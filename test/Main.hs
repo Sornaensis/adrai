@@ -2,7 +2,9 @@
 
 module Main (main) where
 
+import qualified Adrai.ConfigFormatTest
 import qualified Adrai.CoverageLedgerTest
+import qualified Adrai.DomainFormatTest
 import qualified Adrai.FixtureContractTest
 import qualified Adrai.FixturePlanTest
 import qualified Adrai.FixturePrngTest
@@ -10,6 +12,10 @@ import qualified Adrai.FixtureProperties
 import qualified Adrai.FixtureRelevanceTest
 import qualified Adrai.FormatFoundationTest
 import qualified Adrai.GoldenFixturesTest
+import qualified Adrai.ManagedDocumentFormatTest
+import qualified Adrai.ProvenanceFormatTest
+import qualified Adrai.ScopeFormatTest
+import qualified Adrai.TomlCanonicalTest
 import qualified Adrai.TypesProperties
 import qualified Adrai.TypesTest
 import Control.Exception (bracket)
@@ -43,5 +49,11 @@ tests =
       Adrai.FixtureRelevanceTest.tests,
       Adrai.FixturePlanTest.tests,
       Adrai.FixtureProperties.tests,
-      Adrai.FixtureContractTest.tests
+      Adrai.FixtureContractTest.tests,
+      Adrai.DomainFormatTest.tests,
+      Adrai.ScopeFormatTest.tests,
+      Adrai.ProvenanceFormatTest.tests,
+      Adrai.TomlCanonicalTest.tests,
+      Adrai.ConfigFormatTest.tests,
+      Adrai.ManagedDocumentFormatTest.tests
     ]

@@ -24,6 +24,7 @@ dependencies:
   - time
   - toml-parser
   - typed-process
+  - unicode-transforms
   - vector
   - wai
   - wai-websockets

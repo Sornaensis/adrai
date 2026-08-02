@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Adrai.Format
-  ( parseAdrId,
+  ( -- * Foundation codecs
+    parseAdrId,
     parseRecordId,
     parseConnectionId,
     parseOperationId,
@@ -13,9 +14,68 @@ module Adrai.Format
     sourceSchemaText,
     publicSchemaText,
     configSchemaNumber,
+
+    -- * Configuration documents
+    ConfigParseError (..),
+    ConfigFormatError,
+    defaultConfigText,
+    parseConfigText,
+    renderConfig,
+
+    -- * Managed documents
+    DecisionRecord (..),
+    ConnectionRecord (..),
+    ConnectionPayload (..),
+    AmendsPayload (..),
+    AppliesToPayload (..),
+    DomainsPayload (..),
+    StatusPayload (..),
+    StatusState (..),
+    ManagedRecord (..),
+    ParsedManagedDocument (..),
+    DocumentError (..),
+    parseFrontMatter,
+    renderDecisionSemantic,
+    renderConnectionSemantic,
+    renderManagedSemantic,
+    parseManagedDocument,
+    sealManagedDocument,
+    canonicalManagedPath,
+
+    -- * Canonical TOML primitives
+    renderTomlString,
+    renderTomlStringArray,
   )
 where
 
+import Adrai.Format.Config
+  ( ConfigFormatError,
+    ConfigParseError (..),
+    defaultConfigText,
+    parseConfigText,
+    renderConfig,
+  )
+import Adrai.Format.Document
+  ( AmendsPayload (..),
+    AppliesToPayload (..),
+    ConnectionPayload (..),
+    ConnectionRecord (..),
+    DecisionRecord (..),
+    DocumentError (..),
+    DomainsPayload (..),
+    ManagedRecord (..),
+    ParsedManagedDocument (..),
+    StatusPayload (..),
+    StatusState (..),
+    canonicalManagedPath,
+    parseFrontMatter,
+    parseManagedDocument,
+    renderConnectionSemantic,
+    renderDecisionSemantic,
+    renderManagedSemantic,
+    sealManagedDocument,
+  )
+import Adrai.Format.Toml (renderTomlString, renderTomlStringArray)
 import Adrai.Types
   ( AdraiError (..),
     AdrId,
