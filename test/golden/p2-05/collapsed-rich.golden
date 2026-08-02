@@ -1,0 +1,165 @@
+{
+  "adr": "A11111111111111111111111111",
+  "applies_to": [
+    "src/**"
+  ],
+  "as_of": "deadbeef",
+  "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+  "candidate_domains": [
+    {
+      "connection": "C22222222222222222222222222",
+      "domains": [
+        "compiler"
+      ],
+      "path": "fixtures/C22222222222222222222222222.md"
+    }
+  ],
+  "candidate_records": [
+    {
+      "path": "fixtures/R22222222222222222222222222.md",
+      "record": "R22222222222222222222222222",
+      "summary": "new summary",
+      "title": "Caf\u00e9 architecture v2"
+    }
+  ],
+  "candidate_scopes": [
+    {
+      "applies_to": [
+        "src/**"
+      ],
+      "connection": "C11111111111111111111111111",
+      "path": "fixtures/C11111111111111111111111111.md"
+    }
+  ],
+  "conflicts": [],
+  "connection_history": [
+    "C44444444444444444444444444",
+    "C11111111111111111111111111",
+    "C22222222222222222222222222",
+    "C33333333333333333333333333",
+    "C55555555555555555555555555"
+  ],
+  "counts": {
+    "amendments": 1,
+    "domain_revisions": 1,
+    "editions": 2,
+    "scope_revisions": 1,
+    "status_revisions": 2
+  },
+  "decision_history": [
+    "R11111111111111111111111111",
+    "R22222222222222222222222222"
+  ],
+  "domain_heads": [
+    "C22222222222222222222222222"
+  ],
+  "domains": [
+    "compiler"
+  ],
+  "evolution": {
+    "latest": {
+      "actor": "service:service",
+      "claimed_at": "1970-01-01T00:00:00.200000Z",
+      "details": {},
+      "label": "reactivated",
+      "operation": "O33333333333333333333333333",
+      "reason": "status update"
+    },
+    "operation_count": 3,
+    "summary": "created \u2192 amended \u2192 reactivated"
+  },
+  "issues": [],
+  "obsolete": false,
+  "provenance": {
+    "created": {
+      "actor": "human:architect",
+      "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "claimed_at": "1970-01-01T00:00:00.300000Z",
+      "introductions": [],
+      "line_landings": [
+        {
+          "commit": "landing-1",
+          "complete": true,
+          "line": "trunk",
+          "ref": "refs/heads/main"
+        }
+      ],
+      "model": null,
+      "operation": "O11111111111111111111111111",
+      "original_commits": [
+        "commit-placement-1"
+      ]
+    },
+    "domains": {
+      "actor": "human:architect",
+      "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "claimed_at": "1970-01-01T00:00:00.300000Z",
+      "introductions": [],
+      "line_landings": [
+        {
+          "commit": "landing-1",
+          "complete": true,
+          "line": "trunk",
+          "ref": "refs/heads/main"
+        }
+      ],
+      "model": null,
+      "operation": "O11111111111111111111111111",
+      "original_commits": [
+        "commit-placement-1"
+      ]
+    },
+    "effective": {
+      "actor": "llm:reviewer",
+      "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "claimed_at": "1970-01-01T00:00:00.100000Z",
+      "introductions": [
+        "commit-placement-2"
+      ],
+      "line_landings": [],
+      "model": null,
+      "operation": "O22222222222222222222222222",
+      "original_commits": []
+    },
+    "status": {
+      "actor": "service:service",
+      "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "claimed_at": "1970-01-01T00:00:00.200000Z",
+      "introductions": [],
+      "line_landings": [],
+      "model": null,
+      "operation": "O33333333333333333333333333",
+      "original_commits": []
+    }
+  },
+  "record": "R22222222222222222222222222",
+  "record_heads": [
+    "R22222222222222222222222222"
+  ],
+  "replacement": null,
+  "resolution": {
+    "conflicts": [],
+    "resolution_required": false,
+    "resolved": true
+  },
+  "resolution_required": false,
+  "resolved": true,
+  "schema": "adrai/show-collapsed/v1",
+  "scope_heads": [
+    "C11111111111111111111111111"
+  ],
+  "source_paths": [
+    "fixtures/R22222222222222222222222222.md",
+    "fixtures/C11111111111111111111111111.md",
+    "fixtures/C22222222222222222222222222.md",
+    "fixtures/C55555555555555555555555555.md"
+  ],
+  "state_token": "SYZEeC9tWl0ulonggnO5MTo",
+  "status": "active",
+  "status_heads": [
+    "C55555555555555555555555555"
+  ],
+  "summary": "new summary",
+  "title": "Caf\u00e9 architecture v2",
+  "view": "collapsed"
+}

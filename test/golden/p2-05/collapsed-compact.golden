@@ -1,0 +1,109 @@
+{
+  "adr": "A11111111111111111111111111",
+  "applies_to": [
+    "src/**"
+  ],
+  "as_of": "deadbeef",
+  "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+  "counts": {
+    "amendments": 1,
+    "domain_revisions": 1,
+    "editions": 2,
+    "scope_revisions": 1,
+    "status_revisions": 2
+  },
+  "domains": [
+    "compiler"
+  ],
+  "evolution": {
+    "latest": {
+      "actor": "service:service",
+      "claimed_at": "1970-01-01T00:00:00.200000Z",
+      "details": {},
+      "label": "reactivated",
+      "operation": "O33333333333333333333333333",
+      "reason": "status update"
+    },
+    "operation_count": 3,
+    "summary": "created \u2192 amended \u2192 reactivated"
+  },
+  "issues": [],
+  "obsolete": false,
+  "provenance": {
+    "created": {
+      "actor": "human:architect",
+      "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "claimed_at": "1970-01-01T00:00:00.300000Z",
+      "introductions": [],
+      "line_landings": [
+        {
+          "commit": "landing-1",
+          "complete": true,
+          "line": "trunk",
+          "ref": "refs/heads/main"
+        }
+      ],
+      "model": null,
+      "operation": "O11111111111111111111111111",
+      "original_commits": [
+        "commit-placement-1"
+      ]
+    },
+    "domains": {
+      "actor": "human:architect",
+      "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "claimed_at": "1970-01-01T00:00:00.300000Z",
+      "introductions": [],
+      "line_landings": [
+        {
+          "commit": "landing-1",
+          "complete": true,
+          "line": "trunk",
+          "ref": "refs/heads/main"
+        }
+      ],
+      "model": null,
+      "operation": "O11111111111111111111111111",
+      "original_commits": [
+        "commit-placement-1"
+      ]
+    },
+    "effective": {
+      "actor": "llm:reviewer",
+      "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "claimed_at": "1970-01-01T00:00:00.100000Z",
+      "introductions": [
+        "commit-placement-2"
+      ],
+      "line_landings": [],
+      "model": null,
+      "operation": "O22222222222222222222222222",
+      "original_commits": []
+    },
+    "status": {
+      "actor": "service:service",
+      "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "claimed_at": "1970-01-01T00:00:00.200000Z",
+      "introductions": [],
+      "line_landings": [],
+      "model": null,
+      "operation": "O33333333333333333333333333",
+      "original_commits": []
+    }
+  },
+  "record": "R22222222222222222222222222",
+  "replacement": null,
+  "resolution": {
+    "conflicts": [],
+    "resolution_required": false,
+    "resolved": true
+  },
+  "resolution_required": false,
+  "resolved": true,
+  "schema": "adrai/show-collapsed/v1",
+  "state_token": "SYZEeC9tWl0ulonggnO5MTo",
+  "status": "active",
+  "summary": "new summary",
+  "title": "Caf\u00e9 architecture v2",
+  "view": "collapsed"
+}

@@ -1,0 +1,262 @@
+{
+  "cache": {
+    "mode": "pure"
+  },
+  "counts": {
+    "added": 0,
+    "changed": 1,
+    "removed": 0,
+    "unchanged": 1
+  },
+  "entries": [
+    {
+      "adr": "A11111111111111111111111111",
+      "after": {
+        "adr": "A11111111111111111111111111",
+        "applies_to": [
+          "src/**"
+        ],
+        "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+        "conflict": null,
+        "conflicts": [],
+        "counts": {
+          "amendments": 1,
+          "domain_revisions": 1,
+          "records": 2,
+          "scope_revisions": 1,
+          "status_revisions": 2
+        },
+        "domain_heads": [
+          "C22222222222222222222222222"
+        ],
+        "domains": [
+          "compiler"
+        ],
+        "obsolete": false,
+        "record": "R22222222222222222222222222",
+        "record_heads": [
+          "R22222222222222222222222222"
+        ],
+        "replacement": null,
+        "resolution_required": false,
+        "resolved": true,
+        "scope_heads": [
+          "C11111111111111111111111111"
+        ],
+        "state_token": "SYZEeC9tWl0ulonggnO5MTo",
+        "status": "active",
+        "status_heads": [
+          "C55555555555555555555555555"
+        ],
+        "summary": "new summary",
+        "title": "Caf\u00e9 architecture v2"
+      },
+      "before": {
+        "adr": "A11111111111111111111111111",
+        "applies_to": [
+          "src/**"
+        ],
+        "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nKeep the legacy architecture.\nAdopt the service architecture.",
+        "conflict": null,
+        "conflicts": [],
+        "counts": {
+          "amendments": 0,
+          "domain_revisions": 1,
+          "records": 1,
+          "scope_revisions": 1,
+          "status_revisions": 1
+        },
+        "domain_heads": [
+          "C22222222222222222222222222"
+        ],
+        "domains": [
+          "compiler"
+        ],
+        "obsolete": false,
+        "record": "R11111111111111111111111111",
+        "record_heads": [
+          "R11111111111111111111111111"
+        ],
+        "replacement": null,
+        "resolution_required": false,
+        "resolved": true,
+        "scope_heads": [
+          "C11111111111111111111111111"
+        ],
+        "state_token": "SfklXq4igKWmeWaEQ9tehOp",
+        "status": "active",
+        "status_heads": [
+          "C33333333333333333333333333"
+        ],
+        "summary": "Caf\u00e9 architecture v1 summary",
+        "title": "Caf\u00e9 architecture v1"
+      },
+      "changes": [
+        {
+          "after": "R22222222222222222222222222",
+          "before": "R11111111111111111111111111",
+          "field": "record"
+        },
+        {
+          "after": "Caf\u00e9 architecture v2",
+          "before": "Caf\u00e9 architecture v1",
+          "diff": "--- before+++ after@@ -1 +1 @@-Caf\u00e9 architecture v1+Caf\u00e9 architecture v2",
+          "field": "title"
+        },
+        {
+          "after": "new summary",
+          "before": "Caf\u00e9 architecture v1 summary",
+          "diff": "--- before+++ after@@ -1 +1 @@-Caf\u00e9 architecture v1 summary+new summary",
+          "field": "summary"
+        },
+        {
+          "after": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+          "before": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nKeep the legacy architecture.\nAdopt the service architecture.",
+          "diff": "--- before+++ after@@ -7,5 +7,5 @@ Shared context 6\n Shared context 7\n Shared context 8\n-Keep the legacy architecture.\n-Adopt the service architecture.+Adopt the service architecture.\n+Keep the legacy architecture.",
+          "field": "body"
+        },
+        {
+          "after": [
+            "R22222222222222222222222222"
+          ],
+          "before": [
+            "R11111111111111111111111111"
+          ],
+          "field": "record_heads"
+        },
+        {
+          "after": [
+            "C55555555555555555555555555"
+          ],
+          "before": [
+            "C33333333333333333333333333"
+          ],
+          "field": "status_heads"
+        }
+      ],
+      "kind": "changed",
+      "title": "Caf\u00e9 architecture v2"
+    },
+    {
+      "adr": "A22222222222222222222222222",
+      "after": {
+        "adr": "A22222222222222222222222222",
+        "applies_to": [],
+        "body": "# Decision\nunchanged",
+        "conflict": "0 scope heads; 0 domain heads; 0 status heads; 3 integrity errors",
+        "conflicts": [
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "0 scope heads"
+          },
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "0 domain heads"
+          },
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "0 status heads"
+          },
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "3 integrity errors"
+          }
+        ],
+        "counts": {
+          "amendments": 0,
+          "domain_revisions": 0,
+          "records": 1,
+          "scope_revisions": 0,
+          "status_revisions": 0
+        },
+        "domain_heads": [],
+        "domains": [],
+        "obsolete": false,
+        "record": "R88888888888888888888888888",
+        "record_heads": [
+          "R88888888888888888888888888"
+        ],
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "scope_heads": [],
+        "state_token": "SmLQ9wpLjNCaLjk_oItdzeL",
+        "status": "conflict",
+        "status_heads": [],
+        "summary": "unchanged summary",
+        "title": "unchanged"
+      },
+      "before": {
+        "adr": "A22222222222222222222222222",
+        "applies_to": [],
+        "body": "# Decision\nunchanged",
+        "conflict": "0 scope heads; 0 domain heads; 0 status heads; 3 integrity errors",
+        "conflicts": [
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "0 scope heads"
+          },
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "0 domain heads"
+          },
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "0 status heads"
+          },
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "3 integrity errors"
+          }
+        ],
+        "counts": {
+          "amendments": 0,
+          "domain_revisions": 0,
+          "records": 1,
+          "scope_revisions": 0,
+          "status_revisions": 0
+        },
+        "domain_heads": [],
+        "domains": [],
+        "obsolete": false,
+        "record": "R88888888888888888888888888",
+        "record_heads": [
+          "R88888888888888888888888888"
+        ],
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "scope_heads": [],
+        "state_token": "SmLQ9wpLjNCaLjk_oItdzeL",
+        "status": "conflict",
+        "status_heads": [],
+        "summary": "unchanged summary",
+        "title": "unchanged"
+      },
+      "changes": [],
+      "kind": "unchanged",
+      "title": "unchanged"
+    }
+  ],
+  "from": "before-resolved",
+  "from_requested": "before",
+  "to": "after-resolved",
+  "to_requested": "after",
+  "view": "compare"
+}

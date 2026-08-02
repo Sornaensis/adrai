@@ -4,6 +4,7 @@ license: BSD-3-Clause
 language: GHC2021
 
 dependencies:
+  - array
   - base >= 4.20 && < 4.21
   - aeson
   - async

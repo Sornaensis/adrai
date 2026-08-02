@@ -1,0 +1,62 @@
+{
+  "collapsed": [
+    "adr",
+    "applies_to",
+    "as_of",
+    "body",
+    "counts",
+    "domains",
+    "evolution",
+    "issues",
+    "obsolete",
+    "provenance",
+    "record",
+    "replacement",
+    "resolution",
+    "resolution_required",
+    "resolved",
+    "schema",
+    "state_token",
+    "status",
+    "summary",
+    "title",
+    "view"
+  ],
+  "compare": [
+    "cache",
+    "counts",
+    "entries",
+    "from",
+    "from_requested",
+    "to",
+    "to_requested",
+    "view"
+  ],
+  "exploded": [
+    "adr",
+    "as_of",
+    "operations",
+    "resolution",
+    "resolution_required",
+    "resolved",
+    "schema",
+    "state_token",
+    "view"
+  ],
+  "history": [
+    "adr",
+    "as_of",
+    "filters",
+    "limit",
+    "operations",
+    "order",
+    "schema",
+    "truncated",
+    "view"
+  ],
+  "resolution": [
+    "conflicts",
+    "resolution_required",
+    "resolved"
+  ]
+}

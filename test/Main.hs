@@ -19,6 +19,7 @@ import qualified Adrai.ManagedDocumentFormatTest
 import qualified Adrai.ManagedPathContractTest
 import qualified Adrai.MarkdownTest
 import qualified Adrai.ProvenanceFormatTest
+import qualified Adrai.QueryHistoryTest
 import qualified Adrai.SemanticIdentityTest
 import qualified Adrai.ScopeFormatTest
 import qualified Adrai.ServiceTest
@@ -65,6 +66,7 @@ tests =
       Adrai.ConfigFormatTest.tests,
       Adrai.ManagedDocumentFormatTest.tests,
       Adrai.GraphTest.tests,
+      Adrai.QueryHistoryTest.tests,
       Adrai.ServiceTest.tests,
       Adrai.IdentityTest.tests,
       Adrai.StateTest.tests,

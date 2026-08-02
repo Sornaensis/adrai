@@ -1,0 +1,93 @@
+{
+  "adr": null,
+  "as_of": "repository-resolved",
+  "filters": {
+    "actor": null,
+    "since": null,
+    "until": null
+  },
+  "limit": 20,
+  "operations": [
+    {
+      "actor": "human:other",
+      "adr": "A22222222222222222222222222",
+      "changes": [
+        "decision"
+      ],
+      "claimed_at": "1970-01-01T00:00:00.400000Z",
+      "conflict": "0 scope heads; 0 domain heads; 0 status heads; 3 integrity errors",
+      "details": {},
+      "label": "created",
+      "operation": "O88888888888888888888888888",
+      "reason": "other summary",
+      "resolved": false,
+      "status": "conflict",
+      "title": "other"
+    },
+    {
+      "actor": "service:service",
+      "adr": "A11111111111111111111111111",
+      "changes": [
+        "status"
+      ],
+      "claimed_at": "1970-01-01T00:00:00.200000Z",
+      "details": {},
+      "label": "reactivated",
+      "operation": "O33333333333333333333333333",
+      "reason": "status update",
+      "resolved": true,
+      "status": "active",
+      "title": "Caf\u00e9 architecture v2"
+    },
+    {
+      "actor": "llm:reviewer",
+      "adr": "A11111111111111111111111111",
+      "changes": [
+        "decision"
+      ],
+      "claimed_at": "1970-01-01T00:00:00.100000Z",
+      "details": {
+        "changed_fields": [
+          "title",
+          "summary",
+          "decision text"
+        ]
+      },
+      "label": "amended",
+      "operation": "O22222222222222222222222222",
+      "reason": "reviewed amendment",
+      "resolved": true,
+      "status": "active",
+      "title": "Caf\u00e9 architecture v2"
+    },
+    {
+      "actor": "human:architect",
+      "adr": "A11111111111111111111111111",
+      "changes": [
+        "decision",
+        "scope",
+        "domains",
+        "status"
+      ],
+      "claimed_at": "1970-01-01T00:00:00.300000Z",
+      "details": {
+        "added_domains": [
+          "compiler"
+        ],
+        "added_scope": [
+          "src/**"
+        ]
+      },
+      "label": "created",
+      "operation": "O11111111111111111111111111",
+      "reason": "Caf\u00e9 architecture v1 summary",
+      "resolved": true,
+      "status": "active",
+      "title": "Caf\u00e9 architecture v1"
+    }
+  ],
+  "order": "newest-first",
+  "schema": "adrai/history/v1",
+  "truncated": false,
+  "view": "history"
+}

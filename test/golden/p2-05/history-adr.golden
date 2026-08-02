@@ -1,0 +1,81 @@
+{
+  "adr": "A11111111111111111111111111",
+  "as_of": "deadbeef",
+  "filters": {
+    "actor": null,
+    "since": null,
+    "until": null
+  },
+  "limit": 20,
+  "operations": [
+    {
+      "actor": "service:service",
+      "adr": "A11111111111111111111111111",
+      "changes": [
+        "status"
+      ],
+      "claimed_at": "1970-01-01T00:00:00.200000Z",
+      "details": {},
+      "label": "reactivated",
+      "operation": "O33333333333333333333333333",
+      "reason": "status update",
+      "resolved": true,
+      "status": "active",
+      "title": "Caf\u00e9 architecture v2"
+    },
+    {
+      "actor": "llm:reviewer",
+      "adr": "A11111111111111111111111111",
+      "changes": [
+        "decision"
+      ],
+      "claimed_at": "1970-01-01T00:00:00.100000Z",
+      "commit": "commit-placement-2",
+      "details": {
+        "changed_fields": [
+          "title",
+          "summary",
+          "decision text"
+        ]
+      },
+      "label": "amended",
+      "operation": "O22222222222222222222222222",
+      "placement": "introduction",
+      "reason": "reviewed amendment",
+      "resolved": true,
+      "status": "active",
+      "title": "Caf\u00e9 architecture v2"
+    },
+    {
+      "actor": "human:architect",
+      "adr": "A11111111111111111111111111",
+      "changes": [
+        "decision",
+        "scope",
+        "domains",
+        "status"
+      ],
+      "claimed_at": "1970-01-01T00:00:00.300000Z",
+      "commit": "commit-placement-1",
+      "details": {
+        "added_domains": [
+          "compiler"
+        ],
+        "added_scope": [
+          "src/**"
+        ]
+      },
+      "label": "created",
+      "operation": "O11111111111111111111111111",
+      "placement": "original",
+      "reason": "Caf\u00e9 architecture v1 summary",
+      "resolved": true,
+      "status": "active",
+      "title": "Caf\u00e9 architecture v1"
+    }
+  ],
+  "order": "newest-first",
+  "schema": "adrai/history/v1",
+  "truncated": false,
+  "view": "history"
+}

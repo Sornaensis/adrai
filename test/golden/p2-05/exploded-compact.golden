@@ -1,0 +1,336 @@
+{
+  "adr": "A11111111111111111111111111",
+  "as_of": "deadbeef",
+  "operations": [
+    {
+      "items": [
+        {
+          "event": "decision.amend",
+          "item": "C44444444444444444444444444",
+          "metadata": {
+            "added": [],
+            "applies_to": [],
+            "change": null,
+            "domains": [],
+            "from_record": "R22222222222222222222222222",
+            "parent_connections": [],
+            "record_heads": [],
+            "refinements": [],
+            "removed": [],
+            "replacement": null,
+            "state": null,
+            "to_records": [
+              "R11111111111111111111111111"
+            ]
+          },
+          "operation": "O22222222222222222222222222",
+          "path": "fixtures/C44444444444444444444444444.md",
+          "rationale": "reviewed amendment",
+          "relation": "amends",
+          "type": "connection"
+        },
+        {
+          "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+          "diffs": [
+            {
+              "diff": "--- parent\n+++ child\n@@ -1,9 +1,9 @@\n +++\n schema = \"adrai/decision/v1\"\n adr = \"A11111111111111111111111111\"\n-record = \"R11111111111111111111111111\"\n-title = \"Caf\u00e9 architecture v1\"\n-summary = \"Caf\u00e9 architecture v1 summary\"\n+record = \"R22222222222222222222222222\"\n+title = \"Caf\u00e9 architecture v2\"\n+summary = \"new summary\"\n domains = [\"compiler\"]\n +++\n \n@@ -16,5 +16,5 @@\n Shared context 6\n Shared context 7\n Shared context 8\n+Adopt the service architecture.\n Keep the legacy architecture.\n-Adopt the service architecture.\n",
+              "parent": "R11111111111111111111111111"
+            }
+          ],
+          "domains": [
+            "compiler"
+          ],
+          "event": "decision.amend",
+          "item": "R22222222222222222222222222",
+          "operation": "O22222222222222222222222222",
+          "parents": [
+            "R11111111111111111111111111"
+          ],
+          "path": "fixtures/R22222222222222222222222222.md",
+          "summary": "new summary",
+          "title": "Caf\u00e9 architecture v2",
+          "type": "decision"
+        }
+      ],
+      "operation": "O22222222222222222222222222",
+      "provenance": {
+        "actor": "llm:reviewer",
+        "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "branch_hint": null,
+        "claimed_at": "1970-01-01T00:00:00.100000Z",
+        "claimed_ms": 100,
+        "context_digest": null,
+        "events": [
+          "decision.amend"
+        ],
+        "input_digest": null,
+        "line_anchors": [],
+        "line_landings": [],
+        "model": null,
+        "objects": [
+          "C44444444444444444444444444",
+          "R22222222222222222222222222"
+        ],
+        "operation": "O22222222222222222222222222",
+        "placements": [
+          {
+            "authored_at": "1970-01-01T00:00:00.090000Z",
+            "classification": "introduction",
+            "commit": "commit-placement-2",
+            "committed_at": "1970-01-01T00:00:00.100000Z",
+            "parents": [
+              "commit-placement-1"
+            ],
+            "reachable": true,
+            "subject": "amend ADR"
+          }
+        ],
+        "prompt_digest": null,
+        "tool": "adrai/1.0.0",
+        "upstream_hint": null,
+        "when": {
+          "copies": [],
+          "first_present_on_lines": [],
+          "introductions": [
+            "commit-placement-2"
+          ],
+          "original_operation_commits": [],
+          "semantic": "1970-01-01T00:00:00.100000Z"
+        }
+      }
+    },
+    {
+      "items": [
+        {
+          "event": "decision.reactivate",
+          "item": "C55555555555555555555555555",
+          "metadata": {
+            "added": [],
+            "applies_to": [],
+            "change": null,
+            "domains": [],
+            "from_record": null,
+            "parent_connections": [
+              "C33333333333333333333333333"
+            ],
+            "record_heads": [
+              "R22222222222222222222222222"
+            ],
+            "refinements": [],
+            "removed": [],
+            "replacement": null,
+            "state": "active",
+            "to_records": []
+          },
+          "operation": "O33333333333333333333333333",
+          "path": "fixtures/C55555555555555555555555555.md",
+          "rationale": "status update",
+          "relation": "status",
+          "type": "connection"
+        }
+      ],
+      "operation": "O33333333333333333333333333",
+      "provenance": {
+        "actor": "service:service",
+        "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "branch_hint": null,
+        "claimed_at": "1970-01-01T00:00:00.200000Z",
+        "claimed_ms": 200,
+        "context_digest": null,
+        "events": [
+          "decision.reactivate"
+        ],
+        "input_digest": null,
+        "line_anchors": [],
+        "line_landings": [],
+        "model": null,
+        "objects": [
+          "C55555555555555555555555555"
+        ],
+        "operation": "O33333333333333333333333333",
+        "placements": [],
+        "prompt_digest": null,
+        "tool": "adrai/1.0.0",
+        "upstream_hint": null,
+        "when": {
+          "copies": [],
+          "first_present_on_lines": [],
+          "introductions": [],
+          "original_operation_commits": [],
+          "semantic": "1970-01-01T00:00:00.200000Z"
+        }
+      }
+    },
+    {
+      "items": [
+        {
+          "event": "scope.initial",
+          "item": "C11111111111111111111111111",
+          "metadata": {
+            "added": [
+              "src/**"
+            ],
+            "applies_to": [
+              "src/**"
+            ],
+            "change": "initial",
+            "domains": [],
+            "from_record": null,
+            "parent_connections": [],
+            "record_heads": [],
+            "refinements": [],
+            "removed": [],
+            "replacement": null,
+            "state": null,
+            "to_records": []
+          },
+          "operation": "O11111111111111111111111111",
+          "path": "fixtures/C11111111111111111111111111.md",
+          "rationale": "initial scope",
+          "relation": "applies_to",
+          "type": "connection"
+        },
+        {
+          "event": "domain.initial",
+          "item": "C22222222222222222222222222",
+          "metadata": {
+            "added": [
+              "compiler"
+            ],
+            "applies_to": [],
+            "change": "initial",
+            "domains": [
+              "compiler"
+            ],
+            "from_record": null,
+            "parent_connections": [],
+            "record_heads": [],
+            "refinements": [],
+            "removed": [],
+            "replacement": null,
+            "state": null,
+            "to_records": []
+          },
+          "operation": "O11111111111111111111111111",
+          "path": "fixtures/C22222222222222222222222222.md",
+          "rationale": "initial domain",
+          "relation": "domains",
+          "type": "connection"
+        },
+        {
+          "event": "status.initial",
+          "item": "C33333333333333333333333333",
+          "metadata": {
+            "added": [],
+            "applies_to": [],
+            "change": null,
+            "domains": [],
+            "from_record": null,
+            "parent_connections": [],
+            "record_heads": [
+              "R11111111111111111111111111"
+            ],
+            "refinements": [],
+            "removed": [],
+            "replacement": null,
+            "state": "active",
+            "to_records": []
+          },
+          "operation": "O11111111111111111111111111",
+          "path": "fixtures/C33333333333333333333333333.md",
+          "rationale": "status update",
+          "relation": "status",
+          "type": "connection"
+        },
+        {
+          "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nKeep the legacy architecture.\nAdopt the service architecture.",
+          "diffs": [],
+          "domains": [
+            "compiler"
+          ],
+          "event": "decision.create",
+          "item": "R11111111111111111111111111",
+          "operation": "O11111111111111111111111111",
+          "parents": [],
+          "path": "fixtures/R11111111111111111111111111.md",
+          "summary": "Caf\u00e9 architecture v1 summary",
+          "title": "Caf\u00e9 architecture v1",
+          "type": "decision"
+        }
+      ],
+      "operation": "O11111111111111111111111111",
+      "provenance": {
+        "actor": "human:architect",
+        "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "branch_hint": null,
+        "claimed_at": "1970-01-01T00:00:00.300000Z",
+        "claimed_ms": 300,
+        "context_digest": null,
+        "events": [
+          "decision.create",
+          "domain.initial",
+          "scope.initial",
+          "status.initial"
+        ],
+        "input_digest": null,
+        "line_anchors": [],
+        "line_landings": [
+          {
+            "commit": "landing-1",
+            "complete": true,
+            "line": "trunk",
+            "ref": "refs/heads/main"
+          }
+        ],
+        "model": null,
+        "objects": [
+          "C11111111111111111111111111",
+          "C22222222222222222222222222",
+          "C33333333333333333333333333",
+          "R11111111111111111111111111"
+        ],
+        "operation": "O11111111111111111111111111",
+        "placements": [
+          {
+            "authored_at": "1970-01-01T00:00:00.250000Z",
+            "classification": "original",
+            "commit": "commit-placement-1",
+            "committed_at": "1970-01-01T00:00:00.300000Z",
+            "parents": [],
+            "reachable": true,
+            "subject": "create ADR"
+          }
+        ],
+        "prompt_digest": null,
+        "tool": "adrai/1.0.0",
+        "upstream_hint": null,
+        "when": {
+          "copies": [],
+          "first_present_on_lines": [
+            {
+              "commit": "landing-1",
+              "complete": true,
+              "line": "trunk",
+              "ref": "refs/heads/main"
+            }
+          ],
+          "introductions": [],
+          "original_operation_commits": [
+            "commit-placement-1"
+          ],
+          "semantic": "1970-01-01T00:00:00.300000Z"
+        }
+      }
+    }
+  ],
+  "resolution": {
+    "conflicts": [],
+    "resolution_required": false,
+    "resolved": true
+  },
+  "resolution_required": false,
+  "resolved": true,
+  "schema": "adrai/show-exploded/v1",
+  "state_token": "SYZEeC9tWl0ulonggnO5MTo",
+  "view": "exploded"
+}
