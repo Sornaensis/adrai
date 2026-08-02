@@ -43,7 +43,10 @@ executables:
 tests:
   adrai-test:
     main: Main.hs
-    source-dirs: test
+    source-dirs:
+      - test
+      - test/unit
+      - test/property
     dependencies:
       - adrai
       - hedgehog
