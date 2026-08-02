@@ -2,6 +2,7 @@
 
 module Main (main) where
 
+import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.FormatFoundationTest
 import qualified Adrai.GoldenFixturesTest
 import qualified Adrai.TypesProperties
@@ -31,5 +32,6 @@ tests =
       Adrai.TypesTest.tests,
       Adrai.FormatFoundationTest.tests,
       Adrai.TypesProperties.tests,
-      Adrai.GoldenFixturesTest.tests
+      Adrai.GoldenFixturesTest.tests,
+      Adrai.CoverageLedgerTest.tests
     ]

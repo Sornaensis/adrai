@@ -1,0 +1,24 @@
+{
+  "schema": "adrai/coverage-ledger-category/v1",
+  "category": "large-stress",
+  "expectedCount": 1,
+  "sourceModules": [
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_stress_large_repo.py",
+      "expectedCount": 1
+    }
+  ],
+  "rows": [
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_stress_large_repo.py",
+      "pythonMethod": "test_twelve_thousand_commit_history_with_two_thousand_adrai_operations",
+      "behaviorContract": "A Haskell-owned deterministic generator builds a temporary repository with at least 12,000 commits and 2,000 ADR operations, then the real executable completes a clean cold compile, uses the exact and tree-identical caches correctly, retains bounded hybrid-search and representative relevance behavior, and remains consistent across branch revisions within generous regression ceilings.",
+      "haskellTestName": "12,000-commit repository with 2,000 ADR operations",
+      "haskellTestPath": "test/e2e/Adrai/LargeRepositoryStressTest.hs",
+      "haskellTestType": "e2e",
+      "phaseOwner": "P6",
+      "state": "planned",
+      "evidence": "ADRAI_1_Source/tests/test_stress_large_repo.py:17 (static prototype stress test; the Haskell suite must own its generator and must not execute Python)"
+    }
+  ]
+}

@@ -1,0 +1,248 @@
+{
+  "schema": "adrai/coverage-ledger-category/v1",
+  "category": "formats-distribution-footprint",
+  "expectedCount": 16,
+  "sourceModules": [
+    "ADRAI_1_Source/tests/test_format_contract.py",
+    "ADRAI_1_Source/tests/test_distribution_cli.py",
+    "ADRAI_1_Source/tests/test_committed_footprint.py"
+  ],
+  "rows": [
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "pythonMethod": "test_every_internal_and_public_source_contract_is_version_one",
+      "behaviorContract": "Every tool, source, provenance, cache, overlay, configuration, and public JSON schema identifier remains fixed to the single ADRAI 1 contract.",
+      "haskellTestName": "all internal source cache and public contracts remain version one",
+      "haskellTestPath": "test/golden/Adrai/GoldenFixturesTest.hs",
+      "haskellTestType": "golden",
+      "phaseOwner": "P2",
+      "state": "partial",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_format_contract.py:22-30",
+        "test/unit/Adrai/FormatFoundationTest.hs:84-100",
+        "test/golden/Adrai/GoldenFixturesTest.hs:288-305",
+        "test/fixtures/contracts/v1/versions.json:1-11"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "pythonMethod": "test_default_configuration_is_the_complete_supported_shape",
+      "behaviorContract": "The default configuration contains exactly the v1 managed roots and trunk line while excluding vector, cache, and database configuration.",
+      "haskellTestName": "default configuration has exact committed bytes and typed v1 values",
+      "haskellTestPath": "test/golden/Adrai/GoldenFixturesTest.hs",
+      "haskellTestType": "golden",
+      "phaseOwner": "P2",
+      "state": "covered",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_format_contract.py:37-45",
+        "test/golden/Adrai/GoldenFixturesTest.hs:45-49",
+        "test/golden/Adrai/GoldenFixturesTest.hs:401-413",
+        "test/unit/Adrai/TypesTest.hs:119-134"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "pythonMethod": "test_unknown_top_level_tables_are_rejected",
+      "behaviorContract": "The v1 configuration parser rejects every unsupported top-level table instead of silently accepting extension points.",
+      "haskellTestName": "configuration parser rejects unsupported top level tables",
+      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestType": "unit",
+      "phaseOwner": "P2",
+      "state": "planned",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_format_contract.py:47-52"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "pythonMethod": "test_unknown_path_and_line_fields_are_rejected",
+      "behaviorContract": "The v1 configuration parser rejects unknown fields within paths and logical-line records.",
+      "haskellTestName": "configuration parser rejects unknown path and logical line fields",
+      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestType": "unit",
+      "phaseOwner": "P2",
+      "state": "planned",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_format_contract.py:54-66"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "pythonMethod": "test_schema_and_managed_roots_are_strict",
+      "behaviorContract": "Configuration accepts only schema 1 and requires distinct non-overlapping safe repository-relative managed roots.",
+      "haskellTestName": "configuration schema and managed roots are strict",
+      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestType": "unit",
+      "phaseOwner": "P2",
+      "state": "partial",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_format_contract.py:68-84",
+        "test/unit/Adrai/TypesTest.hs:119-145",
+        "test/unit/Adrai/FormatFoundationTest.hs:84-92"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "pythonMethod": "test_only_v1_record_schemas_are_accepted",
+      "behaviorContract": "Managed-document parsing accepts only the exact decision and connection v1 schema tags and rejects historical, future, or aliased tags.",
+      "haskellTestName": "managed document parser accepts only exact v1 record schemas",
+      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestType": "unit",
+      "phaseOwner": "P2",
+      "state": "partial",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_format_contract.py:102-109",
+        "test/unit/Adrai/FormatFoundationTest.hs:90-92",
+        "test/fixtures/contracts/v1/documents/parse-cases.json:48-54"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "pythonMethod": "test_unknown_decision_frontmatter_and_capsule_fields_are_rejected",
+      "behaviorContract": "Decision front matter and provenance capsules are closed records whose unknown fields are rejected even after semantic resealing.",
+      "haskellTestName": "decision parser rejects unknown front matter and capsule fields",
+      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestType": "unit",
+      "phaseOwner": "P2",
+      "state": "partial",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_format_contract.py:111-127",
+        "test/fixtures/contracts/v1/documents/parse-cases.json:62-68",
+        "test/golden/Adrai/GoldenFixturesTest.hs:228-238"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "pythonMethod": "test_unknown_relation_and_connection_fields_are_rejected",
+      "behaviorContract": "Connection parsing rejects unsupported relation names and fields outside the selected relation's closed v1 shape.",
+      "haskellTestName": "connection parser rejects unknown relations and relation fields",
+      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestType": "unit",
+      "phaseOwner": "P2",
+      "state": "planned",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_format_contract.py:129-145"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "pythonMethod": "test_capsule_version_tool_shape_and_actor_shape_are_strict",
+      "behaviorContract": "Provenance validation enforces capsule version 1, a released ADRAI tool version, and the closed canonical actor shape.",
+      "haskellTestName": "provenance capsule version tool and actor shapes are strict",
+      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestType": "unit",
+      "phaseOwner": "P2",
+      "state": "planned",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_format_contract.py:147-159",
+        "test/fixtures/contracts/v1/documents/parse-cases.json:10-31"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_distribution_cli.py",
+      "pythonMethod": "test_pyproject_declares_dependency_free_console_entrypoint",
+      "behaviorContract": "Distribution metadata declares the ADRAI 1 executable and release maturity without requiring a Python dependency set at runtime.",
+      "haskellTestName": "native package metadata replaces Python project metadata",
+      "haskellTestPath": "test/e2e/Adrai/DistributionTest.hs",
+      "haskellTestType": "e2e",
+      "phaseOwner": "P7",
+      "state": "not-applicable",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_distribution_cli.py:16-27",
+        "package.yaml:1-7",
+        "package.yaml:36-41"
+      ],
+      "translationNote": "Python-only pyproject keys, classifiers, requires-python, and empty runtime dependencies do not exist in the native distribution; P7 verifies the corresponding package version and adrai executable metadata instead."
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_distribution_cli.py",
+      "pythonMethod": "test_python_module_entrypoint_exposes_the_same_cli",
+      "behaviorContract": "The installed invocation exposes the complete command help and reports ADRAI version 1.0.0 through the same CLI surface.",
+      "haskellTestName": "installed native executable exposes command help and version",
+      "haskellTestPath": "test/e2e/Adrai/DistributionTest.hs",
+      "haskellTestType": "e2e",
+      "phaseOwner": "P7",
+      "state": "installed-haskell-equivalent",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_distribution_cli.py:29-52",
+        "app/Main.hs:1-6",
+        "package.yaml:36-41",
+        "test/fixtures/contracts/v1/cli/commands.json:1-6"
+      ],
+      "translationNote": "The Python -m adrai_core entrypoint is replaced by the installed native adrai executable; its --help and --version behavior is the Haskell parity surface."
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_distribution_cli.py",
+      "pythonMethod": "test_cli_has_one_explorer_and_no_removed_commands",
+      "behaviorContract": "The public command inventory contains one option-free explorer and rejects removed trust, vectors, and migrate commands.",
+      "haskellTestName": "CLI exposes one explorer and rejects removed commands",
+      "haskellTestPath": "test/e2e/Adrai/CliInventoryTest.hs",
+      "haskellTestType": "e2e",
+      "phaseOwner": "P6",
+      "state": "planned",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_distribution_cli.py:54-77",
+        "test/fixtures/contracts/v1/cli/commands.json:21-92"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_distribution_cli.py",
+      "pythonMethod": "test_module_cli_round_trip_from_a_repository_path_with_spaces_and_unicode",
+      "behaviorContract": "An installed-style CLI invocation outside the repository completes init, create, show, and hybrid search in a repository path containing spaces and Unicode while producing exactly three commits.",
+      "haskellTestName": "installed CLI round trip supports repository paths with spaces and Unicode",
+      "haskellTestPath": "test/e2e/Adrai/DistributionTest.hs",
+      "haskellTestType": "e2e",
+      "phaseOwner": "P7",
+      "state": "partial",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_distribution_cli.py:79-131",
+        "test/property/Adrai/TypesProperties.hs:22-69",
+        "test/unit/Adrai/TypesTest.hs:76-77"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_committed_footprint.py",
+      "pythonMethod": "test_bootstrap_commits_shared_config_but_not_local_cache_state",
+      "behaviorContract": "Repository initialization commits only shared configuration and ignore attributes while local cache configuration and generated cache files remain untracked.",
+      "haskellTestName": "bootstrap commits shared configuration but excludes local cache state",
+      "haskellTestPath": "test/integration/Adrai/CommittedFootprintTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P4",
+      "state": "planned",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_committed_footprint.py:52-77",
+        "test/fixtures/contracts/v1/config/default.toml:1-9"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_committed_footprint.py",
+      "pythonMethod": "test_each_semantic_operation_adds_only_its_immutable_records",
+      "behaviorContract": "Each semantic mutation creates one isolated append-only commit with the exact immutable record count, provenance event kinds, trailers, and no tracked SQLite cache.",
+      "haskellTestName": "semantic operations commit only their immutable managed records",
+      "haskellTestPath": "test/integration/Adrai/CommittedFootprintTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P4",
+      "state": "planned",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_committed_footprint.py:30-50",
+        "ADRAI_1_Source/tests/test_committed_footprint.py:79-164"
+      ]
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_committed_footprint.py",
+      "pythonMethod": "test_capsule_is_compact_json_embedded_in_each_managed_file",
+      "behaviorContract": "Every managed file ends with a whitespace-free base64url capsule that decodes to compact round-trippable JSON carrying the operation identifier.",
+      "haskellTestName": "every managed file embeds a canonical compact JSON capsule",
+      "haskellTestPath": "test/integration/Adrai/CommittedFootprintTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P4",
+      "state": "partial",
+      "evidence": [
+        "ADRAI_1_Source/tests/test_committed_footprint.py:166-177",
+        "test/fixtures/contracts/v1/documents/parse-cases.json:10-31",
+        "test/golden/Adrai/GoldenFixturesTest.hs:50-55",
+        "test/golden/Adrai/GoldenFixturesTest.hs:431-445"
+      ]
+    }
+  ]
+}

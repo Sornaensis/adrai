@@ -1,0 +1,77 @@
+{
+  "schema": "adrai/coverage-ledger/v1",
+  "extractionDate": "2026-08-02",
+  "expectedTotal": 206,
+  "categories": [
+    {
+      "file": "formats-distribution-footprint.json",
+      "category": "formats-distribution-footprint",
+      "expectedCount": 16
+    },
+    {
+      "file": "graph-service-conflicts-integrity.json",
+      "category": "graph-service-conflicts-integrity",
+      "expectedCount": 50
+    },
+    {
+      "file": "git-transactions-environments-provenance-branches-concurrency.json",
+      "category": "git-transactions-environments-provenance-branches-concurrency",
+      "expectedCount": 42
+    },
+    {
+      "file": "compiler-cache-consistency-usability.json",
+      "category": "compiler-cache-consistency-usability",
+      "expectedCount": 28
+    },
+    {
+      "file": "search-relevance-vectors-history-compare-explorer.json",
+      "category": "search-relevance-vectors-history-compare-explorer",
+      "expectedCount": 69
+    },
+    {
+      "file": "large-stress.json",
+      "category": "large-stress",
+      "expectedCount": 1
+    }
+  ],
+  "allowedStates": [
+    "planned",
+    "partial",
+    "covered",
+    "installed-haskell-equivalent",
+    "not-applicable"
+  ],
+  "allowedPhaseOwners": ["P2", "P3", "P4", "P5", "P6", "P7"],
+  "allowedHaskellTestTypes": ["unit", "property", "integration", "golden", "e2e"],
+  "allowedHaskellTestDirectories": [
+    "test/unit/",
+    "test/property/",
+    "test/integration/",
+    "test/golden/",
+    "test/e2e/"
+  ],
+  "runtimeIndependence": {
+    "requiresPrototypeAtTestRuntime": false,
+    "requiresPython": false,
+    "ledgerIsHaskellOwned": true
+  },
+  "sourceDeletion": {
+    "prototypeMayBeDeletedAfterParity": true,
+    "ledgerRemainsValidAfterDeletion": true,
+    "pythonPathsAreHistoricalAnchors": true
+  },
+  "dynamicGenerators": [
+    {
+      "contract": "relevance",
+      "pythonPath": "ADRAI_1_Source/tests/test_relevance.py",
+      "haskellOwner": "test/support/Adrai/RelevanceFixture.hs",
+      "phaseOwner": "P5"
+    },
+    {
+      "contract": "large-stress",
+      "pythonPath": "ADRAI_1_Source/tests/test_large.py",
+      "haskellOwner": "test/support/Adrai/LargeStressFixture.hs",
+      "phaseOwner": "P6"
+    }
+  ]
+}
