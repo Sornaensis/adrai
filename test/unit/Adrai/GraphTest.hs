@@ -27,9 +27,11 @@ import Adrai.Types
   ( AdrId,
     ConnectionId,
     RecordId,
+    connectionObjectRef,
     mkAdrId,
     mkConnectionId,
     mkRecordId,
+    recordObjectRef,
   )
 import Data.List (permutations)
 import Data.Maybe (fromJust)
@@ -57,6 +59,7 @@ tests =
       testCase "compound malformed records retain every independent diagnostic" compoundMalformedDiagnostics,
       testCase "connection-only ADRs are valid replacement targets" connectionOnlyReplacementTargetsExist,
       testCase "scope and domain diagnostics retain the static taxonomy" deltaDiagnosticTaxonomy,
+      testCase "semantic conflicts are typed, sorted, and exclude integrity-only zero heads" semanticConflictClassification,
       testCase "head lists and state token are sorted and compatible" sortedHeadsAndToken,
       testCase "representative graph reduction is invariant under every permutation" permutationInvariant
     ]
@@ -254,6 +257,20 @@ staleStatusCoverage = do
   axisResolutionEffective (reducedStatusAxis adr) @?= Nothing
   axisResolutionConflict (reducedStatusAxis adr) @?= Just "obsolete status does not cover current decision heads"
   reducedConflictAxes adr @?= [ScopeAxis, DomainAxis, StatusAxis]
+  fmap (map conflictCandidateAxis . adrConflictCandidates) (classifyAdrConflict adr) @?= Just [StatusAxis]
+  fmap adrConflictSummaries (classifyAdrConflict adr) @?= Just ["obsolete status does not cover current decision heads"]
+  let staleAxis = reducedStatusAxis adr
+      recordUpdated = adr {reducedStatusAxis = staleAxis {axisResolutionConflict = Nothing}}
+      malformedHistory =
+        [ ConnectionRecord
+            t1
+            (AppliesToConnection (AppliesToPayload a [] "initial" [] [] []))
+            "typed malformed history"
+        ]
+      malformedRecordUpdate = recordUpdated {reducedStatusHistory = malformedHistory}
+  fmap adrConflictSummaries (classifyAdrConflict recordUpdated)
+    @?= Just ["obsolete status does not cover current decision heads"]
+  classifyAdrConflict malformedRecordUpdate @?= Nothing
 
 invalidChildrenAreQuarantined :: IO ()
 invalidChildrenAreQuarantined = do
@@ -484,6 +501,56 @@ deltaDiagnosticTaxonomy = do
       "DOMAIN_MERGE_KIND",
       "DOMAIN_ROOT_NOT_INITIAL"
     ]
+
+semanticConflictClassification :: IO ()
+semanticConflictClassification = do
+  let a = aid '1'
+      d1 = rid '1'
+      d2 = rid '2'
+      s1 = cid '1'
+      s2 = cid '2'
+      n1 = cid '3'
+      n2 = cid '4'
+      t1 = cid '5'
+      t2 = cid '6'
+      p = scope "src/**"
+      q = scope "test/**"
+      compiler = domain "compiler"
+      identity = domain "identity"
+      records =
+        [ decision a d2 [] "two",
+          statusRevision t2 a [] StatusActive [d1, d2] Nothing,
+          domainRevision n2 a [] "initial" [identity] [] [identity] [],
+          scopeRevision s2 a [] "initial" [q] [] [q],
+          decision a d1 [] "one",
+          statusRevision t1 a [] StatusActive [d1, d2] Nothing,
+          domainRevision n1 a [] "initial" [compiler] [] [compiler] [],
+          scopeRevision s1 a [] "initial" [p] [] [p]
+        ]
+      adr = reduced a (reduceManagedGraph records)
+      conflict = fromJust (classifyAdrConflict adr)
+      emptyAdr = reduced a (reduceManagedGraph [amend (cid '9') a (rid '9') [rid '9']])
+      tamperedToken = stateTokenForHeads (StateHeads [] [] [] [])
+      tamperedAdr = adr {reducedStateToken = tamperedToken}
+  adrConflictCodeText @?= "ADR_CONFLICT"
+  adrConflictCode conflict @?= "ADR_CONFLICT"
+  adrConflictAdr conflict @?= a
+  adrConflictCount conflict @?= 4
+  map conflictCandidateAxis (adrConflictCandidates conflict)
+    @?= [DecisionAxis, ScopeAxis, DomainAxis, StatusAxis]
+  map conflictCandidateHeadCount (adrConflictCandidates conflict) @?= [2, 2, 2, 2]
+  map conflictCandidateHeads (adrConflictCandidates conflict)
+    @?= [ map recordObjectRef [d1, d2],
+          map connectionObjectRef [s1, s2],
+          map connectionObjectRef [n1, n2],
+          map connectionObjectRef [t1, t2]
+        ]
+  adrConflictSummaries conflict @?= ["2 decision heads", "2 scope heads", "2 domain heads", "2 status heads"]
+  adrConflictStateToken conflict @?= reducedStateToken adr
+  classifyAdrConflict emptyAdr @?= Nothing
+  adrConflictStateToken (fromJust (classifyAdrConflict tamperedAdr)) @?= stateTokenForHeads (reducedStateHeads adr)
+  assertBool "classification ignores a record-updated cached token" (adrConflictStateToken conflict /= tamperedToken)
+  assertBool "legacy integrity projection still records zero heads" (not (null (reducedConflictAxes emptyAdr)))
 
 sortedHeadsAndToken :: IO ()
 sortedHeadsAndToken = do

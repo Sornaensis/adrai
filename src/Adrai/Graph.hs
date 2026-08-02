@@ -10,6 +10,10 @@ module Adrai.Graph
     AxisResolution (..),
     CurrentDecisionView (..),
     ReducedStatus (..),
+    ConflictCandidate (..),
+    AdrConflict (..),
+    adrConflictCodeText,
+    classifyAdrConflict,
     GraphIssue (..),
     GraphIssueCode (..),
     graphIssueCodeText,
@@ -92,6 +96,29 @@ data ReducedStatus = ReducedStatus
     reducedStatusReplacement :: Maybe AdrId
   }
   deriving (Eq, Show)
+
+-- | One actionable semantic conflict.  Integrity-only zero-head states are
+-- deliberately absent; their structured graph issues remain authoritative.
+data ConflictCandidate = ConflictCandidate
+  { conflictCandidateAxis :: GraphAxis,
+    conflictCandidateHeads :: [ObjectRef],
+    conflictCandidateHeadCount :: Int,
+    conflictCandidateSummary :: Text
+  }
+  deriving (Eq, Show)
+
+data AdrConflict = AdrConflict
+  { adrConflictCode :: Text,
+    adrConflictAdr :: AdrId,
+    adrConflictCandidates :: [ConflictCandidate],
+    adrConflictCount :: Int,
+    adrConflictSummaries :: [Text],
+    adrConflictStateToken :: StateToken
+  }
+  deriving (Eq, Show)
+
+adrConflictCodeText :: Text
+adrConflictCodeText = "ADR_CONFLICT"
 
 -- | A materialized ADR.  Histories retain every supplied local immutable
 -- record, including records which were quarantined from current-head
@@ -471,6 +498,107 @@ headConflict label heads =
   case heads of
     [_] -> Nothing
     _ -> Just (decimal (length heads) <> " " <> label <> " heads")
+
+-- | Recompute the actionable conflict classification from current heads and
+-- history.  This intentionally neither trusts a cached projection nor maps the
+-- legacy zero-head integrity projection.
+classifyAdrConflict :: ReducedAdr -> Maybe AdrConflict
+classifyAdrConflict adr =
+  classifyConflict
+    (reducedAdrId adr)
+    (stateTokenForHeads heads)
+    decisionHeads
+    scopeHeads
+    domainHeads
+    statusHeads
+    statusCandidate
+  where
+    decisionHeads = axisResolutionHeads (reducedDecisionAxis adr)
+    scopeHeads = axisResolutionHeads (reducedScopeAxis adr)
+    domainHeads = axisResolutionHeads (reducedDomainAxis adr)
+    statusHeads = axisResolutionHeads (reducedStatusAxis adr)
+    heads =
+      StateHeads
+        { stateRecordHeads = decisionHeads,
+          stateScopeHeads = scopeHeads,
+          stateStatusHeads = statusHeads,
+          stateDomainHeads = domainHeads
+        }
+    statusCandidate =
+      case statusHeads of
+        [headId] -> findStatus headId (reducedStatusHistory adr)
+        _ -> Nothing
+    findStatus _ [] = Nothing
+    findStatus identifier (connection : remaining)
+      | connectionRecordId connection == identifier =
+          case connectionPayload connection of
+            StatusConnection payload ->
+              Just
+                ReducedStatus
+                  { reducedStatusState = statusState payload,
+                    reducedStatusRecordHeads = sort (statusRecordHeads payload),
+                    reducedStatusReplacement = statusReplacementAdr payload
+                  }
+            _ -> Nothing
+      | otherwise = findStatus identifier remaining
+
+classifyConflict :: AdrId -> StateToken -> [RecordId] -> [ConnectionId] -> [ConnectionId] -> [ConnectionId] -> Maybe ReducedStatus -> Maybe AdrConflict
+classifyConflict adr token decisionHeads scopeHeads domainHeads statusHeads statusCandidate =
+  case candidates of
+    [] -> Nothing
+    _ ->
+      Just
+        AdrConflict
+          { adrConflictCode = adrConflictCodeText,
+            adrConflictAdr = adr,
+            adrConflictCandidates = candidates,
+            adrConflictCount = length candidates,
+            adrConflictSummaries = map conflictCandidateSummary candidates,
+            adrConflictStateToken = token
+          }
+  where
+    candidates =
+      mapMaybe id
+        [ multiHeadCandidate DecisionAxis (map recordObjectRef decisionHeads) "decision" decisionHeads,
+          multiHeadCandidate ScopeAxis (map connectionObjectRef scopeHeads) "scope" scopeHeads,
+          multiHeadCandidate DomainAxis (map connectionObjectRef domainHeads) "domain" domainHeads,
+          statusCandidateFor statusHeads statusCandidate decisionHeads
+        ]
+
+multiHeadCandidate :: GraphAxis -> [ObjectRef] -> Text -> [identifier] -> Maybe ConflictCandidate
+multiHeadCandidate axis objects label heads
+  | length heads > 1 =
+      Just
+        ConflictCandidate
+          { conflictCandidateAxis = axis,
+            conflictCandidateHeads = objects,
+            conflictCandidateHeadCount = length heads,
+            conflictCandidateSummary = decimal (length heads) <> " " <> label <> " heads"
+          }
+  | otherwise = Nothing
+
+statusCandidateFor :: [ConnectionId] -> Maybe ReducedStatus -> [RecordId] -> Maybe ConflictCandidate
+statusCandidateFor heads effective decisionHeads
+  | length heads > 1 =
+      Just
+        ConflictCandidate
+          { conflictCandidateAxis = StatusAxis,
+            conflictCandidateHeads = map connectionObjectRef heads,
+            conflictCandidateHeadCount = length heads,
+            conflictCandidateSummary = decimal (length heads) <> " status heads"
+          }
+  | [_] <- heads,
+    Just status <- effective,
+    reducedStatusState status == StatusObsolete,
+    reducedStatusRecordHeads status /= decisionHeads =
+      Just
+        ConflictCandidate
+          { conflictCandidateAxis = StatusAxis,
+            conflictCandidateHeads = map connectionObjectRef heads,
+            conflictCandidateHeadCount = 1,
+            conflictCandidateSummary = "obsolete status does not cover current decision heads"
+          }
+  | otherwise = Nothing
 
 -- Decision axis ---------------------------------------------------------------
 
