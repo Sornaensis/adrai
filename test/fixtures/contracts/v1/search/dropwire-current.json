@@ -1,0 +1,36 @@
+{
+  "fixtureSchema": "adrai/golden/search-baseline/v1",
+  "status": "current",
+  "sourceArtifact": "ADRAI_1_Source/verification/ADRAI_1_Search_Enhanced_Dropwire_Evaluation_24.json",
+  "sourceSha256": "97B70927B44CC3D4125BC91AC48DCB5096E631E5183261FF59E16960C94E2C73",
+  "timingPolicy": "observedSnapshot",
+  "timingsAreEqualityGate": false,
+  "baseline": {
+    "any_expected_top3_cases": 19,
+    "any_expected_top3_rate": 1.0,
+    "association_hits": {
+      "1": 19,
+      "10": 47,
+      "3": 38,
+      "5": 43,
+      "7": 47
+    },
+    "association_recall": {
+      "1": 0.404255,
+      "10": 1.0,
+      "3": 0.808511,
+      "5": 0.914894,
+      "7": 1.0
+    },
+    "expected_associations": 47,
+    "high_confidence_false_positives": 0,
+    "max_seconds": 1.296895,
+    "median_seconds": 0.060282,
+    "medium_confidence_false_positives": 0,
+    "negative_cases": 3,
+    "p95_seconds": 0.451799,
+    "positive_cases": 19,
+    "top1_positive_cases": 19,
+    "top1_positive_rate": 1.0
+  }
+}

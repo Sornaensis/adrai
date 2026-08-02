@@ -1,0 +1,77 @@
+{
+  "schema": "adrai-contract/id-validation/v1",
+  "committed": {
+    "pattern": "^[ARCO][0-9A-HJKMNP-TV-Z]{26}$",
+    "normalization": "none",
+    "valid": [
+      "A00000000000000000000000000",
+      "R7ZZZZZZZZZZZZZZZZZZZZZZZZZ",
+      "C0123456789ABCDEFGHJKMNPQRS",
+      "O00000000000000000000000000"
+    ],
+    "invalid": [
+      {"value": "", "reason": "empty"},
+      {"value": "A0000000000000000000000000", "reason": "too-short"},
+      {"value": "A000000000000000000000000000", "reason": "too-long"},
+      {"value": "X00000000000000000000000000", "reason": "unknown-prefix"},
+      {"value": "A0000000000000000000000000I", "reason": "excluded-I"},
+      {"value": "A0000000000000000000000000L", "reason": "excluded-L"},
+      {"value": "A0000000000000000000000000O", "reason": "excluded-O"},
+      {"value": "A0000000000000000000000000U", "reason": "excluded-U"},
+      {"value": "a00000000000000000000000000", "reason": "lowercase"},
+      {"value": " A00000000000000000000000000", "reason": "leading-space"},
+      {"value": "A00000000000000000000000000\n", "reason": "trailing-newline"}
+    ]
+  },
+  "public_reference": {
+    "allowed_prefixes": ["A", "R", "C"],
+    "minimum_total_length": 8,
+    "full_total_length": 27,
+    "normalization": ["trim-unicode-whitespace", "uppercase"],
+    "cases": [
+      {
+        "input": "  a0000000  ",
+        "normalized": "A0000000",
+        "kind": "prefix",
+        "result": "A00000000000000000000000000"
+      },
+      {
+        "input": "R00000000000000000000000000",
+        "normalized": "R00000000000000000000000000",
+        "kind": "full",
+        "result": "R00000000000000000000000000"
+      },
+      {
+        "input": "C0000000",
+        "normalized": "C0000000",
+        "kind": "prefix",
+        "error": "not-found"
+      },
+      {
+        "input": "A1234567",
+        "normalized": "A1234567",
+        "kind": "prefix",
+        "candidates": [
+          "A12345670000000000000000000",
+          "A1234567ZZZZZZZZZZZZZZZZZZZ"
+        ],
+        "error": "ambiguous"
+      },
+      {
+        "input": "O0000000",
+        "normalized": "O0000000",
+        "error": "operation-id-not-public"
+      },
+      {
+        "input": "A000000",
+        "normalized": "A000000",
+        "error": "prefix-too-short"
+      },
+      {
+        "input": "A000000000000000000000000000",
+        "normalized": "A000000000000000000000000000",
+        "error": "reference-too-long"
+      }
+    ]
+  }
+}

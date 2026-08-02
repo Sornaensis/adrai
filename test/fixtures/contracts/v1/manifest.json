@@ -1,0 +1,332 @@
+{
+  "fixtureContract": "adrai-contract-fixtures/1",
+  "schemaVersion": 1,
+  "extractionDate": "2026-08-02",
+  "license": "BSD-3-Clause",
+  "provenance": {
+    "method": "Independent hand/static transcription from named same-project prototype sources and completed verification artifacts.",
+    "constraints": [
+      "The Python prototype was read as text only and was never executed or imported.",
+      "The Haskell tests have no runtime dependency on the prototype.",
+      "Recorded timing measurements are observed snapshots and are not equality gates."
+    ],
+    "generatedBy": "ADRAI Haskell reimplementation P1-04 contract extraction"
+  },
+  "sources": [
+    {
+      "id": "prototype-formats",
+      "sourcePath": "ADRAI_1_Source/adrai_core/formats.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "ea836696f0f98660279517b348088977a8eccf94105ed2529c25386cc76f31f7",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Match v1 versions, codecs, identifiers, configuration, semantic normalization, digests, state tokens, and strict document parsing.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python prototype; static text reference only."
+    },
+    {
+      "id": "prototype-types",
+      "sourcePath": "ADRAI_1_Source/adrai_core/types.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "e45ceafbc7ff39f7562628bdde73d9e80ea875bc80c6d8ca6f8bc3e381c05289",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Match the default managed paths and logical trunk reference ordering.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python prototype; static text reference only."
+    },
+    {
+      "id": "prototype-identifiers",
+      "sourcePath": "ADRAI_1_Source/adrai_core/identifiers.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "c526e486dd7d6bafdae72cdd0f1465a6a0faf6a4a8bba516fee620e107e08f8b",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Match public A/R/C reference normalization and deterministic not-found or ambiguous resolution.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python prototype; static text reference only."
+    },
+    {
+      "id": "prototype-cli",
+      "sourcePath": "ADRAI_1_Source/adrai_core/cli.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "688e6a5580ead3ce339ba2b35433200d0288dfb876cd109ab17dd899692e55ec",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Match public command grammar, exit classes, JSON serialization, and specialized response schemas.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python prototype; static text reference only."
+    },
+    {
+      "id": "prototype-service",
+      "sourcePath": "ADRAI_1_Source/adrai_core/service.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "330f075097e03e1a0d802e6034b192ba91dfd56ec6c592dd916e8a6796502362",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Match mutation result envelopes and canonical creation document assembly.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python prototype; static text reference only."
+    },
+    {
+      "id": "prototype-compiler",
+      "sourcePath": "ADRAI_1_Source/adrai_core/compiler.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "bd7aa86910d53bf488d99b6d50e5c59578d3aa489da593a106ca3962678c96be",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Preserve the adrai-cache/1 schema version contract.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python prototype; static text reference only."
+    },
+    {
+      "id": "prototype-provenance-cache",
+      "sourcePath": "ADRAI_1_Source/adrai_core/provenance_cache.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "6942304a4b594376136566793f9f7014b71465e96febcdbc58c43bcfc16286fd",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Preserve the adrai-provenance-cache/1 schema version contract.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python prototype; static text reference only."
+    },
+    {
+      "id": "prototype-queries",
+      "sourcePath": "ADRAI_1_Source/adrai_core/queries.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "a84caee2ae49e603c56c5deb8b01f86077c626148fcec3c366cfabdbad115e77",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Match compare, compile, and doctor passthrough response shapes.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python prototype; static text reference only."
+    },
+    {
+      "id": "format-documentation",
+      "sourcePath": "ADRAI_1_Source/docs/FORMAT.md",
+      "extractionDate": "2026-08-02",
+      "sha256": "f331484fe70182ad67220ad6c6ff6cd9ec98228352de7005b6bda846e401fa2f",
+      "schemaVersion": "documentation",
+      "intendedHaskellAssertion": "Implement the documented v1 paths, configuration, semantic document, and provenance capsule contracts.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected prototype documentation; static text reference only."
+    },
+    {
+      "id": "prototype-test-format-contract",
+      "sourcePath": "ADRAI_1_Source/tests/test_format_contract.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "15ceaed43a575befad5b825784164d35198f103993fec118d1672624e5feb294",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Port the strict version, configuration, schema, capsule, and canonical parsing assertions.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python contract test; static text reference only."
+    },
+    {
+      "id": "prototype-test-public-workflows",
+      "sourcePath": "ADRAI_1_Source/tests/test_public_workflows.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "799e9c62e79b55dc8934d9595c3ea431bec7146f8ace631417ff396202be5c8a",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Port public mutation and digest-provenance workflow assertions.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python contract test; static text reference only."
+    },
+    {
+      "id": "prototype-test-search-cli-explorer",
+      "sourcePath": "ADRAI_1_Source/tests/test_search_cli_explorer.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "59d6000fdf3fd1bba5f9b2d6779237418f028efed5f4963130c82d4f20ba31d7",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Port search, show, explorer, JSON input, and provenance digest assertions.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python contract test; static text reference only."
+    },
+    {
+      "id": "prototype-test-usability-refinements",
+      "sourcePath": "ADRAI_1_Source/tests/test_usability_refinements.py",
+      "extractionDate": "2026-08-02",
+      "sha256": "3d6bd94af43333b3e89fb7bb484a4373cae83f5202bbcc4672bb2864a32a2b8a",
+      "schemaVersion": "python-static-contract",
+      "intendedHaskellAssertion": "Port compact public search and show schema assertions.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected Python contract test; static text reference only."
+    },
+    {
+      "id": "verification-readme",
+      "sourcePath": "ADRAI_1_Source/verification/README.md",
+      "extractionDate": "2026-08-02",
+      "sha256": "fe47d38f666aff63154640b6d8b13ad93f44ee36937057111129c0df2ed0592e",
+      "schemaVersion": "documentation",
+      "intendedHaskellAssertion": "Treat the bundled JSON files as completed enhanced-search and production-stress evidence.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project protected verification documentation; static text reference only."
+    },
+    {
+      "id": "verification-dropwire",
+      "sourcePath": "ADRAI_1_Source/verification/ADRAI_1_Search_Enhanced_Dropwire_Evaluation_24.json",
+      "extractionDate": "2026-08-02",
+      "sha256": "97b70927b44cc3d4125bc91ac48dcb5096e631e5183261ff59e16960c94e2c73",
+      "schemaVersion": "unversioned-verification-json",
+      "intendedHaskellAssertion": "Meet the current Dropwire summary baseline while retaining old_summary only as historical provenance.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project completed verification artifact; statically extracted without rerunning it."
+    },
+    {
+      "id": "verification-production-stress",
+      "sourcePath": "ADRAI_1_Source/verification/ADRAI_1_Search_Enhanced_Production_Stress_2000_final.json",
+      "extractionDate": "2026-08-02",
+      "sha256": "e0afbe0958eed5bbd6681cb9b5648904ea8a47e69fc3f243f6689fa0d041b807",
+      "schemaVersion": 1,
+      "intendedHaskellAssertion": "Meet the completed production-stress correctness assertions; recorded timings remain non-gating observations.",
+      "license": "BSD-3-Clause",
+      "provenance": "Same-project completed verification artifact; statically extracted without rerunning it."
+    }
+  ],
+  "fixtures": [
+    {
+      "path": "cli/commands.json",
+      "kind": "cli-command-contract",
+      "sourceRefs": ["prototype-cli"],
+      "sha256": "38e73e21ce00a8fe1c25b6b887db685d39787de2a1b291de2a838d6773982e8c",
+      "byteLength": 4015,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "The Haskell CLI exposes the same commands, arguments, options, mutual exclusions, and defaults."
+    },
+    {
+      "path": "cli/exits.json",
+      "kind": "cli-exit-contract",
+      "sourceRefs": ["prototype-cli"],
+      "sha256": "118533b0d954c567b658ffa5fca3b62e777ee43601c92376deadfc4b08704089",
+      "byteLength": 972,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "The Haskell CLI returns exit classes 0, 2, 3, and 4 under the frozen conditions and emits final-LF output."
+    },
+    {
+      "path": "config/default.toml",
+      "kind": "configuration-text",
+      "sourceRefs": ["prototype-formats", "prototype-types", "format-documentation", "prototype-test-format-contract"],
+      "sha256": "634db372b5ddf19440951835ed203d310bc5f18edbc696497e02f143254b2eea",
+      "byteLength": 239,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Default configuration rendering is exactly 239 UTF-8/LF bytes and parses to the frozen paths and trunk refs."
+    },
+    {
+      "path": "documents/decision-create.sealed.md",
+      "kind": "sealed-decision-document",
+      "sourceRefs": ["prototype-formats", "prototype-identifiers", "prototype-service", "format-documentation", "prototype-test-format-contract", "prototype-test-public-workflows"],
+      "sha256": "48f53cd5d5ca94fdcd506b766bfaa3bf4d6f20d19cbe7b2c5bdf77ef0027caec",
+      "byteLength": 649,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Strict parsing accepts the exact canonical document and verifies its capsule, object, operation, actor, basis, timestamp, tool, and semantic digest."
+    },
+    {
+      "path": "documents/decision-create.semantic.md",
+      "kind": "canonical-semantic-document",
+      "sourceRefs": ["prototype-formats", "prototype-service", "format-documentation", "prototype-test-format-contract"],
+      "sha256": "f6a9cd6a571e7d42039cded6021ac26ede04992007f30a5ea5939f830874b986",
+      "byteLength": 268,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Canonical decision rendering and semantic normalization reproduce the exact bytes and sha256:9qnNalcefUIDnN7WAhrCbt4EmSAH8wpepZOfgwh0uYY digest."
+    },
+    {
+      "path": "documents/parse-cases.json",
+      "kind": "strict-document-parse-cases",
+      "sourceRefs": ["prototype-formats", "prototype-identifiers", "prototype-service", "prototype-test-format-contract"],
+      "sha256": "8b8d0c00a8f345310be19d811bf09c3636d204254b3aebc25c2a2388ed285fbe",
+      "byteLength": 3202,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Strict parsing returns the frozen semantic/front-matter/body/provenance fields and rejects each malformed mutation."
+    },
+    {
+      "path": "encoding/base64url.json",
+      "kind": "base64url-codec-vectors",
+      "sourceRefs": ["prototype-formats"],
+      "sha256": "fbb42f489feb3a6126aac4a623f53de9c9c993fa9e7e43194b5015cd2c9fe349",
+      "byteLength": 730,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Encode unpadded RFC 4648 base64url exactly and reject padding, alternate alphabets, whitespace, bad length, or characters."
+    },
+    {
+      "path": "encoding/digests.json",
+      "kind": "sha256-digest-vectors",
+      "sourceRefs": ["prototype-formats", "format-documentation", "prototype-test-public-workflows", "prototype-test-search-cli-explorer"],
+      "sha256": "f9c341e895202dfab529a7d5957336ab4f61260d388e4b61d7e1e1a45b1ab015",
+      "byteLength": 1099,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Render SHA-256 as sha256: plus 43 unpadded base64url characters for exact UTF-8 and fixture bytes."
+    },
+    {
+      "path": "encoding/semantic-normalization.json",
+      "kind": "semantic-normalization-vectors",
+      "sourceRefs": ["prototype-formats", "format-documentation", "prototype-test-format-contract"],
+      "sha256": "eaf13073dbcdbb102ab2a3f9deb87fb1c9cbffa9f983870443bea7cc921f3dc0",
+      "byteLength": 1321,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Normalize line endings, trailers, trailing whitespace, and final LF exactly before digesting."
+    },
+    {
+      "path": "encoding/state-tokens.json",
+      "kind": "state-token-vectors",
+      "sourceRefs": ["prototype-formats"],
+      "sha256": "ae6a369129c3500e72e02e86c3e66fca9940c609d85f0377e94165c2cab81e88",
+      "byteLength": 1891,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Canonicalize sorted head arrays and reproduce S plus the first 22 base64url SHA-256 characters."
+    },
+    {
+      "path": "ids/crockford.json",
+      "kind": "crockford-codec-vectors",
+      "sourceRefs": ["prototype-formats"],
+      "sha256": "d7a4c4941c4ba9641e982b17b8d6f0334379e0097deda50d48d4f4d83b061ce0",
+      "byteLength": 968,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Encode 16 bytes to 26 sortable Crockford characters using the exact alphabet and A/R/C/O prefixes."
+    },
+    {
+      "path": "ids/validation.json",
+      "kind": "identifier-validation-cases",
+      "sourceRefs": ["prototype-formats", "prototype-identifiers"],
+      "sha256": "0cebcf5da10e3db2e5f04822da5a758214d64017a4711e67f2353b48bfb684e7",
+      "byteLength": 2455,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Validate strict committed A/R/C/O IDs and normalized public A/R/C full or unique-prefix references, including ambiguity."
+    },
+    {
+      "path": "public-json/contracts.json",
+      "kind": "public-json-shape-contract",
+      "sourceRefs": ["prototype-cli", "prototype-service", "prototype-queries", "prototype-test-public-workflows", "prototype-test-search-cli-explorer", "prototype-test-usability-refinements"],
+      "sha256": "84104d36ff5652f7887c96ab9e925c90ab0de29dbe20850047a120363a8a066b",
+      "byteLength": 3615,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Emit the frozen specialized, mutation, and passthrough JSON field sets with sorted pretty keys, final LF, and compact optional fields."
+    },
+    {
+      "path": "search/dropwire-current.json",
+      "kind": "current-search-acceptance-baseline",
+      "sourceRefs": ["verification-readme", "verification-dropwire", "prototype-cli", "prototype-test-search-cli-explorer", "prototype-test-usability-refinements"],
+      "sha256": "99ada04f55973e1416fef54b71cab8ed6424f0b3250d26e7ddf1c0a62c627f4f",
+      "byteLength": 992,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Meet the current Dropwire summary accuracy, recall, and false-positive acceptance values; timing fields are non-gating."
+    },
+    {
+      "path": "search/dropwire-old-historical.json",
+      "kind": "historical-search-provenance",
+      "sourceRefs": ["verification-readme", "verification-dropwire"],
+      "sha256": "31d86374c09324731487b7bf50e4d286c8111a5ce1d308f016f680e48fa7da29",
+      "byteLength": 1795,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Retain old_summary for historical provenance only and never treat it as the current Dropwire acceptance baseline."
+    },
+    {
+      "path": "search/production-stress-compact.json",
+      "kind": "production-stress-acceptance-snapshot",
+      "sourceRefs": ["verification-readme", "verification-production-stress"],
+      "sha256": "fc86c7f6b1ed89ed0889944529c390e0d1e27e02a1e38ba6c6de5cca82958dba",
+      "byteLength": 7574,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Meet all frozen production-stress correctness assertions while treating performance timings as non-gating observations."
+    },
+    {
+      "path": "versions.json",
+      "kind": "version-contract",
+      "sourceRefs": ["prototype-formats", "prototype-compiler", "prototype-provenance-cache", "prototype-test-format-contract"],
+      "sha256": "dd61a77a227f4ad1c23d1538b0a33e95c381862f66593048fd6a457898304ee7",
+      "byteLength": 297,
+      "finalNewline": true,
+      "intendedHaskellAssertion": "Expose the single frozen v1 tool, configuration, document, provenance, cache, and provenance-cache versions."
+    }
+  ]
+}

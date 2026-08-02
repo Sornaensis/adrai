@@ -1,0 +1,38 @@
+{
+  "schema": "adrai-contract/crockford/v1",
+  "alphabet": "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+  "input_bytes": 16,
+  "encoded_characters": 26,
+  "sortable_layout": {
+    "timestamp_bytes": 6,
+    "random_bytes": 10,
+    "byte_order": "big-endian"
+  },
+  "vectors": [
+    {
+      "hex": "00000000000000000000000000000000",
+      "encoded": "00000000000000000000000000"
+    },
+    {
+      "hex": "00000000000000000000000000000001",
+      "encoded": "00000000000000000000000001"
+    },
+    {
+      "hex": "0000000000000000000000000000001f",
+      "encoded": "0000000000000000000000000Z"
+    },
+    {
+      "hex": "00000000000000000000000000000020",
+      "encoded": "00000000000000000000000010"
+    },
+    {
+      "hex": "000000000000000000000000000000ff",
+      "encoded": "0000000000000000000000007Z"
+    },
+    {
+      "hex": "ffffffffffffffffffffffffffffffff",
+      "encoded": "7ZZZZZZZZZZZZZZZZZZZZZZZZZ"
+    }
+  ],
+  "identifier_prefixes": ["A", "R", "C", "O"]
+}

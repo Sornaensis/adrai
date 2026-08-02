@@ -1,0 +1,53 @@
+{
+  "schema": "adrai-contract/public-json/v1",
+  "serialization": {"indent": 2, "sort_keys": true, "ensure_ascii": true, "final_lf": true},
+  "specialized": {
+    "search": {
+      "schema_value": "adrai/search/v1",
+      "top_level": ["schema", "as_of", "view", "mode", "query", "filters", "retrieval", "results"],
+      "filters": ["file", "domains", "actor", "include_obsolete"],
+      "result": ["id", "adr", "record", "kind", "title", "summary", "status", "obsolete", "replacement", "resolved", "resolution_required", "conflicts", "domains", "scope_match", "score", "fts_score", "vector_score", "state_token"]
+    },
+    "relevant": {
+      "schema_value": "adrai/relevant/v1",
+      "top_level": ["schema", "view", "as_of", "file", "retrieval", "results"],
+      "result": ["adr", "record", "title", "summary", "domains", "status", "obsolete", "replacement", "resolved", "resolution_required", "score", "semantic_score", "scope_match", "scope_bonus", "confidence", "margin", "evidence"]
+    },
+    "history": {
+      "schema_value": "adrai/history/v1",
+      "top_level": ["schema", "view", "as_of", "adr", "order", "limit", "truncated", "filters", "operations"],
+      "operation": ["operation", "adr", "title", "label", "reason", "changes", "details", "actor", "model", "claimed_at", "commit", "placement", "resolved", "conflict", "status"]
+    },
+    "show-collapsed": {
+      "schema_value": "adrai/show-collapsed/v1",
+      "top_level": ["schema", "view", "as_of", "adr", "record", "title", "summary", "body", "domains", "applies_to", "status", "obsolete", "replacement", "resolved", "resolution_required", "resolution", "state_token", "counts", "evolution", "provenance", "issues"],
+      "counts": ["editions", "amendments", "scope_revisions", "domain_revisions", "status_revisions"],
+      "provenance": ["created", "effective", "domains", "status"]
+    },
+    "show-exploded": {
+      "schema_value": "adrai/show-exploded/v1",
+      "top_level": ["schema", "view", "as_of", "adr", "resolved", "resolution_required", "resolution", "state_token", "operations"],
+      "operation": ["operation", "provenance", "items"]
+    }
+  },
+  "mutation": {
+    "common": ["committed", "operation", "commit", "created", "index_updated", "indexed"],
+    "indexed_success": ["database", "index_revision", "index_warnings"],
+    "indexed_failure": ["index_error"],
+    "payloads": {
+      "init": ["initialized"],
+      "create": ["adr", "record", "scope", "domain", "domains", "status"],
+      "amend": ["adr", "record", "amends", "connection"],
+      "scope": ["adr", "scope", "scope_parents", "mode", "applies_to"],
+      "domain": ["adr", "domain", "domain_parents", "mode", "domains", "added", "removed", "refinements"],
+      "obsolete": ["adr", "obsolete", "replacement", "connection", "covered_records", "resolved_status_conflict"],
+      "reactivate": ["adr", "obsolete", "connection", "resolved_status_conflict"]
+    }
+  },
+  "passthrough": {
+    "compare": ["view", "from", "to", "from_requested", "to_requested", "counts", "entries", "cache"],
+    "compile": ["database", "revision", "issues", "errors", "warnings", "embedding_computed", "embedding_reused", "cache_mode", "documents_parsed", "documents_reused", "history_commits_scanned", "incremental_kind", "adrs_rebuilt", "adrs_reused", "ann_buckets", "cache_key", "cache_retain_revisions"],
+    "doctor": ["ok", "revision", "database", "shallow", "issues", "cache", "counts", "current_access", "database_build"]
+  },
+  "projection_rule": "omit null-valued optional result and operation fields where the prototype projection explicitly compacts them"
+}

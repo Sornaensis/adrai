@@ -1,0 +1,71 @@
+{
+  "schema": "adrai-contract/document-parse/v1",
+  "valid": [
+    {
+      "file": "decision-create.sealed.md",
+      "path": "architecture/adrai/decisions/R000/R00000000000000000000000000--stable-cache-identity.decision.md",
+      "kind": "decision",
+      "semantic_file": "decision-create.semantic.md",
+      "semantic_digest": "sha256:9qnNalcefUIDnN7WAhrCbt4EmSAH8wpepZOfgwh0uYY",
+      "front_matter": {
+        "schema": "adrai/decision/v1",
+        "adr": "A00000000000000000000000000",
+        "record": "R00000000000000000000000000",
+        "title": "Stable cache identity",
+        "summary": "Cache keys derive from semantic inputs.",
+        "domains": ["compiler.cache.identity"]
+      },
+      "body": "## Decision\nUse semantic inputs.\n",
+      "provenance": {
+        "a": {"i": "architect", "k": "human"},
+        "b": "0000000000000000000000000000000000000000",
+        "k": "decision.create",
+        "o": "R00000000000000000000000000",
+        "op": "O00000000000000000000000000",
+        "s": "sha256:9qnNalcefUIDnN7WAhrCbt4EmSAH8wpepZOfgwh0uYY",
+        "t": 1700000000000,
+        "v": 1,
+        "x": "adrai/1.0.0"
+      },
+      "canonical_capsule_json": "{\"a\":{\"i\":\"architect\",\"k\":\"human\"},\"b\":\"0000000000000000000000000000000000000000\",\"k\":\"decision.create\",\"o\":\"R00000000000000000000000000\",\"op\":\"O00000000000000000000000000\",\"s\":\"sha256:9qnNalcefUIDnN7WAhrCbt4EmSAH8wpepZOfgwh0uYY\",\"t\":1700000000000,\"v\":1,\"x\":\"adrai/1.0.0\"}",
+      "encoded_capsule": "eyJhIjp7ImkiOiJhcmNoaXRlY3QiLCJrIjoiaHVtYW4ifSwiYiI6IjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJrIjoiZGVjaXNpb24uY3JlYXRlIiwibyI6IlIwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIsIm9wIjoiTzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwicyI6InNoYTI1Njo5cW5OYWxjZWZVSURuTjdXQWhyQ2J0NEVtU0FIOHdwZXBaT2Znd2gwdVlZIiwidCI6MTcwMDAwMDAwMDAwMCwidiI6MSwieCI6ImFkcmFpLzEuMC4wIn0"
+    }
+  ],
+  "invalid": [
+    {
+      "base_file": "decision-create.semantic.md",
+      "mutation": "unchanged semantic file has no trailer",
+      "error": "expected-exactly-one-provenance-capsule"
+    },
+    {
+      "base_file": "decision-create.sealed.md",
+      "mutation": "append a second copy of the trailer",
+      "error": "expected-exactly-one-provenance-capsule"
+    },
+    {
+      "base_file": "decision-create.sealed.md",
+      "mutation": "replace the first +++ with ---",
+      "error": "managed-document-must-begin-with-toml-front-matter"
+    },
+    {
+      "base_file": "decision-create.sealed.md",
+      "mutation": "replace adrai/decision/v1 with adrai/decision/v2",
+      "error": "unsupported-schema"
+    },
+    {
+      "base_file": "decision-create.sealed.md",
+      "mutation": "replace Use semantic inputs. with Use path inputs. without changing the capsule",
+      "error": "semantic-digest-mismatch"
+    },
+    {
+      "base_file": "decision-create.sealed.md",
+      "mutation": "decode capsule, set o to R00000000000000000000000001, canonically re-encode",
+      "error": "object-id-mismatch"
+    },
+    {
+      "base_file": "decision-create.sealed.md",
+      "mutation": "decode capsule, add unknown key z, canonically re-encode",
+      "error": "unsupported-provenance-key"
+    }
+  ]
+}

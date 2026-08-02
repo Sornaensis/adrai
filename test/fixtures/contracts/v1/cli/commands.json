@@ -1,0 +1,93 @@
+{
+  "schema": "adrai-contract/cli-commands/v1",
+  "program": "adrai",
+  "global": {
+    "options": ["--version", "--repo PATH"],
+    "defaults": {"repo": "."}
+  },
+  "shared": {
+    "json_output": ["--json"],
+    "actor": [
+      "--actor VALUE",
+      "--model VALUE",
+      "--input-digest DIGEST",
+      "--prompt-digest DIGEST",
+      "--context-digest DIGEST",
+      "--prompt-file PATH",
+      "--context-file PATH"
+    ],
+    "content_one_of": ["--body TEXT", "--body-file PATH", "--stdin", "--input-json PATH_OR_DASH"]
+  },
+  "commands": [
+    {"name": "init", "positionals": [], "options": ["json_output"], "defaults": {}},
+    {
+      "name": "create",
+      "positionals": [],
+      "options": ["--title TEXT", "--summary TEXT", "--domain DOMAIN (repeatable)", "--applies-to GLOB (repeatable)", "actor", "content_one_of", "json_output"],
+      "defaults": {}
+    },
+    {
+      "name": "amend",
+      "positionals": ["adr"],
+      "options": ["--title TEXT", "--summary TEXT", "--change-summary TEXT", "--expect STATE_TOKEN", "actor", "content_one_of", "json_output"],
+      "defaults": {}
+    },
+    {
+      "name": "scope",
+      "positionals": ["adr"],
+      "options": ["--add GLOB (repeatable)", "--remove GLOB (repeatable)", "--set GLOB (repeatable)", "--reason TEXT (required)", "--expect STATE_TOKEN", "actor", "json_output"],
+      "defaults": {"add": [], "remove": []}
+    },
+    {
+      "name": "domain",
+      "positionals": ["adr"],
+      "options": ["--add DOMAIN (repeatable)", "--remove DOMAIN (repeatable)", "--refine FROM=TO (repeatable)", "--set DOMAIN (repeatable, exclusive with --clear)", "--clear", "--reason TEXT (required)", "--expect STATE_TOKEN", "actor", "json_output"],
+      "defaults": {"add": [], "remove": [], "refine": [], "clear": false}
+    },
+    {
+      "name": "obsolete",
+      "positionals": ["adr"],
+      "options": ["--reason TEXT (required)", "--replacement ADR", "--expect STATE_TOKEN", "--resolve", "actor", "json_output"],
+      "defaults": {"resolve": false}
+    },
+    {
+      "name": "reactivate",
+      "positionals": ["adr"],
+      "options": ["--reason TEXT (required)", "--expect STATE_TOKEN", "--resolve", "actor", "json_output"],
+      "defaults": {"resolve": false}
+    },
+    {
+      "name": "search",
+      "positionals": ["query (optional)"],
+      "options": ["--mode fts|vector|hybrid", "--view collapsed|exploded", "--file PATH", "--domain DOMAIN (repeatable)", "--actor VALUE", "--since TIME", "--until TIME", "--at REVISION", "--include-obsolete", "--limit INTEGER", "json_output"],
+      "defaults": {"mode": "hybrid", "view": "collapsed", "domain": [], "at": "HEAD", "include_obsolete": false, "limit": 10}
+    },
+    {
+      "name": "relevant",
+      "positionals": ["file"],
+      "options": ["--at REVISION (exclusive with --worktree)", "--worktree", "--include-obsolete", "--limit INTEGER", "json_output"],
+      "defaults": {"worktree": false, "include_obsolete": false, "limit": 10}
+    },
+    {
+      "name": "show",
+      "positionals": ["id"],
+      "options": ["--view collapsed|exploded", "--at REVISION", "--raw", "json_output"],
+      "defaults": {"view": "collapsed", "at": "HEAD", "raw": false}
+    },
+    {
+      "name": "compare",
+      "positionals": ["from_revision", "to_revision (optional)"],
+      "options": ["--include-unchanged", "json_output"],
+      "defaults": {"to_revision": "HEAD", "include_unchanged": false}
+    },
+    {
+      "name": "history",
+      "positionals": ["adr (optional)"],
+      "options": ["--at REVISION", "--limit INTEGER", "--actor VALUE", "--since TIME", "--until TIME", "--reverse", "json_output"],
+      "defaults": {"at": "HEAD", "limit": 20, "reverse": false}
+    },
+    {"name": "compile", "positionals": [], "options": ["--at REVISION", "json_output"], "defaults": {"at": "HEAD"}},
+    {"name": "doctor", "positionals": [], "options": ["--at REVISION", "json_output"], "defaults": {"at": "HEAD"}},
+    {"name": "explore", "positionals": [], "options": [], "defaults": {}}
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "fixture_contract": "adrai-contract-fixtures/1",
+  "tool": "1.0.0",
+  "schemas": {
+    "configuration": 1,
+    "decision": "adrai/decision/v1",
+    "connection": "adrai/connection/v1",
+    "provenance": 1,
+    "cache": "adrai-cache/1",
+    "provenance_cache": "adrai-provenance-cache/1"
+  }
+}

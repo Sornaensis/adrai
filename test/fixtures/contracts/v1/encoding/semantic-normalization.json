@@ -1,0 +1,42 @@
+{
+  "schema": "adrai-contract/semantic-normalization/v1",
+  "rules": [
+    "convert CRLF and CR to LF",
+    "remove every line whose trimmed form is an ADRAI provenance trailer",
+    "remove trailing whitespace from every retained line",
+    "remove trailing empty lines",
+    "append exactly one LF"
+  ],
+  "cases": [
+    {
+      "label": "canonical",
+      "input": "alpha\nbeta\n",
+      "normalized": "alpha\nbeta\n",
+      "digest": "sha256:5JyB4tL4TiWdQOL7gZLzvNGYs1UYSEXXbY9YgH0NeO4"
+    },
+    {
+      "label": "mixed-endings-and-trailing-space",
+      "input": "alpha  \r\nbeta\t\r\n\r\n",
+      "normalized": "alpha\nbeta\n",
+      "digest": "sha256:5JyB4tL4TiWdQOL7gZLzvNGYs1UYSEXXbY9YgH0NeO4"
+    },
+    {
+      "label": "remove-indented-valid-trailer",
+      "input": "alpha\n  <!-- @adrai:YWJj -->  \nbeta\n",
+      "normalized": "alpha\nbeta\n",
+      "digest": "sha256:5JyB4tL4TiWdQOL7gZLzvNGYs1UYSEXXbY9YgH0NeO4"
+    },
+    {
+      "label": "retain-non-base64url-trailer",
+      "input": "<!-- @adrai:not+url -->\n",
+      "normalized": "<!-- @adrai:not+url -->\n",
+      "digest": "sha256:SjX7ssgBxDUH8wG_tFysobb5a_vB2SgTtyFujGsdE2I"
+    },
+    {
+      "label": "empty-input",
+      "input": "",
+      "normalized": "\n",
+      "digest": "sha256:AbpHGcgLb-kRsJGnwFEktk7uzpZOCcBY74-YBdrKVGs"
+    }
+  ]
+}

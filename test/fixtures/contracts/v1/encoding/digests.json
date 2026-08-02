@@ -1,0 +1,39 @@
+{
+  "schema": "adrai-contract/digests/v1",
+  "algorithm": "sha256",
+  "rendering": "sha256:<43 unpadded base64url characters>",
+  "vectors": [
+    {
+      "label": "empty",
+      "utf8": "",
+      "digest": "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+    },
+    {
+      "label": "ascii",
+      "utf8": "abc",
+      "digest": "sha256:ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0"
+    },
+    {
+      "label": "lf-text",
+      "utf8": "line one\nline two\n",
+      "digest": "sha256:6QJPGgfSnVKtOqXhoY6U2x86n9MrieOdR8RyzZkHHhM"
+    },
+    {
+      "label": "unicode-utf8",
+      "utf8": "Unicode: café Ω\n",
+      "digest": "sha256:4Q988xS8F8PCyxS16iWTuynyHuHSR3K2_eIxHhwONns"
+    },
+    {
+      "label": "decision-semantic-fixture",
+      "file": "../documents/decision-create.semantic.md",
+      "bytes": 268,
+      "digest": "sha256:9qnNalcefUIDnN7WAhrCbt4EmSAH8wpepZOfgwh0uYY"
+    },
+    {
+      "label": "decision-sealed-fixture",
+      "file": "../documents/decision-create.sealed.md",
+      "bytes": 649,
+      "digest": "sha256:SPU81dXKlP3NUGt2a_qjv01vINGcvnssW9937wAnyuw"
+    }
+  ]
+}

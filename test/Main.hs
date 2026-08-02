@@ -3,6 +3,7 @@
 module Main (main) where
 
 import qualified Adrai.FormatFoundationTest
+import qualified Adrai.GoldenFixturesTest
 import qualified Adrai.TypesProperties
 import qualified Adrai.TypesTest
 import Control.Exception (bracket)
@@ -29,5 +30,6 @@ tests =
         ],
       Adrai.TypesTest.tests,
       Adrai.FormatFoundationTest.tests,
-      Adrai.TypesProperties.tests
+      Adrai.TypesProperties.tests,
+      Adrai.GoldenFixturesTest.tests
     ]

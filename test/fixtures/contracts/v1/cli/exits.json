@@ -1,0 +1,21 @@
+{
+  "schema": "adrai-contract/cli-exits/v1",
+  "exits": [
+    {"code": 0, "class": "success", "condition": "command completed, including a healthy doctor result"},
+    {
+      "code": 2,
+      "class": "user-or-usage-error",
+      "condition": "caught ADRAI input, repository, or validation error, or argument parsing failure before dispatch",
+      "stderr_variants": {
+        "caught_adrai_error": "adrai: <message>\\n",
+        "argparse_usage_error": "usage: adrai ...\\nadrai: error: <message>\\n"
+      }
+    },
+    {"code": 3, "class": "conflict", "condition": "mutation or semantic conflict requiring explicit resolution", "stderr_prefix": "adrai: conflict: "},
+    {"code": 4, "class": "doctor-unhealthy", "condition": "doctor completed and reported at least one error-severity issue"}
+  ],
+  "stdout": {
+    "json": "pretty JSON, two-space indentation, lexicographically sorted object keys, final LF",
+    "text": "human-readable rendering with final LF"
+  }
+}

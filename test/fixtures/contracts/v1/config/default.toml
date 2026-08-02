@@ -1,0 +1,9 @@
+schema = 1
+
+[paths]
+decisions = "architecture/adrai/decisions"
+connections = "architecture/adrai/connections"
+
+[[line]]
+id = "trunk"
+refs = ["refs/heads/main", "refs/remotes/origin/main", "refs/heads/master", "refs/remotes/origin/master"]

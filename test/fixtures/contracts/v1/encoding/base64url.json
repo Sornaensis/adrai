@@ -1,0 +1,20 @@
+{
+  "schema": "adrai-contract/base64url/v1",
+  "encoding": "RFC4648-base64url-unpadded",
+  "valid": [
+    {"hex": "", "encoded": ""},
+    {"hex": "00", "encoded": "AA"},
+    {"hex": "66", "encoded": "Zg"},
+    {"hex": "666f", "encoded": "Zm8"},
+    {"hex": "666f6f", "encoded": "Zm9v"},
+    {"hex": "fbff", "encoded": "-_8"},
+    {"hex": "000102030405060708090a0b0c0d0e0f", "encoded": "AAECAwQFBgcICQoLDA0ODw"}
+  ],
+  "invalid": [
+    {"encoded": "Zg==", "reason": "padding-not-canonical"},
+    {"encoded": "+/8", "reason": "standard-alphabet-not-allowed"},
+    {"encoded": "a b", "reason": "whitespace-not-allowed"},
+    {"encoded": "A", "reason": "invalid-length"},
+    {"encoded": "Zm9v!", "reason": "invalid-character"}
+  ]
+}

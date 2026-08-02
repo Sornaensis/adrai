@@ -1,0 +1,58 @@
+{
+  "fixtureSchema": "adrai/golden/search-baseline/v1",
+  "status": "historical",
+  "description": "Historical provenance snapshot only; this is not the current acceptance baseline.",
+  "sourceArtifact": "ADRAI_1_Source/verification/ADRAI_1_Search_Enhanced_Dropwire_Evaluation_24.json",
+  "sourceSha256": "97B70927B44CC3D4125BC91AC48DCB5096E631E5183261FF59E16960C94E2C73",
+  "timingPolicy": "observedSnapshot",
+  "timingsAreEqualityGate": false,
+  "baseline": {
+    "adrai_version": "adrai 1.0.0",
+    "association_recall": {
+      "1": {
+        "found": 17,
+        "recall": 0.3617021276595745,
+        "total": 47
+      },
+      "3": {
+        "found": 35,
+        "recall": 0.7446808510638298,
+        "total": 47
+      },
+      "5": {
+        "found": 42,
+        "recall": 0.8936170212765957,
+        "total": 47
+      },
+      "7": {
+        "found": 46,
+        "recall": 0.9787234042553191,
+        "total": 47
+      }
+    },
+    "case_count": 22,
+    "declared_scope_association_recall": 0.5106382978723404,
+    "declared_scope_associations_found": 24,
+    "expected_associations": 47,
+    "git_status_after": "?? scratch/\n",
+    "git_status_before": "?? scratch/\n",
+    "git_status_unchanged": true,
+    "high_false_positive_count": 0,
+    "max_seconds": 0.31879849999995713,
+    "median_seconds": 0.09245208599986654,
+    "negative_cases": 3,
+    "negative_cases_with_medium_or_high": 0,
+    "positive_cases": 19,
+    "project": "Dropwire relevance field exercise",
+    "repo_head": "fd2513ad4ffc6eafc2fa4336031604ed095a330f",
+    "schema": 1,
+    "scope_union_semantic_recall": {
+      "1": 0.6382978723404256,
+      "3": 0.851063829787234,
+      "5": 0.9361702127659575,
+      "7": 0.9787234042553191
+    },
+    "top1_accuracy": 0.8947368421052632,
+    "top3_recall": 1.0
+  }
+}

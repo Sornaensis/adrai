@@ -1,0 +1,53 @@
+{
+  "schema": "adrai-contract/state-tokens/v1",
+  "algorithm": "S + first 22 unpadded base64url characters of SHA-256(canonical_payload UTF-8)",
+  "canonical_payload": {
+    "object_key_order": ["domains", "records", "scopes", "statuses"],
+    "array_order": "lexicographically-sorted",
+    "json_whitespace": "none",
+    "duplicates": "preserved"
+  },
+  "vectors": [
+    {
+      "heads": {"records": [], "scopes": [], "statuses": [], "domains": []},
+      "payload": "{\"domains\":[],\"records\":[],\"scopes\":[],\"statuses\":[]}",
+      "token": "Sr46U20dkx_Y3MSVvnEWQV6"
+    },
+    {
+      "heads": {
+        "records": ["R00000000000000000000000000"],
+        "scopes": [],
+        "statuses": [],
+        "domains": []
+      },
+      "payload": "{\"domains\":[],\"records\":[\"R00000000000000000000000000\"],\"scopes\":[],\"statuses\":[]}",
+      "token": "SlMfyfvA6ZxXyQEiuuxv0uf"
+    },
+    {
+      "heads": {
+        "records": [
+          "R00000000000000000000000002",
+          "R00000000000000000000000001"
+        ],
+        "scopes": ["C00000000000000000000000004"],
+        "statuses": ["C00000000000000000000000005"],
+        "domains": ["C00000000000000000000000003"]
+      },
+      "payload": "{\"domains\":[\"C00000000000000000000000003\"],\"records\":[\"R00000000000000000000000001\",\"R00000000000000000000000002\"],\"scopes\":[\"C00000000000000000000000004\"],\"statuses\":[\"C00000000000000000000000005\"]}",
+      "token": "SFy3F4Vhwpi24WeZt5pR091"
+    },
+    {
+      "heads": {
+        "records": [
+          "R00000000000000000000000000",
+          "R00000000000000000000000000"
+        ],
+        "scopes": [],
+        "statuses": [],
+        "domains": []
+      },
+      "payload": "{\"domains\":[],\"records\":[\"R00000000000000000000000000\",\"R00000000000000000000000000\"],\"scopes\":[],\"statuses\":[]}",
+      "token": "S6aXx4JmtUGreAQJjTfCM_g"
+    }
+  ]
+}

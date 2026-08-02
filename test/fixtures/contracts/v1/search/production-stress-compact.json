@@ -1,0 +1,234 @@
+{
+  "fixtureSchema": "adrai/golden/search-baseline/v1",
+  "status": "current",
+  "sourceArtifact": "ADRAI_1_Source/verification/ADRAI_1_Search_Enhanced_Production_Stress_2000_final.json",
+  "sourceSha256": "E0AFBE0958EED5BBD6681CB9B5648904EA8A47E69FC3F243F6689FA0D041B807",
+  "timingPolicy": "observedSnapshot",
+  "timingsAreEqualityGate": false,
+  "baseline": {
+    "assertions": {
+      "all_operations_compiled": true,
+      "branch_revision_databases_are_distinct": true,
+      "branch_root_refinement_exercised": true,
+      "branch_switches_are_consistent": true,
+      "exact_cache_used": true,
+      "new_mutation_searchable": true,
+      "no_integrity_errors": true,
+      "noise_compile_reused_all_documents": true,
+      "representative_file_scope_found": true,
+      "representative_semantic_relevance_found": true,
+      "root_domains_exercised": true,
+      "semantic_relevance_is_bounded": true
+    },
+    "benchmark": {
+      "cold_compile": {
+        "adrs_rebuilt": 200,
+        "adrs_reused": 0,
+        "ann_buckets": 0,
+        "cache_key": "bf2116fee1ea72155f5f76d9b17508c09ef7b41f9f52446ca470dbb03732d702",
+        "cache_mode": "full",
+        "documents_parsed": 1100,
+        "documents_reused": 0,
+        "embeddings_computed": 1600,
+        "embeddings_reused": 0,
+        "errors": 0,
+        "history_commits_scanned": 2001,
+        "incremental_kind": "full",
+        "issues": 0,
+        "seconds": 1.854232,
+        "warnings": 0
+      },
+      "exact_compile": {
+        "cache_modes": [
+          "exact"
+        ],
+        "max_seconds": 0.029139,
+        "median_seconds": 0.025634,
+        "min_seconds": 0.024786,
+        "p95_seconds": 0.029139,
+        "runs": 7
+      },
+      "hybrid_search": {
+        "fallback_runs": 0,
+        "max_seconds": 0.381336,
+        "median_candidates": 175.0,
+        "median_corpus": 175.0,
+        "median_seconds": 0.272928,
+        "median_sections_scanned": 1050.0,
+        "min_seconds": 0.260594,
+        "p95_seconds": 0.332409,
+        "retrieval_algorithms": [
+          "three-fts+exact-summary+section-rerank+weighted-rrf"
+        ],
+        "runs": 20,
+        "top_result_samples": [
+          "Compiler architecture 0181",
+          "Durable background job acknowledgement 0192",
+          "Service API architecture 0163",
+          "Security architecture 0195",
+          "Structured telemetry propagation 0086",
+          "Tenant-isolated object storage 0180",
+          "Hermetic deployment pipeline 0188",
+          "Service API architecture 0003",
+          "Client UI architecture 0137",
+          "Append-only domain event storage 0164"
+        ]
+      },
+      "noise_only_incremental_compile": {
+        "adrs_rebuilt": 0,
+        "adrs_reused": 200,
+        "cache_mode": "incremental",
+        "documents_parsed": 0,
+        "documents_reused": 1100,
+        "embeddings_computed": 0,
+        "embeddings_reused": 2900,
+        "history_commits_scanned": 1,
+        "incremental_kind": "tree-identical",
+        "seconds": 0.288314
+      },
+      "repository": {
+        "commit_count": 2005,
+        "database_bytes": 25382912,
+        "git_count_objects": [
+          "count: 29",
+          "size: 116.00 KiB",
+          "in-pack: 13569",
+          "packs: 1",
+          "size-pack: 2.02 MiB",
+          "prune-packable: 0",
+          "garbage: 0",
+          "size-garbage: 0 bytes"
+        ],
+        "git_directory_bytes": 2528681,
+        "logical_adrs": 200,
+        "managed_files": 1104,
+        "sqlite_rows": {
+          "adr_materialization": 200,
+          "collapsed": 200,
+          "connection": 800,
+          "decision_record": 300,
+          "domain_head": 200,
+          "domain_revision": 225,
+          "embedding": 1600,
+          "issue": 0,
+          "line_landing": 400,
+          "object_event": 1100,
+          "operation": 400,
+          "operation_commit": 400,
+          "projection": 2900,
+          "vector_bucket": 0
+        },
+        "worktree_bytes": 106226936
+      },
+      "semantic_relevance": {
+        "adr_chunks": 1200,
+        "adr_shortlist": 120,
+        "bounded_section_candidates": 720,
+        "bucket_hits": 0,
+        "exact_rerank_candidates": 720,
+        "fallback_chunks": 0,
+        "full_section_scan_per_chunk": false,
+        "path": "analysis/semantic-relevance-probe.txt",
+        "ranked_adrs": [
+          "A01HF7YAVYG0000000000000008",
+          "A01HF7YGBQG0000000000000120",
+          "A01HF7YG1Z00000000000000104",
+          "A01HF7YFEE000000000000000WC",
+          "A01HF7YF4NG00000000000000TG",
+          "A01HF7YEH4G00000000000000PR",
+          "A01HF7YDKV000000000000000H4",
+          "A01HF7YCPHG00000000000000BG",
+          "A01HF7YBS80000000000000005W",
+          "A01HF7YB5Q00000000000000024"
+        ],
+        "representative_adr": "A01HF7YAVYG0000000000000008",
+        "representative_in_top_three": true,
+        "seconds": 0.294535,
+        "source_chunks": 1,
+        "strategy": "exact-summary+passage-fts+bounded-section-rerank"
+      }
+    },
+    "branch_consistency": {
+      "base_tip": "feb05e6fcc1a0d4f843671c4d853858eef86d32c",
+      "branch_database_paths": {
+        "main": [
+          "/mnt/data/adrai_search_stress_2000_repo/.adrai/cache/a80c0a60ba7f4de7-c8018b18f35132b1e369f8fd.sqlite"
+        ],
+        "stress/feature-adrs": [
+          "/mnt/data/adrai_search_stress_2000_repo/.adrai/cache/4453f24e18d429e9-35fa976b40756ea3d9ed852f.sqlite"
+        ]
+      },
+      "cache_mode_counts": {
+        "exact": 11,
+        "incremental": 1
+      },
+      "cache_modes": [
+        "exact",
+        "incremental"
+      ],
+      "checks": 144,
+      "compare_counts": {
+        "added": 1,
+        "changed": 4,
+        "removed": 1,
+        "unchanged": 197
+      },
+      "compare_seconds": 0.104805,
+      "consistent": true,
+      "domain_base": "api",
+      "domain_base_was_root": true,
+      "domain_divergence_adr": "A01HF7YAWXR000000000000000E",
+      "feature_domain_revision": "C01KYXB0E2R91NQZY752DYG6NAX",
+      "feature_scope_revision": "C01KYXB0B3X7TYTDN8J6NMNCBNB",
+      "feature_tip": "4453f24e18d429e9b54fd10eec2832fd7dd795ff",
+      "first_compile_seconds": {
+        "main": 0.063424,
+        "stress/feature-adrs": 0.071165
+      },
+      "iterations": 12,
+      "main_doctor_ok": true,
+      "main_domain_revision": "C01KYXB0JN137XB4C0XD4YV13VX",
+      "main_tip": "a80c0a60ba7f4de7cc51e751afd330f06e1d6668",
+      "median_compile_seconds": 0.043993,
+      "median_cycle_seconds": 0.672867,
+      "p95_compile_seconds": 0.071165,
+      "p95_cycle_seconds": 0.717537,
+      "revision_database_count": 2,
+      "warm_compile_median_seconds": {
+        "main": 0.04316,
+        "stress/feature-adrs": 0.043057
+      },
+      "warm_compile_p95_seconds": {
+        "main": 0.061425,
+        "stress/feature-adrs": 0.044902
+      }
+    },
+    "generation": {
+      "adr_amendments": 100,
+      "adr_creates": 200,
+      "adr_domain_changes": 25,
+      "adr_obsoletions": 25,
+      "adr_operations": 400,
+      "adr_scope_changes": 50,
+      "generation_seconds": 1.031,
+      "noise_commits": 1600,
+      "synthetic_commits": 2000
+    },
+    "ok": true,
+    "parameters": {
+      "adr_amendments": 100,
+      "adr_creates": 200,
+      "adr_domain_changes": 25,
+      "adr_obsoletions": 25,
+      "adr_scope_changes": 50,
+      "seed": 260729,
+      "total_synthetic_commits": 2000
+    },
+    "sample": {
+      "first_adr": "A01HF7YATZ80000000000000002",
+      "last_adr": "A01HF7YGXA0000000000000015C",
+      "root_domain_adrs": 87
+    },
+    "schema": 1
+  }
+}
