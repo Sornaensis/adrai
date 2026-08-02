@@ -196,7 +196,7 @@ encodingAndLf = do
   let crlf = TextEncoding.encodeUtf8 (Text.replace "\n" "\r\n" (TextEncoding.decodeUtf8 expectedSealedDecision))
   parsed <- assertRight (parseManagedDocument path crlf)
   parsedManagedSemantic parsed @?= expectedDecisionSemantic
-  parsedManagedBytes parsed @?= expectedSealedDecision
+  parsedManagedBytes parsed @?= crlf
   where
     isUtf8 (DocumentInvalidUtf8 _) = True
     isUtf8 _ = False

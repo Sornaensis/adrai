@@ -87,7 +87,15 @@ repoPathTests =
                 ("a/./b", RepoPathDotSegment),
                 ("a/../b", RepoPathParentSegment),
                 ("a/.GiT/b", RepoPathGitSegment),
-                ("a/\n/b", RepoPathControlCharacter)
+                ("a/\n/b", RepoPathControlCharacter),
+                ("ab:name/b", RepoPathInvalidCharacter ':'),
+                ("a/name./b", RepoPathTrailingDotOrSpace "name."),
+                ("a/name /b", RepoPathTrailingDotOrSpace "name "),
+                ("a/CON/b", RepoPathReservedName "CON"),
+                ("a/com1.txt/b", RepoPathReservedName "com1.txt"),
+                ("a/COM\x00b9/b", RepoPathReservedName "COM\x00b9"),
+                ("a/lpt\x00b2.txt/b", RepoPathReservedName "lpt\x00b2.txt"),
+                ("a/Com\x00b3/b", RepoPathReservedName "Com\x00b3")
               ]
         traverse_ (\(input, expected) -> mkRepoPath input @?= Left expected) unsafe
     ]
@@ -142,6 +150,11 @@ exitAndConfigTests =
               (Right paths, Right line) ->
                 fmap configSchema (mkConfig ConfigSchemaV1 paths [line]) @?= Right ConfigSchemaV1
               other -> assertFailure ("fixture construction failed: " <> show other)
+          other -> assertFailure ("fixture construction failed: " <> show other),
+      testCase "managed roots reject portable case aliases" $
+        case (mkRepoPath "architecture/Objects", mkRepoPath "architecture/objects") of
+          (Right decisions, Right connections) ->
+            mkManagedPaths decisions connections @?= Left (ManagedPathsOverlap decisions connections)
           other -> assertFailure ("fixture construction failed: " <> show other)
     ]
 

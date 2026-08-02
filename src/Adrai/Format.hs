@@ -41,6 +41,7 @@ module Adrai.Format
     parseManagedDocument,
     sealManagedDocument,
     canonicalManagedPath,
+    validateManagedLocation,
 
     -- * Canonical TOML primitives
     renderTomlString,
@@ -74,6 +75,7 @@ import Adrai.Format.Document
     renderDecisionSemantic,
     renderManagedSemantic,
     sealManagedDocument,
+    validateManagedLocation,
   )
 import Adrai.Format.Toml (renderTomlString, renderTomlStringArray)
 import Adrai.Types

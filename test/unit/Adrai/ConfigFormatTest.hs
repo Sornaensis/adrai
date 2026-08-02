@@ -112,11 +112,11 @@ escapingTests :: TestTree
 escapingTests =
   testGroup
     "escaping"
-    [ testCase "rendered quoted paths round trip canonically" $
-        case customConfig "architecture/\"quoted\"" "relations" of
+    [ testCase "rendered Unicode paths round trip canonically" $
+        case customConfig "architecture/beslutning-\x00f8" "relations" of
           Left problem -> assertFailure problem
           Right config -> do
-            assertBool "quote must be escaped" ("\\\"quoted\\\"" `T.isInfixOf` renderConfig config)
+            assertBool "Unicode path must be preserved" ("beslutning-\x00f8" `T.isInfixOf` renderConfig config)
             parseConfigText (renderConfig config) @?= Right config,
       testCase "TOML 1.1-only basic-string escapes are rejected" $ do
         assertRejected "schema = 1\n[paths]\ndecisions = \"architecture\\x2Fadrai\"\n"

@@ -35,6 +35,7 @@ module Adrai.Provenance
     encodeBase64Url,
     decodeBase64Url,
     sha256Digest,
+    normalizeLineEndings,
     normalizeSemantic,
     semanticDigest,
     encodeCapsule,
@@ -345,11 +346,24 @@ hexToBytes value
 normalizeSemantic :: Text -> Text
 normalizeSemantic input = T.intercalate "\n" retained <> "\n"
   where
-    normalizedEndings = T.replace "\r" "\n" (T.replace "\r\n" "\n" input)
+    -- Python's frozen prototype uses @str.splitlines()@ after normalizing CRLF.
+    -- Match its complete Unicode line-boundary vocabulary, not only CR/LF, so
+    -- semantic identity is stable across both implementations.
+    normalizedEndings = normalizeLineEndings input
     retained = dropTrailingEmpty (map (T.dropWhileEnd isSpace) semanticLines)
     semanticLines = filter (not . isCapsuleTrailer . T.strip) (T.splitOn "\n" normalizedEndings)
 
     dropTrailingEmpty = reverse . dropWhile T.null . reverse
+
+
+-- | Match the complete line-boundary vocabulary recognized by the frozen
+-- prototype's @splitlines()@ behavior.
+normalizeLineEndings :: Text -> Text
+normalizeLineEndings = T.map normalizeLineBoundary . T.replace "\r\n" "\n"
+  where
+    normalizeLineBoundary character
+      | character `elem` ['\r', '\v', '\f', '\x001c', '\x001d', '\x001e', '\x0085', '\x2028', '\x2029'] = '\n'
+      | otherwise = character
 
 semanticDigest :: Text -> Digest
 semanticDigest = sha256Digest . TextEncoding.encodeUtf8 . normalizeSemantic

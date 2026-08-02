@@ -298,6 +298,9 @@ data RepoPathViolation
   | RepoPathParentSegment
   | RepoPathGitSegment
   | RepoPathControlCharacter
+  | RepoPathInvalidCharacter Char
+  | RepoPathTrailingDotOrSpace Text
+  | RepoPathReservedName Text
   deriving (Eq, Show)
 
 mkRepoPath :: Text -> Either RepoPathViolation RepoPath
@@ -308,13 +311,43 @@ mkRepoPath value
   | isDriveQualified value = Left RepoPathDriveQualified
   | T.any (== '\\') value = Left RepoPathBackslash
   | T.any isControl value = Left RepoPathControlCharacter
+  | Just invalid <- T.find (`elem` ("<>:\"|?*" :: String)) value = Left (RepoPathInvalidCharacter invalid)
   | any T.null segments = Left RepoPathEmptySegment
   | any (== ".") segments = Left RepoPathDotSegment
   | any (== "..") segments = Left RepoPathParentSegment
   | any ((== ".git") . asciiLower) segments = Left RepoPathGitSegment
+  | Just invalid <- firstMatching hasTrailingDotOrSpace segments = Left (RepoPathTrailingDotOrSpace invalid)
+  | Just invalid <- firstMatching isReservedWindowsName segments = Left (RepoPathReservedName invalid)
   | otherwise = Right (RepoPath value)
   where
     segments = T.splitOn "/" value
+
+firstMatching :: (value -> Bool) -> [value] -> Maybe value
+firstMatching predicate = go
+  where
+    go [] = Nothing
+    go (value : remaining)
+      | predicate value = Just value
+      | otherwise = go remaining
+
+hasTrailingDotOrSpace :: Text -> Bool
+hasTrailingDotOrSpace segment =
+  case T.unsnoc segment of
+    Just (_, finalCharacter) -> finalCharacter == '.' || finalCharacter == ' '
+    Nothing -> False
+
+isReservedWindowsName :: Text -> Bool
+isReservedWindowsName segment =
+  base `elem` ["con", "prn", "aux", "nul", "conin$", "conout$"]
+    || any (`T.isPrefixOf` base) ["com", "lpt"] && numericDeviceSuffix base
+  where
+    base = T.toCaseFold (T.takeWhile (/= '.') segment)
+    numericDeviceSuffix value =
+      case T.unsnoc value of
+        Just (prefix, digit) ->
+          prefix `elem` ["com", "lpt"]
+            && (digit >= '1' && digit <= '9' || digit `elem` ['\x00b9', '\x00b2', '\x00b3'])
+        Nothing -> False
 
 repoPathText :: RepoPath -> Text
 repoPathText (RepoPath value) = value
@@ -502,9 +535,12 @@ mkManagedPaths decisions connections
 
 pathsOverlap :: RepoPath -> RepoPath -> Bool
 pathsOverlap first second =
-  first == second
-    || (repoPathText first <> "/") `T.isPrefixOf` repoPathText second
-    || (repoPathText second <> "/") `T.isPrefixOf` repoPathText first
+  firstKey == secondKey
+    || (firstKey <> "/") `T.isPrefixOf` secondKey
+    || (secondKey <> "/") `T.isPrefixOf` firstKey
+  where
+    firstKey = T.toCaseFold (repoPathText first)
+    secondKey = T.toCaseFold (repoPathText second)
 
 data LogicalLine = LogicalLine
   { logicalLineId :: Text,

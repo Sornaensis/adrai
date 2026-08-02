@@ -20,6 +20,7 @@ module Adrai.Format.Document
     parseManagedDocument,
     sealManagedDocument,
     canonicalManagedPath,
+    validateManagedLocation,
   )
 where
 
@@ -42,6 +43,7 @@ import Adrai.Provenance
   ( ProvenanceCapsule,
     ProvenanceError,
     decodeCapsule,
+    normalizeLineEndings,
     normalizeSemantic,
     sealSemantic,
     semanticDigest,
@@ -162,6 +164,11 @@ data ParsedManagedDocument = ParsedManagedDocument
     parsedManagedRecord :: ManagedRecord,
     parsedManagedCapsule :: ProvenanceCapsule,
     parsedManagedSemantic :: Text,
+    -- | The exact bytes supplied to 'parseManagedDocument'.  Semantic
+    -- normalization is deliberately kept in 'parsedManagedSemantic'; retaining
+    -- the source bytes here lets append-only checks distinguish byte rewrites
+    -- (for example, LF versus CRLF) without re-reading a potentially changed
+    -- worktree file.
     parsedManagedBytes :: ByteString
   }
   deriving (Eq, Show)
@@ -187,6 +194,8 @@ data DocumentError
   | DocumentCapsuleCount Int
   | DocumentCapsuleError ProvenanceError
   | DocumentPathError RepoPathViolation
+  | DocumentNonCanonicalPath RepoPath RepoPath
+  | DocumentNonCanonicalSemantic
   deriving (Eq, Show)
 
 parseFrontMatter :: Text -> Either DocumentError (Map Text Toml.Value, Text)
@@ -269,6 +278,10 @@ parseManagedDocument path bytes = do
       "adrai/decision/v1" -> ManagedDecision <$> parseDecision entries body
       "adrai/connection/v1" -> ManagedConnection <$> parseConnection entries body
       unsupported -> Left (DocumentUnsupportedSchema unsupported)
+  canonicalSemantic <- renderManagedSemantic managed
+  if canonicalSemantic == semantic
+    then Right ()
+    else Left DocumentNonCanonicalSemantic
   capsule <- first DocumentCapsuleError (decodeCapsule encoded)
   first DocumentCapsuleError (validateCapsule (managedObjectRef managed) (semanticDigest semantic) capsule)
   Right
@@ -277,7 +290,7 @@ parseManagedDocument path bytes = do
         parsedManagedRecord = managed,
         parsedManagedCapsule = capsule,
         parsedManagedSemantic = semantic,
-        parsedManagedBytes = TextEncoding.encodeUtf8 normalized
+        parsedManagedBytes = bytes
       }
 
 sealManagedDocument :: ManagedRecord -> ProvenanceCapsule -> Either DocumentError ByteString
@@ -310,6 +323,18 @@ canonicalManagedPath paths managed =
               <> "--"
               <> relationName (connectionPayload record)
               <> ".connection.md"
+
+-- | Require a parsed managed document to live at the one path implied by its
+-- configured managed root and parsed identity.  Both sides are typed
+-- repository paths so diagnostics cannot accidentally report an unchecked
+-- filesystem path.
+validateManagedLocation :: ManagedPaths -> ParsedManagedDocument -> Either DocumentError ()
+validateManagedLocation paths document = do
+  expected <- canonicalManagedPath paths (parsedManagedRecord document)
+  let actual = parsedManagedPath document
+  if actual == expected
+    then Right ()
+    else Left (DocumentNonCanonicalPath actual expected)
 
 parseDecision :: Map Text Toml.Value -> Text -> Either DocumentError DecisionRecord
 parseDecision entries body = do
@@ -609,7 +634,7 @@ arrayField :: Text -> [Text] -> Text
 arrayField key values = key <> " = " <> renderTomlStringArray values
 
 normalizeLf :: Text -> Text
-normalizeLf = Text.replace "\r" "\n" . Text.replace "\r\n" "\n"
+normalizeLf = normalizeLineEndings
 
 slugify :: Text -> Text
 slugify title = Text.take 64 fallback
