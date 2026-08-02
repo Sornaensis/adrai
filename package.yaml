@@ -1,0 +1,53 @@
+name: adrai
+version: 1.0.0.0
+license: BSD-3-Clause
+language: GHC2021
+
+dependencies:
+  - base >= 4.20 && < 4.21
+  - aeson
+  - async
+  - base64
+  - bytestring
+  - containers
+  - crypton
+  - directory
+  - file-embed
+  - filepath
+  - fsnotify
+  - http-types
+  - network
+  - optparse-applicative
+  - sqlite-simple
+  - stm
+  - text
+  - time
+  - toml-parser
+  - typed-process
+  - vector
+  - wai
+  - wai-websockets
+  - warp
+  - websockets
+
+library:
+  source-dirs: src
+
+executables:
+  adrai:
+    main: Main.hs
+    source-dirs: app
+    dependencies: [adrai]
+    ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N]
+
+tests:
+  adrai-test:
+    main: Main.hs
+    source-dirs: test
+    dependencies:
+      - adrai
+      - hedgehog
+      - tasty
+      - tasty-hedgehog
+      - tasty-hunit
+      - temporary

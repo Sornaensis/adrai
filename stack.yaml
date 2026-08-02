@@ -1,0 +1,11 @@
+snapshot: lts-24.52
+require-stack-version: "== 3.11.1"
+packages:
+  - .
+
+flags:
+  direct-sqlite:
+    systemlib: false
+
+ghc-options:
+  "$locals": -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns

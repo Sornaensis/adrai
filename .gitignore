@@ -1,2 +1,7 @@
 /ADRAI_1_Source/
 /ADRAI_1_Search_Enhanced_Haskell_Reimplementation_Plan.md
+/.stack-work/
+/adrai.cabal
+/web/node_modules/
+/web/elm-stuff/
+/browser-tests/node_modules/
