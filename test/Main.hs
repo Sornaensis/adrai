@@ -12,6 +12,7 @@ import qualified Adrai.FixtureProperties
 import qualified Adrai.FixtureRelevanceTest
 import qualified Adrai.FormatFoundationTest
 import qualified Adrai.GoldenFixturesTest
+import qualified Adrai.GraphTest
 import qualified Adrai.IdentityTest
 import qualified Adrai.IntegrityTest
 import qualified Adrai.ManagedDocumentFormatTest
@@ -62,6 +63,7 @@ tests =
       Adrai.TomlCanonicalTest.tests,
       Adrai.ConfigFormatTest.tests,
       Adrai.ManagedDocumentFormatTest.tests,
+      Adrai.GraphTest.tests,
       Adrai.IdentityTest.tests,
       Adrai.StateTest.tests,
       Adrai.ManagedPathContractTest.tests,
