@@ -3,6 +3,11 @@
 module Main (main) where
 
 import qualified Adrai.CoverageLedgerTest
+import qualified Adrai.FixtureContractTest
+import qualified Adrai.FixturePlanTest
+import qualified Adrai.FixturePrngTest
+import qualified Adrai.FixtureProperties
+import qualified Adrai.FixtureRelevanceTest
 import qualified Adrai.FormatFoundationTest
 import qualified Adrai.GoldenFixturesTest
 import qualified Adrai.TypesProperties
@@ -33,5 +38,10 @@ tests =
       Adrai.FormatFoundationTest.tests,
       Adrai.TypesProperties.tests,
       Adrai.GoldenFixturesTest.tests,
-      Adrai.CoverageLedgerTest.tests
+      Adrai.CoverageLedgerTest.tests,
+      Adrai.FixturePrngTest.tests,
+      Adrai.FixtureRelevanceTest.tests,
+      Adrai.FixturePlanTest.tests,
+      Adrai.FixtureProperties.tests,
+      Adrai.FixtureContractTest.tests
     ]

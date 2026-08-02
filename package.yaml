@@ -48,6 +48,7 @@ tests:
       - test/unit
       - test/property
       - test/golden
+      - test/support
     dependencies:
       - adrai
       - hedgehog
