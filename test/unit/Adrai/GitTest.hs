@@ -3,7 +3,7 @@
 module Adrai.GitTest (tests) where
 
 import Adrai.Git
-import Adrai.Provenance (GitOid, gitOidText, mkGitOid)
+import Adrai.Provenance (mkGitOid)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.Either (isLeft)

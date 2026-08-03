@@ -5,7 +5,7 @@ module Adrai.GitBatchTest (tests) where
 
 import Adrai.Git
 import Adrai.GitTestSupport
-import Adrai.Provenance (GitOid, gitOidText, mkGitOid)
+import Adrai.Provenance (mkGitOid)
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)

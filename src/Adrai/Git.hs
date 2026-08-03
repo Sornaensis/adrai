@@ -19,6 +19,9 @@ module Adrai.Git
     repositoryCommonIsBare,
     repositoryCommandDirectory,
     discoverRepository,
+    GitHeadState (..),
+    repositoryHeadState,
+    decodeGitHeadState,
     RevisionSpec,
     mkRevisionSpec,
     revisionSpecText,
@@ -49,12 +52,14 @@ module Adrai.Git
     decodeGitBlobHeader,
     decodeGitBlobPayload,
     validateGitBatchTrailing,
+    GitOid,
+    gitOidText,
   )
 where
 
 import Adrai.ManagedPath (ManagedReadPathError (..), resolveRepositoryReadPath)
 import Adrai.Provenance (GitOid, gitOidText, mkGitOid)
-import Adrai.Types (RepoPath, RepoPathViolation, mkRepoPath, repoPathText)
+import Adrai.Types (GitRef, RepoPath, RepoPathViolation, mkGitRef, mkRepoPath, repoPathText)
 import qualified Control.Concurrent.Async as Async
 import Control.Exception (IOException, finally, try)
 import Data.Bifunctor (first)
@@ -107,6 +112,11 @@ data RepositoryLayout
   | MainWorktree
   | LinkedWorktree
   deriving (Eq, Ord, Show)
+
+data GitHeadState
+  = GitHeadAttached GitRef
+  | GitHeadDetached
+  deriving (Eq, Show)
 
 data Repository = Repository
   { repositoryClient :: GitClient,
@@ -293,6 +303,33 @@ discoverRepository client input = do
   where
     renderBool True = "true"
     renderBool False = "false"
+
+repositoryHeadState :: Repository -> IO (Either GitError GitHeadState)
+repositoryHeadState repository = do
+  result <- runRepository repository "symbolic HEAD" ["symbolic-ref", "--quiet", "HEAD"] BS.empty
+  pure $ do
+    processResult <- result
+    decodeGitHeadState (processExitCode processResult) (processStdout processResult) (processStderr processResult)
+
+decodeGitHeadState :: ExitCode -> ByteString -> ByteString -> Either GitError GitHeadState
+decodeGitHeadState exitCode stdoutBytes stderrBytes =
+  case exitCode of
+    ExitSuccess -> do
+      refPath <- first (GitInvalidOutput "symbolic HEAD") (decodeGitPathOutput stdoutBytes)
+      case mkGitRef (Text.pack refPath) of
+        Left _ -> Left (GitInvalidOutput "symbolic HEAD" (GitMalformedPathOutput (protocolSample stdoutBytes)))
+        Right reference -> Right (GitHeadAttached reference)
+    ExitFailure 1
+      | BS.null stdoutBytes -> Right GitHeadDetached
+      | otherwise -> Left (GitInvalidOutput "symbolic HEAD" (GitMalformedPathOutput (protocolSample stdoutBytes)))
+    _ ->
+      Left
+        ( GitCommandFailed
+            "symbolic HEAD"
+            (exitCodeNumber exitCode)
+            (boundedDiagnostic stdoutBytes)
+            (boundedDiagnostic stderrBytes)
+        )
 
 discoverDetails :: GitClient -> FilePath -> Bool -> IO (Either GitError Repository)
 discoverDetails client input hasWorktree = do

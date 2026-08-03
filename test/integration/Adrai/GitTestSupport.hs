@@ -4,6 +4,7 @@ module Adrai.GitTestSupport
   ( initTestRepository,
     initBareRepository,
     commitFile,
+    commitFiles,
     hashObject,
     gitSuccess,
     gitResult,
@@ -48,7 +49,9 @@ gitSuccess directory arguments input = do
             <> show directory
             <> " "
             <> show arguments
-            <> "\n"
+            <> "\nstdout: "
+            <> Text.unpack (TextEncoding.decodeUtf8Lenient stdoutBytes)
+            <> "\nstderr: "
             <> Text.unpack (TextEncoding.decodeUtf8Lenient stderrBytes)
         )
 
@@ -73,12 +76,18 @@ initBareRepository directory = do
   pure ()
 
 commitFile :: FilePath -> FilePath -> ByteString -> IO Text
-commitFile repository relativePath bytes = do
-  createDirectoryIfMissing True (takeDirectory (repository </> relativePath))
-  BS.writeFile (repository </> relativePath) bytes
-  _ <- gitSuccess repository ["--literal-pathspecs", "add", "--", relativePath] BS.empty
+commitFile repository relativePath bytes = commitFiles repository [(relativePath, bytes)]
+
+commitFiles :: FilePath -> [(FilePath, ByteString)] -> IO Text
+commitFiles repository files = do
+  mapM_ writeOne files
+  _ <- gitSuccess repository ["--literal-pathspecs", "add", "--all"] BS.empty
   _ <- gitSuccess repository ["commit", "-m", "fixture"] BS.empty
   outputText <$> gitSuccess repository ["rev-parse", "HEAD"] BS.empty
+  where
+    writeOne (relativePath, bytes) = do
+      createDirectoryIfMissing True (takeDirectory (repository </> relativePath))
+      BS.writeFile (repository </> relativePath) bytes
 
 hashObject :: FilePath -> ByteString -> IO Text
 hashObject repository bytes = outputText <$> gitSuccess repository ["hash-object", "-w", "--stdin"] bytes

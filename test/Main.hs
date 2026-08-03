@@ -37,6 +37,9 @@ import qualified Adrai.PassageFtsTest
 import qualified Adrai.ProjectionProperties
 import qualified Adrai.QueryHistoryTest
 import qualified Adrai.ReconciliationProperties
+import qualified Adrai.RepositoryIsolationTest
+import qualified Adrai.RepositorySnapshotTest
+import qualified Adrai.RepositoryTest
 import qualified Adrai.RelevanceProperties
 import qualified Adrai.RelevanceIntegrationTest
 import qualified Adrai.RelevanceGoldenTest
@@ -177,5 +180,11 @@ tests =
           [ Adrai.GitTest.tests,
             Adrai.GitDiscoveryTest.tests,
             Adrai.GitBatchTest.tests
+          ],
+      testGroup
+          "P4-02"
+          [ Adrai.RepositoryTest.tests,
+            Adrai.RepositorySnapshotTest.tests,
+            Adrai.RepositoryIsolationTest.tests
           ]
     ]
