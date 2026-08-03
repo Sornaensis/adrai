@@ -45,12 +45,15 @@
       "pythonMethod": "test_unknown_top_level_tables_are_rejected",
       "behaviorContract": "The v1 configuration parser rejects every unsupported top-level table instead of silently accepting extension points.",
       "haskellTestName": "configuration parser rejects unsupported top level tables",
-      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestPath": "test/unit/Adrai/ConfigFormatTest.hs",
       "haskellTestType": "unit",
       "phaseOwner": "P2",
-      "state": "planned",
+      "state": "covered",
       "evidence": [
-        "ADRAI_1_Source/tests/test_format_contract.py:47-52"
+        "ADRAI_1_Source/tests/test_format_contract.py:47-52",
+        "test/unit/Adrai/ConfigFormatTest.hs:71-87",
+        "test/property/Adrai/FormatProperties.hs:107-108",
+        "test/property/Adrai/FormatProperties.hs:134-135"
       ]
     },
     {
@@ -58,12 +61,15 @@
       "pythonMethod": "test_unknown_path_and_line_fields_are_rejected",
       "behaviorContract": "The v1 configuration parser rejects unknown fields within paths and logical-line records.",
       "haskellTestName": "configuration parser rejects unknown path and logical line fields",
-      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestPath": "test/unit/Adrai/ConfigFormatTest.hs",
       "haskellTestType": "unit",
       "phaseOwner": "P2",
-      "state": "planned",
+      "state": "covered",
       "evidence": [
-        "ADRAI_1_Source/tests/test_format_contract.py:54-66"
+        "ADRAI_1_Source/tests/test_format_contract.py:54-66",
+        "test/unit/Adrai/ConfigFormatTest.hs:77-85",
+        "test/property/Adrai/FormatProperties.hs:109-112",
+        "test/property/Adrai/FormatProperties.hs:136-139"
       ]
     },
     {
@@ -71,14 +77,15 @@
       "pythonMethod": "test_schema_and_managed_roots_are_strict",
       "behaviorContract": "Configuration accepts only schema 1 and requires distinct non-overlapping safe repository-relative managed roots.",
       "haskellTestName": "configuration schema and managed roots are strict",
-      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestPath": "test/unit/Adrai/ConfigFormatTest.hs",
       "haskellTestType": "unit",
       "phaseOwner": "P2",
-      "state": "partial",
+      "state": "covered",
       "evidence": [
         "ADRAI_1_Source/tests/test_format_contract.py:68-84",
         "test/unit/Adrai/TypesTest.hs:119-145",
-        "test/unit/Adrai/FormatFoundationTest.hs:84-92"
+        "test/unit/Adrai/FormatFoundationTest.hs:84-92",
+        "test/unit/Adrai/ConfigFormatTest.hs:72-98"
       ]
     },
     {
@@ -86,14 +93,16 @@
       "pythonMethod": "test_only_v1_record_schemas_are_accepted",
       "behaviorContract": "Managed-document parsing accepts only the exact decision and connection v1 schema tags and rejects historical, future, or aliased tags.",
       "haskellTestName": "managed document parser accepts only exact v1 record schemas",
-      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestPath": "test/unit/Adrai/ManagedDocumentFormatTest.hs",
       "haskellTestType": "unit",
       "phaseOwner": "P2",
-      "state": "partial",
+      "state": "covered",
       "evidence": [
         "ADRAI_1_Source/tests/test_format_contract.py:102-109",
         "test/unit/Adrai/FormatFoundationTest.hs:90-92",
-        "test/fixtures/contracts/v1/documents/parse-cases.json:48-54"
+        "test/fixtures/contracts/v1/documents/parse-cases.json:48-54",
+        "test/property/Adrai/FormatProperties.hs:113-116",
+        "test/property/Adrai/FormatProperties.hs:140-141"
       ]
     },
     {
@@ -101,14 +110,19 @@
       "pythonMethod": "test_unknown_decision_frontmatter_and_capsule_fields_are_rejected",
       "behaviorContract": "Decision front matter and provenance capsules are closed records whose unknown fields are rejected even after semantic resealing.",
       "haskellTestName": "decision parser rejects unknown front matter and capsule fields",
-      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestPath": "test/unit/Adrai/ManagedDocumentFormatTest.hs",
       "haskellTestType": "unit",
       "phaseOwner": "P2",
-      "state": "partial",
+      "state": "covered",
       "evidence": [
         "ADRAI_1_Source/tests/test_format_contract.py:111-127",
         "test/fixtures/contracts/v1/documents/parse-cases.json:62-68",
-        "test/golden/Adrai/GoldenFixturesTest.hs:228-238"
+        "test/golden/Adrai/GoldenFixturesTest.hs:228-238",
+        "test/unit/Adrai/ManagedDocumentFormatTest.hs:116-190",
+        "test/property/Adrai/FormatProperties.hs:117-118",
+        "test/property/Adrai/FormatProperties.hs:125-126",
+        "test/property/Adrai/FormatProperties.hs:142-143",
+        "test/property/Adrai/FormatProperties.hs:150-151"
       ]
     },
     {
@@ -116,12 +130,15 @@
       "pythonMethod": "test_unknown_relation_and_connection_fields_are_rejected",
       "behaviorContract": "Connection parsing rejects unsupported relation names and fields outside the selected relation's closed v1 shape.",
       "haskellTestName": "connection parser rejects unknown relations and relation fields",
-      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestPath": "test/unit/Adrai/ManagedDocumentFormatTest.hs",
       "haskellTestType": "unit",
       "phaseOwner": "P2",
-      "state": "planned",
+      "state": "covered",
       "evidence": [
-        "ADRAI_1_Source/tests/test_format_contract.py:129-145"
+        "ADRAI_1_Source/tests/test_format_contract.py:129-145",
+        "test/unit/Adrai/ManagedDocumentFormatTest.hs:86-100",
+        "test/property/Adrai/FormatProperties.hs:119-122",
+        "test/property/Adrai/FormatProperties.hs:144-147"
       ]
     },
     {
@@ -129,13 +146,16 @@
       "pythonMethod": "test_capsule_version_tool_shape_and_actor_shape_are_strict",
       "behaviorContract": "Provenance validation enforces capsule version 1, a released ADRAI tool version, and the closed canonical actor shape.",
       "haskellTestName": "provenance capsule version tool and actor shapes are strict",
-      "haskellTestPath": "test/unit/Adrai/FormatContractTest.hs",
+      "haskellTestPath": "test/unit/Adrai/ProvenanceFormatTest.hs",
       "haskellTestType": "unit",
       "phaseOwner": "P2",
-      "state": "planned",
+      "state": "covered",
       "evidence": [
         "ADRAI_1_Source/tests/test_format_contract.py:147-159",
-        "test/fixtures/contracts/v1/documents/parse-cases.json:10-31"
+        "test/fixtures/contracts/v1/documents/parse-cases.json:10-31",
+        "test/unit/Adrai/ProvenanceFormatTest.hs:147-168",
+        "test/property/Adrai/FormatProperties.hs:127-132",
+        "test/property/Adrai/FormatProperties.hs:152-157"
       ]
     },
     {

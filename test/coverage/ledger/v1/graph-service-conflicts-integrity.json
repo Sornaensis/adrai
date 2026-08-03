@@ -173,11 +173,11 @@
       "pythonMethod": "test_user_input_is_canonicalized_to_root_or_dotted_names",
       "behaviorContract": "Domain input normalization accepts single-segment root domain names and canonical dotted names while producing one stable canonical representation.",
       "haskellTestName": "domain input canonicalizes root and dotted names",
-      "haskellTestPath": "test/unit/Adrai/DomainTest.hs",
+      "haskellTestPath": "test/unit/Adrai/DomainFormatTest.hs",
       "haskellTestType": "unit",
       "phaseOwner": "P2",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:32 (static prototype test)"
+      "state": "covered",
+      "evidence": "ADRAI_1_Source/tests/test_domains.py:32 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:17-59 | test/property/Adrai/DomainProperties.hs:25-52"
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
@@ -195,11 +195,11 @@
       "pythonMethod": "test_refinement_syntax_requires_a_strict_descendant",
       "behaviorContract": "A domain refinement mapping must name a strict dotted descendant rather than the same domain or an unrelated domain.",
       "haskellTestName": "domain refinement requires strict descendant",
-      "haskellTestPath": "test/unit/Adrai/DomainTest.hs",
+      "haskellTestPath": "test/unit/Adrai/DomainFormatTest.hs",
       "haskellTestType": "unit",
       "phaseOwner": "P2",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:113 (static prototype test)"
+      "state": "covered",
+      "evidence": "ADRAI_1_Source/tests/test_domains.py:113 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:60-69 | test/property/Adrai/DomainProperties.hs:54-70"
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
@@ -264,8 +264,8 @@
       "haskellTestPath": "test/property/Adrai/DomainProperties.hs",
       "haskellTestType": "property",
       "phaseOwner": "P2",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:380 (static prototype test)"
+      "state": "partial",
+      "evidence": "ADRAI_1_Source/tests/test_domains.py:380 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:50-59 | test/property/Adrai/DomainProperties.hs:72-85 (pure hierarchy primitive only; repeated search-filter conjunction remains P5 consumer work)"
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_domains.py",

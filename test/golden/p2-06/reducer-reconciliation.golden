@@ -1,0 +1,179 @@
+{
+  "invalid_cases": [
+    {
+      "axis": "decision",
+      "fault": "dangling-parent",
+      "heads": [
+        "R00000000000000000000000000"
+      ],
+      "issue_codes": [
+        "AMENDMENT_MISSING_PARENT"
+      ]
+    },
+    {
+      "axis": "scope",
+      "fault": "cycle",
+      "heads": [
+        "C00000000000000000000000000"
+      ],
+      "issue_codes": [
+        "SCOPE_CHANGE_SHAPE",
+        "SCOPE_CHANGE_SHAPE",
+        "SCOPE_CYCLE"
+      ]
+    },
+    {
+      "axis": "domain",
+      "fault": "invalid-delta",
+      "heads": [
+        "C00000000000000000000000001"
+      ],
+      "issue_codes": [
+        "DOMAIN_DELTA_MISMATCH",
+        "DOMAIN_DELTA_MISMATCH"
+      ]
+    },
+    {
+      "axis": "status",
+      "fault": "cross-adr-parent",
+      "heads": [
+        "C00000000000000000000000002"
+      ],
+      "issue_codes": [
+        "INVALID_STATUS_PARENTS"
+      ]
+    }
+  ],
+  "reconciliation_cases": [
+    {
+      "after": {
+        "heads": [
+          "R00000000000000000000000003"
+        ],
+        "state_token": "S0KtCVXKRcyUjHiyBiG9K7h"
+      },
+      "appends": [
+        {
+          "kind": "decision",
+          "object": "R00000000000000000000000003",
+          "parents": []
+        },
+        {
+          "kind": "amends",
+          "object": "C00000000000000000000000005",
+          "parents": [
+            "R00000000000000000000000001",
+            "R00000000000000000000000002"
+          ]
+        }
+      ],
+      "axis": "decision",
+      "before": {
+        "heads": [
+          "R00000000000000000000000001",
+          "R00000000000000000000000002"
+        ],
+        "state_token": "SGTdQBCgUCJCjljKTmadrWC"
+      },
+      "untouched_axes": {
+        "domain": true,
+        "scope": true,
+        "status": true
+      }
+    },
+    {
+      "after": {
+        "heads": [
+          "C00000000000000000000000005"
+        ],
+        "state_token": "Sbs2UUNqK272N0F_bgSJUeu"
+      },
+      "appends": [
+        {
+          "kind": "applies_to",
+          "object": "C00000000000000000000000005",
+          "parents": [
+            "C00000000000000000000000001",
+            "C00000000000000000000000002"
+          ]
+        }
+      ],
+      "axis": "scope",
+      "before": {
+        "heads": [
+          "C00000000000000000000000001",
+          "C00000000000000000000000002"
+        ],
+        "state_token": "SlH_e94YwgqiGCvQcmpeON-"
+      },
+      "untouched_axes": {
+        "decision": true,
+        "domain": true,
+        "status": true
+      }
+    },
+    {
+      "after": {
+        "heads": [
+          "C00000000000000000000000005"
+        ],
+        "state_token": "SQiUvaAjUauPts7qbwHq4BT"
+      },
+      "appends": [
+        {
+          "kind": "domains",
+          "object": "C00000000000000000000000005",
+          "parents": [
+            "C00000000000000000000000002",
+            "C00000000000000000000000003"
+          ]
+        }
+      ],
+      "axis": "domain",
+      "before": {
+        "heads": [
+          "C00000000000000000000000002",
+          "C00000000000000000000000003"
+        ],
+        "state_token": "S1u6iOBx6GSMWPcBcrRCY7o"
+      },
+      "untouched_axes": {
+        "decision": true,
+        "scope": true,
+        "status": true
+      }
+    },
+    {
+      "after": {
+        "heads": [
+          "C00000000000000000000000005"
+        ],
+        "state_token": "SVqs7lDhd5N6KUMkPkHJgJz"
+      },
+      "appends": [
+        {
+          "kind": "status",
+          "object": "C00000000000000000000000005",
+          "parents": [
+            "C00000000000000000000000003",
+            "C00000000000000000000000004"
+          ]
+        }
+      ],
+      "axis": "status",
+      "before": {
+        "heads": [
+          "C00000000000000000000000003",
+          "C00000000000000000000000004"
+        ],
+        "state_token": "SdSnrATKsKWy78uU02ampk5"
+      },
+      "untouched_axes": {
+        "decision": true,
+        "domain": true,
+        "scope": true
+      }
+    }
+  ],
+  "schema": "adrai/p2-06-reducer-reconciliation/v1"
+}

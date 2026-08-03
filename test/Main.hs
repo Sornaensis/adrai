@@ -5,13 +5,16 @@ module Main (main) where
 import qualified Adrai.ConfigFormatTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
+import qualified Adrai.DomainProperties
 import qualified Adrai.FixtureContractTest
 import qualified Adrai.FixturePlanTest
 import qualified Adrai.FixturePrngTest
 import qualified Adrai.FixtureProperties
 import qualified Adrai.FixtureRelevanceTest
 import qualified Adrai.FormatFoundationTest
+import qualified Adrai.FormatProperties
 import qualified Adrai.GoldenFixturesTest
+import qualified Adrai.GraphProperties
 import qualified Adrai.GraphTest
 import qualified Adrai.IdentityTest
 import qualified Adrai.IntegrityTest
@@ -19,7 +22,10 @@ import qualified Adrai.ManagedDocumentFormatTest
 import qualified Adrai.ManagedPathContractTest
 import qualified Adrai.MarkdownTest
 import qualified Adrai.ProvenanceFormatTest
+import qualified Adrai.P206GoldenTest
+import qualified Adrai.ProjectionProperties
 import qualified Adrai.QueryHistoryTest
+import qualified Adrai.ReconciliationProperties
 import qualified Adrai.SemanticIdentityTest
 import qualified Adrai.ScopeFormatTest
 import qualified Adrai.ServiceTest
@@ -73,5 +79,14 @@ tests =
       Adrai.ManagedPathContractTest.tests,
       Adrai.MarkdownTest.tests,
       Adrai.SemanticIdentityTest.tests,
-      Adrai.IntegrityTest.tests
+      Adrai.IntegrityTest.tests,
+      testGroup
+          "P2-06"
+          [ Adrai.FormatProperties.tests,
+            Adrai.DomainProperties.tests,
+            Adrai.GraphProperties.tests,
+            Adrai.ReconciliationProperties.tests,
+            Adrai.ProjectionProperties.tests,
+            Adrai.P206GoldenTest.tests
+          ]
     ]
