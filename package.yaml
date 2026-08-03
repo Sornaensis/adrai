@@ -17,6 +17,7 @@ dependencies:
   - filepath
   - fsnotify
   - http-types
+  - memory
   - network
   - optparse-applicative
   - sqlite-simple

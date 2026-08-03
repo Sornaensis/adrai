@@ -33,15 +33,23 @@ import qualified Adrai.StateTest
 import qualified Adrai.TomlCanonicalTest
 import qualified Adrai.TypesProperties
 import qualified Adrai.TypesTest
+import qualified Adrai.VectorProperties
+import qualified Adrai.VectorQualityTest
+import qualified Adrai.VectorTest
 import Control.Exception (bracket)
 import Database.SQLite.Simple (close, execute_, open)
 import Hedgehog (property, success)
+import System.Environment (getArgs)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.Hedgehog (testProperty)
 import Test.Tasty.HUnit (testCase)
 
 main :: IO ()
-main = defaultMain tests
+main = do
+  arguments <- getArgs
+  case arguments of
+    ["--write-p3-01-goldens"] -> Adrai.VectorQualityTest.writeP301Goldens
+    _ -> defaultMain tests
 
 tests :: TestTree
 tests =
@@ -88,5 +96,11 @@ tests =
             Adrai.ReconciliationProperties.tests,
             Adrai.ProjectionProperties.tests,
             Adrai.P206GoldenTest.tests
+          ],
+      testGroup
+          "P3-01"
+          [ Adrai.VectorTest.tests,
+            Adrai.VectorProperties.tests,
+            Adrai.VectorQualityTest.tests
           ]
     ]
