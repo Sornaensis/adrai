@@ -51,6 +51,7 @@ tests:
       - test/unit
       - test/property
       - test/golden
+      - test/integration
       - test/support
     dependencies:
       - adrai

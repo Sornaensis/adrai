@@ -26,6 +26,10 @@ import qualified Adrai.P206GoldenTest
 import qualified Adrai.ProjectionProperties
 import qualified Adrai.QueryHistoryTest
 import qualified Adrai.ReconciliationProperties
+import qualified Adrai.RetrievalPlanGoldenTest
+import qualified Adrai.RetrievalSqliteTest
+import qualified Adrai.SearchRetrievalProperties
+import qualified Adrai.SearchRetrievalTest
 import qualified Adrai.SemanticIdentityTest
 import qualified Adrai.ScopeFormatTest
 import qualified Adrai.ServiceTest
@@ -49,6 +53,7 @@ main = do
   arguments <- getArgs
   case arguments of
     ["--write-p3-01-goldens"] -> Adrai.VectorQualityTest.writeP301Goldens
+    ["--write-p3-02-goldens"] -> Adrai.RetrievalPlanGoldenTest.writeP302Goldens
     _ -> defaultMain tests
 
 tests :: TestTree
@@ -102,5 +107,12 @@ tests =
           [ Adrai.VectorTest.tests,
             Adrai.VectorProperties.tests,
             Adrai.VectorQualityTest.tests
+          ],
+      testGroup
+          "P3-02"
+          [ Adrai.SearchRetrievalTest.tests,
+            Adrai.SearchRetrievalProperties.tests,
+            Adrai.RetrievalSqliteTest.tests,
+            Adrai.RetrievalPlanGoldenTest.tests
           ]
     ]
