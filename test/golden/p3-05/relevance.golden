@@ -1,0 +1,386 @@
+{
+  "chunking_fingerprint": "sha256:Nh2G1cvQT0C8UX8nxSoUMS7NI2caJ_rJOHgTwncHEc4",
+  "conflicted": {
+    "as_of": "p3-04-conflict-resolved",
+    "file": {
+      "blob": "blob-conflict",
+      "bytes": 65,
+      "chunks": 1,
+      "digest": "sha256:FMvAr-6DEoW1dBCZ9Zu_KrY4tOiRBkslKFKzLmuqVkI",
+      "path": "src/conflict.txt",
+      "query_chunks": 1,
+      "revision": "p3-04-conflict-resolved",
+      "source": "revision"
+    },
+    "results": [
+      {
+        "adr": "A00000000000000000000000000",
+        "applies_to": [
+          "src/**"
+        ],
+        "confidence": "high",
+        "domains": [
+          "compiler"
+        ],
+        "evidence": [
+          {
+            "adr_candidate": "A00000000000000000000000000@R00000000000000000000000001",
+            "adr_chunk": "A00000000000000000000000000@R00000000000000000000000001/section/title-summary/0/1-2",
+            "adr_excerpt": "left left summary",
+            "adr_section": "title-summary",
+            "candidate_record": "R00000000000000000000000001",
+            "file_excerpt": "left decision summary right decision summary architectural choice",
+            "file_lines": [
+              1,
+              1
+            ],
+            "lexical_score": 1.0,
+            "matched_terms": [
+              "left",
+              "summary"
+            ],
+            "score": 0.472079,
+            "semantic_score": 0.472079
+          }
+        ],
+        "lexical_bonus": 0.1,
+        "lexical_score": 1.0,
+        "margin": 0.472079,
+        "matched_candidate": "A00000000000000000000000000@R00000000000000000000000001",
+        "matched_record": "R00000000000000000000000001",
+        "matched_title": "left",
+        "obsolete": false,
+        "record": null,
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "scope_bonus": 0.025,
+        "scope_match": "exact",
+        "score": 0.597079,
+        "semantic_score": 0.472079,
+        "source_information": 1.0,
+        "status": "active",
+        "strongest_lexical_pair": 1.0,
+        "strongest_pair": 0.472079,
+        "summary": "left summary; right summary",
+        "title": "[conflicted ADR]"
+      }
+    ],
+    "retrieval": {
+      "adr_shortlist": 1,
+      "candidate_search_items": 2,
+      "eligible_adrs": 1,
+      "eligible_search_items": 2,
+      "exact_rerank_candidates": 8,
+      "identifier_vector_id": "adrai-identifier:-JSyvxW6dxoDl9Pzpm6Q_aoG:768",
+      "implementation": "structured-raw-text-cross-reference",
+      "passage_fts": {
+        "algorithm": "passage-exact+stemmed+identifier-fts",
+        "candidate_pairs": 4,
+        "channel_hits": {
+          "exact": 4,
+          "identifier": 4,
+          "stemmed": 0
+        },
+        "queries": 1
+      },
+      "scope_used_for_eligibility": false,
+      "scoring": {
+        "high_margin": 0.045,
+        "high_pair_score": 0.3,
+        "high_semantic_score": 0.34,
+        "lexical_bonus_cap": 0.1,
+        "lexical_rank_weight": 0.1,
+        "medium_pair_score": 0.14,
+        "medium_semantic_score": 0.16,
+        "minimum_lexical_pair_score": 0.18,
+        "minimum_pair_score": 0.075,
+        "repetitive_chunk_low_confidence": 0.15,
+        "scope_bonus_ambiguous": 0.01,
+        "scope_bonus_exact": 0.025,
+        "second_evidence_weight": 0.1,
+        "third_evidence_weight": 0.05
+      },
+      "search_sections": 8,
+      "sections": {
+        "algorithm": "exact-bounded-section-scan",
+        "bucket_hits": 0,
+        "candidates": 8,
+        "corpus": 8,
+        "fallback_chunks": 0
+      },
+      "selected_source_chunks": 1,
+      "semantic_vector_id": "adrai-semantic:T_yApQ2sJvyBH21HYYBYuQ1X:1024",
+      "source_chunks": 1,
+      "strategy": "exact-summary+passage-fts+bounded-section-rerank",
+      "summary": {
+        "algorithm": "exact",
+        "identifier_corpus": 2,
+        "semantic_corpus": 2
+      }
+    },
+    "schema": "adrai/relevant/v1",
+    "view": "relevant"
+  },
+  "outside_scope": {
+    "as_of": "rationale-resolved",
+    "file": {
+      "blob": "blob-rationale",
+      "bytes": 95,
+      "chunks": 1,
+      "digest": "sha256:wpW7-HbX9tGWU0wJg1w6bAmzob04_5GfPvjivkom5M0",
+      "path": "unrelated/file.txt",
+      "query_chunks": 1,
+      "revision": "rationale-resolved",
+      "source": "revision"
+    },
+    "results": [
+      {
+        "adr": "A00000000000000000000000000",
+        "applies_to": [
+          "src/current/**"
+        ],
+        "confidence": "high",
+        "domains": [
+          "current.domain"
+        ],
+        "evidence": [
+          {
+            "adr_candidate": "A00000000000000000000000000",
+            "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
+            "adr_excerpt": "decision first decision second",
+            "adr_section": "decision",
+            "candidate_record": "R00000000000000000000000001",
+            "file_excerpt": "current decision api context first decision second consequence current domain cache lease token",
+            "file_lines": [
+              1,
+              1
+            ],
+            "lexical_score": 1.0,
+            "matched_terms": [
+              "first",
+              "second"
+            ],
+            "score": 0.352558,
+            "semantic_score": 0.352558
+          }
+        ],
+        "lexical_bonus": 0.1,
+        "lexical_score": 1.0,
+        "margin": 0.352558,
+        "matched_candidate": null,
+        "matched_record": "R00000000000000000000000001",
+        "matched_title": null,
+        "obsolete": true,
+        "record": "R00000000000000000000000001",
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "scope_bonus": 0.0,
+        "scope_match": "none",
+        "score": 0.452558,
+        "semantic_score": 0.352558,
+        "source_information": 1.0,
+        "status": "obsolete",
+        "strongest_lexical_pair": 1.0,
+        "strongest_pair": 0.352558,
+        "summary": "Current summary",
+        "title": "Current Decision API (CDAPI)"
+      }
+    ],
+    "retrieval": {
+      "adr_shortlist": 1,
+      "candidate_search_items": 1,
+      "eligible_adrs": 1,
+      "eligible_search_items": 1,
+      "exact_rerank_candidates": 7,
+      "identifier_vector_id": "adrai-identifier:-JSyvxW6dxoDl9Pzpm6Q_aoG:768",
+      "implementation": "structured-raw-text-cross-reference",
+      "passage_fts": {
+        "algorithm": "passage-exact+stemmed+identifier-fts",
+        "candidate_pairs": 6,
+        "channel_hits": {
+          "exact": 6,
+          "identifier": 6,
+          "stemmed": 0
+        },
+        "queries": 1
+      },
+      "scope_used_for_eligibility": false,
+      "scoring": {
+        "high_margin": 0.045,
+        "high_pair_score": 0.3,
+        "high_semantic_score": 0.34,
+        "lexical_bonus_cap": 0.1,
+        "lexical_rank_weight": 0.1,
+        "medium_pair_score": 0.14,
+        "medium_semantic_score": 0.16,
+        "minimum_lexical_pair_score": 0.18,
+        "minimum_pair_score": 0.075,
+        "repetitive_chunk_low_confidence": 0.15,
+        "scope_bonus_ambiguous": 0.01,
+        "scope_bonus_exact": 0.025,
+        "second_evidence_weight": 0.1,
+        "third_evidence_weight": 0.05
+      },
+      "search_sections": 7,
+      "sections": {
+        "algorithm": "exact-bounded-section-scan",
+        "bucket_hits": 0,
+        "candidates": 7,
+        "corpus": 7,
+        "fallback_chunks": 0
+      },
+      "selected_source_chunks": 1,
+      "semantic_vector_id": "adrai-semantic:T_yApQ2sJvyBH21HYYBYuQ1X:1024",
+      "source_chunks": 1,
+      "strategy": "exact-summary+passage-fts+bounded-section-rerank",
+      "summary": {
+        "algorithm": "exact",
+        "identifier_corpus": 1,
+        "semantic_corpus": 1
+      }
+    },
+    "schema": "adrai/relevant/v1",
+    "view": "relevant"
+  },
+  "resolved": {
+    "as_of": "rationale-resolved",
+    "file": {
+      "blob": "blob-rationale",
+      "bytes": 95,
+      "chunks": 1,
+      "digest": "sha256:wpW7-HbX9tGWU0wJg1w6bAmzob04_5GfPvjivkom5M0",
+      "path": "src/current/cache.py",
+      "query_chunks": 1,
+      "revision": "rationale-resolved",
+      "source": "revision"
+    },
+    "results": [
+      {
+        "adr": "A00000000000000000000000000",
+        "applies_to": [
+          "src/current/**"
+        ],
+        "confidence": "high",
+        "domains": [
+          "current.domain"
+        ],
+        "evidence": [
+          {
+            "adr_candidate": "A00000000000000000000000000",
+            "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
+            "adr_excerpt": "decision first decision second",
+            "adr_section": "decision",
+            "candidate_record": "R00000000000000000000000001",
+            "file_excerpt": "current decision api context first decision second consequence current domain cache lease token",
+            "file_lines": [
+              1,
+              1
+            ],
+            "lexical_score": 1.0,
+            "matched_terms": [
+              "first",
+              "second"
+            ],
+            "score": 0.352558,
+            "semantic_score": 0.352558
+          }
+        ],
+        "lexical_bonus": 0.1,
+        "lexical_score": 1.0,
+        "margin": 0.352558,
+        "matched_candidate": null,
+        "matched_record": "R00000000000000000000000001",
+        "matched_title": null,
+        "obsolete": true,
+        "record": "R00000000000000000000000001",
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "scope_bonus": 0.025,
+        "scope_match": "exact",
+        "score": 0.477558,
+        "semantic_score": 0.352558,
+        "source_information": 1.0,
+        "status": "obsolete",
+        "strongest_lexical_pair": 1.0,
+        "strongest_pair": 0.352558,
+        "summary": "Current summary",
+        "title": "Current Decision API (CDAPI)"
+      }
+    ],
+    "retrieval": {
+      "adr_shortlist": 1,
+      "candidate_search_items": 1,
+      "eligible_adrs": 1,
+      "eligible_search_items": 1,
+      "exact_rerank_candidates": 7,
+      "identifier_vector_id": "adrai-identifier:-JSyvxW6dxoDl9Pzpm6Q_aoG:768",
+      "implementation": "structured-raw-text-cross-reference",
+      "passage_fts": {
+        "algorithm": "passage-exact+stemmed+identifier-fts",
+        "candidate_pairs": 6,
+        "channel_hits": {
+          "exact": 6,
+          "identifier": 6,
+          "stemmed": 0
+        },
+        "queries": 1
+      },
+      "scope_used_for_eligibility": false,
+      "scoring": {
+        "high_margin": 0.045,
+        "high_pair_score": 0.3,
+        "high_semantic_score": 0.34,
+        "lexical_bonus_cap": 0.1,
+        "lexical_rank_weight": 0.1,
+        "medium_pair_score": 0.14,
+        "medium_semantic_score": 0.16,
+        "minimum_lexical_pair_score": 0.18,
+        "minimum_pair_score": 0.075,
+        "repetitive_chunk_low_confidence": 0.15,
+        "scope_bonus_ambiguous": 0.01,
+        "scope_bonus_exact": 0.025,
+        "second_evidence_weight": 0.1,
+        "third_evidence_weight": 0.05
+      },
+      "search_sections": 7,
+      "sections": {
+        "algorithm": "exact-bounded-section-scan",
+        "bucket_hits": 0,
+        "candidates": 7,
+        "corpus": 7,
+        "fallback_chunks": 0
+      },
+      "selected_source_chunks": 1,
+      "semantic_vector_id": "adrai-semantic:T_yApQ2sJvyBH21HYYBYuQ1X:1024",
+      "source_chunks": 1,
+      "strategy": "exact-summary+passage-fts+bounded-section-rerank",
+      "summary": {
+        "algorithm": "exact",
+        "identifier_corpus": 1,
+        "semantic_corpus": 1
+      }
+    },
+    "schema": "adrai/relevant/v1",
+    "view": "relevant"
+  },
+  "schema": "adrai/p3-05-relevance-golden/v1",
+  "scoring": {
+    "high_margin": 0.045,
+    "high_pair_score": 0.3,
+    "high_semantic_score": 0.34,
+    "lexical_bonus_cap": 0.1,
+    "lexical_rank_weight": 0.1,
+    "medium_pair_score": 0.14,
+    "medium_semantic_score": 0.16,
+    "minimum_lexical_pair_score": 0.18,
+    "minimum_pair_score": 0.075,
+    "repetitive_chunk_low_confidence": 0.15,
+    "scope_bonus_ambiguous": 0.01,
+    "scope_bonus_exact": 0.025,
+    "second_evidence_weight": 0.1,
+    "third_evidence_weight": 0.05
+  }
+}

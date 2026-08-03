@@ -50,6 +50,7 @@ module Adrai.Retrieval
     rankingFingerprintPayload,
     ftsQuote,
     collapseWhitespace,
+    informativeTerms,
     retrievalImplementationFingerprint,
     retrievalFingerprintPayload,
   )
@@ -141,6 +142,43 @@ queryScaffolding =
       "with",
       "would"
     ]
+
+informativeTerms :: Int -> Text -> [Text]
+informativeTerms limit text =
+  map snd . take (max 0 limit) . sortBy (comparing (Down . fst) <> comparing (Down . snd)) $
+    [ (termScore term, term)
+      | term <- Set.toList (Set.union semanticSet identifierSet),
+        Text.length term >= 3,
+        not (Set.member term informativeStop)
+    ]
+  where
+    semantic = semanticTokens text
+    semanticSet = Set.fromList semantic
+    identifierSet = Set.fromList (identifierTerms False text)
+    counts = Map.fromListWith (+) [(term, 1 :: Int) | term <- semantic]
+    termScore :: Text -> Double
+    termScore term =
+      fromIntegral (min (Text.length term) 20) / 10
+        + (if Set.member term identifierSet then 1.5 else 0)
+        + 1 / fromIntegral (max 1 (Map.findWithDefault 1 term counts))
+
+informativeStop :: Set Text
+informativeStop =
+  Set.union
+    queryScaffolding
+    ( Set.fromList
+        [ "application",
+          "architecture",
+          "component",
+          "data",
+          "decision",
+          "implementation",
+          "record",
+          "service",
+          "system",
+          "value"
+        ]
+    )
 
 queryQuestionWords :: Set Text
 queryQuestionWords = Set.fromList ["what", "why", "how", "where", "when", "which", "do", "does", "did", "should", "can", "could", "would"]

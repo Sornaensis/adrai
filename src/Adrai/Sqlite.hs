@@ -18,6 +18,7 @@ module Adrai.Sqlite
     candidateCap,
     FtsHit (..),
     SummaryFtsCandidates (..),
+    PassageFtsCandidates (..),
     SearchStorageComponent (..),
     SearchStorageError (..),
     searchStorageErrorToAdraiError,
@@ -28,6 +29,7 @@ module Adrai.Sqlite
     loadLocalAliases,
     runFtsTarget,
     runSummaryFtsChannels,
+    runPassageFtsChannels,
   )
 where
 
@@ -183,6 +185,13 @@ data SummaryFtsCandidates = SummaryFtsCandidates
     summaryFtsStemmed :: [FtsHit],
     summaryFtsIdentifier :: [FtsHit],
     summaryFtsPrefixUsed :: Bool
+  }
+  deriving (Eq, Show)
+
+data PassageFtsCandidates = PassageFtsCandidates
+  { passageFtsExact :: [FtsHit],
+    passageFtsStemmed :: [FtsHit],
+    passageFtsIdentifier :: [FtsHit]
   }
   deriving (Eq, Show)
 
@@ -474,6 +483,24 @@ runSummaryFtsChannels connection plan allowed requested =
         (Left retrievalError, _, _) -> pure (Left retrievalError)
         (_, Left retrievalError, _) -> pure (Left retrievalError)
         (_, _, Left retrievalError) -> pure (Left retrievalError)
+
+runPassageFtsChannels :: Connection -> QueryPlan -> Set Text -> CandidateLimit -> IO (Either RetrievalSqlError PassageFtsCandidates)
+runPassageFtsChannels connection plan allowed limit = do
+  exactResult <- runFtsTarget connection PassageExactTarget exactExpression allowed limit
+  stemmedResult <- runFtsTarget connection PassageStemmedTarget (queryPlanFtsStemmed plan) allowed limit
+  identifierResult <- runFtsTarget connection PassageIdentifierTarget (queryPlanFtsIdentifier plan) allowed limit
+  pure $ do
+    exact <- exactResult
+    stemmed <- stemmedResult
+    identifier <- identifierResult
+    Right
+      PassageFtsCandidates
+        { passageFtsExact = exact,
+          passageFtsStemmed = stemmed,
+          passageFtsIdentifier = identifier
+        }
+  where
+    exactExpression = Text.intercalate " OR " (queryPlanFtsExactTerms plan)
 
 rankQuery :: FtsTarget -> Int -> Query
 rankQuery target allowedCount =

@@ -47,6 +47,15 @@ module Adrai.Query
     SearchMatches (..),
     SearchResult (..),
     SearchProjection (..),
+    RelevantRequest (..),
+    defaultRelevantRequest,
+    RelevantSource (..),
+    RelevantError (..),
+    RelevantFileInfo (..),
+    RelevantEvidence (..),
+    RelevantResult (..),
+    RelevantRetrieval (..),
+    RelevantProjection (..),
     domainsMatchRequested,
     semanticSummaryText,
     searchDocumentLexicalFields,
@@ -54,8 +63,11 @@ module Adrai.Query
     chooseBestByAdr,
     sortLogicalAdrs,
     runCurrentSearch,
+    runRelevant,
     searchProjectionJson,
     renderSearchProjection,
+    relevantProjectionJson,
+    renderRelevantProjection,
   )
 where
 
@@ -66,25 +78,44 @@ import Adrai.Format.Json
 import Adrai.Graph
 import Adrai.History
 import Adrai.Provenance
+import Adrai.Relevance
 import Adrai.Retrieval
 import Adrai.Scope (ScopePattern, scopeMatches, scopePatternText)
 import Adrai.Sqlite
   ( FtsHit (..),
     RetrievalSqlError,
+    PassageFtsCandidates (..),
     SummaryFtsCandidates (..),
     mkCandidateLimit,
     runSummaryFtsChannels,
+    runPassageFtsChannels,
   )
 import Adrai.Types
 import Adrai.Vector
   ( DenseVector,
+    CandidateDiagnostics (..),
+    CandidateFallback (..),
+    SectionIndexMode (..),
     VectorError,
+    buildLshIndex,
+    buildLshPlan,
+    denseDimension,
+    denseValues,
+    denseVector,
     dot,
+    embedderVectorId,
+    identifierEmbedder,
     identifierEmbedding,
+    identifierTerms,
+    sectionIndexMode,
+    selectCandidates,
+    semanticEmbedder,
     semanticEmbedding,
+    semanticTokens,
   )
 import Data.Array (Array, (!), listArray)
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import Data.List (find, sort, sortBy, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -358,6 +389,134 @@ data SearchProjection = SearchProjection
     searchProjectionMode :: RetrievalMode,
     searchProjectionLimit :: Int,
     searchProjectionResults :: [SearchResult]
+  }
+  deriving (Eq, Show)
+
+-- Relevance ------------------------------------------------------------------
+
+data RelevantRequest = RelevantRequest
+  { relevantRequestFile :: RepoPath,
+    relevantRequestRevision :: RevisionSelector,
+    relevantRequestIncludeObsolete :: Bool,
+    relevantRequestLimit :: Int
+  }
+  deriving (Eq, Show)
+
+defaultRelevantRequest :: RepoPath -> RelevantRequest
+defaultRelevantRequest path =
+  RelevantRequest
+    { relevantRequestFile = path,
+      relevantRequestRevision = AtRevision "HEAD",
+      relevantRequestIncludeObsolete = False,
+      relevantRequestLimit = 10
+    }
+
+data RelevantSource
+  = RevisionRelevantSource
+      { relevantSourcePath :: RepoPath,
+        relevantSourceResolvedRevision :: Text,
+        relevantSourceBlob :: Text,
+        relevantSourceBytes :: ByteString
+      }
+  | WorktreeRelevantSource
+      { relevantSourcePath :: RepoPath,
+        relevantSourceHeadRevision :: Text,
+        relevantSourceBytes :: ByteString
+      }
+  deriving (Eq, Show)
+
+data RelevantError
+  = RelevantInvalidLimit Int
+  | RelevantSnapshotInvalid SnapshotConsistencyError
+  | RelevantMaterializationMismatch Text
+  | RelevantSourceMismatch Text
+  | RelevantDecodeFailure TextDecodeError
+  | RelevantChunkFailure ChunkError
+  | RelevantSqlFailure RetrievalSqlError
+  | RelevantVectorFailure VectorError
+  deriving (Eq, Show)
+
+data RelevantFileInfo = RelevantFileInfo
+  { relevantFilePath :: RepoPath,
+    relevantFileSource :: Text,
+    relevantFileRevision :: Text,
+    relevantFileBlob :: Maybe Text,
+    relevantFileDigest :: Text,
+    relevantFileBytes :: Int,
+    relevantFileChunks :: Int,
+    relevantFileQueryChunks :: Int
+  }
+  deriving (Eq, Show)
+
+data RelevantEvidence = RelevantEvidence
+  { relevantEvidenceFileLineStart :: Int,
+    relevantEvidenceFileLineEnd :: Int,
+    relevantEvidenceFileExcerpt :: Text,
+    relevantEvidenceAdrChunk :: Text,
+    relevantEvidenceAdrSection :: SectionKind,
+    relevantEvidenceAdrCandidate :: Text,
+    relevantEvidenceCandidateRecord :: RecordId,
+    relevantEvidenceAdrExcerpt :: Text,
+    relevantEvidenceScore :: Double,
+    relevantEvidenceSemanticScore :: Double,
+    relevantEvidenceLexicalScore :: Double,
+    relevantEvidenceMatchedTerms :: [Text]
+  }
+  deriving (Eq, Show)
+
+data RelevantResult = RelevantResult
+  { relevantResultAdr :: AdrId,
+    relevantResultRecord :: Maybe RecordId,
+    relevantResultMatchedCandidate :: Maybe Text,
+    relevantResultMatchedRecord :: Maybe RecordId,
+    relevantResultMatchedTitle :: Maybe Text,
+    relevantResultTitle :: Text,
+    relevantResultSummary :: Text,
+    relevantResultDomains :: [Text],
+    relevantResultAppliesTo :: [Text],
+    relevantResultStatus :: Text,
+    relevantResultObsolete :: Bool,
+    relevantResultReplacement :: Maybe AdrId,
+    relevantResultResolution :: ResolutionState,
+    relevantResultScore :: Double,
+    relevantResultSemanticScore :: Double,
+    relevantResultLexicalScore :: Double,
+    relevantResultLexicalBonus :: Double,
+    relevantResultScopeMatch :: RelevanceScopeMatch,
+    relevantResultScopeBonus :: Double,
+    relevantResultConfidence :: ConfidenceLabel,
+    relevantResultMargin :: Double,
+    relevantResultStrongestPair :: Double,
+    relevantResultStrongestLexicalPair :: Double,
+    relevantResultSourceInformation :: Double,
+    relevantResultEvidence :: [RelevantEvidence]
+  }
+  deriving (Eq, Show)
+
+data RelevantRetrieval = RelevantRetrieval
+  { relevantRetrievalImplementation :: Text,
+    relevantRetrievalStrategy :: Text,
+    relevantRetrievalSemanticVectorId :: Maybe Text,
+    relevantRetrievalIdentifierVectorId :: Maybe Text,
+    relevantRetrievalSourceChunks :: Int,
+    relevantRetrievalSelectedSourceChunks :: Int,
+    relevantRetrievalEligibleAdrs :: Int,
+    relevantRetrievalEligibleSearchItems :: Int,
+    relevantRetrievalSearchSections :: Int,
+    relevantRetrievalAdrShortlist :: Int,
+    relevantRetrievalCandidateSearchItems :: Int,
+    relevantRetrievalSummary :: Maybe JsonValue,
+    relevantRetrievalPassageFts :: Maybe JsonValue,
+    relevantRetrievalSections :: Maybe JsonValue,
+    relevantRetrievalExactRerankCandidates :: Int
+  }
+  deriving (Eq, Show)
+
+data RelevantProjection = RelevantProjection
+  { relevantProjectionRevision :: RevisionIdentity,
+    relevantProjectionFile :: RelevantFileInfo,
+    relevantProjectionRetrieval :: RelevantRetrieval,
+    relevantProjectionResults :: [RelevantResult]
   }
   deriving (Eq, Show)
 
@@ -1176,6 +1335,581 @@ runCurrentSearch connection snapshot materialization request =
                   searchProjectionResults = results
                 }
 
+data RelevantPrepared = RelevantPrepared
+  { preparedRelevantReduced :: Map AdrId ReducedAdr,
+    preparedRelevantDocuments :: Map Text SearchDocument,
+    preparedRelevantPassages :: [SearchPassage],
+    preparedRelevantSourceName :: Text,
+    preparedRelevantSourceRevision :: Text,
+    preparedRelevantSourceBlob :: Maybe Text
+  }
+
+data PassageChunkEvidence = PassageChunkEvidence
+  { passageChunkScores :: Map Text Double,
+    passageChunkTerms :: Map Text [Text],
+    passageChunkQueried :: Bool,
+    passageChunkExactHits :: Int,
+    passageChunkStemmedHits :: Int,
+    passageChunkIdentifierHits :: Int
+  }
+
+data RelevantMatchAux = RelevantMatchAux
+  { relevantAuxPassage :: SearchPassage,
+    relevantAuxCandidateItem :: Text,
+    relevantAuxMatchedTerms :: [Text]
+  }
+
+data RelevantAggregated = RelevantAggregated
+  { relevantAggregatedAdr :: AdrId,
+    relevantAggregatedReduced :: ReducedAdr,
+    relevantAggregatedValue :: RelevanceAggregate,
+    relevantAggregatedEvidence :: [RelevantEvidence],
+    relevantAggregatedMatchedItem :: Text
+  }
+
+runRelevant :: Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
+runRelevant connection snapshot materialization request source =
+  case prepareRelevant snapshot materialization request source of
+    Left problem -> pure (Left problem)
+    Right prepared ->
+      let bytes = relevantSourceBytes source
+          label = "file " <> repoPathText (relevantRequestFile request)
+          finishZero =
+            let fileInfo = relevantFileInfo request source prepared [] []
+             in pure
+                  ( Right
+                      RelevantProjection
+                        { relevantProjectionRevision = readSnapshotRevision snapshot,
+                          relevantProjectionFile = fileInfo,
+                          relevantProjectionRetrieval = emptyRelevantRetrieval [] [],
+                          relevantProjectionResults = []
+                        }
+                  )
+       in if meaningfulAlnumByteCount bytes == 0
+            then
+              case validateTextBytes label bytes of
+                Left problem -> pure (Left (RelevantDecodeFailure problem))
+                Right () -> finishZero
+            else
+              case decodeTextBytes label bytes of
+                Left problem -> pure (Left (RelevantDecodeFailure problem))
+                Right decoded ->
+                  let meaningfulCount = meaningfulAlnumCount decoded
+                      finish allChunks selectedChunks =
+                        let fileInfo = relevantFileInfo request source prepared allChunks selectedChunks
+                            emptyProjection =
+                              RelevantProjection
+                                { relevantProjectionRevision = readSnapshotRevision snapshot,
+                                  relevantProjectionFile = fileInfo,
+                                  relevantProjectionRetrieval = emptyRelevantRetrieval allChunks selectedChunks,
+                                  relevantProjectionResults = []
+                                }
+                         in if meaningfulCount < minMeaningfulAlnum || null selectedChunks
+                              then pure (Right emptyProjection)
+                              else runRelevantCandidates connection snapshot materialization request prepared fileInfo allChunks selectedChunks
+                   in if meaningfulCount == 0
+                        then finish [] []
+                        else
+                          let rawChunks = chunkDecodedText decoded
+                              allChunks = filter ((>= minChunkAlnum) . meaningfulAlnumCount . textChunkText) rawChunks
+                              selectedChunks = selectInformativeChunks allChunks
+                           in finish allChunks selectedChunks
+
+prepareRelevant :: ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantSource -> Either RelevantError RelevantPrepared
+prepareRelevant snapshot materialization request source = do
+  mapLeft RelevantSnapshotInvalid (validateReadSnapshot snapshot)
+  if relevantRequestLimit request < 1 || relevantRequestLimit request > 100
+    then Left (RelevantInvalidLimit (relevantRequestLimit request))
+    else Right ()
+  validateRelevantSource snapshot request source
+  mapM_ validateDocument (searchMaterializationDocuments materialization)
+  mapM_ validatePassage (searchMaterializationPassages materialization)
+  Right
+    RelevantPrepared
+      { preparedRelevantReduced = eligibleReduced,
+        preparedRelevantDocuments = eligibleDocuments,
+        preparedRelevantPassages = eligiblePassages,
+        preparedRelevantSourceName = sourceName,
+        preparedRelevantSourceRevision = revisionResolved (readSnapshotRevision snapshot),
+        preparedRelevantSourceBlob = sourceBlob
+      }
+  where
+    allReduced = Map.fromList [(reducedAdrId reduced, reduced) | reduced <- graphReductionAdrs (readSnapshotReduction snapshot)]
+    allDocuments = Map.fromList [(searchDocumentItemId document, document) | document <- searchMaterializationDocuments materialization]
+    eligibleReduced = Map.filter (adrVisible (relevantRequestIncludeObsolete request)) allReduced
+    eligibleDocuments = Map.filter (\document -> Map.member (searchDocumentAdrId document) eligibleReduced) allDocuments
+    eligiblePassages = [passage | passage <- searchMaterializationPassages materialization, Map.member (searchPassageDocumentItemId passage) eligibleDocuments]
+    validateDocument document =
+      case Map.lookup (searchDocumentAdrId document) allReduced of
+        Nothing -> Left (RelevantMaterializationMismatch (searchDocumentItemId document <> " refers to an ADR outside the snapshot"))
+        Just reduced
+          | searchDocumentStateToken document /= reducedStateToken reduced ->
+              Left (RelevantMaterializationMismatch (searchDocumentItemId document <> " has a stale state token"))
+          | otherwise -> Right ()
+    validatePassage passage =
+      case Map.lookup (searchPassageDocumentItemId passage) allDocuments of
+        Nothing -> Left (RelevantMaterializationMismatch (searchPassageId passage <> " refers to a missing search document"))
+        Just document
+          | searchPassageAdrId passage /= searchDocumentAdrId document
+              || searchPassageCandidateRecordId passage /= searchDocumentCandidateRecordId document ->
+              Left (RelevantMaterializationMismatch (searchPassageId passage <> " disagrees with its search document identity"))
+          | otherwise -> Right ()
+    (sourceName, sourceBlob) = case source of
+      RevisionRelevantSource _ _ blob _ -> ("revision", Just blob)
+      WorktreeRelevantSource {} -> ("worktree", Nothing)
+
+validateRelevantSource :: ReadSnapshot -> RelevantRequest -> RelevantSource -> Either RelevantError ()
+validateRelevantSource snapshot request source
+  | relevantSourcePath source /= relevantRequestFile request = Left (RelevantSourceMismatch "source path does not match the relevance request")
+  | otherwise =
+      case (relevantRequestRevision request, source) of
+        (AtRevision requested, RevisionRelevantSource _ resolved blob _)
+          | Text.null (Text.strip blob) -> Left (RelevantSourceMismatch "revision source requires a blob identity")
+          | requested /= revisionRequested identity -> Left (RelevantSourceMismatch "requested revision does not match the compiled snapshot request")
+          | resolved /= revisionResolved identity -> Left (RelevantSourceMismatch "revision source does not match the compiled snapshot revision")
+          | otherwise -> Right ()
+        (WorkingRevision, WorktreeRelevantSource _ headRevision _)
+          | revisionRequested identity /= "HEAD" -> Left (RelevantSourceMismatch "worktree relevance requires a snapshot compiled from HEAD")
+          | headRevision /= revisionResolved identity -> Left (RelevantSourceMismatch "worktree source HEAD does not match the compiled snapshot revision")
+          | otherwise -> Right ()
+        (WorkingRevision, _) -> Left (RelevantSourceMismatch "working revision requires a worktree source")
+        (AtRevision _, _) -> Left (RelevantSourceMismatch "historical revision requires a revision source")
+  where
+    identity = readSnapshotRevision snapshot
+
+relevantFileInfo :: RelevantRequest -> RelevantSource -> RelevantPrepared -> [TextChunk] -> [TextChunk] -> RelevantFileInfo
+relevantFileInfo request source prepared allChunks selectedChunks =
+  RelevantFileInfo
+    { relevantFilePath = relevantRequestFile request,
+      relevantFileSource = preparedRelevantSourceName prepared,
+      relevantFileRevision = preparedRelevantSourceRevision prepared,
+      relevantFileBlob = preparedRelevantSourceBlob prepared,
+      relevantFileDigest = renderDigest (sha256Digest bytes),
+      relevantFileBytes = ByteString.length bytes,
+      relevantFileChunks = length allChunks,
+      relevantFileQueryChunks = length selectedChunks
+    }
+  where
+    bytes = relevantSourceBytes source
+
+emptyRelevantRetrieval :: [TextChunk] -> [TextChunk] -> RelevantRetrieval
+emptyRelevantRetrieval allChunks selectedChunks =
+  RelevantRetrieval
+    { relevantRetrievalImplementation = "structured-raw-text-cross-reference",
+      relevantRetrievalStrategy = "exact-summary+passage-fts+bounded-section-rerank",
+      relevantRetrievalSemanticVectorId = Nothing,
+      relevantRetrievalIdentifierVectorId = Nothing,
+      relevantRetrievalSourceChunks = length allChunks,
+      relevantRetrievalSelectedSourceChunks = length selectedChunks,
+      relevantRetrievalEligibleAdrs = 0,
+      relevantRetrievalEligibleSearchItems = 0,
+      relevantRetrievalSearchSections = 0,
+      relevantRetrievalAdrShortlist = 0,
+      relevantRetrievalCandidateSearchItems = 0,
+      relevantRetrievalSummary = Nothing,
+      relevantRetrievalPassageFts = Nothing,
+      relevantRetrievalSections = Nothing,
+      relevantRetrievalExactRerankCandidates = 0
+    }
+
+runRelevantCandidates :: Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantPrepared -> RelevantFileInfo -> [TextChunk] -> [TextChunk] -> IO (Either RelevantError RelevantProjection)
+runRelevantCandidates connection snapshot _materialization request prepared fileInfo allChunks selectedChunks
+  | Map.null documents =
+      pure
+        ( Right
+            RelevantProjection
+              { relevantProjectionRevision = readSnapshotRevision snapshot,
+                relevantProjectionFile = fileInfo,
+                relevantProjectionRetrieval = emptyRelevantRetrieval allChunks selectedChunks,
+                relevantProjectionResults = []
+              }
+        )
+  | otherwise = do
+      let semanticVectors = map (semanticEmbedding . sourceEmbeddingText . textChunkText) selectedChunks
+          identifierVectors = map (identifierEmbedding . sourceEmbeddingText . textChunkText) selectedChunks
+          semanticCentroid = normalizedCentroid semanticVectors
+          identifierCentroid = normalizedCentroid identifierVectors
+      case (relevantDocumentScores semanticEmbedding semanticCentroid semanticSummaryText documents, relevantDocumentScores identifierEmbedding identifierCentroid searchDocumentIdentifiers documents) of
+        (Left problem, _) -> pure (Left problem)
+        (_, Left problem) -> pure (Left problem)
+        (Right summaryScores, Right identifierScores) -> do
+          passageResult <- runRelevantPassageFts connection request selectedChunks passages
+          case passageResult of
+            Left problem -> pure (Left problem)
+            Right (passageChunks, passageDiagnostics) ->
+              let shortlist = relevantShortlist request documents passages summaryScores identifierScores passageChunks
+                  shortlistPassages = [passage | passage <- passages, Set.member (searchPassageDocumentItemId passage) shortlist]
+               in case selectRelevantSectionCandidates request semanticVectors shortlistPassages passageChunks of
+                    Left problem -> pure (Left problem)
+                    Right (candidateSets, sectionDiagnostics, exactCandidateCount) ->
+                      case buildRelevantMatches selectedChunks semanticVectors shortlistPassages passageChunks candidateSets of
+                        Left problem -> pure (Left problem)
+                        Right (matchesByAdr, auxByMatch) -> do
+                          let aggregated = aggregateRelevantMatches request prepared documents matchesByAdr auxByMatch
+                              orderedAggregated = sortBy relevantAggregatedOrder aggregated
+                              results = take (relevantRequestLimit request) (finalizeRelevantResults snapshot (relevantRequestFile request) documents orderedAggregated)
+                              shortlistAdrs =
+                                Set.fromList
+                                  [ searchDocumentAdrId document
+                                    | item <- Set.toList shortlist,
+                                      Just document <- [Map.lookup item documents]
+                                  ]
+                              retrieval =
+                                RelevantRetrieval
+                                  { relevantRetrievalImplementation = "structured-raw-text-cross-reference",
+                                    relevantRetrievalStrategy = "exact-summary+passage-fts+bounded-section-rerank",
+                                    relevantRetrievalSemanticVectorId = Just (embedderVectorId semanticEmbedder),
+                                    relevantRetrievalIdentifierVectorId = Just (embedderVectorId identifierEmbedder),
+                                    relevantRetrievalSourceChunks = length allChunks,
+                                    relevantRetrievalSelectedSourceChunks = length selectedChunks,
+                                    relevantRetrievalEligibleAdrs = Map.size (preparedRelevantReduced prepared),
+                                    relevantRetrievalEligibleSearchItems = Map.size documents,
+                                    relevantRetrievalSearchSections = length passages,
+                                    relevantRetrievalAdrShortlist = Set.size shortlistAdrs,
+                                    relevantRetrievalCandidateSearchItems = Set.size shortlist,
+                                    relevantRetrievalSummary =
+                                      Just
+                                        ( object
+                                            [ ("algorithm", JsonString "exact"),
+                                              ("semantic_corpus", JsonNumber (fromIntegral (Map.size summaryScores))),
+                                              ("identifier_corpus", JsonNumber (fromIntegral (Map.size identifierScores)))
+                                            ]
+                                        ),
+                                    relevantRetrievalPassageFts = Just passageDiagnostics,
+                                    relevantRetrievalSections = Just sectionDiagnostics,
+                                    relevantRetrievalExactRerankCandidates = exactCandidateCount
+                                  }
+                          pure
+                            ( Right
+                                RelevantProjection
+                                  { relevantProjectionRevision = readSnapshotRevision snapshot,
+                                    relevantProjectionFile = fileInfo,
+                                    relevantProjectionRetrieval = retrieval,
+                                    relevantProjectionResults = results
+                                  }
+                            )
+  where
+    documents = preparedRelevantDocuments prepared
+    passages = preparedRelevantPassages prepared
+
+normalizedCentroid :: [DenseVector] -> DenseVector
+normalizedCentroid [] = denseVector []
+normalizedCentroid (vector : remaining) = denseVector normalized
+  where
+    totals = foldl' (zipWith (+)) (denseValues vector) (map denseValues remaining)
+    magnitude = sqrt (sum [value * value | value <- totals])
+    normalized
+      | magnitude <= 0 = totals
+      | otherwise = map (/ magnitude) totals
+
+relevantDocumentScores :: (Text -> DenseVector) -> DenseVector -> (SearchDocument -> Text) -> Map Text SearchDocument -> Either RelevantError (Map Text Double)
+relevantDocumentScores embedDocument queryVector documentText =
+  traverse (mapLeft RelevantVectorFailure . dot queryVector . embedDocument . documentText)
+
+runRelevantPassageFts :: Connection -> RelevantRequest -> [TextChunk] -> [SearchPassage] -> IO (Either RelevantError ([PassageChunkEvidence], JsonValue))
+runRelevantPassageFts connection request chunks passages =
+  case mkCandidateLimit (toInteger perChunkLimit) of
+    Left problem -> pure (Left (RelevantSqlFailure problem))
+    Right candidateLimit -> do
+      result <- collect chunks candidateLimit []
+      pure $ do
+        values <- result
+        Right (values, passageFtsDiagnostics values)
+  where
+    perChunkLimit = max 24 (relevantRequestLimit request * 6)
+    allowed = Set.fromList (map searchPassageId passages)
+    collect [] _ values = pure (Right (reverse values))
+    collect (chunk : remaining) limit values = do
+      let terms = informativeTerms 16 (textChunkText chunk)
+      if null terms
+        then collect remaining limit (emptyPassageChunkEvidence : values)
+        else do
+          let plan = buildQueryPlan (Text.unwords terms) []
+          channelResult <- runPassageFtsChannels connection plan allowed limit
+          case channelResult of
+            Left problem -> pure (Left (RelevantSqlFailure problem))
+            Right channels -> collect remaining limit (passageChunkEvidence perChunkLimit terms channels : values)
+
+emptyPassageChunkEvidence :: PassageChunkEvidence
+emptyPassageChunkEvidence =
+  PassageChunkEvidence
+    { passageChunkScores = Map.empty,
+      passageChunkTerms = Map.empty,
+      passageChunkQueried = False,
+      passageChunkExactHits = 0,
+      passageChunkStemmedHits = 0,
+      passageChunkIdentifierHits = 0
+    }
+
+passageChunkEvidence :: Int -> [Text] -> PassageFtsCandidates -> PassageChunkEvidence
+passageChunkEvidence limit terms channels =
+  PassageChunkEvidence
+    { passageChunkScores = selected,
+      passageChunkTerms = Map.fromSet (const terms) (Map.keysSet selected),
+      passageChunkQueried = True,
+      passageChunkExactHits = length (passageFtsExact channels),
+      passageChunkStemmedHits = length (passageFtsStemmed channels),
+      passageChunkIdentifierHits = length (passageFtsIdentifier channels)
+    }
+  where
+    channelMaps =
+      Map.fromList
+        [ (FtsTermsChannel, hitMap (passageFtsExact channels)),
+          (FtsStemmedChannel, hitMap (passageFtsStemmed channels)),
+          (FtsIdentifierChannel, hitMap (passageFtsIdentifier channels))
+        ]
+    weights = QueryWeights 0 0.40 0.25 0.35 0 0
+    fused = weightedReciprocalRankFusion weights channelMaps
+    selected =
+      Map.fromList
+        ( take limit
+            ( sortBy
+                (comparing (Down . snd) <> comparing (Down . fst))
+                [(item, rrfScore evidence) | (item, evidence) <- Map.toList fused]
+            )
+        )
+    hitMap = Map.fromList . map (\hit -> (ftsHitItemId hit, ftsHitScore hit))
+
+passageFtsDiagnostics :: [PassageChunkEvidence] -> JsonValue
+passageFtsDiagnostics chunks =
+  object
+    [ ("algorithm", JsonString "passage-exact+stemmed+identifier-fts"),
+      ("queries", JsonNumber (fromIntegral (length chunks))),
+      ( "channel_hits",
+        if any passageChunkQueried chunks
+          then
+            object
+              [ ("exact", JsonNumber (fromIntegral (sum (map passageChunkExactHits chunks)))),
+                ("stemmed", JsonNumber (fromIntegral (sum (map passageChunkStemmedHits chunks)))),
+                ("identifier", JsonNumber (fromIntegral (sum (map passageChunkIdentifierHits chunks))))
+              ]
+          else object []
+      ),
+      ("candidate_pairs", JsonNumber (fromIntegral (sum (map (Map.size . passageChunkScores) chunks))))
+    ]
+
+relevantShortlist :: RelevantRequest -> Map Text SearchDocument -> [SearchPassage] -> Map Text Double -> Map Text Double -> [PassageChunkEvidence] -> Set Text
+relevantShortlist request documents passages summaryScores identifierScores passageChunks
+  | Map.size documents <= target = Map.keysSet documents
+  | Set.size initial <= relevanceAdrShortlistMax = initial
+  | otherwise = Set.fromList (take relevanceAdrShortlistMax (sortBy combinedOrder (Set.toList initial)))
+  where
+    target = min relevanceAdrShortlistMax (max relevanceAdrShortlistMin (relevantRequestLimit request * relevanceAdrShortlistMultiplier))
+    semanticTop = take target (rankScoreMap summaryScores)
+    identifierTop = take (max 24 (target `div` 2)) (rankScoreMap identifierScores)
+    passageToDocument = Map.fromList [(searchPassageId passage, searchPassageDocumentItemId passage) | passage <- passages]
+    ftsItems =
+      Set.fromList
+        [ item
+          | chunk <- passageChunks,
+            section <- Map.keys (passageChunkScores chunk),
+            Just item <- [Map.lookup section passageToDocument]
+        ]
+    initial = Set.unions [Set.fromList semanticTop, Set.fromList identifierTop, ftsItems]
+    combined item = maximum [Map.findWithDefault (negate (1 / 0)) item summaryScores, Map.findWithDefault (negate (1 / 0)) item identifierScores, if Set.member item ftsItems then 0.25 else negate (1 / 0)]
+    combinedOrder = comparing (Down . combined) <> comparing Down
+
+rankScoreMap :: Map Text Double -> [Text]
+rankScoreMap = map fst . sortBy (comparing (Down . snd) <> comparing (Down . fst)) . Map.toList
+
+selectRelevantSectionCandidates :: RelevantRequest -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> Either RelevantError ([Set Text], JsonValue, Int)
+selectRelevantSectionCandidates request sourceVectors passages passageChunks = do
+  (baseCandidates, diagnostics, exactCount) <-
+    case sectionIndexMode (Map.size passageVectors) of
+      ExactSectionScan ->
+        let candidates = replicate (length sourceVectors) (Map.keysSet passageVectors)
+            count = Map.size passageVectors * length sourceVectors
+         in Right
+              ( candidates,
+                object
+                  [ ("algorithm", JsonString "exact-bounded-section-scan"),
+                    ("corpus", JsonNumber (fromIntegral (Map.size passageVectors))),
+                    ("candidates", JsonNumber (fromIntegral count)),
+                    ("fallback_chunks", JsonNumber 0),
+                    ("bucket_hits", JsonNumber 0)
+                  ],
+                count
+              )
+      LshSectionScan -> do
+        plan <- mapLeft RelevantVectorFailure (buildLshPlan dimensions (embedderVectorId semanticEmbedder))
+        index <- mapLeft RelevantVectorFailure (buildLshIndex plan (Map.toAscList passageVectors))
+        selected <-
+          traverse
+            (\sourceVector -> mapLeft RelevantVectorFailure (selectCandidates index sourceVector (Map.keysSet passageVectors) (max 24 (relevantRequestLimit request * 4)) False))
+            sourceVectors
+        let candidateSets = map fst selected
+            candidateDiagnostics = map snd selected
+            count = sum (map Set.size candidateSets)
+        Right
+          ( candidateSets,
+            object
+              [ ("algorithm", JsonString "batched-lsh+exact-rerank"),
+                ("corpus", JsonNumber (fromIntegral (Map.size passageVectors))),
+                ("bucket_hits", JsonNumber (fromIntegral (sum (map candidateBucketHits candidateDiagnostics)))),
+                ("candidates", JsonNumber (fromIntegral count)),
+                ("fallback_chunks", JsonNumber (fromIntegral (length (filter ((/= CandidateNoFallback) . candidateFallback) candidateDiagnostics)))),
+                ("source_queries", JsonNumber (fromIntegral (length sourceVectors)))
+              ],
+            count
+          )
+  let withFts = zipWith addFts baseCandidates passageChunks
+  Right (withFts, diagnostics, exactCount)
+  where
+    passageVectors = Map.fromList [(searchPassageId passage, semanticEmbedding (searchPassageText passage)) | passage <- passages]
+    dimensions = case sourceVectors of
+      vector : _ -> denseDimension vector
+      [] -> 0
+    allowed = Map.keysSet passageVectors
+    addFts candidates chunk = Set.union candidates (Set.intersection allowed (Map.keysSet (passageChunkScores chunk)))
+
+type RelevantAuxKey = (Int, AdrId, Text)
+
+buildRelevantMatches :: [TextChunk] -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> [Set Text] -> Either RelevantError (Map AdrId [PairMatch], Map RelevantAuxKey RelevantMatchAux)
+buildRelevantMatches chunks sourceVectors passages passageChunks candidateSets = do
+  perChunk <- traverse scoreChunk (zip4 chunks sourceVectors passageChunks candidateSets)
+  Right
+    ( Map.unionsWith (<>) [matches | (matches, _) <- perChunk],
+      Map.unions [aux | (_, aux) <- perChunk]
+    )
+  where
+    passagesById = Map.fromList [(searchPassageId passage, passage) | passage <- passages]
+    passageVectors = Map.map (semanticEmbedding . searchPassageText) passagesById
+    scoreChunk (chunk, sourceVector, lexical, candidates) = do
+      scored <- traverse (scoreSection chunk sourceVector lexical) (Set.toAscList candidates)
+      let winners = foldl' chooseBest Map.empty (catMaybes scored)
+      Right
+        ( Map.fromListWith (<>) [(adr, [match]) | (adr, (match, _, _)) <- Map.toList winners],
+          Map.fromList
+            [ ((textChunkOrdinal chunk, adr, pairAdrItemId match), aux)
+              | (adr, (match, aux, _)) <- Map.toList winners
+            ]
+        )
+    scoreSection chunk sourceVector lexical sectionId =
+      case (Map.lookup sectionId passagesById, Map.lookup sectionId passageVectors) of
+        (Just passage, Just passageVector) -> do
+          raw <- mapLeft RelevantVectorFailure (dot sourceVector passageVector)
+          let semantic = min 1 (raw * searchPassageWeight passage)
+              lexicalStrength = min 1 (Map.findWithDefault 0 sectionId (passageChunkScores lexical) * 24)
+              ranking = semantic + lexicalStrength * lexicalRankWeight
+              match = PairMatch chunk sectionId (searchPassageText passage) semantic lexicalStrength
+              sourceTerms = Set.fromList (informativeTerms 24 (textChunkText chunk))
+              adrTerms = Set.union (Set.fromList (semanticTokens (searchPassageText passage))) (Set.fromList (identifierTerms False (searchPassageText passage)))
+              aux =
+                RelevantMatchAux
+                  { relevantAuxPassage = passage,
+                    relevantAuxCandidateItem = searchPassageDocumentItemId passage,
+                    relevantAuxMatchedTerms = take 16 (Set.toAscList (Set.intersection sourceTerms adrTerms))
+                  }
+          Right (Just (searchPassageAdrId passage, (match, aux, ranking)))
+        _ -> Right Nothing
+    chooseBest values (adr, candidate) = Map.insertWith choose adr candidate values
+      where
+        choose new@(newMatch, _, newRanking) previous@(oldMatch, _, oldRanking)
+          | (newRanking, pairScore newMatch, pairAdrItemId newMatch) > (oldRanking, pairScore oldMatch, pairAdrItemId oldMatch) = new
+          | otherwise = previous
+
+zip4 :: [a] -> [b] -> [c] -> [d] -> [(a, b, c, d)]
+zip4 (a : as) (b : bs) (c : cs) (d : ds) = (a, b, c, d) : zip4 as bs cs ds
+zip4 _ _ _ _ = []
+
+aggregateRelevantMatches :: RelevantRequest -> RelevantPrepared -> Map Text SearchDocument -> Map AdrId [PairMatch] -> Map RelevantAuxKey RelevantMatchAux -> [RelevantAggregated]
+aggregateRelevantMatches request prepared _documents matchesByAdr auxByMatch =
+  mapMaybe aggregateOne (Map.toList matchesByAdr)
+  where
+    aggregateOne (adr, matches) = do
+      reduced <- Map.lookup adr (preparedRelevantReduced prepared)
+      let scopeMatch = relevanceScopeMatch (logicalScopeMatch (Just (relevantRequestFile request)) reduced)
+      value <- aggregateRelevance matches (Just scopeMatch)
+      let selected = aggregateEvidence value
+          evidence = mapMaybe (toEvidence adr) selected
+          matchedItem = case selected of
+            match : _ -> maybe (adrIdText adr) relevantAuxCandidateItem (Map.lookup (textChunkOrdinal (pairFileChunk match), adr, pairAdrItemId match) auxByMatch)
+            [] -> adrIdText adr
+      Just (RelevantAggregated adr reduced value evidence matchedItem)
+    toEvidence adr match = do
+      aux <- Map.lookup (textChunkOrdinal (pairFileChunk match), adr, pairAdrItemId match) auxByMatch
+      let passage = relevantAuxPassage aux
+          (lineStart, lineEnd, fileExcerpt) = focusedEvidenceExcerpt (textChunkText (pairFileChunk match)) (pairAdrText match) (textChunkStartLine (pairFileChunk match))
+      Just
+        RelevantEvidence
+          { relevantEvidenceFileLineStart = lineStart,
+            relevantEvidenceFileLineEnd = lineEnd,
+            relevantEvidenceFileExcerpt = fileExcerpt,
+            relevantEvidenceAdrChunk = pairAdrItemId match,
+            relevantEvidenceAdrSection = searchPassageSectionKind passage,
+            relevantEvidenceAdrCandidate = relevantAuxCandidateItem aux,
+            relevantEvidenceCandidateRecord = searchPassageCandidateRecordId passage,
+            relevantEvidenceAdrExcerpt = focusedAdrExcerpt (pairAdrText match) fileExcerpt,
+            relevantEvidenceScore = pairScore match,
+            relevantEvidenceSemanticScore = pairScore match,
+            relevantEvidenceLexicalScore = pairLexicalScore match,
+            relevantEvidenceMatchedTerms = relevantAuxMatchedTerms aux
+          }
+
+relevanceScopeMatch :: Maybe ScopeFilterMatch -> RelevanceScopeMatch
+relevanceScopeMatch (Just ScopeExact) = RelevanceScopeExact
+relevanceScopeMatch (Just ScopeAmbiguous) = RelevanceScopeAmbiguous
+relevanceScopeMatch _ = RelevanceScopeNone
+
+relevantAggregatedOrder :: RelevantAggregated -> RelevantAggregated -> Ordering
+relevantAggregatedOrder =
+  comparing (Down . aggregateScore . relevantAggregatedValue)
+    <> comparing (Down . aggregateSemanticScore . relevantAggregatedValue)
+    <> comparing (Down . aggregateLexicalScore . relevantAggregatedValue)
+    <> comparing (Down . relevantAggregatedAdr)
+
+finalizeRelevantResults :: ReadSnapshot -> RepoPath -> Map Text SearchDocument -> [RelevantAggregated] -> [RelevantResult]
+finalizeRelevantResults snapshot sourcePath documents aggregated = zipWith build [0 :: Int ..] aggregated
+  where
+    rawSemantic = map (aggregateSemanticScore . relevantAggregatedValue) aggregated
+    publishedSemantic = map roundSix rawSemantic
+    build index item =
+      let value = relevantAggregatedValue item
+          reduced = relevantAggregatedReduced item
+          matchedItem = relevantAggregatedMatchedItem item
+          matchedDocument = Map.lookup matchedItem documents
+          rawCompetitor = maximum (0 : [score | (otherIndex, score) <- zip [0 ..] rawSemantic, otherIndex /= index])
+          rawMargin = max 0 (aggregateSemanticScore value - rawCompetitor)
+          publishedCompetitor = maximum (0 : [score | (otherIndex, score) <- zip [0 ..] publishedSemantic, otherIndex /= index])
+          publishedMargin = roundSix (roundSix (aggregateSemanticScore value) - publishedCompetitor)
+          confidence = confidenceLabel (aggregateSemanticScore value) (aggregateStrongestPair value) rawMargin (aggregateSourceInformation value)
+          resolution = resolutionFor snapshot reduced
+          logicalDecision = axisResolutionEffective (reducedDecisionAxis reduced)
+       in RelevantResult
+            { relevantResultAdr = relevantAggregatedAdr item,
+              relevantResultRecord = decisionRecord <$> logicalDecision,
+              relevantResultMatchedCandidate = if matchedItem == adrIdText (relevantAggregatedAdr item) then Nothing else Just matchedItem,
+              relevantResultMatchedRecord = searchDocumentCandidateRecordId <$> matchedDocument,
+              relevantResultMatchedTitle = if matchedItem == adrIdText (relevantAggregatedAdr item) then Nothing else searchDocumentTitle <$> matchedDocument,
+              relevantResultTitle = logicalDecisionTitle reduced,
+              relevantResultSummary = logicalDecisionSummary reduced,
+              relevantResultDomains = map domainText (axisResolutionEffective (reducedDomainAxis reduced)),
+              relevantResultAppliesTo = logicalScope reduced,
+              relevantResultStatus = logicalStatusText reduced,
+              relevantResultObsolete = logicalObsolete reduced,
+              relevantResultReplacement = logicalReplacement reduced,
+              relevantResultResolution = resolution,
+              relevantResultScore = aggregateScore value,
+              relevantResultSemanticScore = aggregateSemanticScore value,
+              relevantResultLexicalScore = aggregateLexicalScore value,
+              relevantResultLexicalBonus = aggregateLexicalBonus value,
+              relevantResultScopeMatch = relevanceScopeMatch (logicalScopeMatch (Just sourcePath) reduced),
+              relevantResultScopeBonus = aggregateScopeBonus value,
+              relevantResultConfidence = confidence,
+              relevantResultMargin = max 0 publishedMargin,
+              relevantResultStrongestPair = aggregateStrongestPair value,
+              relevantResultStrongestLexicalPair = aggregateStrongestLexicalPair value,
+              relevantResultSourceInformation = aggregateSourceInformation value,
+              relevantResultEvidence = relevantAggregatedEvidence item
+            }
+
+roundSix :: Double -> Double
+roundSix value
+  | rounded == 0 = 0
+  | otherwise = rounded
+  where
+    rounded = fromInteger (round (value * 1000000)) / 1000000
+
 prepareSearch :: ReadSnapshot -> SearchMaterialization -> SearchRequest -> Either SearchError ([Domain], Map AdrId ReducedAdr, Map Text SearchDocument, Map AdrId SearchFilterInfo, Set Text)
 prepareSearch snapshot materialization request = do
   mapLeft SearchSnapshotInvalid (validateReadSnapshot snapshot)
@@ -1796,6 +2530,122 @@ snapshotTextDiff field before after
   where
     old = compareSnapshotCollapsed before
     new = compareSnapshotCollapsed after
+
+relevantProjectionJson :: RelevantProjection -> JsonValue
+relevantProjectionJson projection =
+  object
+    [ ("schema", JsonString "adrai/relevant/v1"),
+      ("view", JsonString "relevant"),
+      ("as_of", JsonString (revisionResolved (relevantProjectionRevision projection))),
+      ("file", relevantFileJson (relevantProjectionFile projection)),
+      ("retrieval", relevantRetrievalJson (relevantProjectionRetrieval projection)),
+      ("results", JsonArray (map relevantResultJson (relevantProjectionResults projection)))
+    ]
+
+renderRelevantProjection :: RelevantProjection -> ByteString
+renderRelevantProjection = renderCanonicalJsonBytes . relevantProjectionJson
+
+relevantFileJson :: RelevantFileInfo -> JsonValue
+relevantFileJson info =
+  object
+    [ ("path", JsonString (repoPathText (relevantFilePath info))),
+      ("source", JsonString (relevantFileSource info)),
+      ("revision", JsonString (relevantFileRevision info)),
+      ("blob", maybeJson JsonString (relevantFileBlob info)),
+      ("digest", JsonString (relevantFileDigest info)),
+      ("bytes", JsonNumber (fromIntegral (relevantFileBytes info))),
+      ("chunks", JsonNumber (fromIntegral (relevantFileChunks info))),
+      ("query_chunks", JsonNumber (fromIntegral (relevantFileQueryChunks info)))
+    ]
+
+relevantRetrievalJson :: RelevantRetrieval -> JsonValue
+relevantRetrievalJson retrieval =
+  objectOmittingNulls
+    ( [ ("implementation", JsonString (relevantRetrievalImplementation retrieval)),
+        ("strategy", JsonString (relevantRetrievalStrategy retrieval)),
+        ("semantic_vector_id", maybeJson JsonString (relevantRetrievalSemanticVectorId retrieval)),
+        ("identifier_vector_id", maybeJson JsonString (relevantRetrievalIdentifierVectorId retrieval)),
+        ("source_chunks", JsonNumber (fromIntegral (relevantRetrievalSourceChunks retrieval))),
+        ("selected_source_chunks", JsonNumber (fromIntegral (relevantRetrievalSelectedSourceChunks retrieval))),
+        ("eligible_adrs", JsonNumber (fromIntegral (relevantRetrievalEligibleAdrs retrieval))),
+        ("search_sections", JsonNumber (fromIntegral (relevantRetrievalSearchSections retrieval))),
+        ("adr_shortlist", JsonNumber (fromIntegral (relevantRetrievalAdrShortlist retrieval))),
+        ("exact_rerank_candidates", JsonNumber (fromIntegral (relevantRetrievalExactRerankCandidates retrieval))),
+        ( "scoring",
+          object
+            [(name, scoreJson value) | (name, value) <- Map.toAscList relevanceScoringContract]
+        )
+      ]
+        <> if relevantRetrievalSemanticVectorId retrieval == Nothing
+          then []
+          else
+            [ ("eligible_search_items", JsonNumber (fromIntegral (relevantRetrievalEligibleSearchItems retrieval))),
+              ("candidate_search_items", JsonNumber (fromIntegral (relevantRetrievalCandidateSearchItems retrieval))),
+              ("summary", fromMaybe JsonNull (relevantRetrievalSummary retrieval)),
+              ("passage_fts", fromMaybe JsonNull (relevantRetrievalPassageFts retrieval)),
+              ("sections", fromMaybe JsonNull (relevantRetrievalSections retrieval)),
+              ("scope_used_for_eligibility", JsonBool False)
+            ]
+    )
+
+relevantResultJson :: RelevantResult -> JsonValue
+relevantResultJson result =
+  object
+    [ ("adr", JsonString (adrIdText (relevantResultAdr result))),
+      ("record", maybeJson (JsonString . recordIdText) (relevantResultRecord result)),
+      ("matched_candidate", maybeJson JsonString (relevantResultMatchedCandidate result)),
+      ("matched_record", maybeJson (JsonString . recordIdText) (relevantResultMatchedRecord result)),
+      ("matched_title", maybeJson JsonString (relevantResultMatchedTitle result)),
+      ("title", JsonString (relevantResultTitle result)),
+      ("summary", JsonString (relevantResultSummary result)),
+      ("domains", textArray (relevantResultDomains result)),
+      ("applies_to", textArray (relevantResultAppliesTo result)),
+      ("status", JsonString (relevantResultStatus result)),
+      ("obsolete", JsonBool (relevantResultObsolete result)),
+      ("replacement", maybeJson (JsonString . adrIdText) (relevantResultReplacement result)),
+      ("resolved", JsonBool (resolutionStateResolved resolution)),
+      ("resolution_required", JsonBool (resolutionStateRequired resolution)),
+      ("score", scoreJson (relevantResultScore result)),
+      ("semantic_score", scoreJson (relevantResultSemanticScore result)),
+      ("lexical_score", scoreJson (relevantResultLexicalScore result)),
+      ("lexical_bonus", scoreJson (relevantResultLexicalBonus result)),
+      ("scope_match", JsonString (relevanceScopeMatchText (relevantResultScopeMatch result))),
+      ("scope_bonus", scoreJson (relevantResultScopeBonus result)),
+      ("confidence", JsonString (confidenceLabelText (relevantResultConfidence result))),
+      ("margin", scoreJson (relevantResultMargin result)),
+      ("strongest_pair", scoreJson (relevantResultStrongestPair result)),
+      ("strongest_lexical_pair", scoreJson (relevantResultStrongestLexicalPair result)),
+      ("source_information", scoreJson (relevantResultSourceInformation result)),
+      ("evidence", JsonArray (map relevantEvidenceJson (relevantResultEvidence result)))
+    ]
+  where
+    resolution = relevantResultResolution result
+
+relevantEvidenceJson :: RelevantEvidence -> JsonValue
+relevantEvidenceJson evidence =
+  object
+    [ ("file_lines", JsonArray [JsonNumber (fromIntegral (relevantEvidenceFileLineStart evidence)), JsonNumber (fromIntegral (relevantEvidenceFileLineEnd evidence))]),
+      ("file_excerpt", JsonString (relevantEvidenceFileExcerpt evidence)),
+      ("adr_chunk", JsonString (relevantEvidenceAdrChunk evidence)),
+      ("adr_section", JsonString (sectionKindName (relevantEvidenceAdrSection evidence))),
+      ("adr_candidate", JsonString (relevantEvidenceAdrCandidate evidence)),
+      ("candidate_record", JsonString (recordIdText (relevantEvidenceCandidateRecord evidence))),
+      ("adr_excerpt", JsonString (relevantEvidenceAdrExcerpt evidence)),
+      ("score", scoreJson (relevantEvidenceScore evidence)),
+      ("semantic_score", scoreJson (relevantEvidenceSemanticScore evidence)),
+      ("lexical_score", scoreJson (relevantEvidenceLexicalScore evidence)),
+      ("matched_terms", textArray (relevantEvidenceMatchedTerms evidence))
+    ]
+
+relevanceScopeMatchText :: RelevanceScopeMatch -> Text
+relevanceScopeMatchText RelevanceScopeExact = "exact"
+relevanceScopeMatchText RelevanceScopeAmbiguous = "ambiguous"
+relevanceScopeMatchText RelevanceScopeNone = "none"
+
+confidenceLabelText :: ConfidenceLabel -> Text
+confidenceLabelText LowConfidence = "low"
+confidenceLabelText MediumConfidence = "medium"
+confidenceLabelText HighConfidence = "high"
 
 searchProjectionJson :: SearchProjection -> JsonValue
 searchProjectionJson projection =
