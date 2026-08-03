@@ -9,6 +9,7 @@ module Adrai.Graph
     GraphAxis (..),
     AxisResolution (..),
     CurrentDecisionView (..),
+    CurrentConnectionRef (..),
     ReducedStatus (..),
     ConflictCandidate (..),
     AdrConflict (..),
@@ -90,6 +91,15 @@ data CurrentDecisionView = CurrentDecisionView
   }
   deriving (Eq, Show)
 
+-- | A validated connection which contributes directly to the current graph
+-- projection.  Decision roots have no connection; amended decision heads are
+-- represented by their surviving amendment relation.
+data CurrentConnectionRef = CurrentConnectionRef
+  { currentConnectionAxis :: GraphAxis,
+    currentConnectionId :: ConnectionId
+  }
+  deriving (Eq, Show)
+
 data ReducedStatus = ReducedStatus
   { reducedStatusState :: StatusState,
     reducedStatusRecordHeads :: [RecordId],
@@ -130,6 +140,7 @@ data ReducedAdr = ReducedAdr
     reducedDomainAxis :: AxisResolution ConnectionId [Domain],
     reducedStatusAxis :: AxisResolution ConnectionId (Maybe ReducedStatus),
     reducedCurrentDecisions :: [CurrentDecisionView],
+    reducedCurrentConnections :: [CurrentConnectionRef],
     reducedDecisionHistory :: [DecisionRecord],
     reducedAmendmentHistory :: [ConnectionRecord],
     reducedScopeHistory :: [ConnectionRecord],
@@ -367,6 +378,7 @@ reduceAdr catalog adr =
         reducedDomainAxis = domainResolution,
         reducedStatusAxis = statusResolution,
         reducedCurrentDecisions = currentDecisions,
+        reducedCurrentConnections = currentConnections,
         reducedDecisionHistory = decisionHistory,
         reducedAmendmentHistory = amendmentHistory,
         reducedScopeHistory = scopeHistory,
@@ -388,7 +400,8 @@ reduceAdr catalog adr =
     domainConnections = connectionsFor DomainConnectionAxis localConnections
     statusConnections = connectionsFor StatusConnectionAxis localConnections
 
-    (decisionHeads, decisionIssues) = reduceDecisionAxis catalog adr localDecisions amendmentConnections
+    (decisionHeads, decisionConnectionHeads, decisionIssues) =
+      reduceDecisionAxis catalog adr localDecisions amendmentConnections
     (scopeHeads, scopeEffectiveById, scopeIssues) =
       reduceScopeAxis catalog adr scopeConnections
     (domainHeads, domainEffectiveById, domainIssues) =
@@ -456,6 +469,15 @@ reduceAdr catalog adr =
         | headId <- decisionHeads,
           Just decision <- [Map.lookup headId localDecisions]
       ]
+
+    currentConnections =
+      sortOn
+        (\connection -> (currentConnectionAxis connection, currentConnectionId connection))
+        ( map (CurrentConnectionRef DecisionAxis) decisionConnectionHeads
+            <> map (CurrentConnectionRef ScopeAxis) scopeHeads
+            <> map (CurrentConnectionRef DomainAxis) domainHeads
+            <> map (CurrentConnectionRef StatusAxis) statusHeads
+        )
 
     decisionHistory =
       sortOn stableDecisionKey
@@ -610,9 +632,12 @@ data AmendmentAnalysis = AmendmentAnalysis
     amendmentAnalysisIssues :: [GraphIssue]
   }
 
-reduceDecisionAxis :: Catalog -> AdrId -> Map RecordId DecisionRecord -> Map ConnectionId ConnectionRecord -> ([RecordId], [GraphIssue])
+reduceDecisionAxis :: Catalog -> AdrId -> Map RecordId DecisionRecord -> Map ConnectionId ConnectionRecord -> ([RecordId], [ConnectionId], [GraphIssue])
 reduceDecisionAxis catalog adr localDecisions connections =
-  (heads, analysisIssues <> duplicateChildIssues <> cycleIssues <> inheritedIssues <> rootIssues)
+  ( heads,
+    currentConnectionHeads,
+    analysisIssues <> duplicateChildIssues <> cycleIssues <> inheritedIssues <> rootIssues
+  )
   where
     analyses = map analyze (Map.elems connections)
     analyze connection = analyzeAmendment catalog adr localDecisions connection
@@ -729,6 +754,13 @@ reduceDecisionAxis catalog adr localDecisions connections =
           Set.notMember identifier quarantined,
           Set.notMember identifier consumed
       ]
+    currentConnectionHeads =
+      sort
+        [ connection
+          | headId <- heads,
+            Set.notMember headId quarantined,
+            Just connection <- [Map.lookup headId candidateConnections]
+        ]
 
 analyzeAmendment :: Catalog -> AdrId -> Map RecordId DecisionRecord -> ConnectionRecord -> AmendmentAnalysis
 analyzeAmendment catalog adr localDecisions connection =

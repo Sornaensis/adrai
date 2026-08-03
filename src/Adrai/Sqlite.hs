@@ -18,15 +18,30 @@ module Adrai.Sqlite
     candidateCap,
     FtsHit (..),
     SummaryFtsCandidates (..),
+    SearchStorageComponent (..),
+    SearchStorageError (..),
+    searchStorageErrorToAdraiError,
+    searchOrdinarySchemaDdl,
     initializeFtsTargets,
+    initializeSearchSchema,
+    replaceSearchMaterialization,
+    loadLocalAliases,
     runFtsTarget,
     runSummaryFtsChannels,
   )
 where
 
-import Adrai.Retrieval (QueryPlan (..))
-import Adrai.Types (AdraiError (..), ExitClass (ExitUserError))
-import Control.Exception (try)
+import Adrai.Retrieval
+  ( LocalAlias,
+    QueryPlan (..),
+    SearchDocument (..),
+    SearchMaterialization (..),
+    SearchPassage (..),
+    sectionKindName,
+  )
+import Adrai.Types (AdraiError (..), ExitClass (ExitUserError), adrIdText, recordIdText, stateTokenText)
+import Control.Exception (Exception, catch, throwIO, try)
+import Control.Monad (forM_)
 import Data.Int (Int64)
 import Data.List (sortBy)
 import qualified Data.Map.Strict as Map
@@ -42,10 +57,12 @@ import Database.SQLite.Simple
     FromRow (fromRow),
     Query,
     SQLError (..),
-    SQLData (SQLInteger, SQLText),
+    SQLData (SQLFloat, SQLInteger, SQLText),
+    execute,
     execute_,
     field,
     query,
+    withTransaction,
   )
 
 data FtsTarget
@@ -169,6 +186,58 @@ data SummaryFtsCandidates = SummaryFtsCandidates
   }
   deriving (Eq, Show)
 
+data SearchStorageComponent
+  = SearchSchemaStorage Text
+  | SearchDocumentStorage
+  | SearchAliasStorage
+  | SearchPassageStorage
+  | SearchFtsStorage FtsTarget
+  deriving (Eq, Show)
+
+data SearchStorageError = SearchStorageError SearchStorageComponent
+  deriving (Eq, Show)
+
+searchStorageErrorToAdraiError :: SearchStorageError -> AdraiError
+searchStorageErrorToAdraiError (SearchStorageError component) =
+  AdraiError ExitUserError ("Search materialization storage failed for " <> storageComponentName component <> ".")
+
+storageComponentName :: SearchStorageComponent -> Text
+storageComponentName component = case component of
+  SearchSchemaStorage name -> "schema " <> name
+  SearchDocumentStorage -> "search documents"
+  SearchAliasStorage -> "local aliases"
+  SearchPassageStorage -> "search passages"
+  SearchFtsStorage target -> ftsTargetName target
+
+searchOrdinarySchemaDdl :: [(SearchStorageComponent, Text)]
+searchOrdinarySchemaDdl =
+  [ ( SearchSchemaStorage "search_document",
+      "CREATE TABLE search_document("
+        <> "item_id TEXT PRIMARY KEY,"
+        <> "adr_id TEXT NOT NULL,"
+        <> "candidate_record_id TEXT NOT NULL,"
+        <> "title TEXT NOT NULL,summary TEXT NOT NULL,context TEXT NOT NULL,decision TEXT NOT NULL,"
+        <> "consequences TEXT NOT NULL,domains TEXT NOT NULL,rationale TEXT NOT NULL,identifiers TEXT NOT NULL,"
+        <> "other TEXT NOT NULL,scope TEXT NOT NULL,source_paths TEXT NOT NULL,"
+        <> "obsolete INTEGER NOT NULL CHECK(obsolete IN (0,1)),"
+        <> "conflicted INTEGER NOT NULL CHECK(conflicted IN (0,1)),state_token TEXT NOT NULL)"
+    ),
+    ( SearchSchemaStorage "local_alias",
+      "CREATE TABLE local_alias(alias TEXT PRIMARY KEY,expansion TEXT NOT NULL)"
+    ),
+    ( SearchSchemaStorage "search_section",
+      "CREATE TABLE search_section("
+        <> "passage_rowid INTEGER PRIMARY KEY,"
+        <> "item_id TEXT NOT NULL UNIQUE,"
+        <> "search_item_id TEXT NOT NULL REFERENCES search_document(item_id) ON DELETE CASCADE,"
+        <> "adr_id TEXT NOT NULL,candidate_record_id TEXT NOT NULL,section_kind TEXT NOT NULL,"
+        <> "ordinal INTEGER NOT NULL CHECK(ordinal>=0),line_start INTEGER NOT NULL CHECK(line_start>=1),"
+        <> "line_end INTEGER NOT NULL CHECK(line_end>=line_start),text TEXT NOT NULL,weight REAL NOT NULL,"
+        <> "source_paths TEXT NOT NULL,identifiers TEXT NOT NULL,"
+        <> "UNIQUE(search_item_id,section_kind,ordinal,line_start,line_end))"
+    )
+  ]
+
 initializeFtsTargets :: Connection -> IO (Either RetrievalSqlError ())
 initializeFtsTargets connection = create allFtsTargets
   where
@@ -178,6 +247,186 @@ initializeFtsTargets connection = create allFtsTargets
       case outcome of
         Left _ -> pure (Left (RetrievalIndexError target))
         Right () -> create targets
+
+initializeSearchSchema :: Connection -> IO (Either SearchStorageError ())
+initializeSearchSchema connection = do
+  result <- tryStorage $ withTransaction connection $ do
+    forM_ searchOrdinarySchemaDdl $ \(component, ddl) -> runStorage component (execute_ connection (asQuery ddl))
+    forM_ allFtsTargets $ \target -> runStorage (SearchFtsStorage target) (execute_ connection (asQuery (ftsTargetDdl target)))
+  pure (storageResult result)
+
+replaceSearchMaterialization :: Connection -> SearchMaterialization -> IO (Either SearchStorageError ())
+replaceSearchMaterialization connection materialization = do
+  result <- tryStorage $ withTransaction connection $ do
+    forM_ allFtsTargets $ \target ->
+      runStorage (SearchFtsStorage target) (execute_ connection (asQuery ("DELETE FROM " <> ftsTargetTable target)))
+    runStorage SearchPassageStorage (execute_ connection "DELETE FROM search_section")
+    runStorage SearchAliasStorage (execute_ connection "DELETE FROM local_alias")
+    runStorage SearchDocumentStorage (execute_ connection "DELETE FROM search_document")
+    forM_ sortedDocuments (insertSearchDocument connection)
+    forM_ sortedAliases (insertLocalAlias connection)
+    forM_ numberedPassages (uncurry (insertSearchPassage connection))
+    forM_ sortedDocuments $ \document ->
+      forM_ [SearchExactTarget, SearchStemmedTarget, SearchIdentifierTarget] $ \target ->
+        insertSummaryFts connection target document
+    forM_ numberedPassages $ \(rowId, passage) ->
+      forM_ [PassageExactTarget, PassageStemmedTarget, PassageIdentifierTarget] $ \target ->
+        insertPassageFts connection target rowId passage
+  pure (storageResult result)
+  where
+    sortedDocuments = sortBy (comparing searchDocumentItemId) (searchMaterializationDocuments materialization)
+    sortedAliases = sortBy (comparing fst) (searchMaterializationAliases materialization)
+    sortedPassages = sortBy (comparing searchPassageId) (searchMaterializationPassages materialization)
+    numberedPassages = zip [1 :: Int64 ..] sortedPassages
+
+loadLocalAliases :: Connection -> IO (Either SearchStorageError [LocalAlias])
+loadLocalAliases connection = do
+  result <- trySql (query connection "SELECT alias,expansion FROM local_alias ORDER BY alias" ())
+  pure $ case result of
+    Left _ -> Left (SearchStorageError SearchAliasStorage)
+    Right aliases -> Right aliases
+
+insertSearchDocument :: Connection -> SearchDocument -> IO ()
+insertSearchDocument connection document =
+  runStorage SearchDocumentStorage $
+    execute
+      connection
+      "INSERT INTO search_document(item_id,adr_id,candidate_record_id,title,summary,context,decision,consequences,domains,rationale,identifiers,other,scope,source_paths,obsolete,conflicted,state_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+      [ SQLText (searchDocumentItemId document),
+        SQLText (adrIdText (searchDocumentAdrId document)),
+        SQLText (recordIdText (searchDocumentCandidateRecordId document)),
+        SQLText (searchDocumentTitle document),
+        SQLText (searchDocumentSummary document),
+        SQLText (searchDocumentContext document),
+        SQLText (searchDocumentDecision document),
+        SQLText (searchDocumentConsequences document),
+        SQLText (Text.intercalate "\n" (searchDocumentDomains document)),
+        SQLText (searchDocumentRationale document),
+        SQLText (searchDocumentIdentifiers document),
+        SQLText (searchDocumentOther document),
+        SQLText (Text.intercalate "\n" (searchDocumentScope document)),
+        SQLText (Text.intercalate "\n" (searchDocumentSourcePaths document)),
+        SQLInteger (boolInteger (searchDocumentObsolete document)),
+        SQLInteger (boolInteger (searchDocumentConflicted document)),
+        SQLText (stateTokenText (searchDocumentStateToken document))
+      ]
+
+insertLocalAlias :: Connection -> LocalAlias -> IO ()
+insertLocalAlias connection (alias, expansion) =
+  runStorage SearchAliasStorage $
+    execute connection "INSERT INTO local_alias(alias,expansion) VALUES (?,?)" [SQLText alias, SQLText expansion]
+
+insertSearchPassage :: Connection -> Int64 -> SearchPassage -> IO ()
+insertSearchPassage connection rowId passage =
+  runStorage SearchPassageStorage $
+    execute
+      connection
+      "INSERT INTO search_section(passage_rowid,item_id,search_item_id,adr_id,candidate_record_id,section_kind,ordinal,line_start,line_end,text,weight,source_paths,identifiers) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+      [ SQLInteger rowId,
+        SQLText (searchPassageId passage),
+        SQLText (searchPassageDocumentItemId passage),
+        SQLText (adrIdText (searchPassageAdrId passage)),
+        SQLText (recordIdText (searchPassageCandidateRecordId passage)),
+        SQLText (sectionKindName (searchPassageSectionKind passage)),
+        SQLInteger (fromIntegral (searchPassageOrdinal passage)),
+        SQLInteger (fromIntegral (searchPassageLineStart passage)),
+        SQLInteger (fromIntegral (searchPassageLineEnd passage)),
+        SQLText (searchPassageText passage),
+        SQLFloat (searchPassageWeight passage),
+        SQLText (Text.intercalate "\n" (searchPassageSourcePaths passage)),
+        SQLText (searchPassageIdentifiers passage)
+      ]
+
+insertSummaryFts :: Connection -> FtsTarget -> SearchDocument -> IO ()
+insertSummaryFts connection target document =
+  runStorage (SearchFtsStorage target) $
+    execute connection statement parameters
+  where
+    table = ftsTargetTable target
+    base =
+      [ SQLText (searchDocumentItemId document),
+        SQLText (adrIdText (searchDocumentAdrId document)),
+        SQLText (recordIdText (searchDocumentCandidateRecordId document))
+      ]
+    (columns, values) = case target of
+      SearchExactTarget ->
+        ( ["title", "summary", "decision", "domains", "rationale", "context", "consequences", "identifiers"],
+          [ searchDocumentTitle document,
+            searchDocumentSummary document,
+            searchDocumentDecision document,
+            Text.intercalate "\n" (searchDocumentDomains document),
+            searchDocumentRationale document,
+            searchDocumentContext document,
+            searchDocumentConsequences document,
+            searchDocumentIdentifiers document
+          ]
+        )
+      SearchStemmedTarget ->
+        ( ["title", "summary", "decision", "rationale", "context", "consequences"],
+          [ searchDocumentTitle document,
+            searchDocumentSummary document,
+            searchDocumentDecision document,
+            searchDocumentRationale document,
+            searchDocumentContext document,
+            searchDocumentConsequences document
+          ]
+        )
+      SearchIdentifierTarget -> (["identifiers"], [searchDocumentIdentifiers document])
+      _ -> error "internal error: passage target used for summary insertion"
+    allColumns = ["item_id", "adr_id", "candidate_record_id"] <> columns
+    statement = insertStatement table allColumns
+    parameters = base <> map SQLText values
+
+insertPassageFts :: Connection -> FtsTarget -> Int64 -> SearchPassage -> IO ()
+insertPassageFts connection target rowId passage =
+  runStorage (SearchFtsStorage target) $
+    execute connection statement parameters
+  where
+    table = ftsTargetTable target
+    base =
+      [ SQLInteger rowId,
+        SQLText (searchPassageId passage),
+        SQLText (adrIdText (searchPassageAdrId passage)),
+        SQLText (recordIdText (searchPassageCandidateRecordId passage)),
+        SQLText (sectionKindName (searchPassageSectionKind passage))
+      ]
+    (columns, values) = case target of
+      PassageExactTarget -> (["text", "identifiers"], [searchPassageText passage, searchPassageIdentifiers passage])
+      PassageStemmedTarget -> (["text"], [searchPassageText passage])
+      PassageIdentifierTarget -> (["identifiers"], [searchPassageIdentifiers passage])
+      _ -> error "internal error: summary target used for passage insertion"
+    statement = insertStatementWithRowId table (["item_id", "adr_id", "candidate_record_id", "section_kind"] <> columns)
+    parameters = base <> map SQLText values
+
+insertStatement :: Text -> [Text] -> Query
+insertStatement table columns =
+  asQuery ("INSERT INTO " <> table <> "(" <> Text.intercalate "," columns <> ") VALUES (" <> placeholders (length columns) <> ")")
+
+insertStatementWithRowId :: Text -> [Text] -> Query
+insertStatementWithRowId table columns =
+  asQuery ("INSERT INTO " <> table <> "(rowid," <> Text.intercalate "," columns <> ") VALUES (" <> placeholders (length columns + 1) <> ")")
+
+placeholders :: Int -> Text
+placeholders amount = Text.intercalate "," (replicate amount "?")
+
+boolInteger :: Bool -> Int64
+boolInteger value = if value then 1 else 0
+
+data StorageException = StorageException SearchStorageComponent SQLError
+  deriving (Show)
+
+instance Exception StorageException
+
+runStorage :: SearchStorageComponent -> IO value -> IO value
+runStorage component action = action `catch` (throwIO . StorageException component)
+
+tryStorage :: IO value -> IO (Either StorageException value)
+tryStorage = try
+
+storageResult :: Either StorageException value -> Either SearchStorageError value
+storageResult result = case result of
+  Left (StorageException component _) -> Left (SearchStorageError component)
+  Right value -> Right value
 
 runFtsTarget :: Connection -> FtsTarget -> Text -> Set Text -> CandidateLimit -> IO (Either RetrievalSqlError [FtsHit])
 runFtsTarget connection target expression allowed limit

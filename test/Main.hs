@@ -3,6 +3,10 @@
 module Main (main) where
 
 import qualified Adrai.ConfigFormatTest
+import qualified Adrai.CompilerMaterializationGoldenTest
+import qualified Adrai.CompilerMaterializationProperties
+import qualified Adrai.CompilerMaterializationTest
+import qualified Adrai.CompilerSearchSqliteTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
 import qualified Adrai.DomainProperties
@@ -54,6 +58,7 @@ main = do
   case arguments of
     ["--write-p3-01-goldens"] -> Adrai.VectorQualityTest.writeP301Goldens
     ["--write-p3-02-goldens"] -> Adrai.RetrievalPlanGoldenTest.writeP302Goldens
+    ["--write-p3-03-goldens"] -> Adrai.CompilerMaterializationGoldenTest.writeP303Goldens
     _ -> defaultMain tests
 
 tests :: TestTree
@@ -114,5 +119,12 @@ tests =
             Adrai.SearchRetrievalProperties.tests,
             Adrai.RetrievalSqliteTest.tests,
             Adrai.RetrievalPlanGoldenTest.tests
+          ],
+      testGroup
+          "P3-03"
+          [ Adrai.CompilerMaterializationTest.tests,
+            Adrai.CompilerMaterializationProperties.tests,
+            Adrai.CompilerSearchSqliteTest.tests,
+            Adrai.CompilerMaterializationGoldenTest.tests
           ]
     ]

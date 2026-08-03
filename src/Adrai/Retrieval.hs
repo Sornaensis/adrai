@@ -14,8 +14,17 @@ module Adrai.Retrieval
     sectionWeight,
     SectionSource (..),
     sectionSources,
+    sectionSourcesFromSections,
     LocalAlias,
     extractLocalAliases,
+    SearchDocument (..),
+    SearchPassage (..),
+    SearchMaterialization (..),
+    searchDocumentAliasTexts,
+    materializationAliases,
+    chunkSearchDocument,
+    materializationImplementationFingerprint,
+    materializationFingerprintPayload,
     QueryPlan (..),
     classifyQuery,
     buildQueryPlan,
@@ -29,6 +38,8 @@ where
 import Adrai.Format (renderDigest)
 import Adrai.Markdown (MarkdownSections (..), extractMarkdownSections)
 import Adrai.Provenance (sha256Digest)
+import Adrai.Relevance (ChunkError, TextChunk (..), chunkText, chunkBoundaryRadius, chunkOverlapChars, maxTextBytes, targetChunkChars)
+import Adrai.Types (AdrId, RecordId, StateToken, adrIdText, recordIdText)
 import Adrai.Vector (identifierTerms, semanticTokens)
 import Data.Bits ((.&.), shiftR)
 import Data.ByteString (ByteString)
@@ -43,6 +54,7 @@ import qualified Data.Set as Set
 import Data.Set (Set)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Numeric (showFFloat)
 
 data QueryProfile
@@ -165,13 +177,15 @@ data SectionSource = SectionSource
   deriving (Eq, Show)
 
 sectionSources :: Text -> Text -> Text -> [Text] -> Text -> [SectionSource]
-sectionSources title summary body domains rationale =
+sectionSources title summary body domains rationale = sectionSourcesFromSections title summary (extractMarkdownSections body) domains rationale
+
+sectionSourcesFromSections :: Text -> Text -> MarkdownSections -> [Text] -> Text -> [SectionSource]
+sectionSourcesFromSections title summary parsed domains rationale =
   [ SectionSource kind text (sectionWeight kind)
     | (kind, text) <- rawSources,
       not (Text.null (Text.strip text))
   ]
   where
-    parsed = extractMarkdownSections body
     titleSummary = Text.intercalate "\n" [value | value <- [title, summary], not (Text.null (Text.strip value))]
     rawSources =
       [ (TitleSummarySection, titleSummary),
@@ -184,6 +198,112 @@ sectionSources title summary body domains rationale =
       ]
 
 type LocalAlias = (Text, Text)
+
+data SearchDocument = SearchDocument
+  { searchDocumentItemId :: Text,
+    searchDocumentAdrId :: AdrId,
+    searchDocumentCandidateRecordId :: RecordId,
+    searchDocumentTitle :: Text,
+    searchDocumentSummary :: Text,
+    searchDocumentContext :: Text,
+    searchDocumentDecision :: Text,
+    searchDocumentConsequences :: Text,
+    searchDocumentDomains :: [Text],
+    searchDocumentRationale :: Text,
+    searchDocumentOther :: Text,
+    searchDocumentScope :: [Text],
+    searchDocumentObsolete :: Bool,
+    searchDocumentConflicted :: Bool,
+    searchDocumentStateToken :: StateToken,
+    searchDocumentSourcePaths :: [Text],
+    searchDocumentIdentifiers :: Text
+  }
+  deriving (Eq, Show)
+
+data SearchPassage = SearchPassage
+  { searchPassageId :: Text,
+    searchPassageDocumentItemId :: Text,
+    searchPassageAdrId :: AdrId,
+    searchPassageCandidateRecordId :: RecordId,
+    searchPassageSectionKind :: SectionKind,
+    searchPassageOrdinal :: Int,
+    searchPassageLineStart :: Int,
+    searchPassageLineEnd :: Int,
+    searchPassageText :: Text,
+    searchPassageWeight :: Double,
+    searchPassageSourcePaths :: [Text],
+    searchPassageIdentifiers :: Text
+  }
+  deriving (Eq, Show)
+
+data SearchMaterialization = SearchMaterialization
+  { searchMaterializationDocuments :: [SearchDocument],
+    searchMaterializationPassages :: [SearchPassage],
+    searchMaterializationAliases :: [LocalAlias]
+  }
+  deriving (Eq, Show)
+
+searchDocumentAliasTexts :: SearchDocument -> [Text]
+searchDocumentAliasTexts document =
+  [ searchDocumentTitle document,
+    searchDocumentSummary document,
+    searchDocumentContext document,
+    searchDocumentDecision document,
+    searchDocumentConsequences document,
+    searchDocumentRationale document,
+    searchDocumentIdentifiers document
+  ]
+
+materializationAliases :: [SearchDocument] -> [LocalAlias]
+materializationAliases = sortOn fst . extractLocalAliases . concatMap searchDocumentAliasTexts . sortOn documentKey
+  where
+    documentKey document = (adrIdText (searchDocumentAdrId document), recordIdText (searchDocumentCandidateRecordId document))
+
+chunkSearchDocument :: SearchDocument -> Either ChunkError [SearchPassage]
+chunkSearchDocument document = concat <$> traverse chunkSource sources
+  where
+    sections =
+      MarkdownSections
+        { markdownContext = searchDocumentContext document,
+          markdownDecision = searchDocumentDecision document,
+          markdownConsequences = searchDocumentConsequences document,
+          markdownOther = searchDocumentOther document
+        }
+    sources =
+      sectionSourcesFromSections
+        (searchDocumentTitle document)
+        (searchDocumentSummary document)
+        sections
+        (searchDocumentDomains document)
+        (searchDocumentRationale document)
+    chunkSource source = map (toPassage source) <$> chunkText (sectionSourceText source)
+    toPassage source chunk =
+      SearchPassage
+        { searchPassageId =
+            searchDocumentItemId document
+              <> "/section/"
+              <> sectionKindName (sectionSourceKind source)
+              <> "/"
+              <> decimal (textChunkOrdinal chunk)
+              <> "/"
+              <> decimal (textChunkStartLine chunk)
+              <> "-"
+              <> decimal (textChunkEndLine chunk),
+          searchPassageDocumentItemId = searchDocumentItemId document,
+          searchPassageAdrId = searchDocumentAdrId document,
+          searchPassageCandidateRecordId = searchDocumentCandidateRecordId document,
+          searchPassageSectionKind = sectionSourceKind source,
+          searchPassageOrdinal = textChunkOrdinal chunk,
+          searchPassageLineStart = textChunkStartLine chunk,
+          searchPassageLineEnd = textChunkEndLine chunk,
+          searchPassageText = textChunkText chunk,
+          searchPassageWeight = sectionSourceWeight source,
+          searchPassageSourcePaths = searchDocumentSourcePaths document,
+          searchPassageIdentifiers = Text.unwords (identifierTerms True (textChunkText chunk))
+        }
+
+decimal :: Int -> Text
+decimal = Text.pack . show
 
 data QueryPlan = QueryPlan
   { queryPlanRaw :: Text,
@@ -433,6 +553,31 @@ expansionCharacter character = isAsciiAlphaNumeric character || character `elem`
 
 acronymCharacter :: Char -> Bool
 acronymCharacter character = isAsciiUpper character || isAsciiDigit character || character == '-'
+
+materializationImplementationFingerprint :: Text
+materializationImplementationFingerprint = renderDigest (sha256Digest materializationFingerprintPayload)
+
+materializationFingerprintPayload :: ByteString
+materializationFingerprintPayload =
+  TextEncoding.encodeUtf8
+    ( Text.intercalate
+        "\n"
+        [ "adrai-search-materialization/v1",
+          "resolved-item=ADR",
+          "conflict-item=ADR@RID",
+          "relations=amends,applies_to,domains,status",
+          "alias-fields=title,summary,context,decision,consequences,rationale,identifiers",
+          "sections=title-summary,decision,rationale,domains,context,consequences,other",
+          "chunk-max-bytes=" <> decimal maxTextBytes,
+          "chunk-target-chars=" <> decimal targetChunkChars,
+          "chunk-overlap-chars=" <> decimal chunkOverlapChars,
+          "chunk-boundary-radius=" <> decimal chunkBoundaryRadius,
+          "passage-id=ITEM/section/KIND/ORDINAL/LINE_START-LINE_END",
+          "obsolete=stored",
+          "fts=three-summary+three-passage"
+        ]
+        <> "\n"
+    )
 
 retrievalImplementationFingerprint :: Text
 retrievalImplementationFingerprint = renderDigest (sha256Digest retrievalFingerprintPayload)

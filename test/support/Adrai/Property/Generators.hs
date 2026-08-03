@@ -36,6 +36,7 @@ module Adrai.Property.Generators
     ProjectionFixture (..),
     genProjectionDagSpec,
     materializeProjectionDag,
+    parsedDocument,
     managedObjectId,
     sampledPermutation,
   )
