@@ -5,6 +5,11 @@ module Adrai.Compiler
   ( ObsoletePolicy (..),
     SearchMaterializationError (..),
     SearchMaterializationStats (..),
+    ColdCompilerError (..),
+    ColdCompilerResult (..),
+    coldCompileRepository,
+    materializeReducedSearch,
+    materializeParsedReducedSearch,
     materializeCurrentSearch,
     visibleSearchItemIds,
     writeCurrentSearch,
@@ -12,6 +17,23 @@ module Adrai.Compiler
 where
 
 import Adrai.Domain (domainText)
+import Adrai.Compiler.Snapshot
+  ( AnalyzedRepositorySnapshot,
+    CompilerDiagnostic (..),
+    CompilerDiagnosticOrigin (..),
+    CompilerDiagnosticSeverity (..),
+    ParsedReducedRepositorySnapshot,
+    analyzeRepositorySnapshot,
+    analyzedConflicts,
+    analyzedDiagnostics,
+    analyzedDocuments,
+    analyzedReduction,
+    analyzedSourceFingerprint,
+    compilerDiagnosticCodeText,
+    gateAnalyzedRepositorySnapshot,
+    parsedReducedDocuments,
+    parsedReducedReduction,
+  )
 import Adrai.Format.Document
   ( ConnectionPayload (..),
     ConnectionRecord (..),
@@ -20,8 +42,10 @@ import Adrai.Format.Document
     ParsedManagedDocument (..),
     StatusState (StatusObsolete),
   )
+import Adrai.Format (renderDigest)
 import Adrai.Graph
-  ( AxisResolution (..),
+  ( AdrConflict (..),
+    AxisResolution (..),
     CurrentConnectionRef (..),
     CurrentDecisionView (..),
     GraphReduction (..),
@@ -32,16 +56,63 @@ import Adrai.History (ReadSnapshot (..), SnapshotConsistencyError, validateReadS
 import Adrai.Markdown (MarkdownSections (..))
 import Adrai.Relevance (ChunkError)
 import Adrai.Retrieval
+import Adrai.Provenance
+  ( eventKindText,
+    gitOidText,
+    lineAnchorCommit,
+    lineAnchorId,
+    provenanceActor,
+    provenanceBasis,
+    provenanceBranchHint,
+    provenanceEventKind,
+    provenanceInputs,
+    provenanceLineAnchors,
+    provenanceObjectId,
+    provenanceObjectIdText,
+    provenanceOperationId,
+    provenanceParents,
+    provenanceSemanticDigest,
+    provenanceTimestampMs,
+    provenanceToolVersion,
+    provenanceUpstreamHint,
+    sha256Digest,
+  )
+import Adrai.Repository
+  ( RepositorySnapshotError,
+    ResolvedRepositoryRevision,
+    observeRawRepositorySnapshotAt,
+  )
 import Adrai.Scope (scopePatternText)
-import Adrai.Sqlite (SearchStorageError, replaceSearchMaterialization)
+import Adrai.Sqlite
+  ( ColdDatabaseError,
+    ColdDatabaseStats,
+    SearchStorageError,
+    replaceSearchMaterialization,
+    writeColdDatabase,
+  )
 import Adrai.Types
   ( ConnectionId,
+    Digest,
     RecordId,
+    ActorKind (..),
     adrIdText,
+    actorId,
+    actorKind,
+    actorModel,
+    connectionIdText,
+    digestBytes,
+    objectRefText,
+    operationIdText,
+    provenanceContextDigest,
+    provenanceInputDigest,
+    provenancePromptDigest,
     recordIdText,
     repoPathText,
+    stateTokenText,
   )
 import Adrai.Vector (identifierTerms)
+import qualified Data.ByteString as BS
+import Data.ByteString (ByteString)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
@@ -49,6 +120,8 @@ import qualified Data.Set as Set
 import Data.Set (Set)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import Numeric (showFFloat)
 import Database.SQLite.Simple (Connection)
 
 data ObsoletePolicy = ExcludeObsolete | IncludeObsolete
@@ -71,9 +144,236 @@ data SearchMaterializationStats = SearchMaterializationStats
   }
   deriving (Eq, Show)
 
+data ColdCompilerError
+  = ColdCompilerRepositoryError RepositorySnapshotError
+  | ColdCompilerSearchError SearchMaterializationError
+  | ColdCompilerDatabaseError ColdDatabaseError
+  deriving (Eq, Show)
+
+data ColdCompilerResult = ColdCompilerResult
+  { coldCompilerAnalyzed :: AnalyzedRepositorySnapshot,
+    coldCompilerParsedReduced :: Maybe ParsedReducedRepositorySnapshot,
+    coldCompilerSearchMaterialization :: Maybe SearchMaterialization,
+    coldCompilerMaterializationFingerprint :: Digest,
+    coldCompilerDatabaseStats :: ColdDatabaseStats
+  }
+  deriving (Eq, Show)
+
+coldCompileRepository :: Connection -> ResolvedRepositoryRevision -> IO (Either ColdCompilerError ColdCompilerResult)
+coldCompileRepository connection revision = do
+  rawResult <- observeRawRepositorySnapshotAt revision
+  case rawResult of
+    Left problem -> pure (Left (ColdCompilerRepositoryError problem))
+    Right raw -> do
+      analyzedResult <- analyzeRepositorySnapshot raw
+      case analyzedResult of
+        Left problem -> pure (Left (ColdCompilerRepositoryError problem))
+        Right analyzed ->
+          case gateAnalyzedRepositorySnapshot analyzed of
+            Left _ -> store analyzed Nothing Nothing
+            Right parsed ->
+              case materializeParsedReducedSearch parsed of
+                Left problem -> pure (Left (ColdCompilerSearchError problem))
+                Right materialization -> store analyzed (Just parsed) (Just materialization)
+  where
+    store analyzed parsed materialization = do
+      let fingerprint = coldMaterializationFingerprint analyzed materialization
+      stored <- writeColdDatabase connection analyzed materialization fingerprint
+      pure $ do
+        stats <- mapLeft ColdCompilerDatabaseError stored
+        Right
+          ColdCompilerResult
+            { coldCompilerAnalyzed = analyzed,
+              coldCompilerParsedReduced = parsed,
+              coldCompilerSearchMaterialization = materialization,
+              coldCompilerMaterializationFingerprint = fingerprint,
+              coldCompilerDatabaseStats = stats
+            }
+
+coldMaterializationFingerprint :: AnalyzedRepositorySnapshot -> Maybe SearchMaterialization -> Digest
+coldMaterializationFingerprint analyzed materialization =
+  sha256Digest
+    ( BS.concat
+        ( "adrai-cold-materialization/1\NUL"
+            : framedText "adrai-cache/1"
+            : framedText materializationImplementationFingerprint
+            : framedBytes (digestBytes (analyzedSourceFingerprint analyzed))
+            : map (framedText . diagnosticFingerprint) (analyzedDiagnostics analyzed)
+              <> map (framedText . conflictFingerprint) (analyzedConflicts analyzed)
+              <> map (framedText . operationDocumentFingerprint) (sortOn operationDocumentKey (analyzedDocuments analyzed))
+              <> map (framedText . reducedFingerprint) (sortOn reducedAdrId (graphReductionAdrs (analyzedReduction analyzed)))
+              <> maybe [] searchFingerprint materialization
+        )
+    )
+
+diagnosticFingerprint :: CompilerDiagnostic -> Text
+diagnosticFingerprint problem =
+  Text.intercalate
+    "\NUL"
+    [ compilerDiagnosticCodeText (compilerDiagnosticCode problem),
+      diagnosticSeverityFingerprint (compilerDiagnosticSeverity problem),
+      diagnosticOriginFingerprint (compilerDiagnosticOrigin problem),
+      maybe "" adrIdText (compilerDiagnosticAdr problem),
+      maybe "" objectRefText (compilerDiagnosticObject problem),
+      maybe "" operationIdText (compilerDiagnosticOperation problem),
+      maybe "" gitOidText (compilerDiagnosticCommit problem),
+      maybe "" repoPathText (compilerDiagnosticPath problem),
+      compilerDiagnosticMessage problem
+    ]
+
+operationDocumentKey :: ParsedManagedDocument -> (Text, Text, Text)
+operationDocumentKey document =
+  ( operationIdText (provenanceOperationId capsule),
+    provenanceObjectIdText (provenanceObjectId capsule),
+    repoPathText (parsedManagedPath document)
+  )
+  where
+    capsule = parsedManagedCapsule document
+
+operationDocumentFingerprint :: ParsedManagedDocument -> Text
+operationDocumentFingerprint document =
+  Text.intercalate
+    "\NUL"
+    [ operationIdText (provenanceOperationId capsule),
+      provenanceObjectIdText (provenanceObjectId capsule),
+      eventKindText (provenanceEventKind capsule),
+      decimal (provenanceTimestampMs capsule),
+      actorKindFingerprint (actorKind actor),
+      actorId actor,
+      maybe "" id (actorModel actor),
+      gitOidText (provenanceBasis capsule),
+      Text.intercalate "\n" (map provenanceObjectIdText (provenanceParents capsule)),
+      maybe "" id (provenanceBranchHint capsule),
+      maybe "" id (provenanceUpstreamHint capsule),
+      Text.intercalate "\n" [lineAnchorId anchor <> "@" <> gitOidText (lineAnchorCommit anchor) | anchor <- provenanceLineAnchors capsule],
+      renderDigest (provenanceSemanticDigest capsule),
+      provenanceToolVersion capsule,
+      maybe "" renderDigest (provenanceInputDigest inputs),
+      maybe "" renderDigest (provenancePromptDigest inputs),
+      maybe "" renderDigest (provenanceContextDigest inputs),
+      repoPathText (parsedManagedPath document)
+    ]
+  where
+    capsule = parsedManagedCapsule document
+    actor = provenanceActor capsule
+    inputs = provenanceInputs capsule
+
+actorKindFingerprint :: ActorKind -> Text
+actorKindFingerprint kind =
+  case kind of
+    HumanActor -> "human"
+    LlmActor -> "llm"
+    ServiceActor -> "service"
+
+conflictFingerprint :: AdrConflict -> Text
+conflictFingerprint conflict =
+  Text.intercalate
+    "\NUL"
+    [ adrConflictCode conflict,
+      adrIdText (adrConflictAdr conflict),
+      decimal (adrConflictCount conflict),
+      stateTokenText (adrConflictStateToken conflict),
+      Text.intercalate "\n" (adrConflictSummaries conflict)
+    ]
+
+reducedFingerprint :: ReducedAdr -> Text
+reducedFingerprint reduced =
+  Text.intercalate
+    "\NUL"
+    [ adrIdText (reducedAdrId reduced),
+      stateTokenText (reducedStateToken reduced),
+      Text.intercalate "," (map recordIdText (axisResolutionHeads (reducedDecisionAxis reduced))),
+      Text.intercalate "," (map connectionIdText (axisResolutionHeads (reducedScopeAxis reduced))),
+      Text.intercalate "," (map connectionIdText (axisResolutionHeads (reducedDomainAxis reduced))),
+      Text.intercalate "," (map connectionIdText (axisResolutionHeads (reducedStatusAxis reduced))),
+      Text.intercalate "," (map (connectionIdText . currentConnectionId) (reducedCurrentConnections reduced))
+    ]
+
+searchFingerprint :: SearchMaterialization -> [ByteString]
+searchFingerprint materialization =
+  map (framedText . searchDocumentFingerprint) (sortOn searchDocumentItemId (searchMaterializationDocuments materialization))
+    <> map (framedText . searchPassageFingerprint) (sortOn searchPassageId (searchMaterializationPassages materialization))
+    <> map (framedText . uncurry (\alias expansion -> alias <> "\NUL" <> expansion)) (sortOn fst (searchMaterializationAliases materialization))
+
+searchDocumentFingerprint :: SearchDocument -> Text
+searchDocumentFingerprint document =
+  Text.intercalate
+    "\NUL"
+    [ searchDocumentItemId document,
+      adrIdText (searchDocumentAdrId document),
+      recordIdText (searchDocumentCandidateRecordId document),
+      searchDocumentTitle document,
+      searchDocumentSummary document,
+      searchDocumentContext document,
+      searchDocumentDecision document,
+      searchDocumentConsequences document,
+      Text.intercalate "\n" (searchDocumentDomains document),
+      searchDocumentRationale document,
+      searchDocumentIdentifiers document,
+      searchDocumentOther document,
+      Text.intercalate "\n" (searchDocumentScope document),
+      Text.intercalate "\n" (searchDocumentSourcePaths document),
+      boolText (searchDocumentObsolete document),
+      boolText (searchDocumentConflicted document),
+      stateTokenText (searchDocumentStateToken document)
+    ]
+
+searchPassageFingerprint :: SearchPassage -> Text
+searchPassageFingerprint passage =
+  Text.intercalate
+    "\NUL"
+    [ searchPassageId passage,
+      searchPassageDocumentItemId passage,
+      adrIdText (searchPassageAdrId passage),
+      recordIdText (searchPassageCandidateRecordId passage),
+      sectionKindName (searchPassageSectionKind passage),
+      decimal (searchPassageOrdinal passage),
+      decimal (searchPassageLineStart passage),
+      decimal (searchPassageLineEnd passage),
+      searchPassageText passage,
+      Text.pack (showFFloat (Just 6) (searchPassageWeight passage) ""),
+      Text.intercalate "\n" (searchPassageSourcePaths passage),
+      searchPassageIdentifiers passage
+    ]
+
+framedText :: Text -> ByteString
+framedText = framedBytes . TextEncoding.encodeUtf8
+
+framedBytes :: ByteString -> ByteString
+framedBytes bytes = TextEncoding.encodeUtf8 (decimal (BS.length bytes) <> ":") <> bytes <> "\NUL"
+
+diagnosticSeverityFingerprint :: CompilerDiagnosticSeverity -> Text
+diagnosticSeverityFingerprint CompilerDiagnosticError = "error"
+diagnosticSeverityFingerprint CompilerDiagnosticWarning = "warning"
+
+diagnosticOriginFingerprint :: CompilerDiagnosticOrigin -> Text
+diagnosticOriginFingerprint origin =
+  case origin of
+    CompilerConfigOrigin -> "config"
+    CompilerPathDocumentOrigin -> "path_document"
+    CompilerHistoryOrigin -> "history"
+    CompilerOperationOrigin -> "operation"
+    CompilerGraphOrigin -> "graph"
+    CompilerBasisOrigin -> "basis"
+
+boolText :: Bool -> Text
+boolText True = "true"
+boolText False = "false"
+
+decimal :: (Show value) => value -> Text
+decimal = Text.pack . show
+
 materializeCurrentSearch :: ReadSnapshot -> Either SearchMaterializationError SearchMaterialization
 materializeCurrentSearch snapshot = do
   mapLeft SearchMaterializationSnapshotError (validateReadSnapshot snapshot)
+  materializeReducedSearch (readSnapshotDocuments snapshot) (readSnapshotReduction snapshot)
+
+materializeParsedReducedSearch :: ParsedReducedRepositorySnapshot -> Either SearchMaterializationError SearchMaterialization
+materializeParsedReducedSearch snapshot =
+  materializeReducedSearch (parsedReducedDocuments snapshot) (parsedReducedReduction snapshot)
+
+materializeReducedSearch :: [ParsedManagedDocument] -> GraphReduction -> Either SearchMaterializationError SearchMaterialization
+materializeReducedSearch sourceDocuments reduction = do
   documents <- concat <$> traverse (materializeAdr indexes) reducedAdrs
   ensureUnique SearchMaterializationDuplicateItem searchDocumentItemId documents
   passages <- concat <$> traverse materializePassages documents
@@ -85,8 +385,8 @@ materializeCurrentSearch snapshot = do
         searchMaterializationAliases = materializationAliases documents
       }
   where
-    indexes = buildIndexes (readSnapshotDocuments snapshot)
-    reducedAdrs = sortOn reducedAdrId (graphReductionAdrs (readSnapshotReduction snapshot))
+    indexes = buildIndexes sourceDocuments
+    reducedAdrs = sortOn reducedAdrId (graphReductionAdrs reduction)
     materializePassages document =
       mapLeft (SearchMaterializationChunkError (searchDocumentItemId document)) (chunkSearchDocument document)
 

@@ -31,6 +31,8 @@ module Adrai.Provenance
     provenanceSemanticDigest,
     provenanceToolVersion,
     provenanceInputs,
+    OperationContext (..),
+    provenanceOperationContext,
     ProvenanceError (..),
     encodeBase64Url,
     decodeBase64Url,
@@ -175,6 +177,21 @@ data ProvenanceCapsuleInput = ProvenanceCapsuleInput
   }
   deriving (Eq, Show)
 
+-- | Capsule fields shared by every member of one logical operation. Member
+-- identity, event kind, semantic digest, and ordered parents are intentionally
+-- excluded because they are object-specific.
+data OperationContext = OperationContext
+  { operationContextTimestampMs :: Integer,
+    operationContextActor :: Actor,
+    operationContextBasis :: GitOid,
+    operationContextBranchHint :: Maybe Text,
+    operationContextUpstreamHint :: Maybe Text,
+    operationContextLineAnchors :: [LineAnchor],
+    operationContextToolVersion :: Text,
+    operationContextInputs :: ProvenanceInputs
+  }
+  deriving (Eq, Show)
+
 newtype ProvenanceCapsule = ProvenanceCapsule ProvenanceCapsuleInput
   deriving (Eq, Show)
 
@@ -235,6 +252,19 @@ provenanceToolVersion (ProvenanceCapsule input) = capsuleInputToolVersion input
 
 provenanceInputs :: ProvenanceCapsule -> ProvenanceInputs
 provenanceInputs (ProvenanceCapsule input) = capsuleInputDigests input
+
+provenanceOperationContext :: ProvenanceCapsule -> OperationContext
+provenanceOperationContext capsule =
+  OperationContext
+    { operationContextTimestampMs = provenanceTimestampMs capsule,
+      operationContextActor = provenanceActor capsule,
+      operationContextBasis = provenanceBasis capsule,
+      operationContextBranchHint = provenanceBranchHint capsule,
+      operationContextUpstreamHint = provenanceUpstreamHint capsule,
+      operationContextLineAnchors = provenanceLineAnchors capsule,
+      operationContextToolVersion = provenanceToolVersion capsule,
+      operationContextInputs = provenanceInputs capsule
+    }
 
 data ProvenanceError
   = InvalidGitOid Text

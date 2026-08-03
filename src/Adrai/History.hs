@@ -130,7 +130,7 @@ validateReadSnapshot snapshot
     operationProblems =
       [ "operation " <> operationIdText operation <> " has inconsistent capsule fields"
         | (operation, capsules) <- Map.toAscList operationCapsules,
-          not (allSame (map operationCapsuleInvariant capsules))
+          not (allSame (map provenanceOperationContext capsules))
       ]
     operationCapsules =
       Map.fromListWith (<>)
@@ -691,18 +691,6 @@ optionalArray key values = (key, if null values then JsonNull else textArray val
 
 textArray :: [Text] -> JsonValue
 textArray = JsonArray . map JsonString
-
-operationCapsuleInvariant :: ProvenanceCapsule -> (Integer, Actor, GitOid, Maybe Text, Maybe Text, [LineAnchor], Text, ProvenanceInputs)
-operationCapsuleInvariant capsule =
-  ( provenanceTimestampMs capsule,
-    provenanceActor capsule,
-    provenanceBasis capsule,
-    provenanceBranchHint capsule,
-    provenanceUpstreamHint capsule,
-    provenanceLineAnchors capsule,
-    provenanceToolVersion capsule,
-    provenanceInputs capsule
-  )
 
 allSame :: (Eq value) => [value] -> Bool
 allSame values = case values of [] -> True; first : remaining -> all (== first) remaining

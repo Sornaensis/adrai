@@ -57,9 +57,25 @@ data IntegrityIssueCode
   = NonCanonicalPath
   | DuplicateObjectId
   | AppendOnlyRewrite
+  | AppendOnlyDelete
   | MissingHistoricalObject
   | IncompleteOperation
   | InvalidManagedDocument
+  | InconsistentOperationCapsule
+  | BasisCommitUnavailable
+  | UnknownOperationShape
+  | CrossAdrOperation
+  | ProvenanceParentMismatch
+  | AmendmentOperationMismatch
+  | AmendmentEdgeCardinality
+  | CreateHasAmendmentEdge
+  | CreateProvenanceHasParents
+  | ScopeEventKindMismatch
+  | DomainEventKindMismatch
+  | StatusEventKindMismatch
+  | ManagedNonBlob
+  | InvalidRepositoryConfig
+  | HistoryCoverageIncomplete
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 integrityIssueCodeText :: IntegrityIssueCode -> Text
@@ -68,9 +84,25 @@ integrityIssueCodeText code =
     NonCanonicalPath -> "NON_CANONICAL_PATH"
     DuplicateObjectId -> "DUPLICATE_OBJECT_ID"
     AppendOnlyRewrite -> "APPEND_ONLY_REWRITE"
+    AppendOnlyDelete -> "APPEND_ONLY_DELETE"
     MissingHistoricalObject -> "MISSING_HISTORICAL_OBJECT"
     IncompleteOperation -> "INCOMPLETE_OPERATION"
     InvalidManagedDocument -> "INVALID_MANAGED_DOCUMENT"
+    InconsistentOperationCapsule -> "INCONSISTENT_OPERATION_CAPSULE"
+    BasisCommitUnavailable -> "BASIS_COMMIT_UNAVAILABLE"
+    UnknownOperationShape -> "UNKNOWN_OPERATION_SHAPE"
+    CrossAdrOperation -> "CROSS_ADR_OPERATION"
+    ProvenanceParentMismatch -> "PROVENANCE_PARENT_MISMATCH"
+    AmendmentOperationMismatch -> "AMENDMENT_OPERATION_MISMATCH"
+    AmendmentEdgeCardinality -> "AMENDMENT_EDGE_CARDINALITY"
+    CreateHasAmendmentEdge -> "CREATE_HAS_AMENDMENT_EDGE"
+    CreateProvenanceHasParents -> "CREATE_PROVENANCE_HAS_PARENTS"
+    ScopeEventKindMismatch -> "SCOPE_EVENT_KIND_MISMATCH"
+    DomainEventKindMismatch -> "DOMAIN_EVENT_KIND_MISMATCH"
+    StatusEventKindMismatch -> "STATUS_EVENT_KIND_MISMATCH"
+    ManagedNonBlob -> "MANAGED_NONBLOB"
+    InvalidRepositoryConfig -> "INVALID_REPOSITORY_CONFIG"
+    HistoryCoverageIncomplete -> "HISTORY_COVERAGE_INCOMPLETE"
 
 data IntegrityIssue = IntegrityIssue
   { integritySeverity :: IntegritySeverity,

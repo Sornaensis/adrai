@@ -44,7 +44,9 @@ tests =
         assertBool "path rejects invalid UTF-8" (isLeft (decodeGitPathOutput (BS.pack [0x80, 0x0a]))),
       testCase "tree protocol requires terminal NUL, strict metadata, and UTF-8 paths" $ do
         let valid = BS8.pack ("100644 blob " <> Text.unpack (gitOidText (oid 1)) <> "\tfile.txt\NUL")
+            directory = BS8.pack ("040000 tree " <> Text.unpack (gitOidText (oid 2)) <> "\tmanaged.connection.md\NUL")
         fmap (map gitTreeMode) (decodeGitTreeOutput valid) @?= Right [GitRegularFile]
+        fmap (map (\entry -> (gitTreeMode entry, gitTreeObjectType entry))) (decodeGitTreeOutput directory) @?= Right [(GitDirectory, GitTreeObject)]
         assertBool "missing terminal NUL" (isLeft (decodeGitTreeOutput (BS.init valid)))
         assertBool "empty record" (isLeft (decodeGitTreeOutput (valid <> "\NUL")))
         assertBool "noncanonical metadata whitespace" (isLeft (decodeGitTreeOutput (BS8.pack ("100644  blob " <> Text.unpack (gitOidText (oid 1)) <> "\tfile.txt\NUL"))))

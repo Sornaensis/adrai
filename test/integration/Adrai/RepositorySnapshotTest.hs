@@ -64,6 +64,27 @@ tests =
           repositorySnapshot discovered (requireRevision "HEAD") >>= \case
             Left (RepositorySnapshotConfigParseError _ _) -> pure ()
             result -> assertFailure ("expected TOML error, got " <> show result),
+      testCase "raw observation retains invalid committed config without guessing managed roots" $
+        withRepository $ \repository -> do
+          let invalidConfig = "schema = ["
+          _ <- commitFile repository ".adrai.toml" invalidConfig
+          discovered <- requireRepository repository
+          resolved <- resolveRepositoryRevision discovered (requireRevision "HEAD") >>= \case
+            Left problem -> assertFailure (show problem)
+            Right value -> pure value
+          raw <- observeRawRepositorySnapshotAt resolved >>= \case
+            Left problem -> assertFailure (show problem)
+            Right value -> pure value
+          let config = rawRepositorySnapshotConfig raw
+          rawRepositoryConfigOrigin config @?= CommittedConfigOrigin
+          fmap gitBlobBytes (rawRepositoryConfigBlob config) @?= Just invalidConfig
+          fmap gitTreeOid (rawRepositoryConfigEntry config) @?= fmap gitBlobOid (rawRepositoryConfigBlob config)
+          case rawRepositoryConfigResult config of
+            Left (RepositoryConfigFailureParse _ _) -> pure ()
+            result -> assertFailure ("expected retained raw config parse failure, got " <> show result)
+          rawRepositoryConfigManagedPaths config @?= Nothing
+          rawRepositorySnapshotManagedPaths raw @?= Nothing
+          rawRepositorySnapshotEntries raw @?= [],
       testCase "Unicode configured roots preserve repeated OIDs and arbitrary managed bytes" $
         withRepository $ \repository -> do
           let config = configBytes "arkitektur/beslutninger" "arkitektur/forbindelser"

@@ -16,6 +16,14 @@ The integration suite creates temporary real Git repositories using the same arg
 
 Repository observation returns raw committed configuration and selected tree/blob facts only. It deliberately does not parse decision or connection documents, construct `History.ReadSnapshot`, compile a graph, access SQLite, populate a cache, serve queries, or mutate the repository. Blob entries preserve exact bytes even for symlink mode and arbitrary non-UTF-8 managed content; nonblob entries preserve metadata without pretending to have blob bytes. Bare, linked, sparse, shallow, detached, dirty, staged, and untracked states therefore cannot substitute ambient filesystem content for committed object data. P4-03 owns document parsing, graph reduction, cold compilation, and SQLite materialization over this raw immutable input. P4-04 adds provenance and placement enrichment and assembles the final `History.ReadSnapshot`; P4-05 owns revision-cache publication and reuse.
 
+## Cold compiler boundary
+
+P4-03 starts from an already resolved revision and never resolves `HEAD` or another ref again. It retains invalid committed configuration as raw data, parses every observable managed blob, aggregates deterministic diagnostics, chooses the first path-sorted valid copy of each object, and runs the P2 graph reducer exactly once. It separately validates operation membership and capsule rules, batches provenance-basis checks, and walks the exact reachable commit DAG. Every parent edge of a merge is compared for byte rewrites and disappearances; shallow history is explicitly marked incomplete.
+
+The analysis gate admits warnings and semantic `ADR_CONFLICT` states but rejects every integrity error. Only a gated placement-free snapshot is passed to the P3 search materializer. No empty or inferred placement map is manufactured, and P4-03 does not construct the final `History.ReadSnapshot` owned by P4-04.
+
+Storage accepts a fresh caller-owned SQLite connection. Schema creation, source and diagnostic rows, optional semantic and search rows, foreign-key and count verification, and meta rows share one outer transaction. A failure rolls back schema and data together. Connection paths, filesystem publication, reuse, retention, and corruption recovery remain P4-05 responsibilities.
+
 ## Deterministic fixture plans
 
 The production, large-stress, and relevance fixtures use the versioned `adrai-fixture-splitmix64/v1` algorithm and seed `260729`. This sequence is deliberately Haskell-owned and does not reproduce Python RNG bytes. The indexed retrieval fixture is deterministic by ADR index instead, and records generator `adrai-indexed-retrieval/v1` with seed `0`; it does not consume the SplitMix stream. Changing either tag or seed, the canonical compact summary, or its digest is a reviewed contract change.

@@ -27,6 +27,11 @@ module Adrai.Git
     revisionSpecText,
     resolveRevision,
     isShallowRepository,
+    GitCommitNode,
+    gitCommitNodeOid,
+    gitCommitNodeParents,
+    reachableCommitGraphAt,
+    decodeGitCommitGraph,
     GitObjectType (..),
     GitFileMode (..),
     GitTreeEntry (..),
@@ -175,6 +180,12 @@ data GitObjectInfo = GitObjectInfo
   { objectInfoOid :: GitOid,
     objectInfoType :: GitObjectType,
     objectInfoSize :: Word64
+  }
+  deriving (Eq, Show)
+
+data GitCommitNode = GitCommitNode
+  { gitCommitNodeOid :: GitOid,
+    gitCommitNodeParents :: [GitOid]
   }
   deriving (Eq, Show)
 
@@ -451,6 +462,56 @@ isShallowRepository repository = do
       then Left (commandFailure "shallow repository" processResult)
       else first (GitInvalidOutput "shallow repository") (decodeGitBoolean (processStdout processResult))
 
+reachableCommitGraphAt :: Repository -> GitOid -> IO (Either GitError [GitCommitNode])
+reachableCommitGraphAt repository target = do
+  result <-
+    runRepository
+      repository
+      "reachable commit graph"
+      ["rev-list", "--topo-order", "--reverse", "--parents", Text.unpack (gitOidText target)]
+      BS.empty
+  pure $ do
+    processResult <- result
+    if processExitCode processResult /= ExitSuccess
+      then Left (commandFailure "reachable commit graph" processResult)
+      else decodeGitCommitGraph (processStdout processResult)
+
+decodeGitCommitGraph :: ByteString -> Either GitError [GitCommitNode]
+decodeGitCommitGraph raw
+  | BS.null raw = Left malformedRaw
+  | BS.last raw /= 10 = Left malformedRaw
+  | BS.elem 13 raw = Left malformedRaw
+  | otherwise = do
+      let records = BS.split 10 raw
+      linesBytes <-
+        case reverse records of
+          [] -> Left malformedRaw
+          finalRecord : reversed
+            | not (BS.null finalRecord) || any BS.null reversed -> Left malformedRaw
+            | otherwise -> Right (reverse reversed)
+      nodes <- traverse decodeLine linesBytes
+      let grouped = Map.fromListWith (<>) [(gitCommitNodeOid node, [node]) | node <- nodes]
+      traverse_ rejectDuplicate (Map.elems grouped)
+      Right nodes
+  where
+    malformedRaw = GitInvalidOutput "reachable commit graph" (GitMalformedObjectHeader (protocolSample raw))
+    decodeLine line =
+      case BS.split 32 line of
+        [] -> Left malformed
+        tokens | any BS.null tokens -> Left malformed
+        oidBytes : parentBytes -> do
+          oidText <- decodeToken oidBytes
+          parentTexts <- traverse decodeToken parentBytes
+          oid <- first (const malformed) (mkGitOid oidText)
+          parents <- traverse (first (const malformed) . mkGitOid) parentTexts
+          Right (GitCommitNode oid parents)
+      where
+        malformed = GitInvalidOutput "reachable commit graph" (GitMalformedObjectHeader (protocolSample line))
+        decodeToken token = first (const malformed) (TextEncoding.decodeUtf8' token)
+    rejectDuplicate [] = Right ()
+    rejectDuplicate [_] = Right ()
+    rejectDuplicate _ = Left (GitInvalidOutput "reachable commit graph" (GitMalformedObjectHeader "duplicate commit node"))
+
 runRepository :: Repository -> Text -> [String] -> ByteString -> IO (Either GitError GitProcessResult)
 runRepository repository = runGit (repositoryClient repository) (repositoryCommandDirectory repository)
 
@@ -467,7 +528,7 @@ listTreeEntriesAt repository revision roots = do
   where
     listChunk rootChunk = do
       let arguments =
-            ["--literal-pathspecs", "ls-tree", "-r", "-z", "--full-tree", Text.unpack (gitOidText revision)]
+            ["--literal-pathspecs", "ls-tree", "-r", "-t", "-z", "--full-tree", Text.unpack (gitOidText revision)]
               <> if null rootChunk then [] else "--" : map Text.unpack rootChunk
       result <- runRepository repository "list tree" arguments BS.empty
       pure $ do

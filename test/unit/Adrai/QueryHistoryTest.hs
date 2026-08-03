@@ -536,7 +536,7 @@ eventFor parents record =
     ManagedDecision _ -> if null parents then "decision.create" else "decision.amend"
     ManagedConnection connection ->
       case connectionPayload connection of
-        AmendsConnection _ -> "decision.amend"
+        AmendsConnection _ -> "connection.amends"
         AppliesToConnection payload -> "scope." <> appliesToChange payload
         DomainsConnection payload -> "domain." <> domainsChange payload
         StatusConnection payload

@@ -411,7 +411,7 @@ recordEvent managed =
         AppliesToConnection _ -> "scope.initial"
         DomainsConnection _ -> "domain.initial"
         StatusConnection _ -> "status.initial"
-        _ -> "decision.amend"
+        AmendsConnection _ -> "connection.amends"
 
 managedObject :: ManagedRecord -> ProvenanceObjectId
 managedObject managed =

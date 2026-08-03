@@ -14,6 +14,18 @@ module Adrai.Repository
     resolvedRequestedRevision,
     resolvedCommitOid,
     resolvedRevisionKey,
+    RepositoryConfigFailure (..),
+    RawRepositoryConfigObservation,
+    rawRepositoryConfigOrigin,
+    rawRepositoryConfigResult,
+    rawRepositoryConfigManagedPaths,
+    rawRepositoryConfigEntry,
+    rawRepositoryConfigBlob,
+    RawRepositorySnapshotObservation,
+    rawRepositorySnapshotRevision,
+    rawRepositorySnapshotConfig,
+    rawRepositorySnapshotManagedPaths,
+    rawRepositorySnapshotEntries,
     RepositoryConfigOrigin (..),
     RepositoryConfigObservation,
     repositoryConfigOrigin,
@@ -31,6 +43,8 @@ module Adrai.Repository
     repositorySnapshotEntries,
     RepositorySnapshotError (..),
     resolveRepositoryRevision,
+    observeRawRepositorySnapshotAt,
+    observeManagedTreeAt,
     repositorySnapshotAt,
     repositorySnapshot,
     isManagedSourcePath,
@@ -70,6 +84,29 @@ data ResolvedRepositoryRevision = ResolvedRepositoryRevision
     resolvedRequestedRevision :: RevisionSpec,
     resolvedCommitOid :: GitOid,
     resolvedRevisionKey :: RepositoryRevisionKey
+  }
+  deriving (Eq, Show)
+
+data RepositoryConfigFailure
+  = RepositoryConfigFailureInvalidUtf8 GitOid
+  | RepositoryConfigFailureParse GitOid ConfigParseError
+  | RepositoryConfigFailureNotBlob GitTreeEntry
+  deriving (Eq, Show)
+
+data RawRepositoryConfigObservation = RawRepositoryConfigObservation
+  { rawRepositoryConfigOrigin :: RepositoryConfigOrigin,
+    rawRepositoryConfigResult :: Either RepositoryConfigFailure Config,
+    rawRepositoryConfigManagedPaths :: Maybe ManagedPaths,
+    rawRepositoryConfigEntry :: Maybe GitTreeEntry,
+    rawRepositoryConfigBlob :: Maybe GitBlob
+  }
+  deriving (Eq, Show)
+
+data RawRepositorySnapshotObservation = RawRepositorySnapshotObservation
+  { rawRepositorySnapshotRevision :: ResolvedRepositoryRevision,
+    rawRepositorySnapshotConfig :: RawRepositoryConfigObservation,
+    rawRepositorySnapshotManagedPaths :: Maybe ManagedPaths,
+    rawRepositorySnapshotEntries :: [RepositoryTreeObservation]
   }
   deriving (Eq, Show)
 
@@ -132,60 +169,90 @@ repositorySnapshot repository requested = do
 
 repositorySnapshotAt :: ResolvedRepositoryRevision -> IO (Either RepositorySnapshotError RepositorySnapshot)
 repositorySnapshotAt revision = do
-  configResult <- observeConfig revision
+  raw <- observeRawRepositorySnapshotAt revision
+  pure $ do
+    observation <- raw
+    config <- strictConfigObservation (rawRepositorySnapshotConfig observation)
+    let managedPaths = repositoryObservedManagedPaths config
+    Right
+      RepositorySnapshot
+        { repositorySnapshotRevision = revision,
+          repositorySnapshotConfig = config,
+          repositorySnapshotManagedPaths = managedPaths,
+          repositorySnapshotEntries = rawRepositorySnapshotEntries observation
+        }
+
+observeRawRepositorySnapshotAt :: ResolvedRepositoryRevision -> IO (Either RepositorySnapshotError RawRepositorySnapshotObservation)
+observeRawRepositorySnapshotAt revision = do
+  configResult <- observeRawConfig revision
   case configResult of
     Left problem -> pure (Left problem)
-    Right configObservation -> do
-      entriesResult <- observeManagedEntries revision (repositoryObservedManagedPaths configObservation)
-      pure $ do
-        entries <- entriesResult
-        Right
-          RepositorySnapshot
-            { repositorySnapshotRevision = revision,
-              repositorySnapshotConfig = configObservation,
-              repositorySnapshotManagedPaths = repositoryObservedManagedPaths configObservation,
-              repositorySnapshotEntries = entries
-            }
+    Right configObservation ->
+      case rawRepositoryConfigManagedPaths configObservation of
+        Nothing -> pure (Right (assembleRaw configObservation []))
+        Just managedPaths -> do
+          entries <- observeManagedTreeAt revision (resolvedCommitOid revision) managedPaths
+          pure (assembleRaw configObservation <$> entries)
+  where
+    assembleRaw configObservation entries =
+      RawRepositorySnapshotObservation
+        { rawRepositorySnapshotRevision = revision,
+          rawRepositorySnapshotConfig = configObservation,
+          rawRepositorySnapshotManagedPaths = rawRepositoryConfigManagedPaths configObservation,
+          rawRepositorySnapshotEntries = entries
+        }
 
-observeConfig :: ResolvedRepositoryRevision -> IO (Either RepositorySnapshotError RepositoryConfigObservation)
-observeConfig revision = do
+observeRawConfig :: ResolvedRepositoryRevision -> IO (Either RepositorySnapshotError RawRepositoryConfigObservation)
+observeRawConfig revision = do
   entryResult <- lookupTreeEntryAt repository commitOid configPath
   case entryResult of
     Left problem -> pure (Left (RepositorySnapshotGitError problem))
     Right Nothing ->
       pure
         ( Right
-            RepositoryConfigObservation
-              { repositoryConfigOrigin = DefaultConfigOrigin,
-                repositoryObservedConfig = defaultConfig,
-                repositoryObservedManagedPaths = configManagedPaths defaultConfig,
-                repositoryConfigEntry = Nothing,
-                repositoryConfigBlob = Nothing
+            RawRepositoryConfigObservation
+              { rawRepositoryConfigOrigin = DefaultConfigOrigin,
+                rawRepositoryConfigResult = Right defaultConfig,
+                rawRepositoryConfigManagedPaths = Just (configManagedPaths defaultConfig),
+                rawRepositoryConfigEntry = Nothing,
+                rawRepositoryConfigBlob = Nothing
               }
         )
     Right (Just entry)
-      | gitTreeObjectType entry /= GitBlobObject -> pure (Left (RepositorySnapshotConfigNotBlob entry))
+      | gitTreeObjectType entry /= GitBlobObject ->
+          pure
+            ( Right
+                RawRepositoryConfigObservation
+                  { rawRepositoryConfigOrigin = CommittedConfigOrigin,
+                    rawRepositoryConfigResult = Left (RepositoryConfigFailureNotBlob entry),
+                    rawRepositoryConfigManagedPaths = Nothing,
+                    rawRepositoryConfigEntry = Just entry,
+                    rawRepositoryConfigBlob = Nothing
+                  }
+            )
       | otherwise -> do
           blobsResult <- readBlobBatch repository [gitTreeOid entry]
           pure $ do
             blobs <- first RepositorySnapshotGitError blobsResult
             blob <- maybe (Left (RepositorySnapshotMissingBatchBlob (gitTreeOid entry))) Right (Map.lookup (gitTreeOid entry) blobs)
-            configText <- first (const (RepositorySnapshotConfigInvalidUtf8 (gitBlobOid blob))) (TextEncoding.decodeUtf8' (gitBlobBytes blob))
-            config <- first (RepositorySnapshotConfigParseError (gitBlobOid blob)) (parseConfigText configText)
+            let configResult =
+                  case TextEncoding.decodeUtf8' (gitBlobBytes blob) of
+                    Left _ -> Left (RepositoryConfigFailureInvalidUtf8 (gitBlobOid blob))
+                    Right configText -> first (RepositoryConfigFailureParse (gitBlobOid blob)) (parseConfigText configText)
             Right
-              RepositoryConfigObservation
-                { repositoryConfigOrigin = CommittedConfigOrigin,
-                  repositoryObservedConfig = config,
-                  repositoryObservedManagedPaths = configManagedPaths config,
-                  repositoryConfigEntry = Just entry,
-                  repositoryConfigBlob = Just blob
+              RawRepositoryConfigObservation
+                { rawRepositoryConfigOrigin = CommittedConfigOrigin,
+                  rawRepositoryConfigResult = configResult,
+                  rawRepositoryConfigManagedPaths = configManagedPaths <$> eitherToMaybe configResult,
+                  rawRepositoryConfigEntry = Just entry,
+                  rawRepositoryConfigBlob = Just blob
                 }
   where
     repository = resolvedRepository revision
     commitOid = resolvedCommitOid revision
 
-observeManagedEntries :: ResolvedRepositoryRevision -> ManagedPaths -> IO (Either RepositorySnapshotError [RepositoryTreeObservation])
-observeManagedEntries revision paths = do
+observeManagedTreeAt :: ResolvedRepositoryRevision -> GitOid -> ManagedPaths -> IO (Either RepositorySnapshotError [RepositoryTreeObservation])
+observeManagedTreeAt revision commitOid paths = do
   listed <- listTreeEntriesAt repository commitOid roots
   case first RepositorySnapshotGitError listed >>= validateSelectedEntries . filter (isSelectedManagedPath paths . gitTreePath) of
     Left problem -> pure (Left problem)
@@ -202,8 +269,30 @@ observeManagedEntries revision paths = do
         traverse (assembleObservation blobs) selected
   where
     repository = resolvedRepository revision
-    commitOid = resolvedCommitOid revision
     roots = [managedDecisionPath paths, managedConnectionPath paths]
+
+strictConfigObservation :: RawRepositoryConfigObservation -> Either RepositorySnapshotError RepositoryConfigObservation
+strictConfigObservation raw = do
+  config <- first configFailureSnapshotError (rawRepositoryConfigResult raw)
+  Right
+    RepositoryConfigObservation
+      { repositoryConfigOrigin = rawRepositoryConfigOrigin raw,
+        repositoryObservedConfig = config,
+        repositoryObservedManagedPaths = configManagedPaths config,
+        repositoryConfigEntry = rawRepositoryConfigEntry raw,
+        repositoryConfigBlob = rawRepositoryConfigBlob raw
+      }
+
+configFailureSnapshotError :: RepositoryConfigFailure -> RepositorySnapshotError
+configFailureSnapshotError failure =
+  case failure of
+    RepositoryConfigFailureInvalidUtf8 oid -> RepositorySnapshotConfigInvalidUtf8 oid
+    RepositoryConfigFailureParse oid problem -> RepositorySnapshotConfigParseError oid problem
+    RepositoryConfigFailureNotBlob entry -> RepositorySnapshotConfigNotBlob entry
+
+eitherToMaybe :: Either left right -> Maybe right
+eitherToMaybe (Left _) = Nothing
+eitherToMaybe (Right value) = Just value
 
 assembleObservation :: Map GitOid GitBlob -> GitTreeEntry -> Either RepositorySnapshotError RepositoryTreeObservation
 assembleObservation blobs entry

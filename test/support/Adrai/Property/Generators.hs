@@ -506,7 +506,7 @@ eventFor parents managed =
       | otherwise -> "decision.amend"
     ManagedConnection record ->
       case connectionPayload record of
-        AmendsConnection _ -> "decision.amend"
+        AmendsConnection _ -> "connection.amends"
         AppliesToConnection payload -> "scope." <> appliesToChange payload
         DomainsConnection payload -> "domain." <> domainsChange payload
         StatusConnection payload

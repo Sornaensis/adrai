@@ -15,7 +15,7 @@
       "pythonMethod": "test_immediate_commit_is_original_and_first_trunk_landing",
       "behaviorContract": "An operation committed directly on trunk records that commit as both its original introduction and first trunk landing.",
       "haskellTestName": "immediate commit is original and first trunk landing",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
+      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
       "state": "planned",
@@ -147,11 +147,11 @@
       "pythonMethod": "test_shallow_clone_marks_history_and_line_landings_incomplete",
       "behaviorContract": "A shallow clone reports incomplete history and line-landing provenance instead of claiming complete ancestry.",
       "haskellTestName": "shallow clone marks history and line landings incomplete",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
+      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
       "state": "partial",
-      "evidence": "P4-01 GitBatchTest asserts exact shallow-repository observation plus committed tree/blob reads. P4-02 RepositoryIsolationTest additionally resolves and observes a shallow clone strictly by commit OID while treating shallow state as advisory. Provenance and line-landing completeness remain unimplemented; Python was read statically and not executed."
+      "evidence": "P4-03 ColdCompilerTest compiles a real depth-1 clone, persists HISTORY_COVERAGE_INCOMPLETE, records history_complete=false, and retains valid semantic/search rows. Line-landing completeness remains P4-04, so this row remains partial; Python was read statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
@@ -349,7 +349,7 @@
       "haskellTestType": "e2e",
       "phaseOwner": "P6",
       "state": "partial",
-      "evidence": "P4-01 GitBatchTest asserts typed custom-root tree listing and exact committed blob reads. P4-02 RepositorySnapshotTest and RepositoryIsolationTest additionally parse the configuration from the same OID and select only the branch-local configured roots. Creation, document compilation, and search remain unimplemented; Python was read statically and not executed."
+      "evidence": "P4-01 GitBatchTest and P4-02 repository suites prove exact committed custom-root observation. P4-03 ColdCompilerTest relocates a complete sealed ADR into Unicode custom roots, compiles normalized/search rows, and persists those exact managed_source paths. Public creation and query commands remain P4-06; Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
@@ -360,7 +360,7 @@
       "haskellTestType": "e2e",
       "phaseOwner": "P6",
       "state": "partial",
-      "evidence": "P4-01 GitBatchTest asserts exact Unicode Git paths/blob bytes and strict UTF-8 decoding. P4-02 RepositorySnapshotTest additionally preserves Unicode configured roots, logical paths, repeated object IDs, and exact managed blob bytes. Document decoding, SQLite, FTS, vector, and search round-trips remain unimplemented; Python was read statically and not executed."
+      "evidence": "P4-01/P4-02 suites preserve exact Unicode Git paths, roots, and bytes. P4-03 ColdCompilerTest compiles Unicode custom roots through SQLite normalized/search/FTS storage. A Unicode decision-body and public vector-query round trip remain P4-06, so this row remains partial; Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",

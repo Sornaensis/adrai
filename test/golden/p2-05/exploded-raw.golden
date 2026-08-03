@@ -5,7 +5,7 @@
     {
       "items": [
         {
-          "event": "decision.amend",
+          "event": "connection.amends",
           "item": "C44444444444444444444444444",
           "metadata": {
             "added": [],
@@ -63,6 +63,7 @@
         "claimed_ms": 100,
         "context_digest": null,
         "events": [
+          "connection.amends",
           "decision.amend"
         ],
         "input_digest": null,

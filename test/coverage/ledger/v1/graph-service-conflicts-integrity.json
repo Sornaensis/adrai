@@ -382,11 +382,11 @@
       "pythonMethod": "test_reads_use_committed_tree_while_doctor_and_mutations_reject_dirty_managed_file",
       "behaviorContract": "Reads are isolated to the committed tree, while doctor and mutations explicitly reject a dirty managed worktree file.",
       "haskellTestName": "reads use committed tree while dirty mutations fail",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
+      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:50 (static prototype test)"
+      "state": "partial",
+      "evidence": "P4-02 RepositoryIsolationTest and P4-03 ColdCompilerTest prove exact-OID compilation ignores dirty managed worktree bytes. Public doctor and mutation rejection remain P4-06; Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
@@ -396,8 +396,8 @@
       "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:80 (static prototype test)"
+      "state": "covered",
+      "evidence": "P4-03 IntegrityAdversarialTest changes a typed connection rationale, recomputes its semantic digest, rebuilds the provenance capsule, reseals the managed document at the same path, and asserts persisted APPEND_ONLY_REWRITE with semantics gated; Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
@@ -407,8 +407,8 @@
       "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:108 (static prototype test)"
+      "state": "covered",
+      "evidence": "P4-03 IntegrityAdversarialTest deletes one member of a valid committed scope operation and asserts persisted MISSING_HISTORICAL_OBJECT plus INCOMPLETE_OPERATION with semantic/search rows gated; Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
@@ -418,8 +418,8 @@
       "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:118 (static prototype test)"
+      "state": "covered",
+      "evidence": "P4-03 IntegrityAdversarialTest performs a real-Git managed rename and asserts NON_CANONICAL_PATH plus MISSING_HISTORICAL_OBJECT in the diagnostic database; Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
@@ -429,8 +429,8 @@
       "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:129 (static prototype test)"
+      "state": "partial",
+      "evidence": "ManagedDocumentFormatTest and ProvenanceFormatTest reject malformed capsule data and digest mismatches, and P4-03 persists malformed managed input without crashing. Public doctor rendering remains P4-06; Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
@@ -440,74 +440,74 @@
       "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:142 (static prototype test)"
+      "state": "covered",
+      "evidence": "P4-03 IntegrityAdversarialTest commits a duplicate sealed decision at a second managed path and asserts DUPLICATE_OBJECT_ID plus deterministic semantic gating; Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_historical_revision_can_be_queried_after_head_is_corrupt",
       "behaviorContract": "A valid historical revision remains queryable even when the current HEAD contains corrupt managed data.",
       "haskellTestName": "historical revision remains queryable after HEAD corruption",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
+      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:152 (static prototype test)"
+      "state": "partial",
+      "evidence": "P4-03 ColdCompilerTest binds a healthy historical full OID, corrupts later HEAD, and still materializes normalized/search rows from the bound revision. Public query command behavior remains P4-06; Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_capsule_types_are_validated_even_when_semantic_hash_is_resealed",
       "behaviorContract": "Capsule field types are validated independently of a matching resealed semantic hash.",
       "haskellTestName": "resealed semantic hash cannot hide capsule type errors",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
+      "haskellTestPath": "test/unit/Adrai/ManagedDocumentFormatTest.hs",
+      "haskellTestType": "unit",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:166 (static prototype test)"
+      "state": "partial",
+      "evidence": "ProvenanceFormatTest and ManagedDocumentFormatTest independently reject closed-schema capsule type/key violations and semantic/object digest mismatches; P4-03 maps managed parse failures to stable diagnostics, but an exact resealed capsule-type cold-database fixture is still pending. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_resealed_decision_still_validates_human_readable_frontmatter",
       "behaviorContract": "Human-readable decision frontmatter remains subject to schema validation after an attacker reseals the document.",
       "haskellTestName": "resealed decision still validates frontmatter",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
+      "haskellTestPath": "test/unit/Adrai/ManagedDocumentFormatTest.hs",
+      "haskellTestType": "unit",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:185 (static prototype test)"
+      "state": "partial",
+      "evidence": "ManagedDocumentFormatTest exercises strict decision frontmatter, closed keys, canonical semantic rendering, and capsule validation; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT, but an exact resealed frontmatter cold-database fixture is still pending. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_resealed_connection_rejects_non_array_graph_fields",
       "behaviorContract": "Connection graph fields that require arrays reject scalar or object substitutions even when the document is resealed.",
       "haskellTestName": "resealed connection rejects non-array graph fields",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
+      "haskellTestPath": "test/unit/Adrai/ManagedDocumentFormatTest.hs",
+      "haskellTestType": "unit",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:201 (static prototype test)"
+      "state": "partial",
+      "evidence": "ManagedDocumentFormatTest exercises strict typed connection arrays and canonical relation payloads; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT and blocks semantics, but an exact resealed non-array cold-database fixture is still pending. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_operation_members_must_share_prompt_input_and_context_digests",
       "behaviorContract": "Every object in one operation must share identical prompt, input, and context provenance digests.",
       "haskellTestName": "operation members share provenance digests",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
+      "haskellTestPath": "test/unit/Adrai/CompilerSnapshotTest.hs",
+      "haskellTestType": "unit",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:223 (static prototype test)"
+      "state": "covered",
+      "evidence": "P4-03 CompilerSnapshotTest changes one member's ProvenanceInputs and shared timestamp independently and asserts INCONSISTENT_OPERATION_CAPSULE through the extracted OperationContext validator. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_unavailable_basis_commit_is_explicitly_reported",
       "behaviorContract": "An operation that cites a basis commit unavailable from the repository is diagnosed explicitly rather than silently accepted.",
       "haskellTestName": "unavailable basis commit is explicit",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
+      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:237 (static prototype test)"
+      "state": "covered",
+      "evidence": "P4-03 ColdCompilerTest covers both missing and present-noncommit basis OIDs and asserts stable BASIS_COMMIT_UNAVAILABLE warnings without blocking semantic rows. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
@@ -517,63 +517,63 @@
       "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:248 (static prototype test)"
+      "state": "covered",
+      "evidence": "GraphTest missing-parent coverage and P4-03 IntegrityAdversarialTest's orphan amendment/zero-head fixture persist graph-origin errors and block semantic/search rows. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_scope_self_cycle_and_invalid_delta_are_diagnosed",
       "behaviorContract": "Scope reduction diagnoses self-cycles and deltas whose additions and removals do not form a valid transition.",
       "haskellTestName": "scope self-cycle and invalid delta are diagnosed",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
+      "haskellTestPath": "test/unit/Adrai/GraphTest.hs",
+      "haskellTestType": "unit",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:278 (static prototype test)"
+      "state": "partial",
+      "evidence": "GraphTest compound malformed records asserts SCOPE_CYCLE and SCOPE_DELTA_MISMATCH together; P4-03 maps graph issues into strict compiler diagnostics, but an exact persisted cold-database fixture for this pair is still pending. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_domain_refinement_mapping_must_match_the_committed_delta",
       "behaviorContract": "The declared domain refinement mapping must exactly explain the committed domain delta.",
       "haskellTestName": "domain refinement mapping matches committed delta",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
+      "haskellTestPath": "test/unit/Adrai/GraphTest.hs",
+      "haskellTestType": "unit",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:306 (static prototype test)"
+      "state": "partial",
+      "evidence": "GraphTest refinementAndReplacementDiagnostics asserts DOMAIN_REFINEMENT_MISMATCH and P4-03 maps the same reducer output into strict graph-origin diagnostics, but an exact persisted cold-database refinement fixture is still pending. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_status_with_unknown_replacement_is_diagnosed_even_when_well_sealed",
       "behaviorContract": "An obsolete status pointing to an unknown replacement ADR is diagnosed even when the status object is otherwise correctly sealed.",
       "haskellTestName": "unknown status replacement is diagnosed",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
+      "haskellTestPath": "test/unit/Adrai/GraphTest.hs",
+      "haskellTestType": "unit",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:332 (static prototype test)"
+      "state": "partial",
+      "evidence": "GraphTest refinementAndReplacementDiagnostics asserts MISSING_REPLACEMENT_ADR for a typed status record and P4-03 maps reducer issues into strict compiler diagnostics, but an exact persisted cold-database replacement fixture is still pending. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_status_event_and_state_mismatch_is_detected",
       "behaviorContract": "A status event whose declared transition disagrees with its stored state is detected as an integrity violation.",
       "haskellTestName": "status event and state mismatch is detected",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
+      "haskellTestPath": "test/unit/Adrai/CompilerSnapshotTest.hs",
+      "haskellTestType": "unit",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:353 (static prototype test)"
+      "state": "covered",
+      "evidence": "P4-03 CompilerSnapshotTest mutates the exact status event independently of the typed status payload and asserts STATUS_EVENT_KIND_MISMATCH. Python was reviewed statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
       "pythonMethod": "test_cross_adr_operation_group_is_rejected",
       "behaviorContract": "One operation group cannot contain objects belonging to different ADR identities.",
       "haskellTestName": "cross-ADR operation group is rejected",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
+      "haskellTestPath": "test/unit/Adrai/CompilerSnapshotTest.hs",
+      "haskellTestType": "unit",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_integrity_adversarial.py:367 (static prototype test)"
+      "state": "covered",
+      "evidence": "P4-03 CompilerSnapshotTest groups otherwise valid members across two ADR identities and asserts CROSS_ADR_OPERATION. Python was reviewed statically and not executed."
     }
   ]
 }

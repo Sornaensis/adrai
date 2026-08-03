@@ -7,6 +7,9 @@ import qualified Adrai.CompilerMaterializationGoldenTest
 import qualified Adrai.CompilerMaterializationProperties
 import qualified Adrai.CompilerMaterializationTest
 import qualified Adrai.CompilerSearchSqliteTest
+import qualified Adrai.CompilerSnapshotTest
+import qualified Adrai.ColdCompilerTest
+import qualified Adrai.ColdCompilerGoldenTest
 import qualified Adrai.CurrentSearchTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
@@ -26,6 +29,7 @@ import qualified Adrai.GitBatchTest
 import qualified Adrai.GitDiscoveryTest
 import qualified Adrai.GitTest
 import qualified Adrai.IdentityTest
+import qualified Adrai.IntegrityAdversarialTest
 import qualified Adrai.IntegrityTest
 import qualified Adrai.ManagedDocumentFormatTest
 import qualified Adrai.ManagedPathContractTest
@@ -83,6 +87,7 @@ main = do
     ["--write-p3-04-goldens"] -> Adrai.SearchResultGoldenTest.writeP304Goldens
     ["--write-p3-05-goldens"] -> Adrai.RelevanceGoldenTest.writeP305Goldens
     ["--write-p3-06-goldens"] -> Adrai.P306QualityGoldenTest.writeP306Goldens
+    ["--write-p4-03-goldens"] -> Adrai.ColdCompilerGoldenTest.writeP403Goldens
     _ -> defaultMain tests
 
 tests :: TestTree
@@ -186,5 +191,12 @@ tests =
           [ Adrai.RepositoryTest.tests,
             Adrai.RepositorySnapshotTest.tests,
             Adrai.RepositoryIsolationTest.tests
+          ],
+      testGroup
+          "P4-03"
+          [ Adrai.ColdCompilerGoldenTest.tests,
+            Adrai.CompilerSnapshotTest.tests,
+            Adrai.ColdCompilerTest.tests,
+            Adrai.IntegrityAdversarialTest.tests
           ]
     ]

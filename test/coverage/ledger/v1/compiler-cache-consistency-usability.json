@@ -67,9 +67,10 @@
       "haskellTestPath": "test/integration/Adrai/CompilerCacheTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P5",
-      "state": "planned",
+      "state": "partial",
       "evidence": [
-        "ADRAI_1_Source/tests/test_usability_refinements.py:151-176"
+        "ADRAI_1_Source/tests/test_usability_refinements.py:151-176",
+        "P4-03 ColdCompilerTest and IntegrityAdversarialTest create valid/conflict or diagnostic-only adrai-cache/1 databases and never classify integrity errors as ADR_CONFLICT. The cold transaction verifies exact meta plus every declared normalized/search/FTS table count and key projection before commit. Shared published cache and doctor consumption remain P4-05/P4-06; Python was not executed."
       ]
     },
     {
@@ -258,7 +259,8 @@
       "state": "partial",
       "evidence": [
         "ADRAI_1_Source/tests/test_incremental_compiler.py:21-39",
-        "test/fixtures/contracts/v1/search/production-stress-compact.json:23-45"
+        "test/fixtures/contracts/v1/search/production-stress-compact.json:23-45",
+        "P4-03 ColdCompilerTest and SQLite-derived goldens prove the cold half: every selected document is parsed into a fresh caller-owned database, exact meta and all declared normalized/search/FTS counts and key projections are verified transactionally, and independent cold builds have identical logical rows and fingerprints. Exact-hit reuse, publication, inode, and mtime preservation remain P4-05."
       ]
     },
     {
