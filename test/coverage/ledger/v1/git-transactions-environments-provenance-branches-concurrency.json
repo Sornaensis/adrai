@@ -150,8 +150,8 @@
       "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
       "haskellTestType": "integration",
       "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_shallow_clone_marks_history_and_line_landings_incomplete; Python not executed."
+      "state": "partial",
+      "evidence": "P4-01 GitBatchTest asserts exact shallow-repository observation plus committed tree/blob reads. Provenance and line-landing completeness remain unimplemented; Python was read statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
@@ -304,8 +304,8 @@
       "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
       "haskellTestType": "e2e",
       "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "Static read of test_repository_environments.py::test_linked_worktree_commits_only_its_branch_and_uses_common_lock; Python not executed."
+      "state": "partial",
+      "evidence": "P4-01 GitDiscoveryTest asserts per-worktree git-dir, shared common-dir, command directory, and ordinary/bare-origin linked classification. Branch mutation and repository locking remain unimplemented; Python was read statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
@@ -326,8 +326,8 @@
       "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
       "haskellTestType": "e2e",
       "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "Static read of test_repository_environments.py::test_sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns; Python not executed."
+      "state": "partial",
+      "evidence": "P4-01 GitBatchTest asserts committed tree/blob observation outside sparse patterns. ADR creation, compilation, and query behavior remain unimplemented; Python was read statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
@@ -337,8 +337,8 @@
       "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
       "haskellTestType": "e2e",
       "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "Static read of test_repository_environments.py::test_symlinked_managed_parent_cannot_escape_repository; Python not executed."
+      "state": "partial",
+      "evidence": "P4-01 GitBatchTest always asserts regular/non-file read containment and, when the platform permits test link creation, in-root link acceptance plus outside/dangling link rejection; the portable ManagedPath suite independently asserts write-side redirection rejection. Mutation E2E behavior and cross-platform reparse coverage remain unimplemented; Python was read statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
@@ -348,8 +348,8 @@
       "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
       "haskellTestType": "e2e",
       "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "Static read of test_repository_environments.py::test_custom_committed_roots_compile_and_search; Python not executed."
+      "state": "partial",
+      "evidence": "P4-01 GitBatchTest asserts typed custom-root tree listing and exact committed blob reads. Compilation and search remain unimplemented; Python was read statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
@@ -359,8 +359,8 @@
       "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
       "haskellTestType": "e2e",
       "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "Static read of test_repository_environments.py::test_unicode_content_round_trips_through_git_sqlite_fts_and_vector_search; Python not executed."
+      "state": "partial",
+      "evidence": "P4-01 GitBatchTest asserts exact Unicode Git paths/blob bytes and strict UTF-8 decoding. SQLite, FTS, vector, and search round-trips remain unimplemented; Python was read statically and not executed."
     },
     {
       "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",

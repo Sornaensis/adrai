@@ -11,7 +11,9 @@
 -- must still avoid introducing a check/write race of its own.
 module Adrai.ManagedPath
   ( ManagedPathError (..),
+    ManagedReadPathError (..),
     resolveManagedWritePath,
+    resolveRepositoryReadPath,
     validateManagedRoots,
   )
 where
@@ -27,6 +29,7 @@ import qualified Data.Text as Text
 import System.Directory
   ( canonicalizePath,
     doesDirectoryExist,
+    doesFileExist,
     doesPathExist,
     pathIsSymbolicLink,
   )
@@ -52,6 +55,50 @@ data ManagedPathError
   | ManagedPathRootsOverlap FilePath FilePath
   | ManagedPathIoError FilePath String
   deriving (Eq, Show)
+
+-- | A read path may traverse a link only when its final regular-file target
+-- remains physically inside the repository.  This policy is intentionally
+-- separate from the stricter write resolver above.
+data ManagedReadPathError
+  = ManagedReadRootMissing FilePath
+  | ManagedReadRootNotDirectory FilePath
+  | ManagedReadPathMissing FilePath
+  | ManagedReadPathNotRegular FilePath
+  | ManagedReadPathEscapesRoot FilePath FilePath
+  | ManagedReadIoError FilePath String
+  deriving (Eq, Show)
+
+resolveRepositoryReadPath :: FilePath -> RepoPath -> IO (Either ManagedReadPathError (RepoPath, FilePath))
+resolveRepositoryReadPath repositoryRoot repositoryPath = do
+  attempted <- tryIOError $ do
+    rootExists <- doesPathExist repositoryRoot
+    if not rootExists
+      then pure (Left (ManagedReadRootMissing repositoryRoot))
+      else do
+        rootIsDirectory <- doesDirectoryExist repositoryRoot
+        if not rootIsDirectory
+          then pure (Left (ManagedReadRootNotDirectory repositoryRoot))
+          else do
+            canonicalRoot <- canonicalizePath repositoryRoot
+            let candidate = normalise (foldl (</>) canonicalRoot (pathSegments repositoryPath))
+            candidateExists <- doesPathExist candidate
+            if not candidateExists
+              then pure (Left (ManagedReadPathMissing candidate))
+              else do
+                physical <- canonicalizePath candidate
+                regular <- doesFileExist physical
+                if not regular
+                  then pure (Left (ManagedReadPathNotRegular candidate))
+                  else
+                    pure
+                      ( if isContainedBy canonicalRoot physical
+                          then Right (repositoryPath, physical)
+                          else Left (ManagedReadPathEscapesRoot canonicalRoot physical)
+                      )
+  pure $
+    case attempted of
+      Left problem -> Left (ManagedReadIoError repositoryRoot (show problem))
+      Right result -> result
 
 -- | Resolve a typed repository-relative path below a repository root.
 --

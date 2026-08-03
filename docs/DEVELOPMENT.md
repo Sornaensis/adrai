@@ -2,13 +2,23 @@
 
 ADRAI is built and tested as a native Haskell project. The test suite includes unit, property, golden, integration, E2E, and shared `test/support` source directories. The protected Python prototype is a static reference only: development and tests must never execute or import it.
 
+## Read-only Git observation
+
+`Adrai.Git` is a low-level observation boundary. It discovers main worktrees, linked worktrees (including worktrees attached to bare common storage), and direct bare repositories; resolves a requested commit once; and returns exact tree and blob bytes. It does not parse ADRAI documents, reduce the graph, assemble a read snapshot, update SQLite, classify provenance, mutate refs, or implement public command schemas. Those semantics belong to later P4 and P6 work.
+
+Every runtime Git call uses `typed-process` with an explicit argument array. No command is interpreted by a shell, and resolved object reads accept full validated object IDs rather than user-controlled revision arguments. Git is the only external runtime program at this layer; libgit2 and compatibility subprocesses are not used.
+
+Object-info and blob requests are sorted, deduplicated, and split into batches of at most 256 objects. Each request is flushed and its response is parsed before the next request; the folding API retains at most one payload in addition to the caller's accumulator, while a concurrent drain retains only a bounded stderr diagnostic. The batch protocol verifies response order, full object IDs, object types, decimal sizes, payload lengths, framing newlines, and trailing bytes. Exact byte reads are distinct from the strict UTF-8 convenience API, which rejects invalid text rather than replacing it.
+
+The integration suite creates temporary real Git repositories using the same argv-only process rule. It covers spaces and Unicode, bare and linked layouts, sparse and shallow repositories, custom committed roots, strict path/blob decoding, and batch rollover. No `.git` fixture is committed. Worktree file reads resolve the final file physically: an in-repository link may be read while a link that escapes the canonical worktree is rejected. This read policy has an unavoidable check/read race and must not be reused for writes; `resolveManagedWritePath` retains its stricter component-by-component redirection policy.
+
 ## Deterministic fixture plans
 
 The production, large-stress, and relevance fixtures use the versioned `adrai-fixture-splitmix64/v1` algorithm and seed `260729`. This sequence is deliberately Haskell-owned and does not reproduce Python RNG bytes. The indexed retrieval fixture is deterministic by ADR index instead, and records generator `adrai-indexed-retrieval/v1` with seed `0`; it does not consume the SplitMix stream. Changing either tag or seed, the canonical compact summary, or its digest is a reviewed contract change.
 
 The support layer is pure. `productionShapeV1` and `largeStressV1` describe commit streams, `retrievalScaleV1` describes an indexed logical corpus, and `relevanceCorpusV1` describes focused semantic cases. None of them writes files, initializes Git, or calls the service. Later phases own interpreters:
 
-1. The Git interpreter materializes commits, parents, refs, checkouts, and merges.
+1. A later Git fixture interpreter materializes commits, parents, refs, checkouts, and merges; P4-01 only supplies read-only Git facts and bytes.
 2. The service interpreter creates canonical ADRAI operations through public Haskell APIs.
 3. Integration and E2E suites verify the materialized repository against the plan invariants.
 

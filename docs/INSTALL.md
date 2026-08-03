@@ -1,3 +1,7 @@
 # Installation
 
-ADRAI is currently a Haskell project scaffold and does not yet provide an installable release. Detailed platform prerequisites, build steps, and release installation instructions will be added after the corresponding implementation and packaging work is verified.
+ADRAI does not yet provide an installable release. Packaging and release installation instructions remain deferred.
+
+The implemented read-only repository layer has one external runtime prerequisite: Git 2.31 or newer, including support for `git rev-parse --path-format=absolute`. Git is invoked directly with argument arrays; no shell, Python runtime, or libgit2 installation is required.
+
+Building from source additionally requires the pinned Stack/GHC toolchain described by `stack.yaml`. Stack and GHC are build-time dependencies, not runtime prerequisites of repository observation.

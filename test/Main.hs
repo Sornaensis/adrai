@@ -22,6 +22,9 @@ import qualified Adrai.FormatProperties
 import qualified Adrai.GoldenFixturesTest
 import qualified Adrai.GraphProperties
 import qualified Adrai.GraphTest
+import qualified Adrai.GitBatchTest
+import qualified Adrai.GitDiscoveryTest
+import qualified Adrai.GitTest
 import qualified Adrai.IdentityTest
 import qualified Adrai.IntegrityTest
 import qualified Adrai.ManagedDocumentFormatTest
@@ -168,5 +171,11 @@ tests =
             Adrai.RetrievalScaleTest.tests,
             Adrai.SearchVectorCorpusTest.tests,
             Adrai.SearchVectorReuseTest.tests
+          ],
+      testGroup
+          "P4-01"
+          [ Adrai.GitTest.tests,
+            Adrai.GitDiscoveryTest.tests,
+            Adrai.GitBatchTest.tests
           ]
     ]
