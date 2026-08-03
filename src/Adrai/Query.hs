@@ -40,27 +40,61 @@ module Adrai.Query
     compareSnapshots,
     compareProjectionJson,
     renderCompareProjection,
+    SearchRequest (..),
+    defaultSearchRequest,
+    SearchError (..),
+    ScopeFilterMatch (..),
+    SearchMatches (..),
+    SearchResult (..),
+    SearchProjection (..),
+    domainsMatchRequested,
+    semanticSummaryText,
+    searchDocumentLexicalFields,
+    sortCandidateIds,
+    chooseBestByAdr,
+    sortLogicalAdrs,
+    runCurrentSearch,
+    searchProjectionJson,
+    renderSearchProjection,
   )
 where
 
-import Adrai.Domain (Domain, domainRefinementText, domainText)
+import Adrai.Domain (Domain, DomainError, canonicalDomains, domainIsWithin, domainRefinementText, domainText)
 import Adrai.Format (renderDigest)
 import Adrai.Format.Document
 import Adrai.Format.Json
 import Adrai.Graph
 import Adrai.History
 import Adrai.Provenance
-import Adrai.Scope (ScopePattern, scopePatternText)
+import Adrai.Retrieval
+import Adrai.Scope (ScopePattern, scopeMatches, scopePatternText)
+import Adrai.Sqlite
+  ( FtsHit (..),
+    RetrievalSqlError,
+    SummaryFtsCandidates (..),
+    mkCandidateLimit,
+    runSummaryFtsChannels,
+  )
 import Adrai.Types
+import Adrai.Vector
+  ( DenseVector,
+    VectorError,
+    dot,
+    identifierEmbedding,
+    semanticEmbedding,
+  )
 import Data.Array (Array, (!), listArray)
 import Data.ByteString (ByteString)
-import Data.List (find, sort, sortOn)
+import Data.List (find, sort, sortBy, sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
+import Data.Ord (Down (..), comparing)
 import qualified Data.Set as Set
+import Data.Set (Set)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Database.SQLite.Simple (Connection)
 
 data ProjectionMode = CompactProjection | RichProjection
   deriving (Eq, Ord, Show)
@@ -224,6 +258,109 @@ data QueryError
   | QuerySnapshotInvalid SnapshotConsistencyError
   deriving (Eq, Show)
 
+-- Search ---------------------------------------------------------------------
+
+data SearchRequest = SearchRequest
+  { searchRequestQuery :: Text,
+    searchRequestMode :: RetrievalMode,
+    searchRequestView :: ViewMode,
+    searchRequestIncludeObsolete :: Bool,
+    searchRequestDomains :: [Text],
+    searchRequestFile :: Maybe RepoPath,
+    searchRequestActor :: Maybe ActorSelector,
+    searchRequestSince :: Maybe Integer,
+    searchRequestUntil :: Maybe Integer,
+    searchRequestLimit :: Int,
+    searchRequestShallowHistory :: Bool
+  }
+  deriving (Eq, Show)
+
+defaultSearchRequest :: Text -> SearchRequest
+defaultSearchRequest query =
+  SearchRequest
+    { searchRequestQuery = query,
+      searchRequestMode = HybridRetrieval,
+      searchRequestView = CollapsedView,
+      searchRequestIncludeObsolete = False,
+      searchRequestDomains = [],
+      searchRequestFile = Nothing,
+      searchRequestActor = Nothing,
+      searchRequestSince = Nothing,
+      searchRequestUntil = Nothing,
+      searchRequestLimit = 10,
+      searchRequestShallowHistory = False
+    }
+
+data SearchError
+  = SearchSnapshotInvalid SnapshotConsistencyError
+  | SearchInvalidLimit Int
+  | SearchUnsupportedView ViewMode
+  | SearchInvalidDomains DomainError
+  | SearchInvalidTimeRange Integer Integer
+  | SearchMaterializationMismatch Text
+  | SearchSqlFailure RetrievalSqlError
+  | SearchVectorFailure VectorError
+  deriving (Eq, Show)
+
+data ScopeFilterMatch = ScopeExact | ScopeAmbiguous | ScopeNone
+  deriving (Eq, Ord, Show)
+
+data SearchMatches = SearchMatches
+  { searchMatchFts :: Bool,
+    searchMatchVector :: Bool,
+    searchMatchFileScope :: Maybe ScopeFilterMatch,
+    searchMatchDomains :: [Text],
+    searchMatchActor :: Maybe Text,
+    searchMatchFields :: [Text],
+    searchMatchTerms :: [Text],
+    searchMatchExactPhraseFields :: [Text],
+    searchMatchIdentifierTerms :: [Text],
+    searchMatchChannelRanks :: Map RetrievalChannel Int,
+    searchMatchBestSection :: Maybe SectionKind,
+    searchMatchBestSectionScore :: Maybe Double
+  }
+  deriving (Eq, Show)
+
+data SearchResult = SearchResult
+  { searchResultAdr :: AdrId,
+    searchResultRecord :: Maybe RecordId,
+    searchResultMatchedCandidate :: Maybe Text,
+    searchResultMatchedRecord :: Maybe RecordId,
+    searchResultMatchedTitle :: Maybe Text,
+    searchResultMatchedSummary :: Maybe Text,
+    searchResultTitle :: Text,
+    searchResultSummary :: Text,
+    searchResultDomains :: [Text],
+    searchResultAppliesTo :: [Text],
+    searchResultStatus :: Text,
+    searchResultObsolete :: Bool,
+    searchResultReplacement :: Maybe AdrId,
+    searchResultConflict :: Maybe Text,
+    searchResultResolution :: ResolutionState,
+    searchResultStateToken :: StateToken,
+    searchResultScore :: Double,
+    searchResultFtsScore :: Double,
+    searchResultVectorScore :: Double,
+    searchResultIdentifierVectorScore :: Double,
+    searchResultSourcePaths :: [Text],
+    searchResultMatches :: SearchMatches,
+    searchResultRetrieval :: JsonValue,
+    searchResultCounts :: ProjectionCounts,
+    searchResultScopeAmbiguous :: Bool,
+    searchResultDomainAmbiguous :: Bool,
+    searchResultConflicted :: Bool,
+    searchResultShallowHistory :: Bool
+  }
+  deriving (Eq, Show)
+
+data SearchProjection = SearchProjection
+  { searchProjectionRevision :: RevisionIdentity,
+    searchProjectionMode :: RetrievalMode,
+    searchProjectionLimit :: Int,
+    searchProjectionResults :: [SearchResult]
+  }
+  deriving (Eq, Show)
+
 projectCollapsed :: ProjectionMode -> ReadSnapshot -> AdrId -> Either QueryError CollapsedProjection
 projectCollapsed mode snapshot adr = do
   validateQuerySnapshot snapshot
@@ -238,8 +375,8 @@ materializeCollapsed mode snapshot reduced =
       collapsedMode = mode,
       collapsedAdr = reducedAdrId reduced,
       collapsedRecord = decisionRecord <$> effectiveDecision,
-      collapsedTitle = maybe "[conflicted ADR]" decisionTitle effectiveDecision,
-      collapsedSummary = maybe conflictSummary decisionSummary effectiveDecision,
+      collapsedTitle = logicalDecisionTitle reduced,
+      collapsedSummary = logicalDecisionSummary reduced,
       collapsedBody = maybe conflictBody (Text.strip . decisionBody) effectiveDecision,
       collapsedDomains = map domainText (axisResolutionEffective (reducedDomainAxis reduced)),
       collapsedAppliesTo = map scopePatternText effectiveScope,
@@ -262,13 +399,30 @@ materializeCollapsed mode snapshot reduced =
           decision <- reducedDecisionHistory reduced,
           decisionRecord decision == identifier
       ]
-    conflictSummary = Text.intercalate "; " (map decisionSummary decisionCandidates)
     conflictBody = Text.intercalate "\n\n" (map (Text.strip . decisionBody) decisionCandidates)
     scopeAxis = reducedScopeAxis reduced
     effectiveScope = if axisProjectionResolved scopeAxis then axisResolutionEffective scopeAxis else []
     statusAxis = reducedStatusAxis reduced
     effectiveStatus = if axisProjectionResolved statusAxis then axisResolutionEffective statusAxis else Nothing
     resolution = resolutionFor snapshot reduced
+
+logicalDecisionTitle :: ReducedAdr -> Text
+logicalDecisionTitle reduced =
+  maybe "[conflicted ADR]" decisionTitle (axisResolutionEffective (reducedDecisionAxis reduced))
+
+logicalDecisionSummary :: ReducedAdr -> Text
+logicalDecisionSummary reduced =
+  maybe conflictSummary decisionSummary (axisResolutionEffective (reducedDecisionAxis reduced))
+  where
+    conflictSummary = Text.intercalate "; " (map decisionSummary (logicalDecisionCandidates reduced))
+
+logicalDecisionCandidates :: ReducedAdr -> [DecisionRecord]
+logicalDecisionCandidates reduced =
+  [ decision
+    | identifier <- axisResolutionHeads (reducedDecisionAxis reduced),
+      decision <- reducedDecisionHistory reduced,
+      decisionRecord decision == identifier
+  ]
 
 axisProjectionResolved :: AxisResolution identifier effective -> Bool
 axisProjectionResolved resolution = length (axisResolutionHeads resolution) == 1 && axisResolutionConflict resolution == Nothing
@@ -912,6 +1066,597 @@ adrVisible :: Bool -> ReducedAdr -> Bool
 adrVisible includeObsolete reduced =
   includeObsolete || case axisResolutionEffective (reducedStatusAxis reduced) of Just status -> reducedStatusState status /= StatusObsolete; Nothing -> True
 
+data SearchFilterInfo = SearchFilterInfo
+  { filterScopeMatch :: Maybe ScopeFilterMatch,
+    filterDomains :: [Text],
+    filterActor :: Maybe Text
+  }
+
+data SearchVectorDiagnostics = SearchVectorDiagnostics
+  { vectorDiagnosticAlgorithm :: Text,
+    vectorDiagnosticSummaryCorpus :: Int,
+    vectorDiagnosticSectionCandidates :: Int,
+    vectorDiagnosticSectionsScanned :: Int,
+    vectorDiagnosticIdentifierCorpus :: Maybe Int
+  }
+
+runCurrentSearch :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchRequest -> IO (Either SearchError SearchProjection)
+runCurrentSearch connection snapshot materialization request =
+  case prepareSearch snapshot materialization request of
+    Left problem -> pure (Left problem)
+    Right (requestedDomains, reducedByAdr, documentsById, filterInfo, allowedItems)
+      | Text.null (Text.strip (searchRequestQuery request)) ->
+          pure
+            ( Right
+                SearchProjection
+                  { searchProjectionRevision = readSnapshotRevision snapshot,
+                    searchProjectionMode = searchRequestMode request,
+                    searchProjectionLimit = searchRequestLimit request,
+                    searchProjectionResults =
+                      take (searchRequestLimit request)
+                        [ blankSearchResult snapshot request reduced documentsById info
+                          | (adr, info) <- Map.toAscList filterInfo,
+                            Just reduced <- [Map.lookup adr reducedByAdr]
+                        ]
+                  }
+            )
+      | otherwise -> do
+          let plan = buildQueryPlan (searchRequestQuery request) (sortOn fst (searchMaterializationAliases materialization))
+          ftsOutcome <- runRequestedFts connection request plan allowedItems
+          pure $ do
+            (ftsChannels, ftsPrefixUsed) <- ftsOutcome
+            let allowedDocuments = Map.restrictKeys documentsById allowedItems
+            (semanticScores, identifierScores, sectionDetails, vectorDiagnostics) <-
+              buildRequestedVectorScores request plan allowedDocuments (searchMaterializationPassages materialization) ftsChannels
+            let channels = finalChannels (searchRequestMode request) ftsChannels semanticScores identifierScores
+                fusedBase = weightedReciprocalRankFusion (queryPlanWeights plan) channels
+                baseOrder = sortCandidateIds fusedBase semanticScores ftsChannels
+                rerankTarget = fieldRerankLimit (length baseOrder) (searchRequestLimit request)
+                initiallyReranked = Set.fromList (take rerankTarget baseOrder)
+                rerankedAdrs =
+                  Set.fromList
+                    [ searchDocumentAdrId document
+                      | itemId <- Set.toList initiallyReranked,
+                        Just document <- [Map.lookup itemId allowedDocuments]
+                    ]
+                rerankIds =
+                  Set.fromList
+                    [ itemId
+                      | (itemId, document) <- Map.toList allowedDocuments,
+                        Set.member itemId (Map.keysSet fusedBase),
+                        Set.member (searchDocumentAdrId document) rerankedAdrs
+                    ]
+                evidenceByItem =
+                  Map.fromList
+                    [ (itemId, lexicalEvidence plan (searchDocumentLexicalFields document))
+                      | itemId <- Set.toAscList rerankIds,
+                        Just document <- [Map.lookup itemId allowedDocuments]
+                    ]
+                fused = Map.mapWithKey (applyRerank evidenceByItem) fusedBase
+                rankedItems = sortCandidateIds fused semanticScores ftsChannels
+                bestByAdr = chooseBestByAdr rankedItems allowedDocuments
+                rankedAdrs =
+                  take
+                    (searchRequestLimit request)
+                    (sortLogicalAdrs bestByAdr fused semanticScores)
+                ftsDiagnostics = ftsDiagnosticsJson plan ftsPrefixUsed ftsChannels
+                retrieval =
+                  retrievalDiagnosticsJson
+                    (searchRequestMode request)
+                    plan
+                    ftsDiagnostics
+                    vectorDiagnostics
+                    (Set.size rerankIds)
+                results =
+                  [ buildSearchResult
+                      snapshot
+                      request
+                      requestedDomains
+                      reduced
+                      info
+                      document
+                      evidenceByItem
+                      fused
+                      ftsChannels
+                      semanticScores
+                      identifierScores
+                      sectionDetails
+                      retrieval
+                    | adr <- rankedAdrs,
+                      Just itemId <- [Map.lookup adr bestByAdr],
+                      Just document <- [Map.lookup itemId allowedDocuments],
+                      Just reduced <- [Map.lookup adr reducedByAdr],
+                      Just info <- [Map.lookup adr filterInfo]
+                  ]
+            Right
+              SearchProjection
+                { searchProjectionRevision = readSnapshotRevision snapshot,
+                  searchProjectionMode = searchRequestMode request,
+                  searchProjectionLimit = searchRequestLimit request,
+                  searchProjectionResults = results
+                }
+
+prepareSearch :: ReadSnapshot -> SearchMaterialization -> SearchRequest -> Either SearchError ([Domain], Map AdrId ReducedAdr, Map Text SearchDocument, Map AdrId SearchFilterInfo, Set Text)
+prepareSearch snapshot materialization request = do
+  mapLeft SearchSnapshotInvalid (validateReadSnapshot snapshot)
+  validateSearchRequest request
+  requestedDomains <- mapLeft SearchInvalidDomains (canonicalDomains (searchRequestDomains request))
+  mapM_ (validateDocument reducedByAdr) (searchMaterializationDocuments materialization)
+  let filterInfo =
+        Map.fromList
+          [ (reducedAdrId reduced, info)
+            | reduced <- Map.elems reducedByAdr,
+              Just info <- [searchFilterInfo snapshot request requestedDomains reduced]
+          ]
+      allowedAdrs = Map.keysSet filterInfo
+      allowedItems =
+        Set.fromList
+          [ itemId
+            | (itemId, document) <- Map.toList documentsById,
+              Set.member (searchDocumentAdrId document) allowedAdrs
+          ]
+  Right (requestedDomains, reducedByAdr, documentsById, filterInfo, allowedItems)
+  where
+    reducedByAdr = Map.fromList [(reducedAdrId reduced, reduced) | reduced <- graphReductionAdrs (readSnapshotReduction snapshot)]
+    documentsById = Map.fromList [(searchDocumentItemId document, document) | document <- searchMaterializationDocuments materialization]
+    validateDocument reductions document =
+      case Map.lookup (searchDocumentAdrId document) reductions of
+        Nothing -> Left (SearchMaterializationMismatch (searchDocumentItemId document <> " refers to an ADR outside the snapshot"))
+        Just reduced
+          | searchDocumentStateToken document /= reducedStateToken reduced ->
+              Left (SearchMaterializationMismatch (searchDocumentItemId document <> " has a stale state token"))
+          | otherwise -> Right ()
+
+validateSearchRequest :: SearchRequest -> Either SearchError ()
+validateSearchRequest request
+  | searchRequestView request /= CollapsedView = Left (SearchUnsupportedView (searchRequestView request))
+  | searchRequestLimit request < 1 || searchRequestLimit request > 1000 = Left (SearchInvalidLimit (searchRequestLimit request))
+  | Just since <- searchRequestSince request,
+    Just untilBound <- searchRequestUntil request,
+    since > untilBound = Left (SearchInvalidTimeRange since untilBound)
+  | otherwise = Right ()
+
+searchFilterInfo :: ReadSnapshot -> SearchRequest -> [Domain] -> ReducedAdr -> Maybe SearchFilterInfo
+searchFilterInfo snapshot request requestedDomains reduced
+  | not (adrVisible (searchRequestIncludeObsolete request) reduced) = Nothing
+  | not domainsMatch = Nothing
+  | searchRequestFile request /= Nothing && scopeMatch == Just ScopeNone = Nothing
+  | not actorMatches = Nothing
+  | not sinceMatches = Nothing
+  | not untilMatches = Nothing
+  | otherwise =
+      Just
+        SearchFilterInfo
+          { filterScopeMatch = scopeMatch,
+            filterDomains = map domainText requestedDomains,
+            filterActor = actorSelectorText <$> searchRequestActor request
+          }
+  where
+    logicalDomains =
+      Set.toAscList . Set.fromList $
+        concatMap (`domainEffective` reduced) (axisResolutionHeads (reducedDomainAxis reduced))
+    domainsMatch = domainsMatchRequested requestedDomains logicalDomains
+    scopeMatch = logicalScopeMatch (searchRequestFile request) reduced
+    operationCapsule = do
+      decision <- axisResolutionEffective (reducedDecisionAxis reduced)
+      document <- find (matchesDecision (decisionRecord decision)) (readSnapshotDocuments snapshot)
+      pure (parsedManagedCapsule document)
+    actorMatches = case searchRequestActor request of
+      Nothing -> True
+      Just selector -> maybe False (actorMatchesSelector selector . provenanceActor) operationCapsule
+    claimed = maybe 0 provenanceTimestampMs operationCapsule
+    sinceMatches = maybe True (<= claimed) (searchRequestSince request)
+    untilMatches = maybe True (>= claimed) (searchRequestUntil request)
+    matchesDecision record document = case parsedManagedRecord document of
+      ManagedDecision decision -> decisionRecord decision == record
+      _ -> False
+
+-- | Domain eligibility is a canonical AND across requested ancestors.  Keeping
+-- this as a pure helper makes the filter-before-retrieval contract explicit and
+-- independently testable for input-order invariance.
+domainsMatchRequested :: [Domain] -> [Domain] -> Bool
+domainsMatchRequested requestedDomains logicalDomains =
+  all
+    (\requested -> any (`domainIsWithin` requested) logicalDomains)
+    requestedDomains
+
+logicalScopeMatch :: Maybe RepoPath -> ReducedAdr -> Maybe ScopeFilterMatch
+logicalScopeMatch Nothing _ = Nothing
+logicalScopeMatch (Just path) reduced
+  | length heads == 1 = Just (if matched then ScopeExact else ScopeNone)
+  | matched = Just ScopeAmbiguous
+  | otherwise = Just ScopeNone
+  where
+    heads = axisResolutionHeads (reducedScopeAxis reduced)
+    matched = any (`scopeMatches` path) (concatMap (`scopeEffective` reduced) heads)
+
+actorMatchesSelector :: ActorSelector -> Actor -> Bool
+actorMatchesSelector selector actor = actorKind actor == actorSelectorKind selector && actorId actor == actorSelectorId selector
+
+actorSelectorText :: ActorSelector -> Text
+actorSelectorText selector = actorKindProjectionText (actorSelectorKind selector) <> ":" <> actorSelectorId selector
+
+runRequestedFts :: Connection -> SearchRequest -> QueryPlan -> Set Text -> IO (Either SearchError (Map RetrievalChannel (Map Text Double), Bool))
+runRequestedFts connection request plan allowed
+  | searchRequestMode request == VectorRetrieval = pure (Right (Map.empty, False))
+  | otherwise =
+      case mkCandidateLimit (toInteger (searchRequestLimit request)) of
+        Left problem -> pure (Left (SearchSqlFailure problem))
+        Right candidateLimit -> do
+          result <- runSummaryFtsChannels connection plan allowed candidateLimit
+          pure (mapLeft SearchSqlFailure ((\candidates -> (summaryFtsChannelMaps candidates, summaryFtsPrefixUsed candidates)) <$> result))
+
+summaryFtsChannelMaps :: SummaryFtsCandidates -> Map RetrievalChannel (Map Text Double)
+summaryFtsChannelMaps candidates =
+  Map.fromList
+    [ (FtsPhraseChannel, hitMap (summaryFtsPhrase candidates)),
+      (FtsTermsChannel, hitMap (summaryFtsTerms candidates)),
+      (FtsStemmedChannel, hitMap (summaryFtsStemmed candidates)),
+      (FtsIdentifierChannel, hitMap (summaryFtsIdentifier candidates))
+    ]
+  where
+    hitMap = Map.fromList . map (\hit -> (ftsHitItemId hit, ftsHitScore hit))
+
+buildRequestedVectorScores :: SearchRequest -> QueryPlan -> Map Text SearchDocument -> [SearchPassage] -> Map RetrievalChannel (Map Text Double) -> Either SearchError (Map Text Double, Map Text Double, Map Text SemanticEvidence, SearchVectorDiagnostics)
+buildRequestedVectorScores request plan documents passages ftsChannels
+  | searchRequestMode request == FtsRetrieval =
+      Right
+        ( Map.empty,
+          Map.empty,
+          Map.empty,
+          SearchVectorDiagnostics "not-requested" (Map.size documents) 0 0 Nothing
+        )
+  | otherwise = do
+      let semanticQuery = semanticEmbedding (queryPlanSemanticText plan)
+          identifierQuery = identifierEmbedding (Text.unwords (searchRequestQuery request : queryPlanAliases plan))
+      summaryScores <- exactDocumentScores semanticEmbedding semanticQuery semanticSummaryText documents
+      -- P3-03 deliberately persists the normalized identifier stream.  Reuse
+      -- that frozen field rather than reconstructing or recursively expanding
+      -- the Python prototype's pre-normalized identifier source.
+      identifierScores <- exactDocumentScores identifierEmbedding identifierQuery searchDocumentIdentifiers documents
+      let preliminaryChannels =
+            Map.insert SemanticVectorChannel summaryScores
+              (Map.insert IdentifierVectorChannel identifierScores ftsChannels)
+          preliminary = weightedReciprocalRankFusion (queryPlanWeights plan) preliminaryChannels
+          forced = Set.unions [Set.fromList (take (forcedChannelLimit (searchRequestLimit request)) (rankRawChannel scores)) | scores <- Map.elems preliminaryChannels]
+          ordered = sortPreliminaryIds preliminary summaryScores identifierScores
+          shortlistTarget = sectionShortlistLimit (Map.size documents) (searchRequestLimit request)
+          shortlist = fillCandidateSet shortlistTarget forced ordered
+          candidatePassages = [passage | passage <- passages, Set.member (searchPassageDocumentItemId passage) shortlist]
+          passagesByItem = Map.fromListWith (<>) [(searchPassageDocumentItemId passage, [passage]) | passage <- candidatePassages]
+      details <-
+        traverse
+          (scoreCandidate semanticQuery summaryScores passagesByItem)
+          (Map.fromSet id shortlist)
+      let semanticScores = Map.map semanticEvidenceScore details
+      Right
+        ( semanticScores,
+          identifierScores,
+          details,
+          SearchVectorDiagnostics
+            "exact-summary+bounded-exact-sections"
+            (Map.size summaryScores)
+            (Set.size shortlist)
+            (length candidatePassages)
+            (Just (Map.size identifierScores))
+        )
+  where
+    scoreCandidate semanticQuery summaryScores passagesByItem itemId = do
+      sectionScores <-
+        traverse
+          (scorePassage semanticQuery)
+          (Map.findWithDefault [] itemId passagesByItem)
+      let summaryScore = Map.findWithDefault (negate (1 / 0)) itemId summaryScores
+      Right (detailedSemanticScore summaryScore sectionScores)
+
+exactDocumentScores :: (Text -> DenseVector) -> DenseVector -> (SearchDocument -> Text) -> Map Text SearchDocument -> Either SearchError (Map Text Double)
+exactDocumentScores embedDocument queryVector documentText =
+  traverse
+    (mapLeft SearchVectorFailure . dot queryVector . embedDocument . documentText)
+
+semanticSummaryText :: SearchDocument -> Text
+semanticSummaryText document =
+  Text.intercalate
+    "\n"
+    ( filter
+        (not . Text.null . Text.strip)
+        [ searchDocumentTitle document,
+          searchDocumentSummary document,
+          searchDocumentDecision document,
+          Text.unwords (searchDocumentDomains document),
+          searchDocumentRationale document
+        ]
+    )
+
+scorePassage :: DenseVector -> SearchPassage -> Either SearchError SemanticSectionScore
+scorePassage queryVector passage = do
+  raw <- mapLeft SearchVectorFailure (dot queryVector (semanticEmbedding (searchPassageText passage)))
+  Right
+    SemanticSectionScore
+      { semanticSectionKind = searchPassageSectionKind passage,
+        semanticSectionId = searchPassageId passage,
+        semanticSectionText = searchPassageText passage,
+        semanticSectionScore = raw * searchPassageWeight passage
+      }
+
+rankRawChannel :: Map Text Double -> [Text]
+rankRawChannel = map fst . sortBy (comparing (Down . snd) <> comparing (Down . fst)) . Map.toList
+
+sortPreliminaryIds :: Map Text RrfEvidence -> Map Text Double -> Map Text Double -> [Text]
+sortPreliminaryIds fused semanticScores identifierScores =
+  sortBy
+    ( comparing (Down . score)
+        <> comparing (Down . semantic)
+        <> comparing (Down . identifier)
+        <> comparing Down
+    )
+    (Map.keys fused)
+  where
+    score item = maybe (negate (1 / 0)) rrfScore (Map.lookup item fused)
+    semantic item = Map.findWithDefault (negate (1 / 0)) item semanticScores
+    identifier item = Map.findWithDefault (negate (1 / 0)) item identifierScores
+
+fillCandidateSet :: Int -> Set Text -> [Text] -> Set Text
+fillCandidateSet target = foldl add
+  where
+    add selected item
+      | Set.size selected >= target = selected
+      | otherwise = Set.insert item selected
+
+finalChannels :: RetrievalMode -> Map RetrievalChannel (Map Text Double) -> Map Text Double -> Map Text Double -> Map RetrievalChannel (Map Text Double)
+finalChannels mode fts semanticScores identifierScores =
+  Map.fromList
+    [ (channel, scores)
+      | channel <- retrievalModeChannels mode,
+        let scores = case channel of
+              SemanticVectorChannel -> semanticScores
+              IdentifierVectorChannel -> identifierScores
+              _ -> Map.findWithDefault Map.empty channel fts,
+        not (Map.null scores)
+    ]
+
+applyRerank :: Map Text LexicalEvidence -> Text -> RrfEvidence -> RrfEvidence
+applyRerank evidenceByItem itemId evidence =
+  case Map.lookup itemId evidenceByItem of
+    Nothing -> evidence
+    Just lexical ->
+      evidence
+        { rrfScore =
+            rrfScore evidence
+              + lexicalBonus lexical
+              + agreementBonus (Map.size (rrfChannelRanks evidence))
+        }
+
+sortCandidateIds :: Map Text RrfEvidence -> Map Text Double -> Map RetrievalChannel (Map Text Double) -> [Text]
+sortCandidateIds fused semanticScores ftsChannels =
+  sortBy
+    ( comparing (Down . fusedScore)
+        <> comparing (Down . semanticScore)
+        <> comparing (Down . ftsScore)
+        <> comparing Down
+    )
+    (Map.keys fused)
+  where
+    fusedScore item = maybe (negate (1 / 0)) rrfScore (Map.lookup item fused)
+    semanticScore item = Map.findWithDefault (negate (1 / 0)) item semanticScores
+    ftsScore item = maximum ((negate (1 / 0)) : [Map.findWithDefault (negate (1 / 0)) item scores | scores <- Map.elems ftsChannels])
+
+chooseBestByAdr :: [Text] -> Map Text SearchDocument -> Map AdrId Text
+chooseBestByAdr ordered documents = foldl add Map.empty ordered
+  where
+    add selected itemId = case Map.lookup itemId documents of
+      Nothing -> selected
+      Just document -> Map.insertWith (\_ existing -> existing) (searchDocumentAdrId document) itemId selected
+
+sortLogicalAdrs :: Map AdrId Text -> Map Text RrfEvidence -> Map Text Double -> [AdrId]
+sortLogicalAdrs bestByAdr fused semanticScores =
+  sortBy
+    ( comparing (Down . fusedScore)
+        <> comparing (Down . semanticScore)
+        <> comparing Down
+    )
+    (Map.keys bestByAdr)
+  where
+    item adr = Map.findWithDefault "" adr bestByAdr
+    fusedScore adr = maybe (negate (1 / 0)) rrfScore (Map.lookup (item adr) fused)
+    semanticScore adr = Map.findWithDefault (negate (1 / 0)) (item adr) semanticScores
+
+searchDocumentLexicalFields :: SearchDocument -> [(Text, Text)]
+searchDocumentLexicalFields document =
+  [ ("title", searchDocumentTitle document),
+    ("summary", searchDocumentSummary document),
+    ("decision", searchDocumentDecision document),
+    ("domains", Text.unwords (searchDocumentDomains document)),
+    ("rationale", searchDocumentRationale document),
+    ("context", searchDocumentContext document),
+    ("consequences", searchDocumentConsequences document),
+    ("identifiers", searchDocumentIdentifiers document)
+  ]
+
+blankSearchResult :: ReadSnapshot -> SearchRequest -> ReducedAdr -> Map Text SearchDocument -> SearchFilterInfo -> SearchResult
+blankSearchResult snapshot request reduced documents info =
+  SearchResult
+    { searchResultAdr = adr,
+      searchResultRecord = decisionRecord <$> logicalDecision,
+      searchResultMatchedCandidate = Nothing,
+      searchResultMatchedRecord = Nothing,
+      searchResultMatchedTitle = Nothing,
+      searchResultMatchedSummary = Nothing,
+      searchResultTitle = logicalDecisionTitle reduced,
+      searchResultSummary = logicalDecisionSummary reduced,
+      searchResultDomains = map domainText (axisResolutionEffective (reducedDomainAxis reduced)),
+      searchResultAppliesTo = logicalScope reduced,
+      searchResultStatus = logicalStatusText reduced,
+      searchResultObsolete = logicalObsolete reduced,
+      searchResultReplacement = logicalReplacement reduced,
+      searchResultConflict = logicalConflict snapshot reduced,
+      searchResultResolution = resolutionFor snapshot reduced,
+      searchResultStateToken = reducedStateToken reduced,
+      searchResultScore = 1,
+      searchResultFtsScore = 0,
+      searchResultVectorScore = 0,
+      searchResultIdentifierVectorScore = 0,
+      searchResultSourcePaths = sourcePaths,
+      searchResultMatches = emptySearchMatches info,
+      searchResultRetrieval = object [("algorithm", JsonString "filtered-list"), ("profile", JsonNull)],
+      searchResultCounts = countsFor reduced,
+      searchResultScopeAmbiguous = filterScopeMatch info == Just ScopeAmbiguous,
+      searchResultDomainAmbiguous = length (axisResolutionHeads (reducedDomainAxis reduced)) > 1,
+      searchResultConflicted = not (resolutionStateResolved (resolutionFor snapshot reduced)),
+      searchResultShallowHistory = searchRequestShallowHistory request
+    }
+  where
+    adr = reducedAdrId reduced
+    logicalDecision = axisResolutionEffective (reducedDecisionAxis reduced)
+    sourcePaths =
+      Set.toAscList . Set.fromList $
+        concat
+          [ searchDocumentSourcePaths document
+            | document <- Map.elems documents,
+              searchDocumentAdrId document == adr
+          ]
+
+buildSearchResult :: ReadSnapshot -> SearchRequest -> [Domain] -> ReducedAdr -> SearchFilterInfo -> SearchDocument -> Map Text LexicalEvidence -> Map Text RrfEvidence -> Map RetrievalChannel (Map Text Double) -> Map Text Double -> Map Text Double -> Map Text SemanticEvidence -> JsonValue -> SearchResult
+buildSearchResult snapshot request _requestedDomains reduced info document evidenceByItem fused ftsChannels semanticScores identifierScores sectionDetails retrieval =
+  SearchResult
+    { searchResultAdr = adr,
+      searchResultRecord = decisionRecord <$> logicalDecision,
+      searchResultMatchedCandidate = if itemId == adrIdText adr then Nothing else Just itemId,
+      searchResultMatchedRecord = Just (searchDocumentCandidateRecordId document),
+      searchResultMatchedTitle = if itemId == adrIdText adr then Nothing else Just (searchDocumentTitle document),
+      searchResultMatchedSummary = if itemId == adrIdText adr then Nothing else Just (searchDocumentSummary document),
+      searchResultTitle = logicalDecisionTitle reduced,
+      searchResultSummary = logicalDecisionSummary reduced,
+      searchResultDomains = map domainText (axisResolutionEffective (reducedDomainAxis reduced)),
+      searchResultAppliesTo = logicalScope reduced,
+      searchResultStatus = logicalStatusText reduced,
+      searchResultObsolete = logicalObsolete reduced,
+      searchResultReplacement = logicalReplacement reduced,
+      searchResultConflict = logicalConflict snapshot reduced,
+      searchResultResolution = resolution,
+      searchResultStateToken = reducedStateToken reduced,
+      searchResultScore = maybe 0 rrfScore rrf,
+      searchResultFtsScore = maximum (0 : [Map.findWithDefault 0 itemId scores | scores <- Map.elems ftsChannels]),
+      searchResultVectorScore = Map.findWithDefault 0 itemId semanticScores,
+      searchResultIdentifierVectorScore = Map.findWithDefault 0 itemId identifierScores,
+      searchResultSourcePaths = searchDocumentSourcePaths document,
+      searchResultMatches =
+        SearchMatches
+          { searchMatchFts = any (Map.member itemId) (Map.elems ftsChannels),
+            searchMatchVector = Map.member itemId semanticScores || Map.member itemId identifierScores,
+            searchMatchFileScope = filterScopeMatch info,
+            searchMatchDomains = filterDomains info,
+            searchMatchActor = filterActor info,
+            searchMatchFields = maybe [] lexicalMatchedFields lexical,
+            searchMatchTerms = maybe [] lexicalMatchedTerms lexical,
+            searchMatchExactPhraseFields = maybe [] lexicalExactPhraseFields lexical,
+            searchMatchIdentifierTerms = maybe [] lexicalIdentifierTerms lexical,
+            searchMatchChannelRanks = maybe Map.empty rrfChannelRanks rrf,
+            searchMatchBestSection = semanticSectionKind <$> (semanticBestSection =<< details),
+            searchMatchBestSectionScore = semanticSectionScore <$> (semanticBestSection =<< details)
+          },
+      searchResultRetrieval = retrieval,
+      searchResultCounts = countsFor reduced,
+      searchResultScopeAmbiguous = filterScopeMatch info == Just ScopeAmbiguous,
+      searchResultDomainAmbiguous = length (axisResolutionHeads (reducedDomainAxis reduced)) > 1,
+      searchResultConflicted = not (resolutionStateResolved resolution),
+      searchResultShallowHistory = searchRequestShallowHistory request
+    }
+  where
+    adr = reducedAdrId reduced
+    itemId = searchDocumentItemId document
+    logicalDecision = axisResolutionEffective (reducedDecisionAxis reduced)
+    resolution = resolutionFor snapshot reduced
+    lexical = Map.lookup itemId evidenceByItem
+    rrf = Map.lookup itemId fused
+    details = Map.lookup itemId sectionDetails
+
+emptySearchMatches :: SearchFilterInfo -> SearchMatches
+emptySearchMatches info =
+  SearchMatches False False (filterScopeMatch info) (filterDomains info) (filterActor info) [] [] [] [] Map.empty Nothing Nothing
+
+logicalScope :: ReducedAdr -> [Text]
+logicalScope reduced
+  | axisProjectionResolved (reducedScopeAxis reduced) = map scopePatternText (axisResolutionEffective (reducedScopeAxis reduced))
+  | otherwise = []
+
+logicalStatusText :: ReducedAdr -> Text
+logicalStatusText reduced
+  | axisProjectionResolved axis = statusText (axisResolutionEffective axis)
+  | otherwise = "conflict"
+  where
+    axis = reducedStatusAxis reduced
+
+logicalObsolete :: ReducedAdr -> Bool
+logicalObsolete reduced =
+  case axisResolutionEffective (reducedStatusAxis reduced) of
+    Just status -> axisProjectionResolved (reducedStatusAxis reduced) && reducedStatusState status == StatusObsolete
+    Nothing -> False
+
+logicalReplacement :: ReducedAdr -> Maybe AdrId
+logicalReplacement reduced
+  | axisProjectionResolved axis = reducedStatusReplacement =<< axisResolutionEffective axis
+  | otherwise = Nothing
+  where
+    axis = reducedStatusAxis reduced
+
+logicalConflict :: ReadSnapshot -> ReducedAdr -> Maybe Text
+logicalConflict snapshot reduced =
+  case map resolutionSummary (resolutionStateConflicts (resolutionFor snapshot reduced)) of
+    [] -> Nothing
+    summaries -> Just (Text.intercalate "; " summaries)
+
+ftsDiagnosticsJson :: QueryPlan -> Bool -> Map RetrievalChannel (Map Text Double) -> JsonValue
+ftsDiagnosticsJson plan prefixUsed channels =
+  object
+    ( [ ("profile", JsonString (queryProfileName (queryPlanProfile plan))),
+        ( "channel_candidates",
+          object
+            [ (retrievalChannelName channel, JsonNumber (fromIntegral (Map.size (Map.findWithDefault Map.empty channel channels))))
+              | channel <- [FtsPhraseChannel, FtsTermsChannel, FtsStemmedChannel, FtsIdentifierChannel]
+            ]
+        )
+      ]
+        <> [ ( "queries",
+               object
+                 [ ("phrase", JsonString (queryPlanFtsExactPhrase plan)),
+                   ("terms", JsonString (Text.intercalate " AND " (queryPlanFtsExactTerms plan))),
+                   ("near", JsonString (queryPlanFtsNear plan)),
+                   ("prefix", JsonString (if prefixUsed then queryPlanFtsPrefix plan else "")),
+                   ("stemmed", JsonString (queryPlanFtsStemmed plan)),
+                   ("identifier", JsonString (queryPlanFtsIdentifier plan))
+                 ]
+             )
+             | not (Map.null channels)
+           ]
+    )
+
+retrievalDiagnosticsJson :: RetrievalMode -> QueryPlan -> JsonValue -> SearchVectorDiagnostics -> Int -> JsonValue
+retrievalDiagnosticsJson mode plan ftsDiagnostics vectorDiagnostics rerankCount =
+  object
+    [ ("algorithm", JsonString (retrievalAlgorithm mode)),
+      ("profile", JsonString (queryProfileName (queryPlanProfile plan))),
+      ("aliases", textArray (queryPlanAliases plan)),
+      ("fts", ftsDiagnostics),
+      ("vector", vectorDiagnosticsJson vectorDiagnostics),
+      ("field_rerank_candidates", JsonNumber (fromIntegral rerankCount))
+    ]
+
+retrievalAlgorithm :: RetrievalMode -> Text
+retrievalAlgorithm FtsRetrieval = "three-fts+weighted-rrf"
+retrievalAlgorithm VectorRetrieval = "exact-summary+identifier+section-rerank+weighted-rrf"
+retrievalAlgorithm HybridRetrieval = "three-fts+exact-summary+section-rerank+weighted-rrf"
+
+vectorDiagnosticsJson :: SearchVectorDiagnostics -> JsonValue
+vectorDiagnosticsJson diagnostics =
+  objectOmittingNulls
+    [ ("algorithm", JsonString (vectorDiagnosticAlgorithm diagnostics)),
+      ("summary_corpus", JsonNumber (fromIntegral (vectorDiagnosticSummaryCorpus diagnostics))),
+      ("section_candidates", JsonNumber (fromIntegral (vectorDiagnosticSectionCandidates diagnostics))),
+      ("sections_scanned", JsonNumber (fromIntegral (vectorDiagnosticSectionsScanned diagnostics))),
+      ("identifier_corpus", maybeJson (JsonNumber . fromIntegral) (vectorDiagnosticIdentifierCorpus diagnostics))
+    ]
+
 data CompareOptions = CompareOptions
   { compareIncludeUnchanged :: Bool,
     compareCacheMetadata :: [(Text, JsonValue)]
@@ -1051,6 +1796,120 @@ snapshotTextDiff field before after
   where
     old = compareSnapshotCollapsed before
     new = compareSnapshotCollapsed after
+
+searchProjectionJson :: SearchProjection -> JsonValue
+searchProjectionJson projection =
+  object
+    [ ("schema", JsonString "adrai/search/v1"),
+      ("as_of", JsonString (revisionResolved (searchProjectionRevision projection))),
+      ("view", JsonString "collapsed"),
+      ("mode", JsonString (retrievalModeName (searchProjectionMode projection))),
+      ("limit", JsonNumber (fromIntegral (searchProjectionLimit projection))),
+      ("results", JsonArray (map (searchResultJson (revisionResolved (searchProjectionRevision projection))) (searchProjectionResults projection)))
+    ]
+
+renderSearchProjection :: SearchProjection -> ByteString
+renderSearchProjection = renderCanonicalJsonBytes . searchProjectionJson
+
+searchResultJson :: Text -> SearchResult -> JsonValue
+searchResultJson revision result =
+  object
+    ( [ ("id", JsonString adr),
+        ("adr", JsonString adr),
+        ("record", maybeJson (JsonString . recordIdText) (searchResultRecord result)),
+        ("title", JsonString (searchResultTitle result)),
+        ("summary", JsonString (searchResultSummary result)),
+        ("domains", textArray (searchResultDomains result)),
+        ("applies_to", textArray (searchResultAppliesTo result)),
+        ("status", JsonString (searchResultStatus result)),
+        ("obsolete", JsonBool (searchResultObsolete result)),
+        ("replacement", maybeJson (JsonString . adrIdText) (searchResultReplacement result)),
+        ("conflict", maybeJson JsonString (searchResultConflict result)),
+        ("conflicts", JsonArray (map resolutionEntryJson (resolutionStateConflicts resolution))),
+        ("resolved", JsonBool (resolutionStateResolved resolution)),
+        ("resolution_required", JsonBool (resolutionStateRequired resolution)),
+        ("state_token", JsonString (stateTokenText (searchResultStateToken result))),
+        ("score", scoreJson (searchResultScore result)),
+        ("fts_score", scoreJson (searchResultFtsScore result)),
+        ("vector_score", scoreJson (searchResultVectorScore result))
+      ]
+        <> ( if blank
+               then []
+               else
+                 [ ("identifier_vector_score", scoreJson (searchResultIdentifierVectorScore result)),
+                   ("matched_candidate", maybeJson JsonString (searchResultMatchedCandidate result)),
+                   ("matched_record", maybeJson (JsonString . recordIdText) (searchResultMatchedRecord result)),
+                   ("matched_title", maybeJson JsonString (searchResultMatchedTitle result)),
+                   ("matched_summary", maybeJson JsonString (searchResultMatchedSummary result))
+                 ]
+           )
+        <> [ ("view", JsonString "collapsed"),
+             ("as_of", JsonString revision),
+             ("source_paths", textArray (searchResultSourcePaths result)),
+             ("matches", searchMatchesJson blank (searchResultMatches result)),
+             ("retrieval", searchResultRetrieval result),
+             ("context", searchContextJson result),
+             ( "flags",
+               object
+                 [ ("conflicted", JsonBool (searchResultConflicted result)),
+                   ("shallow_history", JsonBool (searchResultShallowHistory result))
+                 ]
+             )
+           ]
+    )
+  where
+    adr = adrIdText (searchResultAdr result)
+    resolution = searchResultResolution result
+    blank = searchResultMatchedRecord result == Nothing
+
+searchMatchesJson :: Bool -> SearchMatches -> JsonValue
+searchMatchesJson blank matches =
+  object
+    ( [ ("fts", JsonBool (searchMatchFts matches)),
+        ("vector", JsonBool (searchMatchVector matches)),
+        ("file_scope", maybeJson (JsonString . scopeFilterMatchText) (searchMatchFileScope matches)),
+        ("domain_filter", textArray (searchMatchDomains matches)),
+        ("actor_filter", maybeJson JsonString (searchMatchActor matches))
+      ]
+        <> ( if blank
+               then []
+               else
+                 [ ("fields", textArray (searchMatchFields matches)),
+                   ("terms", textArray (searchMatchTerms matches)),
+                   ("exact_phrase_fields", textArray (searchMatchExactPhraseFields matches)),
+                   ("identifier_terms", textArray (searchMatchIdentifierTerms matches)),
+                   ( "channel_ranks",
+                     object
+                       [ (retrievalChannelName channel, JsonNumber (fromIntegral rank))
+                         | (channel, rank) <- Map.toAscList (searchMatchChannelRanks matches)
+                       ]
+                   ),
+                   ("best_section", maybeJson (JsonString . sectionKindName) (searchMatchBestSection matches)),
+                   ("best_section_score", maybe JsonNull scoreJson (searchMatchBestSectionScore matches))
+                 ]
+           )
+    )
+
+scopeFilterMatchText :: ScopeFilterMatch -> Text
+scopeFilterMatchText ScopeExact = "exact"
+scopeFilterMatchText ScopeAmbiguous = "ambiguous"
+scopeFilterMatchText ScopeNone = "none"
+
+searchContextJson :: SearchResult -> JsonValue
+searchContextJson result =
+  object
+    [ ("editions", JsonNumber (fromIntegral (projectionEditions counts))),
+      ("scope_revisions", JsonNumber (fromIntegral (projectionScopeRevisions counts))),
+      ("domain_revisions", JsonNumber (fromIntegral (projectionDomainRevisions counts))),
+      ("status_revisions", JsonNumber (fromIntegral (projectionStatusRevisions counts))),
+      ("scope_ambiguous", JsonBool (searchResultScopeAmbiguous result)),
+      ("domain_ambiguous", JsonBool (searchResultDomainAmbiguous result))
+    ]
+  where
+    counts = searchResultCounts result
+
+scoreJson :: Double -> JsonValue
+scoreJson = fromMaybe JsonNull . jsonNumberRounded6
 
 collapsedProjectionJson :: CollapsedProjection -> JsonValue
 collapsedProjectionJson projection = object (baseMembers <> richMembers)
@@ -1459,6 +2318,11 @@ stableUnique = go Set.empty
     go seen (value : remaining)
       | Set.member value seen = go seen remaining
       | otherwise = value : go (Set.insert value seen) remaining
+
+mapLeft :: (left -> otherLeft) -> Either left right -> Either otherLeft right
+mapLeft action value = case value of
+  Left problem -> Left (action problem)
+  Right result -> Right result
 
 actorProjectionText :: Actor -> Text
 actorProjectionText actor = actorKindProjectionText (actorKind actor) <> ":" <> actorId actor

@@ -28,6 +28,26 @@ module Adrai.Retrieval
     QueryPlan (..),
     classifyQuery,
     buildQueryPlan,
+    RetrievalMode (..),
+    retrievalModeName,
+    retrievalModeChannels,
+    RetrievalChannel (..),
+    retrievalChannelName,
+    retrievalChannelWeight,
+    RrfEvidence (..),
+    weightedReciprocalRankFusion,
+    rrfK,
+    SemanticSectionScore (..),
+    SemanticEvidence (..),
+    detailedSemanticScore,
+    LexicalEvidence (..),
+    lexicalEvidence,
+    agreementBonus,
+    sectionShortlistLimit,
+    forcedChannelLimit,
+    fieldRerankLimit,
+    rankingImplementationFingerprint,
+    rankingFingerprintPayload,
     ftsQuote,
     collapseWhitespace,
     retrievalImplementationFingerprint,
@@ -47,7 +67,10 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Char (GeneralCategory (DecimalNumber), generalCategory, isAlphaNum, isSpace, ord)
 import Data.Foldable (toList)
-import Data.List (sortOn, tails)
+import Data.List (find, sortBy, sortOn, tails)
+import qualified Data.Map.Strict as Map
+import Data.Map.Strict (Map)
+import Data.Ord (Down (..), comparing)
 import qualified Data.Sequence as Sequence
 import Data.Sequence ((|>))
 import qualified Data.Set as Set
@@ -322,6 +345,226 @@ data QueryPlan = QueryPlan
     queryPlanWeights :: QueryWeights
   }
   deriving (Eq, Show)
+
+-- | Public retrieval modes supported by the collapsed current-search service.
+data RetrievalMode
+  = FtsRetrieval
+  | VectorRetrieval
+  | HybridRetrieval
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
+retrievalModeName :: RetrievalMode -> Text
+retrievalModeName FtsRetrieval = "fts"
+retrievalModeName VectorRetrieval = "vector"
+retrievalModeName HybridRetrieval = "hybrid"
+
+data RetrievalChannel
+  = FtsPhraseChannel
+  | FtsTermsChannel
+  | FtsStemmedChannel
+  | FtsIdentifierChannel
+  | SemanticVectorChannel
+  | IdentifierVectorChannel
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
+retrievalChannelName :: RetrievalChannel -> Text
+retrievalChannelName FtsPhraseChannel = "fts_phrase"
+retrievalChannelName FtsTermsChannel = "fts_terms"
+retrievalChannelName FtsStemmedChannel = "fts_stemmed"
+retrievalChannelName FtsIdentifierChannel = "fts_identifier"
+retrievalChannelName SemanticVectorChannel = "semantic_vector"
+retrievalChannelName IdentifierVectorChannel = "identifier_vector"
+
+retrievalModeChannels :: RetrievalMode -> [RetrievalChannel]
+retrievalModeChannels FtsRetrieval = [FtsPhraseChannel, FtsTermsChannel, FtsStemmedChannel, FtsIdentifierChannel]
+retrievalModeChannels VectorRetrieval = [SemanticVectorChannel, IdentifierVectorChannel]
+retrievalModeChannels HybridRetrieval = [minBound .. maxBound]
+
+retrievalChannelWeight :: QueryWeights -> RetrievalChannel -> Double
+retrievalChannelWeight weights channel =
+  case channel of
+    FtsPhraseChannel -> queryWeightFtsPhrase weights
+    FtsTermsChannel -> queryWeightFtsTerms weights
+    FtsStemmedChannel -> queryWeightFtsStemmed weights
+    FtsIdentifierChannel -> queryWeightFtsIdentifier weights
+    SemanticVectorChannel -> queryWeightSemanticVector weights
+    IdentifierVectorChannel -> queryWeightIdentifierVector weights
+
+rrfK :: Double
+rrfK = 20
+
+data RrfEvidence = RrfEvidence
+  { rrfScore :: Double,
+    rrfChannelRanks :: Map RetrievalChannel Int,
+    rrfChannelContributions :: Map RetrievalChannel Double
+  }
+  deriving (Eq, Show)
+
+-- | Weighted reciprocal-rank fusion.  Only active, non-empty, positive-weight
+-- channels participate in normalization.  Raw scores establish rank only;
+-- equal scores use item id descending, exactly like the prototype.
+weightedReciprocalRankFusion :: QueryWeights -> Map RetrievalChannel (Map Text Double) -> Map Text RrfEvidence
+weightedReciprocalRankFusion weights channels
+  | totalWeight <= 0 = Map.empty
+  | otherwise = foldl' addChannel Map.empty active
+  where
+    active =
+      [ (channel, weight, scores)
+        | channel <- [minBound .. maxBound],
+          let weight = retrievalChannelWeight weights channel,
+          weight > 0,
+          let scores = Map.findWithDefault Map.empty channel channels,
+          not (Map.null scores)
+      ]
+    totalWeight = sum [weight | (_, weight, _) <- active]
+    addChannel result (channel, weight, scores) =
+      foldl' (addRank channel (weight / totalWeight)) result (zip [1 ..] (rankedScores scores))
+    addRank channel normalized result (rank, (itemId, _rawScore)) =
+      Map.alter (Just . updateEvidence) itemId result
+      where
+        contribution = normalized / (rrfK + fromIntegral rank)
+        updateEvidence Nothing = RrfEvidence contribution (Map.singleton channel rank) (Map.singleton channel contribution)
+        updateEvidence (Just evidence) =
+          evidence
+            { rrfScore = rrfScore evidence + contribution,
+              rrfChannelRanks = Map.insert channel rank (rrfChannelRanks evidence),
+              rrfChannelContributions = Map.insert channel contribution (rrfChannelContributions evidence)
+            }
+    rankedScores =
+      sortBy
+        (comparing (Down . snd) <> comparing (Down . fst))
+        . Map.toList
+
+data SemanticSectionScore = SemanticSectionScore
+  { semanticSectionKind :: SectionKind,
+    semanticSectionId :: Text,
+    semanticSectionText :: Text,
+    semanticSectionScore :: Double
+  }
+  deriving (Eq, Show)
+
+data SemanticEvidence = SemanticEvidence
+  { semanticEvidenceScore :: Double,
+    semanticBestSection :: Maybe SemanticSectionScore,
+    semanticSupportingSection :: Maybe SemanticSectionScore
+  }
+  deriving (Eq, Show)
+
+detailedSemanticScore :: Double -> [SemanticSectionScore] -> SemanticEvidence
+detailedSemanticScore summaryScore sections =
+  SemanticEvidence
+    { semanticEvidenceScore = min 1 (max (summaryScore * 0.92) bestScore + supportingBonus),
+      semanticBestSection = best,
+      semanticSupportingSection = supporting
+    }
+  where
+    ordered =
+      sortBy
+        ( comparing (Down . semanticSectionScore)
+            <> comparing (Down . sectionKindName . semanticSectionKind)
+            <> comparing (Down . semanticSectionId)
+            <> comparing (Down . semanticSectionText)
+        )
+        sections
+    best = firstValid ordered
+    bestScore = maybe (negate (1 / 0)) semanticSectionScore best
+    supporting = case best of
+      Nothing -> Nothing
+      Just bestSection -> find ((/= semanticSectionId bestSection) . semanticSectionId) (drop 1 ordered)
+    supportingBonus = maybe 0 (max 0 . (* 0.10) . semanticSectionScore) supporting
+
+data LexicalEvidence = LexicalEvidence
+  { lexicalMatchedFields :: [Text],
+    lexicalMatchedTerms :: [Text],
+    lexicalExactPhraseFields :: [Text],
+    lexicalIdentifierTerms :: [Text],
+    lexicalCoverage :: Double,
+    lexicalBonus :: Double
+  }
+  deriving (Eq, Show)
+
+lexicalEvidence :: QueryPlan -> [(Text, Text)] -> LexicalEvidence
+lexicalEvidence plan fields =
+  LexicalEvidence
+    { lexicalMatchedFields = Set.toAscList (Set.fromList matchedFields),
+      lexicalMatchedTerms = take 16 allMatchedTerms,
+      lexicalExactPhraseFields = exactPhraseFields,
+      lexicalIdentifierTerms = take 16 identifierOverlap,
+      lexicalCoverage = coverage,
+      lexicalBonus = bonus
+    }
+  where
+    normalizedFields = [(name, Text.toLower (collapseWhitespace value)) | (name, value) <- fields]
+    phrase = Text.toLower (Text.unwords (queryPlanRawTokens plan))
+    exactPhraseFields =
+      [ name
+        | (name, value) <- normalizedFields,
+          length (queryPlanRawTokens plan) >= 2,
+          not (Text.null phrase),
+          phrase `Text.isInfixOf` value
+      ]
+    semanticTermSet = Set.fromList (queryPlanSemanticTerms plan)
+    fieldMatches =
+      [ (name, Set.toAscList (Set.intersection semanticTermSet (Set.fromList (semanticTokens value))))
+        | (name, value) <- normalizedFields
+      ]
+    matchedFields = [name | (name, terms) <- fieldMatches, not (null terms)]
+    identifierQuerySet = Set.fromList (Text.words (Text.toLower (queryPlanIdentifierText plan)))
+    indexedIdentifierSet =
+      Set.fromList
+        ( Text.words
+            ( Text.toLower
+                (maybe "" snd (find ((== "identifiers") . fst) fields))
+            )
+        )
+    identifierOverlap = Set.toAscList (Set.intersection identifierQuerySet indexedIdentifierSet)
+    allMatchedTerms = dedupe (concatMap snd fieldMatches <> identifierOverlap)
+    coveredTerms = Set.intersection semanticTermSet (Set.fromList allMatchedTerms)
+    coverage
+      | Set.null semanticTermSet = 0
+      | otherwise = fromIntegral (Set.size coveredTerms) / fromIntegral (Set.size semanticTermSet)
+    bonus =
+      min
+        0.012
+        ( (if null exactPhraseFields then 0 else 0.004)
+            + min 0.004 (coverage * 0.004)
+            + min 0.004 (fromIntegral (length identifierOverlap) * 0.0015)
+        )
+
+agreementBonus :: Int -> Double
+agreementBonus participatingChannels = min 0.006 (fromIntegral (max 0 (participatingChannels - 1)) * 0.0015)
+
+sectionShortlistLimit :: Int -> Int -> Int
+sectionShortlistLimit allowedCount limit = min allowedCount (max 120 (limit * 12))
+
+forcedChannelLimit :: Int -> Int
+forcedChannelLimit limit = min 10 (max 3 limit)
+
+fieldRerankLimit :: Int -> Int -> Int
+fieldRerankLimit candidateCount limit = min candidateCount (max 80 (limit * 8))
+
+rankingImplementationFingerprint :: Text
+rankingImplementationFingerprint = renderDigest (sha256Digest rankingFingerprintPayload)
+
+rankingFingerprintPayload :: ByteString
+rankingFingerprintPayload = renderCompactJson payload
+  where
+    payload =
+      JObject
+        [ ("contract", JString "adrai-search-ranking/v1"),
+          ("rrf_k", JNumber rrfK),
+          ("channels", JArray [JString (retrievalChannelName channel) | channel <- [minBound .. maxBound]]),
+          ("active_weight_normalization", JString "positive-nonempty"),
+          ("channel_tie_break", JString "raw-score-desc,item-id-desc"),
+          ("candidate_tie_break", JString "fused,semantic,max-fts,item-id-desc"),
+          ("logical_tie_break", JString "fused,semantic,adr-id-desc"),
+          ("section_shortlist", JString "min(allowed,max(120,limit*12))"),
+          ("forced_per_channel", JString "min(10,max(3,limit))"),
+          ("field_rerank", JString "min(candidates,max(80,limit*8))+conflict-heads"),
+          ("lexical_bonus_cap", JNumber 0.012),
+          ("agreement_bonus_cap", JNumber 0.006),
+          ("score_rounding", JString "six-decimal-ties-to-even")
+        ]
 
 collapseWhitespace :: Text -> Text
 collapseWhitespace = Text.unwords . Text.words

@@ -7,6 +7,7 @@ import qualified Adrai.CompilerMaterializationGoldenTest
 import qualified Adrai.CompilerMaterializationProperties
 import qualified Adrai.CompilerMaterializationTest
 import qualified Adrai.CompilerSearchSqliteTest
+import qualified Adrai.CurrentSearchTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
 import qualified Adrai.DomainProperties
@@ -34,6 +35,9 @@ import qualified Adrai.RetrievalPlanGoldenTest
 import qualified Adrai.RetrievalSqliteTest
 import qualified Adrai.SearchRetrievalProperties
 import qualified Adrai.SearchRetrievalTest
+import qualified Adrai.SearchRankingProperties
+import qualified Adrai.SearchRankingTest
+import qualified Adrai.SearchResultGoldenTest
 import qualified Adrai.SemanticIdentityTest
 import qualified Adrai.ScopeFormatTest
 import qualified Adrai.ServiceTest
@@ -59,6 +63,7 @@ main = do
     ["--write-p3-01-goldens"] -> Adrai.VectorQualityTest.writeP301Goldens
     ["--write-p3-02-goldens"] -> Adrai.RetrievalPlanGoldenTest.writeP302Goldens
     ["--write-p3-03-goldens"] -> Adrai.CompilerMaterializationGoldenTest.writeP303Goldens
+    ["--write-p3-04-goldens"] -> Adrai.SearchResultGoldenTest.writeP304Goldens
     _ -> defaultMain tests
 
 tests :: TestTree
@@ -126,5 +131,12 @@ tests =
             Adrai.CompilerMaterializationProperties.tests,
             Adrai.CompilerSearchSqliteTest.tests,
             Adrai.CompilerMaterializationGoldenTest.tests
+          ],
+      testGroup
+          "P3-04"
+          [ Adrai.SearchRankingTest.tests,
+            Adrai.SearchRankingProperties.tests,
+            Adrai.CurrentSearchTest.tests,
+            Adrai.SearchResultGoldenTest.tests
           ]
     ]

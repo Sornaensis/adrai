@@ -1,0 +1,604 @@
+{
+  "blank": {
+    "as_of": "rationale-resolved",
+    "limit": 10,
+    "mode": "hybrid",
+    "results": [
+      {
+        "adr": "A00000000000000000000000000",
+        "applies_to": [
+          "src/current/**"
+        ],
+        "as_of": "rationale-resolved",
+        "conflict": "1 integrity errors",
+        "conflicts": [
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "1 integrity errors"
+          }
+        ],
+        "context": {
+          "domain_ambiguous": false,
+          "domain_revisions": 2,
+          "editions": 2,
+          "scope_ambiguous": false,
+          "scope_revisions": 2,
+          "status_revisions": 2
+        },
+        "domains": [
+          "current.domain"
+        ],
+        "flags": {
+          "conflicted": true,
+          "shallow_history": false
+        },
+        "fts_score": 0.0,
+        "id": "A00000000000000000000000000",
+        "matches": {
+          "actor_filter": null,
+          "domain_filter": [],
+          "file_scope": null,
+          "fts": false,
+          "vector": false
+        },
+        "obsolete": true,
+        "record": "R00000000000000000000000001",
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "retrieval": {
+          "algorithm": "filtered-list",
+          "profile": null
+        },
+        "score": 1.0,
+        "source_paths": [
+          "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000001--amends.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000002--domains.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000003--applies_to.connection.md",
+          "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md"
+        ],
+        "state_token": "S0D9J6hZXZn8wOvc3Zr_Xbu",
+        "status": "obsolete",
+        "summary": "Current summary",
+        "title": "Current Decision API (CDAPI)",
+        "vector_score": 0.0,
+        "view": "collapsed"
+      }
+    ],
+    "schema": "adrai/search/v1",
+    "view": "collapsed"
+  },
+  "conflict": {
+    "as_of": "p3-04-conflict-resolved",
+    "limit": 10,
+    "mode": "hybrid",
+    "results": [
+      {
+        "adr": "A00000000000000000000000000",
+        "applies_to": [
+          "src/**"
+        ],
+        "as_of": "p3-04-conflict-resolved",
+        "conflict": "2 decision heads",
+        "conflicts": [
+          {
+            "head_count": 2,
+            "heads": [
+              "R00000000000000000000000001",
+              "R00000000000000000000000002"
+            ],
+            "kind": "decision",
+            "summary": "2 decision heads"
+          }
+        ],
+        "context": {
+          "domain_ambiguous": false,
+          "domain_revisions": 1,
+          "editions": 3,
+          "scope_ambiguous": false,
+          "scope_revisions": 1,
+          "status_revisions": 1
+        },
+        "domains": [
+          "compiler"
+        ],
+        "flags": {
+          "conflicted": true,
+          "shallow_history": false
+        },
+        "fts_score": 2e-06,
+        "id": "A00000000000000000000000000",
+        "identifier_vector_score": 0.0252,
+        "matched_candidate": "A00000000000000000000000000@R00000000000000000000000001",
+        "matched_record": "R00000000000000000000000001",
+        "matched_summary": "left summary",
+        "matched_title": "left",
+        "matches": {
+          "actor_filter": null,
+          "best_section": "decision",
+          "best_section_score": 1.0,
+          "channel_ranks": {
+            "fts_identifier": 1,
+            "fts_stemmed": 1,
+            "fts_terms": 1,
+            "identifier_vector": 1,
+            "semantic_vector": 1
+          },
+          "domain_filter": [],
+          "exact_phrase_fields": [],
+          "fields": [
+            "decision",
+            "identifiers",
+            "summary",
+            "title"
+          ],
+          "file_scope": null,
+          "fts": true,
+          "identifier_terms": [
+            "left"
+          ],
+          "terms": [
+            "left"
+          ],
+          "vector": true
+        },
+        "obsolete": false,
+        "record": null,
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "retrieval": {
+          "algorithm": "three-fts+exact-summary+section-rerank+weighted-rrf",
+          "aliases": [],
+          "field_rerank_candidates": 2,
+          "fts": {
+            "channel_candidates": {
+              "fts_identifier": 1,
+              "fts_phrase": 0,
+              "fts_stemmed": 1,
+              "fts_terms": 1
+            },
+            "profile": "keyword",
+            "queries": {
+              "identifier": "\"left\"",
+              "near": "",
+              "phrase": "",
+              "prefix": "\"left\"*",
+              "stemmed": "\"left\"",
+              "terms": "\"left\""
+            }
+          },
+          "profile": "keyword",
+          "vector": {
+            "algorithm": "exact-summary+bounded-exact-sections",
+            "identifier_corpus": 2,
+            "section_candidates": 2,
+            "sections_scanned": 8,
+            "summary_corpus": 2
+          }
+        },
+        "score": 0.059119,
+        "source_paths": [
+          "architecture/adrai/decisions/R000/R00000000000000000000000001--left.decision.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000000--amends.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000001--amends.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000002--applies_to.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000003--domains.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000004--status.connection.md"
+        ],
+        "state_token": "SGTdQBCgUCJCjljKTmadrWC",
+        "status": "active",
+        "summary": "left summary; right summary",
+        "title": "[conflicted ADR]",
+        "vector_score": 1.0,
+        "view": "collapsed"
+      }
+    ],
+    "schema": "adrai/search/v1",
+    "view": "collapsed"
+  },
+  "fts": {
+    "as_of": "rationale-resolved",
+    "limit": 10,
+    "mode": "fts",
+    "results": [
+      {
+        "adr": "A00000000000000000000000000",
+        "applies_to": [
+          "src/current/**"
+        ],
+        "as_of": "rationale-resolved",
+        "conflict": "1 integrity errors",
+        "conflicts": [
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "1 integrity errors"
+          }
+        ],
+        "context": {
+          "domain_ambiguous": false,
+          "domain_revisions": 2,
+          "editions": 2,
+          "scope_ambiguous": false,
+          "scope_revisions": 2,
+          "status_revisions": 2
+        },
+        "domains": [
+          "current.domain"
+        ],
+        "flags": {
+          "conflicted": true,
+          "shallow_history": false
+        },
+        "fts_score": 8e-06,
+        "id": "A00000000000000000000000000",
+        "identifier_vector_score": 0.0,
+        "matched_candidate": null,
+        "matched_record": "R00000000000000000000000001",
+        "matched_summary": null,
+        "matched_title": null,
+        "matches": {
+          "actor_filter": null,
+          "best_section": null,
+          "best_section_score": null,
+          "channel_ranks": {
+            "fts_identifier": 1,
+            "fts_phrase": 1,
+            "fts_stemmed": 1,
+            "fts_terms": 1
+          },
+          "domain_filter": [],
+          "exact_phrase_fields": [
+            "title",
+            "identifiers"
+          ],
+          "fields": [
+            "decision",
+            "identifiers",
+            "rationale",
+            "summary",
+            "title"
+          ],
+          "file_scope": null,
+          "fts": true,
+          "identifier_terms": [
+            "api",
+            "cdapi",
+            "current",
+            "decision"
+          ],
+          "terms": [
+            "api",
+            "current",
+            "decision",
+            "cdapi"
+          ],
+          "vector": false
+        },
+        "obsolete": true,
+        "record": "R00000000000000000000000001",
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "retrieval": {
+          "algorithm": "three-fts+weighted-rrf",
+          "aliases": [
+            "cdapi"
+          ],
+          "field_rerank_candidates": 1,
+          "fts": {
+            "channel_candidates": {
+              "fts_identifier": 1,
+              "fts_phrase": 1,
+              "fts_stemmed": 1,
+              "fts_terms": 1
+            },
+            "profile": "keyword",
+            "queries": {
+              "identifier": "\"current\" OR \"decision\" OR \"api\" OR \"cdapi\"",
+              "near": "NEAR(\"current\" \"decision\" \"api\", 6)",
+              "phrase": "\"current decision api\"",
+              "prefix": "",
+              "stemmed": "\"current\" AND \"decision\" AND \"api\"",
+              "terms": "\"current\" AND \"decision\" AND \"api\""
+            }
+          },
+          "profile": "keyword",
+          "vector": {
+            "algorithm": "not-requested",
+            "section_candidates": 0,
+            "sections_scanned": 0,
+            "summary_corpus": 1
+          }
+        },
+        "score": 0.064119,
+        "source_paths": [
+          "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000001--amends.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000002--domains.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000003--applies_to.connection.md"
+        ],
+        "state_token": "S0D9J6hZXZn8wOvc3Zr_Xbu",
+        "status": "obsolete",
+        "summary": "Current summary",
+        "title": "Current Decision API (CDAPI)",
+        "vector_score": 0.0,
+        "view": "collapsed"
+      }
+    ],
+    "schema": "adrai/search/v1",
+    "view": "collapsed"
+  },
+  "hybrid": {
+    "as_of": "rationale-resolved",
+    "limit": 10,
+    "mode": "hybrid",
+    "results": [
+      {
+        "adr": "A00000000000000000000000000",
+        "applies_to": [
+          "src/current/**"
+        ],
+        "as_of": "rationale-resolved",
+        "conflict": "1 integrity errors",
+        "conflicts": [
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "1 integrity errors"
+          }
+        ],
+        "context": {
+          "domain_ambiguous": false,
+          "domain_revisions": 2,
+          "editions": 2,
+          "scope_ambiguous": false,
+          "scope_revisions": 2,
+          "status_revisions": 2
+        },
+        "domains": [
+          "current.domain"
+        ],
+        "flags": {
+          "conflicted": true,
+          "shallow_history": false
+        },
+        "fts_score": 8e-06,
+        "id": "A00000000000000000000000000",
+        "identifier_vector_score": -0.028245,
+        "matched_candidate": null,
+        "matched_record": "R00000000000000000000000001",
+        "matched_summary": null,
+        "matched_title": null,
+        "matches": {
+          "actor_filter": null,
+          "best_section": "title-summary",
+          "best_section_score": 1.007202,
+          "channel_ranks": {
+            "fts_identifier": 1,
+            "fts_phrase": 1,
+            "fts_stemmed": 1,
+            "fts_terms": 1,
+            "identifier_vector": 1,
+            "semantic_vector": 1
+          },
+          "domain_filter": [],
+          "exact_phrase_fields": [
+            "title",
+            "identifiers"
+          ],
+          "fields": [
+            "decision",
+            "identifiers",
+            "rationale",
+            "summary",
+            "title"
+          ],
+          "file_scope": null,
+          "fts": true,
+          "identifier_terms": [
+            "api",
+            "cdapi",
+            "current",
+            "decision"
+          ],
+          "terms": [
+            "api",
+            "current",
+            "decision",
+            "cdapi"
+          ],
+          "vector": true
+        },
+        "obsolete": true,
+        "record": "R00000000000000000000000001",
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "retrieval": {
+          "algorithm": "three-fts+exact-summary+section-rerank+weighted-rrf",
+          "aliases": [
+            "cdapi"
+          ],
+          "field_rerank_candidates": 1,
+          "fts": {
+            "channel_candidates": {
+              "fts_identifier": 1,
+              "fts_phrase": 1,
+              "fts_stemmed": 1,
+              "fts_terms": 1
+            },
+            "profile": "keyword",
+            "queries": {
+              "identifier": "\"current\" OR \"decision\" OR \"api\" OR \"cdapi\"",
+              "near": "NEAR(\"current\" \"decision\" \"api\", 6)",
+              "phrase": "\"current decision api\"",
+              "prefix": "",
+              "stemmed": "\"current\" AND \"decision\" AND \"api\"",
+              "terms": "\"current\" AND \"decision\" AND \"api\""
+            }
+          },
+          "profile": "keyword",
+          "vector": {
+            "algorithm": "exact-summary+bounded-exact-sections",
+            "identifier_corpus": 1,
+            "section_candidates": 1,
+            "sections_scanned": 7,
+            "summary_corpus": 1
+          }
+        },
+        "score": 0.065619,
+        "source_paths": [
+          "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000001--amends.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000002--domains.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000003--applies_to.connection.md"
+        ],
+        "state_token": "S0D9J6hZXZn8wOvc3Zr_Xbu",
+        "status": "obsolete",
+        "summary": "Current summary",
+        "title": "Current Decision API (CDAPI)",
+        "vector_score": 1.0,
+        "view": "collapsed"
+      }
+    ],
+    "schema": "adrai/search/v1",
+    "view": "collapsed"
+  },
+  "ranking_fingerprint": "sha256:2Xiogjc9P2SaolcX_3ng2BVVp_RXj9TfoiFzJgcQMFk",
+  "schema": "adrai/p3-04-search-golden/v1",
+  "vector": {
+    "as_of": "rationale-resolved",
+    "limit": 10,
+    "mode": "vector",
+    "results": [
+      {
+        "adr": "A00000000000000000000000000",
+        "applies_to": [
+          "src/current/**"
+        ],
+        "as_of": "rationale-resolved",
+        "conflict": "1 integrity errors",
+        "conflicts": [
+          {
+            "head_count": 0,
+            "heads": [],
+            "kind": "integrity",
+            "summary": "1 integrity errors"
+          }
+        ],
+        "context": {
+          "domain_ambiguous": false,
+          "domain_revisions": 2,
+          "editions": 2,
+          "scope_ambiguous": false,
+          "scope_revisions": 2,
+          "status_revisions": 2
+        },
+        "domains": [
+          "current.domain"
+        ],
+        "flags": {
+          "conflicted": true,
+          "shallow_history": false
+        },
+        "fts_score": 0.0,
+        "id": "A00000000000000000000000000",
+        "identifier_vector_score": -0.028245,
+        "matched_candidate": null,
+        "matched_record": "R00000000000000000000000001",
+        "matched_summary": null,
+        "matched_title": null,
+        "matches": {
+          "actor_filter": null,
+          "best_section": "title-summary",
+          "best_section_score": 1.007202,
+          "channel_ranks": {
+            "identifier_vector": 1,
+            "semantic_vector": 1
+          },
+          "domain_filter": [],
+          "exact_phrase_fields": [
+            "title",
+            "identifiers"
+          ],
+          "fields": [
+            "decision",
+            "identifiers",
+            "rationale",
+            "summary",
+            "title"
+          ],
+          "file_scope": null,
+          "fts": false,
+          "identifier_terms": [
+            "api",
+            "cdapi",
+            "current",
+            "decision"
+          ],
+          "terms": [
+            "api",
+            "current",
+            "decision",
+            "cdapi"
+          ],
+          "vector": true
+        },
+        "obsolete": true,
+        "record": "R00000000000000000000000001",
+        "replacement": null,
+        "resolution_required": true,
+        "resolved": false,
+        "retrieval": {
+          "algorithm": "exact-summary+identifier+section-rerank+weighted-rrf",
+          "aliases": [
+            "cdapi"
+          ],
+          "field_rerank_candidates": 1,
+          "fts": {
+            "channel_candidates": {
+              "fts_identifier": 0,
+              "fts_phrase": 0,
+              "fts_stemmed": 0,
+              "fts_terms": 0
+            },
+            "profile": "keyword"
+          },
+          "profile": "keyword",
+          "vector": {
+            "algorithm": "exact-summary+bounded-exact-sections",
+            "identifier_corpus": 1,
+            "section_candidates": 1,
+            "sections_scanned": 7,
+            "summary_corpus": 1
+          }
+        },
+        "score": 0.061119,
+        "source_paths": [
+          "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000001--amends.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000002--domains.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000003--applies_to.connection.md"
+        ],
+        "state_token": "S0D9J6hZXZn8wOvc3Zr_Xbu",
+        "status": "obsolete",
+        "summary": "Current summary",
+        "title": "Current Decision API (CDAPI)",
+        "vector_score": 1.0,
+        "view": "collapsed"
+      }
+    ],
+    "schema": "adrai/search/v1",
+    "view": "collapsed"
+  }
+}
