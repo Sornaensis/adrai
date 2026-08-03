@@ -62,8 +62,11 @@ module Adrai.Query
     sortCandidateIds,
     chooseBestByAdr,
     sortLogicalAdrs,
+    mergeRelevantSectionCandidates,
     runCurrentSearch,
+    runCurrentSearchWithCorpus,
     runRelevant,
+    runRelevantWithCorpus,
     searchProjectionJson,
     renderSearchProjection,
     relevantProjectionJson,
@@ -81,6 +84,18 @@ import Adrai.Provenance
 import Adrai.Relevance
 import Adrai.Retrieval
 import Adrai.Scope (ScopePattern, scopeMatches, scopePatternText)
+import Adrai.SearchVectorCorpus
+  ( SearchVectorCorpus,
+    SearchVectorCorpusError (..),
+    buildSearchVectorCorpus,
+    searchVectorCorpusIdentifierVectorId,
+    searchVectorCorpusIdentifierVectors,
+    searchVectorCorpusSectionVectors,
+    searchVectorCorpusSemanticVectorId,
+    searchVectorCorpusSummaryVectors,
+    searchVectorSemanticSummaryText,
+    validateSearchVectorCorpus,
+  )
 import Adrai.Sqlite
   ( FtsHit (..),
     RetrievalSqlError,
@@ -104,7 +119,6 @@ import Adrai.Vector
     denseVector,
     dot,
     embedderVectorId,
-    identifierEmbedder,
     identifierEmbedding,
     identifierTerms,
     sectionIndexMode,
@@ -331,6 +345,7 @@ data SearchError
   | SearchMaterializationMismatch Text
   | SearchSqlFailure RetrievalSqlError
   | SearchVectorFailure VectorError
+  | SearchVectorCorpusFailure SearchVectorCorpusError
   deriving (Eq, Show)
 
 data ScopeFilterMatch = ScopeExact | ScopeAmbiguous | ScopeNone
@@ -434,6 +449,7 @@ data RelevantError
   | RelevantChunkFailure ChunkError
   | RelevantSqlFailure RetrievalSqlError
   | RelevantVectorFailure VectorError
+  | RelevantVectorCorpusFailure SearchVectorCorpusError
   deriving (Eq, Show)
 
 data RelevantFileInfo = RelevantFileInfo
@@ -1241,6 +1257,18 @@ data SearchVectorDiagnostics = SearchVectorDiagnostics
 
 runCurrentSearch :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchRequest -> IO (Either SearchError SearchProjection)
 runCurrentSearch connection snapshot materialization request =
+  case buildSearchVectorCorpus materialization of
+    Left problem -> pure (Left (SearchVectorCorpusFailure problem))
+    Right corpus -> runCurrentSearchWithCorpus connection snapshot materialization corpus request
+
+runCurrentSearchWithCorpus :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> SearchRequest -> IO (Either SearchError SearchProjection)
+runCurrentSearchWithCorpus connection snapshot materialization corpus request =
+  case validateSearchVectorCorpus materialization corpus of
+    Left problem -> pure (Left (SearchVectorCorpusFailure problem))
+    Right () -> runCurrentSearchValidated connection snapshot materialization corpus request
+
+runCurrentSearchValidated :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> SearchRequest -> IO (Either SearchError SearchProjection)
+runCurrentSearchValidated connection snapshot materialization corpus request =
   case prepareSearch snapshot materialization request of
     Left problem -> pure (Left problem)
     Right (requestedDomains, reducedByAdr, documentsById, filterInfo, allowedItems)
@@ -1266,7 +1294,7 @@ runCurrentSearch connection snapshot materialization request =
             (ftsChannels, ftsPrefixUsed) <- ftsOutcome
             let allowedDocuments = Map.restrictKeys documentsById allowedItems
             (semanticScores, identifierScores, sectionDetails, vectorDiagnostics) <-
-              buildRequestedVectorScores request plan allowedDocuments (searchMaterializationPassages materialization) ftsChannels
+              buildRequestedVectorScores corpus request plan allowedDocuments (searchMaterializationPassages materialization) ftsChannels
             let channels = finalChannels (searchRequestMode request) ftsChannels semanticScores identifierScores
                 fusedBase = weightedReciprocalRankFusion (queryPlanWeights plan) channels
                 baseOrder = sortCandidateIds fusedBase semanticScores ftsChannels
@@ -1369,6 +1397,18 @@ data RelevantAggregated = RelevantAggregated
 
 runRelevant :: Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
 runRelevant connection snapshot materialization request source =
+  case buildSearchVectorCorpus materialization of
+    Left problem -> pure (Left (RelevantVectorCorpusFailure problem))
+    Right corpus -> runRelevantWithCorpus connection snapshot materialization corpus request source
+
+runRelevantWithCorpus :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
+runRelevantWithCorpus connection snapshot materialization corpus request source =
+  case validateSearchVectorCorpus materialization corpus of
+    Left problem -> pure (Left (RelevantVectorCorpusFailure problem))
+    Right () -> runRelevantValidated connection snapshot materialization corpus request source
+
+runRelevantValidated :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
+runRelevantValidated connection snapshot materialization corpus request source =
   case prepareRelevant snapshot materialization request source of
     Left problem -> pure (Left problem)
     Right prepared ->
@@ -1406,7 +1446,7 @@ runRelevant connection snapshot materialization request source =
                                 }
                          in if meaningfulCount < minMeaningfulAlnum || null selectedChunks
                               then pure (Right emptyProjection)
-                              else runRelevantCandidates connection snapshot materialization request prepared fileInfo allChunks selectedChunks
+                              else runRelevantCandidates connection snapshot corpus request prepared fileInfo allChunks selectedChunks
                    in if meaningfulCount == 0
                         then finish [] []
                         else
@@ -1512,8 +1552,8 @@ emptyRelevantRetrieval allChunks selectedChunks =
       relevantRetrievalExactRerankCandidates = 0
     }
 
-runRelevantCandidates :: Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantPrepared -> RelevantFileInfo -> [TextChunk] -> [TextChunk] -> IO (Either RelevantError RelevantProjection)
-runRelevantCandidates connection snapshot _materialization request prepared fileInfo allChunks selectedChunks
+runRelevantCandidates :: Connection -> ReadSnapshot -> SearchVectorCorpus -> RelevantRequest -> RelevantPrepared -> RelevantFileInfo -> [TextChunk] -> [TextChunk] -> IO (Either RelevantError RelevantProjection)
+runRelevantCandidates connection snapshot corpus request prepared fileInfo allChunks selectedChunks
   | Map.null documents =
       pure
         ( Right
@@ -1529,7 +1569,7 @@ runRelevantCandidates connection snapshot _materialization request prepared file
           identifierVectors = map (identifierEmbedding . sourceEmbeddingText . textChunkText) selectedChunks
           semanticCentroid = normalizedCentroid semanticVectors
           identifierCentroid = normalizedCentroid identifierVectors
-      case (relevantDocumentScores semanticEmbedding semanticCentroid semanticSummaryText documents, relevantDocumentScores identifierEmbedding identifierCentroid searchDocumentIdentifiers documents) of
+      case (relevantDocumentScores SearchVectorCorpusMissingSummaryVector (searchVectorCorpusSummaryVectors corpus) semanticCentroid documents, relevantDocumentScores SearchVectorCorpusMissingIdentifierVector (searchVectorCorpusIdentifierVectors corpus) identifierCentroid documents) of
         (Left problem, _) -> pure (Left problem)
         (_, Left problem) -> pure (Left problem)
         (Right summaryScores, Right identifierScores) -> do
@@ -1539,10 +1579,10 @@ runRelevantCandidates connection snapshot _materialization request prepared file
             Right (passageChunks, passageDiagnostics) ->
               let shortlist = relevantShortlist request documents passages summaryScores identifierScores passageChunks
                   shortlistPassages = [passage | passage <- passages, Set.member (searchPassageDocumentItemId passage) shortlist]
-               in case selectRelevantSectionCandidates request semanticVectors shortlistPassages passageChunks of
+               in case selectRelevantSectionCandidates corpus request semanticVectors shortlistPassages passageChunks of
                     Left problem -> pure (Left problem)
                     Right (candidateSets, sectionDiagnostics, exactCandidateCount) ->
-                      case buildRelevantMatches selectedChunks semanticVectors shortlistPassages passageChunks candidateSets of
+                      case buildRelevantMatches corpus selectedChunks semanticVectors shortlistPassages passageChunks candidateSets of
                         Left problem -> pure (Left problem)
                         Right (matchesByAdr, auxByMatch) -> do
                           let aggregated = aggregateRelevantMatches request prepared documents matchesByAdr auxByMatch
@@ -1558,8 +1598,8 @@ runRelevantCandidates connection snapshot _materialization request prepared file
                                 RelevantRetrieval
                                   { relevantRetrievalImplementation = "structured-raw-text-cross-reference",
                                     relevantRetrievalStrategy = "exact-summary+passage-fts+bounded-section-rerank",
-                                    relevantRetrievalSemanticVectorId = Just (embedderVectorId semanticEmbedder),
-                                    relevantRetrievalIdentifierVectorId = Just (embedderVectorId identifierEmbedder),
+                                    relevantRetrievalSemanticVectorId = Just (searchVectorCorpusSemanticVectorId corpus),
+                                    relevantRetrievalIdentifierVectorId = Just (searchVectorCorpusIdentifierVectorId corpus),
                                     relevantRetrievalSourceChunks = length allChunks,
                                     relevantRetrievalSelectedSourceChunks = length selectedChunks,
                                     relevantRetrievalEligibleAdrs = Map.size (preparedRelevantReduced prepared),
@@ -1602,9 +1642,17 @@ normalizedCentroid (vector : remaining) = denseVector normalized
       | magnitude <= 0 = totals
       | otherwise = map (/ magnitude) totals
 
-relevantDocumentScores :: (Text -> DenseVector) -> DenseVector -> (SearchDocument -> Text) -> Map Text SearchDocument -> Either RelevantError (Map Text Double)
-relevantDocumentScores embedDocument queryVector documentText =
-  traverse (mapLeft RelevantVectorFailure . dot queryVector . embedDocument . documentText)
+relevantDocumentScores :: (Text -> SearchVectorCorpusError) -> Map Text DenseVector -> DenseVector -> Map Text SearchDocument -> Either RelevantError (Map Text Double)
+relevantDocumentScores missingError vectors queryVector =
+  traverse scoreDocument
+  where
+    scoreDocument document = do
+      documentVector <-
+        maybe
+          (Left (RelevantVectorCorpusFailure (missingError (searchDocumentItemId document))))
+          Right
+          (Map.lookup (searchDocumentItemId document) vectors)
+      mapLeft RelevantVectorFailure (dot queryVector documentVector)
 
 runRelevantPassageFts :: Connection -> RelevantRequest -> [TextChunk] -> [SearchPassage] -> IO (Either RelevantError ([PassageChunkEvidence], JsonValue))
 runRelevantPassageFts connection request chunks passages =
@@ -1712,9 +1760,10 @@ relevantShortlist request documents passages summaryScores identifierScores pass
 rankScoreMap :: Map Text Double -> [Text]
 rankScoreMap = map fst . sortBy (comparing (Down . snd) <> comparing (Down . fst)) . Map.toList
 
-selectRelevantSectionCandidates :: RelevantRequest -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> Either RelevantError ([Set Text], JsonValue, Int)
-selectRelevantSectionCandidates request sourceVectors passages passageChunks = do
-  (baseCandidates, diagnostics, exactCount) <-
+selectRelevantSectionCandidates :: SearchVectorCorpus -> RelevantRequest -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> Either RelevantError ([Set Text], JsonValue, Int)
+selectRelevantSectionCandidates corpus request sourceVectors passages passageChunks = do
+  passageVectors <- relevantPassageVectors corpus passages
+  (baseCandidates, diagnostics, _) <-
     case sectionIndexMode (Map.size passageVectors) of
       ExactSectionScan ->
         let candidates = replicate (length sourceVectors) (Map.keysSet passageVectors)
@@ -1752,30 +1801,42 @@ selectRelevantSectionCandidates request sourceVectors passages passageChunks = d
               ],
             count
           )
-  let withFts = zipWith addFts baseCandidates passageChunks
-  Right (withFts, diagnostics, exactCount)
+  let (withFts, exactRerankCount) =
+        mergeRelevantSectionCandidates
+          allowed
+          baseCandidates
+          (map (Map.keysSet . passageChunkScores) passageChunks)
+  Right (withFts, diagnostics, exactRerankCount)
   where
-    passageVectors = Map.fromList [(searchPassageId passage, semanticEmbedding (searchPassageText passage)) | passage <- passages]
     dimensions = case sourceVectors of
       vector : _ -> denseDimension vector
       [] -> 0
-    allowed = Map.keysSet passageVectors
-    addFts candidates chunk = Set.union candidates (Set.intersection allowed (Map.keysSet (passageChunkScores chunk)))
+    allowed = Set.fromList (map searchPassageId passages)
+
+-- | Merge lexical passage candidates into the vector-selected candidate sets
+-- and count the exact rerank work that will actually be performed.  The
+-- vector diagnostics intentionally retain their pre-lexical candidate count.
+mergeRelevantSectionCandidates :: Set Text -> [Set Text] -> [Set Text] -> ([Set Text], Int)
+mergeRelevantSectionCandidates allowed baseCandidates lexicalCandidates =
+  (merged, sum (map Set.size merged))
+  where
+    merged = zipWith addLexical baseCandidates lexicalCandidates
+    addLexical base lexical = Set.union base (Set.intersection allowed lexical)
 
 type RelevantAuxKey = (Int, AdrId, Text)
 
-buildRelevantMatches :: [TextChunk] -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> [Set Text] -> Either RelevantError (Map AdrId [PairMatch], Map RelevantAuxKey RelevantMatchAux)
-buildRelevantMatches chunks sourceVectors passages passageChunks candidateSets = do
-  perChunk <- traverse scoreChunk (zip4 chunks sourceVectors passageChunks candidateSets)
+buildRelevantMatches :: SearchVectorCorpus -> [TextChunk] -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> [Set Text] -> Either RelevantError (Map AdrId [PairMatch], Map RelevantAuxKey RelevantMatchAux)
+buildRelevantMatches corpus chunks sourceVectors passages passageChunks candidateSets = do
+  passageVectors <- relevantPassageVectors corpus passages
+  perChunk <- traverse (scoreChunk passageVectors) (zip4 chunks sourceVectors passageChunks candidateSets)
   Right
     ( Map.unionsWith (<>) [matches | (matches, _) <- perChunk],
       Map.unions [aux | (_, aux) <- perChunk]
     )
   where
     passagesById = Map.fromList [(searchPassageId passage, passage) | passage <- passages]
-    passageVectors = Map.map (semanticEmbedding . searchPassageText) passagesById
-    scoreChunk (chunk, sourceVector, lexical, candidates) = do
-      scored <- traverse (scoreSection chunk sourceVector lexical) (Set.toAscList candidates)
+    scoreChunk passageVectors (chunk, sourceVector, lexical, candidates) = do
+      scored <- traverse (scoreSection passageVectors chunk sourceVector lexical) (Set.toAscList candidates)
       let winners = foldl' chooseBest Map.empty (catMaybes scored)
       Right
         ( Map.fromListWith (<>) [(adr, [match]) | (adr, (match, _, _)) <- Map.toList winners],
@@ -1784,7 +1845,7 @@ buildRelevantMatches chunks sourceVectors passages passageChunks candidateSets =
               | (adr, (match, aux, _)) <- Map.toList winners
             ]
         )
-    scoreSection chunk sourceVector lexical sectionId =
+    scoreSection passageVectors chunk sourceVector lexical sectionId =
       case (Map.lookup sectionId passagesById, Map.lookup sectionId passageVectors) of
         (Just passage, Just passageVector) -> do
           raw <- mapLeft RelevantVectorFailure (dot sourceVector passageVector)
@@ -1807,6 +1868,14 @@ buildRelevantMatches chunks sourceVectors passages passageChunks candidateSets =
         choose new@(newMatch, _, newRanking) previous@(oldMatch, _, oldRanking)
           | (newRanking, pairScore newMatch, pairAdrItemId newMatch) > (oldRanking, pairScore oldMatch, pairAdrItemId oldMatch) = new
           | otherwise = previous
+
+relevantPassageVectors :: SearchVectorCorpus -> [SearchPassage] -> Either RelevantError (Map Text DenseVector)
+relevantPassageVectors corpus = fmap Map.fromList . traverse passageVector
+  where
+    passageVector passage =
+      case Map.lookup (searchPassageId passage) (searchVectorCorpusSectionVectors corpus) of
+        Nothing -> Left (RelevantVectorCorpusFailure (SearchVectorCorpusMissingSectionVector (searchPassageId passage)))
+        Just vector -> Right (searchPassageId passage, vector)
 
 zip4 :: [a] -> [b] -> [c] -> [d] -> [(a, b, c, d)]
 zip4 (a : as) (b : bs) (c : cs) (d : ds) = (a, b, c, d) : zip4 as bs cs ds
@@ -2031,8 +2100,8 @@ summaryFtsChannelMaps candidates =
   where
     hitMap = Map.fromList . map (\hit -> (ftsHitItemId hit, ftsHitScore hit))
 
-buildRequestedVectorScores :: SearchRequest -> QueryPlan -> Map Text SearchDocument -> [SearchPassage] -> Map RetrievalChannel (Map Text Double) -> Either SearchError (Map Text Double, Map Text Double, Map Text SemanticEvidence, SearchVectorDiagnostics)
-buildRequestedVectorScores request plan documents passages ftsChannels
+buildRequestedVectorScores :: SearchVectorCorpus -> SearchRequest -> QueryPlan -> Map Text SearchDocument -> [SearchPassage] -> Map RetrievalChannel (Map Text Double) -> Either SearchError (Map Text Double, Map Text Double, Map Text SemanticEvidence, SearchVectorDiagnostics)
+buildRequestedVectorScores corpus request plan documents passages ftsChannels
   | searchRequestMode request == FtsRetrieval =
       Right
         ( Map.empty,
@@ -2043,11 +2112,11 @@ buildRequestedVectorScores request plan documents passages ftsChannels
   | otherwise = do
       let semanticQuery = semanticEmbedding (queryPlanSemanticText plan)
           identifierQuery = identifierEmbedding (Text.unwords (searchRequestQuery request : queryPlanAliases plan))
-      summaryScores <- exactDocumentScores semanticEmbedding semanticQuery semanticSummaryText documents
+      summaryScores <- exactDocumentScores SearchVectorCorpusMissingSummaryVector (searchVectorCorpusSummaryVectors corpus) semanticQuery documents
       -- P3-03 deliberately persists the normalized identifier stream.  Reuse
       -- that frozen field rather than reconstructing or recursively expanding
       -- the Python prototype's pre-normalized identifier source.
-      identifierScores <- exactDocumentScores identifierEmbedding identifierQuery searchDocumentIdentifiers documents
+      identifierScores <- exactDocumentScores SearchVectorCorpusMissingIdentifierVector (searchVectorCorpusIdentifierVectors corpus) identifierQuery documents
       let preliminaryChannels =
             Map.insert SemanticVectorChannel summaryScores
               (Map.insert IdentifierVectorChannel identifierScores ftsChannels)
@@ -2078,33 +2147,34 @@ buildRequestedVectorScores request plan documents passages ftsChannels
     scoreCandidate semanticQuery summaryScores passagesByItem itemId = do
       sectionScores <-
         traverse
-          (scorePassage semanticQuery)
+          (scorePassage corpus semanticQuery)
           (Map.findWithDefault [] itemId passagesByItem)
       let summaryScore = Map.findWithDefault (negate (1 / 0)) itemId summaryScores
       Right (detailedSemanticScore summaryScore sectionScores)
 
-exactDocumentScores :: (Text -> DenseVector) -> DenseVector -> (SearchDocument -> Text) -> Map Text SearchDocument -> Either SearchError (Map Text Double)
-exactDocumentScores embedDocument queryVector documentText =
-  traverse
-    (mapLeft SearchVectorFailure . dot queryVector . embedDocument . documentText)
+exactDocumentScores :: (Text -> SearchVectorCorpusError) -> Map Text DenseVector -> DenseVector -> Map Text SearchDocument -> Either SearchError (Map Text Double)
+exactDocumentScores missingError vectors queryVector =
+  traverse scoreDocument
+  where
+    scoreDocument document = do
+      documentVector <-
+        maybe
+          (Left (SearchVectorCorpusFailure (missingError (searchDocumentItemId document))))
+          Right
+          (Map.lookup (searchDocumentItemId document) vectors)
+      mapLeft SearchVectorFailure (dot queryVector documentVector)
 
 semanticSummaryText :: SearchDocument -> Text
-semanticSummaryText document =
-  Text.intercalate
-    "\n"
-    ( filter
-        (not . Text.null . Text.strip)
-        [ searchDocumentTitle document,
-          searchDocumentSummary document,
-          searchDocumentDecision document,
-          Text.unwords (searchDocumentDomains document),
-          searchDocumentRationale document
-        ]
-    )
+semanticSummaryText = searchVectorSemanticSummaryText
 
-scorePassage :: DenseVector -> SearchPassage -> Either SearchError SemanticSectionScore
-scorePassage queryVector passage = do
-  raw <- mapLeft SearchVectorFailure (dot queryVector (semanticEmbedding (searchPassageText passage)))
+scorePassage :: SearchVectorCorpus -> DenseVector -> SearchPassage -> Either SearchError SemanticSectionScore
+scorePassage corpus queryVector passage = do
+  passageVector <-
+    maybe
+      (Left (SearchVectorCorpusFailure (SearchVectorCorpusMissingSectionVector (searchPassageId passage))))
+      Right
+      (Map.lookup (searchPassageId passage) (searchVectorCorpusSectionVectors corpus))
+  raw <- mapLeft SearchVectorFailure (dot queryVector passageVector)
   Right
     SemanticSectionScore
       { semanticSectionKind = searchPassageSectionKind passage,

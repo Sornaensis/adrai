@@ -1,0 +1,209 @@
+{
+  "cold_reused_equality": {
+    "relevance": {
+      "bytes": 11893,
+      "cold_sha256": "sha256:TlHad8uY4mG1xM3tIBQoZ2HSghCO1Z9Og_6uefJFaIU",
+      "rendered_bytes_equal": true,
+      "repeated_sha256": "sha256:TlHad8uY4mG1xM3tIBQoZ2HSghCO1Z9Og_6uefJFaIU",
+      "reused_sha256": "sha256:TlHad8uY4mG1xM3tIBQoZ2HSghCO1Z9Og_6uefJFaIU",
+      "typed_equal": true
+    },
+    "search": {
+      "bytes": 20979,
+      "cold_sha256": "sha256:nF5h6gkWpSL_X5U60LFE0yk4iuz82d_ck6UOrVv06XI",
+      "rendered_bytes_equal": true,
+      "repeated_sha256": "sha256:nF5h6gkWpSL_X5U60LFE0yk4iuz82d_ck6UOrVv06XI",
+      "reused_sha256": "sha256:nF5h6gkWpSL_X5U60LFE0yk4iuz82d_ck6UOrVv06XI",
+      "typed_equal": true
+    }
+  },
+  "dropwire_result_contract": {
+    "any_expected_top3_cases": 19,
+    "any_expected_top3_rate": 1.0,
+    "artifact": "test/fixtures/contracts/v1/search/dropwire-current.json",
+    "artifact_sha256": "sha256:ma2gT1WXPhQW_vVLccq47WQk8LMlDSbn3fHApixif08",
+    "association_hits": {
+      "1": 19,
+      "10": 47,
+      "3": 38,
+      "5": 43,
+      "7": 47
+    },
+    "association_recall": {
+      "1": 0.404255,
+      "10": 1.0,
+      "3": 0.808511,
+      "5": 0.914894,
+      "7": 1.0
+    },
+    "expected_associations": 47,
+    "fixture_schema": "adrai/golden/search-baseline/v1",
+    "high_confidence_false_positives": 0,
+    "medium_confidence_false_positives": 0,
+    "negative_cases": 3,
+    "positive_cases": 19,
+    "qualification": "result-contract-only; Dropwire source corpus absent; no executable parity claim",
+    "source_artifact": "ADRAI_1_Source/verification/ADRAI_1_Search_Enhanced_Dropwire_Evaluation_24.json",
+    "source_corpus_available": false,
+    "source_sha256": "97B70927B44CC3D4125BC91AC48DCB5096E631E5183261FF59E16960C94E2C73",
+    "status": "current",
+    "timing_policy": "observedSnapshot",
+    "timings_are_equality_gate": false,
+    "top1_positive_cases": 19,
+    "top1_positive_rate": 1.0
+  },
+  "fixture": {
+    "logical_adrs": 6,
+    "namespace": "adrai-relevance-six:v1",
+    "search_documents": 6,
+    "search_passages": 24,
+    "seed": 260729,
+    "source_cases": 13
+  },
+  "quality": {
+    "execution": "Haskell runRelevantWithCorpus over materialized six-ADR fixture",
+    "hard_negative_gate": {
+      "coverage": "executable integration; boilerplate cannot inflate confidence",
+      "high_confidence_ceiling": 0,
+      "source_keys": [
+        "generic-hard-negative",
+        "empty-hard-negative",
+        "tiny-hard-negative"
+      ]
+    },
+    "identifier_gate": {
+      "config_expected_keys": [
+        101,
+        102,
+        103
+      ],
+      "config_source": "config-health-secrets-compose",
+      "coverage": "executable integration; identifier and matched-term evidence required",
+      "lease_expected_key": 3,
+      "lease_source": "lease-token-context"
+    },
+    "integration_test": "test/integration/Adrai/RelevanceQualityTest.hs",
+    "large_region_gate": {
+      "coverage": "executable integration; multiple real ADRs and evidence after line 500",
+      "expected_adr_keys": [
+        1,
+        5
+      ],
+      "source_key": "large-cache-observability-region"
+    },
+    "primary_cases": [
+      {
+        "confidence": "low",
+        "evidence_count": 1,
+        "evidence_excerpts_nonempty": true,
+        "evidence_line_ranges_valid": true,
+        "expected_adr": "A19Z1VKF4PPAXE0000000000001",
+        "expected_adr_key": 1,
+        "matched_terms_present": true,
+        "projection_sha256": "sha256:TlHad8uY4mG1xM3tIBQoZ2HSghCO1Z9Og_6uefJFaIU",
+        "rank": 1,
+        "source_key": "cache-python",
+        "within_top3": true
+      },
+      {
+        "confidence": "high",
+        "evidence_count": 1,
+        "evidence_excerpts_nonempty": true,
+        "evidence_line_ranges_valid": true,
+        "expected_adr": "A19Z1VKF4PPAXE0000000000002",
+        "expected_adr_key": 2,
+        "matched_terms_present": true,
+        "projection_sha256": "sha256:GLQKy6DRozvCSS-JxR5gFoiR22c50e7Btxtu_HDaGbg",
+        "rank": 1,
+        "source_key": "auth-text",
+        "within_top3": true
+      },
+      {
+        "confidence": "high",
+        "evidence_count": 1,
+        "evidence_excerpts_nonempty": true,
+        "evidence_line_ranges_valid": true,
+        "expected_adr": "A19Z1VKF4PPAXE0000000000003",
+        "expected_adr_key": 3,
+        "matched_terms_present": true,
+        "projection_sha256": "sha256:XmKIGzS_WVEfb6_DVY85c6yOt2Paxsu6xCQCvRP9L0U",
+        "rank": 1,
+        "source_key": "queue-compose",
+        "within_top3": true
+      },
+      {
+        "confidence": "high",
+        "evidence_count": 1,
+        "evidence_excerpts_nonempty": true,
+        "evidence_line_ranges_valid": true,
+        "expected_adr": "A19Z1VKF4PPAXE0000000000004",
+        "expected_adr_key": 4,
+        "matched_terms_present": true,
+        "projection_sha256": "sha256:senuir3IkYJb7l4F6-6EnVhUSQg9m3N2IootDj58igo",
+        "rank": 1,
+        "source_key": "storage-sql",
+        "within_top3": true
+      },
+      {
+        "confidence": "high",
+        "evidence_count": 1,
+        "evidence_excerpts_nonempty": true,
+        "evidence_line_ranges_valid": true,
+        "expected_adr": "A19Z1VKF4PPAXE0000000000005",
+        "expected_adr_key": 5,
+        "matched_terms_present": true,
+        "projection_sha256": "sha256:tNjgy5sAp9Sc8-8rv49YTw1gXpnnoGe6X2J_thM3DLA",
+        "rank": 1,
+        "source_key": "observability-custom",
+        "within_top3": true
+      },
+      {
+        "confidence": "high",
+        "evidence_count": 1,
+        "evidence_excerpts_nonempty": true,
+        "evidence_line_ranges_valid": true,
+        "expected_adr": "A19Z1VKF4PPAXE0000000000006",
+        "expected_adr_key": 6,
+        "matched_terms_present": true,
+        "projection_sha256": "sha256:AK0aWKtCpX5WMGLG8EZpgN7TOc80SNwcJOWJYG7jCu4",
+        "rank": 1,
+        "source_key": "deployment-extensionless",
+        "within_top3": true
+      }
+    ]
+  },
+  "scale": {
+    "execution": "validated by test/integration/Adrai/RetrievalScaleTest.hs; not rerun by this golden",
+    "field_rerank_candidates": 80,
+    "identifier_corpus": 2000,
+    "logical_adrs": 2000,
+    "relevance_adr_shortlist": 160,
+    "relevance_candidate_search_items": 160,
+    "relevance_exact_rerank_bound": "strictly less than selected_source_chunks * all search_sections",
+    "relevance_exact_rerank_candidates": 960,
+    "relevance_search_sections": 12000,
+    "relevance_source_chunk_cap": 24,
+    "search_documents": 2000,
+    "search_passages": 12000,
+    "search_section_candidates": 120,
+    "seed": 0,
+    "summary_corpus": 2000,
+    "timing_policy": "reporting-only; no wall-clock threshold or golden timing",
+    "unique_probe": "Architecture rule 1999 -> AdrKey 1999 within top 10"
+  },
+  "schema": "adrai/p3-06-quality-golden/v1",
+  "search_vector_corpus": {
+    "compatibility_fingerprint": "sha256:C5CfKT2ry2_44ShGVIFlhlGtWTXERZmK2ca58aoR3Rc",
+    "identifier_vector_id": "adrai-identifier:-JSyvxW6dxoDl9Pzpm6Q_aoG:768",
+    "identifier_vectors": 6,
+    "materialization_documents": 6,
+    "materialization_passages": 24,
+    "packed_corpus_sha256": "sha256:CcxJDW9veonP_l-nXGTZXjVDaD1zqHwG1HsloeXPU0I",
+    "section_vectors": 24,
+    "semantic_vector_id": "adrai-semantic:T_yApQ2sJvyBH21HYYBYuQ1X:1024",
+    "source_and_query_vectors_ephemeral": true,
+    "storage_contract": "release embedding -> packVector float32 little-endian -> unpackVector -> stored DenseVector",
+    "stored_vectors_float32_origin": true,
+    "summary_vectors": 6
+  }
+}

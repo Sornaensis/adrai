@@ -64,13 +64,13 @@
     {
       "contract": "relevance",
       "pythonPath": "ADRAI_1_Source/tests/test_relevance.py",
-      "haskellOwner": "test/support/Adrai/RelevanceFixture.hs",
-      "phaseOwner": "P5"
+      "haskellOwner": "test/support/Adrai/Fixture/Relevance.hs",
+      "phaseOwner": "P3"
     },
     {
       "contract": "large-stress",
       "pythonPath": "ADRAI_1_Source/tests/test_large.py",
-      "haskellOwner": "test/support/Adrai/LargeStressFixture.hs",
+      "haskellOwner": "test/support/Adrai/Fixture/LargeStress.hs",
       "phaseOwner": "P6"
     }
   ]

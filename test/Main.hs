@@ -15,6 +15,7 @@ import qualified Adrai.FixtureContractTest
 import qualified Adrai.FixturePlanTest
 import qualified Adrai.FixturePrngTest
 import qualified Adrai.FixtureProperties
+import qualified Adrai.FixtureQueryMaterializationTest
 import qualified Adrai.FixtureRelevanceTest
 import qualified Adrai.FormatFoundationTest
 import qualified Adrai.FormatProperties
@@ -28,6 +29,7 @@ import qualified Adrai.ManagedPathContractTest
 import qualified Adrai.MarkdownTest
 import qualified Adrai.ProvenanceFormatTest
 import qualified Adrai.P206GoldenTest
+import qualified Adrai.P306QualityGoldenTest
 import qualified Adrai.PassageFtsTest
 import qualified Adrai.ProjectionProperties
 import qualified Adrai.QueryHistoryTest
@@ -35,14 +37,18 @@ import qualified Adrai.ReconciliationProperties
 import qualified Adrai.RelevanceProperties
 import qualified Adrai.RelevanceIntegrationTest
 import qualified Adrai.RelevanceGoldenTest
+import qualified Adrai.RelevanceQualityTest
 import qualified Adrai.RelevanceTest
 import qualified Adrai.RetrievalPlanGoldenTest
 import qualified Adrai.RetrievalSqliteTest
+import qualified Adrai.RetrievalScaleTest
 import qualified Adrai.SearchRetrievalProperties
 import qualified Adrai.SearchRetrievalTest
 import qualified Adrai.SearchRankingProperties
 import qualified Adrai.SearchRankingTest
 import qualified Adrai.SearchResultGoldenTest
+import qualified Adrai.SearchVectorCorpusTest
+import qualified Adrai.SearchVectorReuseTest
 import qualified Adrai.SemanticIdentityTest
 import qualified Adrai.ScopeFormatTest
 import qualified Adrai.ServiceTest
@@ -70,6 +76,7 @@ main = do
     ["--write-p3-03-goldens"] -> Adrai.CompilerMaterializationGoldenTest.writeP303Goldens
     ["--write-p3-04-goldens"] -> Adrai.SearchResultGoldenTest.writeP304Goldens
     ["--write-p3-05-goldens"] -> Adrai.RelevanceGoldenTest.writeP305Goldens
+    ["--write-p3-06-goldens"] -> Adrai.P306QualityGoldenTest.writeP306Goldens
     _ -> defaultMain tests
 
 tests :: TestTree
@@ -152,5 +159,14 @@ tests =
             Adrai.PassageFtsTest.tests,
             Adrai.RelevanceIntegrationTest.tests,
             Adrai.RelevanceGoldenTest.tests
+          ],
+      testGroup
+          "P3-06"
+          [ Adrai.FixtureQueryMaterializationTest.tests,
+            Adrai.P306QualityGoldenTest.tests,
+            Adrai.RelevanceQualityTest.tests,
+            Adrai.RetrievalScaleTest.tests,
+            Adrai.SearchVectorCorpusTest.tests,
+            Adrai.SearchVectorReuseTest.tests
           ]
     ]

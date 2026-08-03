@@ -19,6 +19,8 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import Data.Char (isHexDigit)
 import Data.List (sort)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -54,7 +56,7 @@ tests =
           testCase "sealed bytes are exact" $ assertFixtureBytes "documents/decision-create.sealed.md" sealedDecisionBytes,
           testCase "sealed hash is exact" $ assertFixtureHash "documents/decision-create.sealed.md" sealedDecisionSha256
         ],
-      testCase "current Dropwire baseline is current and has no old summary" testCurrentDropwire,
+      testCase "current Dropwire result-only baseline has exact aggregate quality thresholds" testCurrentDropwire,
       testCase "historical Dropwire snapshot is explicit and not current" testHistoricalDropwire,
       testCase "production timing observations are not an equality gate" testProductionTimingPolicy,
       testCase "CLI exit classes are exactly 0, 2, 3, and 4" testExitClasses,
@@ -137,6 +139,64 @@ newtype CliExitCase = CliExitCase
 instance Aeson.FromJSON CliExitCase where
   parseJSON = Aeson.withObject "CLI exit case" $ \value ->
     CliExitCase <$> value .: "code"
+
+data DropwireResultContract = DropwireResultContract
+  { dropwireFixtureSchema :: Text,
+    dropwireStatus :: Text,
+    dropwireSourceArtifact :: Text,
+    dropwireSourceSha256 :: Text,
+    dropwireTimingPolicy :: Text,
+    dropwireTimingsAreEqualityGate :: Bool,
+    dropwireBaseline :: DropwireBaseline
+  }
+  deriving (Eq, Show)
+
+instance Aeson.FromJSON DropwireResultContract where
+  parseJSON = Aeson.withObject "Dropwire result contract" $ \value ->
+    DropwireResultContract
+      <$> value .: "fixtureSchema"
+      <*> value .: "status"
+      <*> value .: "sourceArtifact"
+      <*> value .: "sourceSha256"
+      <*> value .: "timingPolicy"
+      <*> value .: "timingsAreEqualityGate"
+      <*> value .: "baseline"
+
+data DropwireBaseline = DropwireBaseline
+  { dropwireAnyExpectedTop3Cases :: Int,
+    dropwireAnyExpectedTop3Rate :: Double,
+    dropwireAssociationHits :: Map Text Int,
+    dropwireAssociationRecall :: Map Text Double,
+    dropwireExpectedAssociations :: Int,
+    dropwireHighConfidenceFalsePositives :: Int,
+    dropwireMaximumSeconds :: Double,
+    dropwireMedianSeconds :: Double,
+    dropwireMediumConfidenceFalsePositives :: Int,
+    dropwireNegativeCases :: Int,
+    dropwireP95Seconds :: Double,
+    dropwirePositiveCases :: Int,
+    dropwireTop1PositiveCases :: Int,
+    dropwireTop1PositiveRate :: Double
+  }
+  deriving (Eq, Show)
+
+instance Aeson.FromJSON DropwireBaseline where
+  parseJSON = Aeson.withObject "Dropwire aggregate baseline" $ \value ->
+    DropwireBaseline
+      <$> value .: "any_expected_top3_cases"
+      <*> value .: "any_expected_top3_rate"
+      <*> value .: "association_hits"
+      <*> value .: "association_recall"
+      <*> value .: "expected_associations"
+      <*> value .: "high_confidence_false_positives"
+      <*> value .: "max_seconds"
+      <*> value .: "median_seconds"
+      <*> value .: "medium_confidence_false_positives"
+      <*> value .: "negative_cases"
+      <*> value .: "p95_seconds"
+      <*> value .: "positive_cases"
+      <*> value .: "top1_positive_cases"
+      <*> value .: "top1_positive_rate"
 
 testManifestProvenance :: Assertion
 testManifestProvenance = do
@@ -251,10 +311,57 @@ assertFixtureHash relativePath expected = do
 
 testCurrentDropwire :: Assertion
 testCurrentDropwire = do
-  value <- loadJsonFixture "search/dropwire-current.json"
-  status <- requiredTextAt "status" value
-  status @?= "current"
-  assertBool "current Dropwire baseline must not contain nested old_summary" (not (containsKey "old_summary" value))
+  contract <- loadTypedJsonFixture "search/dropwire-current.json"
+  rawValue <- loadJsonFixture "search/dropwire-current.json"
+  let baseline = dropwireBaseline contract
+      expectedHits = Map.fromList [("1", 19), ("3", 38), ("5", 43), ("7", 47), ("10", 47)]
+      expectedRecall = Map.map (roundSix . (/ 47) . fromIntegral) expectedHits
+      totalCases = dropwirePositiveCases baseline + dropwireNegativeCases baseline
+      observedTimings = [dropwireMedianSeconds baseline, dropwireP95Seconds baseline, dropwireMaximumSeconds baseline]
+  assertEqual resultOnlyContext "adrai/golden/search-baseline/v1" (dropwireFixtureSchema contract)
+  assertEqual resultOnlyContext "current" (dropwireStatus contract)
+  assertEqual
+    resultOnlyContext
+    "ADRAI_1_Source/verification/ADRAI_1_Search_Enhanced_Dropwire_Evaluation_24.json"
+    (dropwireSourceArtifact contract)
+  assertEqual
+    resultOnlyContext
+    "97B70927B44CC3D4125BC91AC48DCB5096E631E5183261FF59E16960C94E2C73"
+    (dropwireSourceSha256 contract)
+  assertSha256 (resultOnlyContext <> ": sourceSha256") (dropwireSourceSha256 contract)
+  assertEqual resultOnlyContext 22 totalCases
+  assertEqual resultOnlyContext 19 (dropwirePositiveCases baseline)
+  assertEqual resultOnlyContext 3 (dropwireNegativeCases baseline)
+  assertEqual resultOnlyContext 47 (dropwireExpectedAssociations baseline)
+  assertEqual resultOnlyContext 19 (dropwireTop1PositiveCases baseline)
+  assertEqual resultOnlyContext 1.0 (dropwireTop1PositiveRate baseline)
+  assertEqual resultOnlyContext 19 (dropwireAnyExpectedTop3Cases baseline)
+  assertEqual resultOnlyContext 1.0 (dropwireAnyExpectedTop3Rate baseline)
+  assertEqual resultOnlyContext expectedHits (dropwireAssociationHits baseline)
+  assertEqual resultOnlyContext expectedRecall (dropwireAssociationRecall baseline)
+  assertEqual resultOnlyContext 0 (dropwireMediumConfidenceFalsePositives baseline)
+  assertEqual resultOnlyContext 0 (dropwireHighConfidenceFalsePositives baseline)
+  assertEqual resultOnlyContext "observedSnapshot" (dropwireTimingPolicy contract)
+  assertEqual resultOnlyContext False (dropwireTimingsAreEqualityGate contract)
+  assertBool resultOnlyContext (all finiteNonNegative observedTimings)
+  assertBool
+    resultOnlyContext
+    (dropwireMedianSeconds baseline <= dropwireP95Seconds baseline && dropwireP95Seconds baseline <= dropwireMaximumSeconds baseline)
+  assertBool (resultOnlyContext <> ": old_summary is historical-only") (not (containsKey "old_summary" rawValue))
+
+resultOnlyContext :: String
+resultOnlyContext =
+  "Dropwire result-contract validation only; the source corpus is absent, was not reconstructed, and executable Dropwire parity is not claimed"
+
+roundSix :: Double -> Double
+roundSix value
+  | rounded == 0 = 0
+  | otherwise = rounded
+  where
+    rounded = fromInteger (round (value * 1000000)) / 1000000
+
+finiteNonNegative :: Double -> Bool
+finiteNonNegative value = value >= 0 && not (isNaN value || isInfinite value)
 
 testHistoricalDropwire :: Assertion
 testHistoricalDropwire = do
@@ -336,6 +443,22 @@ loadJsonFixture relativePath = do
   bytes <- BS.readFile (root </> relativePath)
   case Aeson.eitherDecodeStrict' bytes of
     Left problem -> assertFailure (relativePath <> " is not valid JSON: " <> problem) >> fail "unreachable"
+    Right value -> pure value
+
+loadTypedJsonFixture :: (Aeson.FromJSON value) => FilePath -> IO value
+loadTypedJsonFixture relativePath = do
+  root <- findFixtureRoot
+  bytes <- BS.readFile (root </> relativePath)
+  case Aeson.eitherDecodeStrict' bytes of
+    Left problem ->
+      assertFailure
+        ( resultOnlyContext
+            <> "; fixture="
+            <> relativePath
+            <> "; typed JSON contract failure: "
+            <> problem
+        )
+        >> fail "unreachable"
     Right value -> pure value
 
 requiredTextAt :: Text -> Aeson.Value -> IO Text

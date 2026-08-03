@@ -194,7 +194,7 @@ instance Aeson.FromJSON Evidence where
 
 testManifestIdentity :: Assertion
 testManifestIdentity = do
-  (_, manifest) <- loadManifest
+  (ledgerRoot, manifest) <- loadManifest
   ledgerSchema manifest @?= "adrai/coverage-ledger/v1"
   ledgerExtractionDate manifest @?= "2026-08-02"
   ledgerExpectedTotal manifest @?= 206
@@ -216,6 +216,10 @@ testManifestIdentity = do
     assertSubstantive "generator Python path" (generatorPythonPath generator)
     assertSubstantive "generator Haskell owner" (generatorHaskellOwner generator)
     assertSubstantive "generator phase owner" (generatorPhaseOwner generator)
+    let repositoryRoot = takeDirectory (takeDirectory (takeDirectory (takeDirectory ledgerRoot)))
+        ownerPath = repositoryRoot </> T.unpack (generatorHaskellOwner generator)
+    ownerExists <- doesFileExist ownerPath
+    assertBool ("dynamic generator Haskell owner does not exist: " <> ownerPath) ownerExists
 
 testManifestCategories :: Assertion
 testManifestCategories = do
@@ -432,11 +436,11 @@ exactDynamicGenerators =
   [ DynamicGenerator
       "relevance"
       "ADRAI_1_Source/tests/test_relevance.py"
-      "test/support/Adrai/RelevanceFixture.hs"
-      "P5",
+      "test/support/Adrai/Fixture/Relevance.hs"
+      "P3",
     DynamicGenerator
       "large-stress"
       "ADRAI_1_Source/tests/test_large.py"
-      "test/support/Adrai/LargeStressFixture.hs"
+      "test/support/Adrai/Fixture/LargeStress.hs"
       "P6"
   ]
