@@ -762,21 +762,31 @@ richDetailFor snapshot reduced =
           | identifier <- axisResolutionHeads (reducedDomainAxis reduced)
             , any ((== identifier) . connectionRecordId) (reducedDomainHistory reduced)
         ],
-      richSourcePaths =
-        mapMaybe
-          (fmap (repoPathText . parsedManagedPath) . (`findDocument` snapshot))
-          ( catMaybes
-              [ singletonHead ProvenanceRecord (axisResolutionHeads (reducedDecisionAxis reduced)),
-                singletonHead ProvenanceConnection (axisResolutionHeads (reducedScopeAxis reduced)),
-                singletonHead ProvenanceConnection (axisResolutionHeads (reducedDomainAxis reduced)),
-                singletonHead ProvenanceConnection (axisResolutionHeads (reducedStatusAxis reduced))
-              ]
-          ),
+      richSourcePaths = effectiveCollapsedSourcePaths snapshot reduced,
       richDecisionHistory = map (recordIdText . decisionRecord) (reducedDecisionHistory reduced),
       richConnectionHistory =
         map (connectionIdText . connectionRecordId)
           (reducedAmendmentHistory reduced <> reducedScopeHistory reduced <> reducedDomainHistory reduced <> reducedStatusHistory reduced)
     }
+
+-- | Effective collapsed provenance in the prototype's stable axis order.
+-- Conflicted and absent axes have no singleton head and therefore contribute
+-- no path.
+effectiveCollapsedSourcePaths :: ReadSnapshot -> ReducedAdr -> [Text]
+effectiveCollapsedSourcePaths snapshot reduced =
+  mapMaybe
+    (fmap (repoPathText . parsedManagedPath) . (`findDocument` snapshot))
+    ( catMaybes
+        [ resolvedHead ProvenanceRecord (reducedDecisionAxis reduced),
+          resolvedHead ProvenanceConnection (reducedScopeAxis reduced),
+          resolvedHead ProvenanceConnection (reducedDomainAxis reduced),
+          resolvedHead ProvenanceConnection (reducedStatusAxis reduced)
+        ]
+    )
+  where
+    resolvedHead toObject axis
+      | axisProjectionResolved axis = singletonHead toObject (axisResolutionHeads axis)
+      | otherwise = Nothing
 
 provenanceFor :: ReadSnapshot -> ReducedAdr -> CollapsedProvenance
 provenanceFor snapshot reduced =
@@ -1281,7 +1291,7 @@ runCurrentSearchValidated connection snapshot materialization corpus request =
                     searchProjectionLimit = searchRequestLimit request,
                     searchProjectionResults =
                       take (searchRequestLimit request)
-                        [ blankSearchResult snapshot request reduced documentsById info
+                        [ blankSearchResult snapshot request reduced info
                           | (adr, info) <- Map.toAscList filterInfo,
                             Just reduced <- [Map.lookup adr reducedByAdr]
                         ]
@@ -1763,7 +1773,7 @@ rankScoreMap = map fst . sortBy (comparing (Down . snd) <> comparing (Down . fst
 selectRelevantSectionCandidates :: SearchVectorCorpus -> RelevantRequest -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> Either RelevantError ([Set Text], JsonValue, Int)
 selectRelevantSectionCandidates corpus request sourceVectors passages passageChunks = do
   passageVectors <- relevantPassageVectors corpus passages
-  (baseCandidates, diagnostics, _) <-
+  (baseCandidates, diagnostics, baseCandidateCount) <-
     case sectionIndexMode (Map.size passageVectors) of
       ExactSectionScan ->
         let candidates = replicate (length sourceVectors) (Map.keysSet passageVectors)
@@ -1801,24 +1811,23 @@ selectRelevantSectionCandidates corpus request sourceVectors passages passageChu
               ],
             count
           )
-  let (withFts, exactRerankCount) =
+  let (withFts, _) =
         mergeRelevantSectionCandidates
           allowed
           baseCandidates
           (map (Map.keysSet . passageChunkScores) passageChunks)
-  Right (withFts, diagnostics, exactRerankCount)
+  Right (withFts, diagnostics, baseCandidateCount)
   where
     dimensions = case sourceVectors of
       vector : _ -> denseDimension vector
       [] -> 0
     allowed = Set.fromList (map searchPassageId passages)
 
--- | Merge lexical passage candidates into the vector-selected candidate sets
--- and count the exact rerank work that will actually be performed.  The
--- vector diagnostics intentionally retain their pre-lexical candidate count.
+-- | Merge allowed lexical passage candidates into the vector-selected sets
+-- used for scoring while retaining the pre-lexical public candidate count.
 mergeRelevantSectionCandidates :: Set Text -> [Set Text] -> [Set Text] -> ([Set Text], Int)
 mergeRelevantSectionCandidates allowed baseCandidates lexicalCandidates =
-  (merged, sum (map Set.size merged))
+  (merged, sum (map Set.size baseCandidates))
   where
     merged = zipWith addLexical baseCandidates lexicalCandidates
     addLexical base lexical = Set.union base (Set.intersection allowed lexical)
@@ -2113,9 +2122,8 @@ buildRequestedVectorScores corpus request plan documents passages ftsChannels
       let semanticQuery = semanticEmbedding (queryPlanSemanticText plan)
           identifierQuery = identifierEmbedding (Text.unwords (searchRequestQuery request : queryPlanAliases plan))
       summaryScores <- exactDocumentScores SearchVectorCorpusMissingSummaryVector (searchVectorCorpusSummaryVectors corpus) semanticQuery documents
-      -- P3-03 deliberately persists the normalized identifier stream.  Reuse
-      -- that frozen field rather than reconstructing or recursively expanding
-      -- the Python prototype's pre-normalized identifier source.
+      -- The reusable corpus embeds the compiler's raw identifier source;
+      -- SQLite/FTS separately persists the normalized identifier stream.
       identifierScores <- exactDocumentScores SearchVectorCorpusMissingIdentifierVector (searchVectorCorpusIdentifierVectors corpus) identifierQuery documents
       let preliminaryChannels =
             Map.insert SemanticVectorChannel summaryScores
@@ -2277,8 +2285,8 @@ searchDocumentLexicalFields document =
     ("identifiers", searchDocumentIdentifiers document)
   ]
 
-blankSearchResult :: ReadSnapshot -> SearchRequest -> ReducedAdr -> Map Text SearchDocument -> SearchFilterInfo -> SearchResult
-blankSearchResult snapshot request reduced documents info =
+blankSearchResult :: ReadSnapshot -> SearchRequest -> ReducedAdr -> SearchFilterInfo -> SearchResult
+blankSearchResult snapshot request reduced info =
   SearchResult
     { searchResultAdr = adr,
       searchResultRecord = decisionRecord <$> logicalDecision,
@@ -2312,13 +2320,7 @@ blankSearchResult snapshot request reduced documents info =
   where
     adr = reducedAdrId reduced
     logicalDecision = axisResolutionEffective (reducedDecisionAxis reduced)
-    sourcePaths =
-      Set.toAscList . Set.fromList $
-        concat
-          [ searchDocumentSourcePaths document
-            | document <- Map.elems documents,
-              searchDocumentAdrId document == adr
-          ]
+    sourcePaths = effectiveCollapsedSourcePaths snapshot reduced
 
 buildSearchResult :: ReadSnapshot -> SearchRequest -> [Domain] -> ReducedAdr -> SearchFilterInfo -> SearchDocument -> Map Text LexicalEvidence -> Map Text RrfEvidence -> Map RetrievalChannel (Map Text Double) -> Map Text Double -> Map Text Double -> Map Text SemanticEvidence -> JsonValue -> SearchResult
 buildSearchResult snapshot request _requestedDomains reduced info document evidenceByItem fused ftsChannels semanticScores identifierScores sectionDetails retrieval =
@@ -2415,10 +2417,13 @@ ftsDiagnosticsJson plan prefixUsed channels =
   object
     ( [ ("profile", JsonString (queryProfileName (queryPlanProfile plan))),
         ( "channel_candidates",
-          object
-            [ (retrievalChannelName channel, JsonNumber (fromIntegral (Map.size (Map.findWithDefault Map.empty channel channels))))
-              | channel <- [FtsPhraseChannel, FtsTermsChannel, FtsStemmedChannel, FtsIdentifierChannel]
-            ]
+          if Map.null channels
+            then object []
+            else
+              object
+                [ (retrievalChannelName channel, JsonNumber (fromIntegral (Map.size (Map.findWithDefault Map.empty channel channels))))
+                  | channel <- [FtsPhraseChannel, FtsTermsChannel, FtsStemmedChannel, FtsIdentifierChannel]
+                ]
         )
       ]
         <> [ ( "queries",

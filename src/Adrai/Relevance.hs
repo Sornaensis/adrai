@@ -66,7 +66,7 @@ module Adrai.Relevance
 where
 
 import Adrai.Format (renderDigest)
-import Adrai.Provenance (normalizeLineEndings, sha256Digest)
+import Adrai.Provenance (sha256Digest)
 import Adrai.Vector (semanticTokens)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
@@ -231,23 +231,10 @@ mediumPairScore = 0.14
 repetitiveChunkLowConfidence :: Double
 repetitiveChunkLowConfidence = 0.15
 
--- | Normalize every line boundary recognized by the managed Markdown and
--- semantic-format paths to LF.
+-- | Normalize only CRLF and bare CR to LF for raw relevance text.  Other
+-- Unicode and C0 separator characters remain literal source evidence.
 normalizeNewlines :: Text -> Text
-normalizeNewlines text
-  | Text.any needsNormalization text = normalizeLineEndings text
-  | otherwise = text
-  where
-    needsNormalization character =
-      character == '\r'
-        || character == '\v'
-        || character == '\f'
-        || character == '\x001c'
-        || character == '\x001d'
-        || character == '\x001e'
-        || character == '\x0085'
-        || character == '\x2028'
-        || character == '\x2029'
+normalizeNewlines = Text.replace "\r" "\n" . Text.replace "\r\n" "\n"
 
 decodeTextBytes :: Text -> ByteString -> Either TextDecodeError Text
 decodeTextBytes = decodeTextBytesWithLimit maxTextBytes

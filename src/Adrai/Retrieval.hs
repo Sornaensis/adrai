@@ -277,6 +277,7 @@ data SearchDocument = SearchDocument
     searchDocumentConflicted :: Bool,
     searchDocumentStateToken :: StateToken,
     searchDocumentSourcePaths :: [Text],
+    searchDocumentIdentifierSource :: Text,
     searchDocumentIdentifiers :: Text
   }
   deriving (Eq, Show)

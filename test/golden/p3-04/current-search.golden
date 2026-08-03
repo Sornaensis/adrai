@@ -54,11 +54,10 @@
         },
         "score": 1.0,
         "source_paths": [
-          "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md",
-          "architecture/adrai/connections/C000/C00000000000000000000000001--amends.connection.md",
-          "architecture/adrai/connections/C000/C00000000000000000000000002--domains.connection.md",
+          "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md",
           "architecture/adrai/connections/C000/C00000000000000000000000003--applies_to.connection.md",
-          "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md"
+          "architecture/adrai/connections/C000/C00000000000000000000000002--domains.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md"
         ],
         "state_token": "S0D9J6hZXZn8wOvc3Zr_Xbu",
         "status": "obsolete",
@@ -111,7 +110,7 @@
         },
         "fts_score": 2e-06,
         "id": "A00000000000000000000000000",
-        "identifier_vector_score": 0.0252,
+        "identifier_vector_score": 0.058616,
         "matched_candidate": "A00000000000000000000000000@R00000000000000000000000001",
         "matched_record": "R00000000000000000000000001",
         "matched_summary": "left summary",
@@ -372,7 +371,7 @@
         },
         "fts_score": 8e-06,
         "id": "A00000000000000000000000000",
-        "identifier_vector_score": -0.028245,
+        "identifier_vector_score": -0.00824,
         "matched_candidate": null,
         "matched_record": "R00000000000000000000000001",
         "matched_summary": null,
@@ -512,7 +511,7 @@
         },
         "fts_score": 0.0,
         "id": "A00000000000000000000000000",
-        "identifier_vector_score": -0.028245,
+        "identifier_vector_score": -0.00824,
         "matched_candidate": null,
         "matched_record": "R00000000000000000000000001",
         "matched_summary": null,
@@ -565,12 +564,7 @@
           ],
           "field_rerank_candidates": 1,
           "fts": {
-            "channel_candidates": {
-              "fts_identifier": 0,
-              "fts_phrase": 0,
-              "fts_stemmed": 0,
-              "fts_terms": 0
-            },
+            "channel_candidates": {},
             "profile": "keyword"
           },
           "profile": "keyword",

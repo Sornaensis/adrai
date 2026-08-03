@@ -478,7 +478,7 @@ runSummaryFtsChannels connection plan allowed requested =
                   summaryFtsTerms = mergeHitsNoCap [exactAnd, near, prefix],
                   summaryFtsStemmed = stemmed,
                   summaryFtsIdentifier = identifier,
-                  summaryFtsPrefixUsed = usePrefix && not (Text.null (queryPlanFtsPrefix plan))
+                  summaryFtsPrefixUsed = usePrefix && not (null prefix)
                 }
         (Left retrievalError, _, _) -> pure (Left retrievalError)
         (_, Left retrievalError, _) -> pure (Left retrievalError)

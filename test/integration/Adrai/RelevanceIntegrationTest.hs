@@ -54,6 +54,8 @@ obsoleteVisibilityContract = withRelevant p303RationaleSnapshot $ \connection ma
   assertBool "selected evidence retains line ranges and ADR chunks" (not (null (relevantResultEvidence result)))
   relevantRetrievalSearchSections (relevantProjectionRetrieval visible) @?= 7
   lookupNested "algorithm" (relevantRetrievalSections (relevantProjectionRetrieval visible)) @?= Just (JsonString "exact-bounded-section-scan")
+  lookupNested "candidates" (relevantRetrievalSections (relevantProjectionRetrieval visible))
+    @?= Just (JsonNumber (fromIntegral (relevantRetrievalExactRerankCandidates (relevantProjectionRetrieval visible))))
 
 scopeBonusContract :: IO ()
 scopeBonusContract = withRelevant p303RationaleSnapshot $ \connection materialization -> do

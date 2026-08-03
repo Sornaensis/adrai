@@ -38,7 +38,7 @@ tests =
       testCase "changed materialization is rejected by compatibility fingerprint" incompatibilityContract,
       testCase "duplicate document and passage keys fail with typed errors" duplicateContract,
       testCase "source fixtures are excluded from the reusable vector corpus" sourceEphemeralityContract,
-      testCase "FTS-only candidates are included in the published exact rerank count" exactRerankCountContract
+      testCase "FTS rescue is scored without inflating the public vector candidate count" exactRerankCountContract
     ]
 
 deterministicContract :: IO ()
@@ -62,7 +62,7 @@ float32OriginContract = do
   Map.lookup (searchDocumentItemId document) (searchVectorCorpusSummaryVectors corpus)
     @?= Just (canonicalVector (semanticEmbedding (semanticSummaryText document)))
   Map.lookup (searchDocumentItemId document) (searchVectorCorpusIdentifierVectors corpus)
-    @?= Just (canonicalVector (identifierEmbedding (searchDocumentIdentifiers document)))
+    @?= Just (canonicalVector (identifierEmbedding (searchVectorIdentifierSourceText document)))
   Map.lookup (searchPassageId passage) (searchVectorCorpusSectionVectors corpus)
     @?= Just (canonicalVector (semanticEmbedding (searchPassageText passage)))
 
@@ -74,7 +74,7 @@ incompatibilityContract = do
       changed =
         search
           { searchMaterializationDocuments =
-              document {searchDocumentSummary = searchDocumentSummary document <> " changed"}
+              document {searchDocumentIdentifierSource = searchDocumentIdentifierSource document <> "\nchanged raw source"}
                 : drop 1 (searchMaterializationDocuments search)
           }
   case validateSearchVectorCorpus changed corpus of
@@ -103,11 +103,17 @@ sourceEphemeralityContract = do
 
 exactRerankCountContract :: IO ()
 exactRerankCountContract = do
-  let allowed = Set.fromList ["vector-hit", "fts-only", "other"]
-      base = [Set.singleton "vector-hit"]
-      lexical = [Set.fromList ["fts-only", "not-allowed"]]
-      expected = [Set.fromList ["vector-hit", "fts-only"]]
-  mergeRelevantSectionCandidates allowed base lexical @?= (expected, 2)
+  let allowed = Set.fromList ["chunk-0-vector", "chunk-0-fts", "chunk-1-fts"]
+      base = [Set.singleton "chunk-0-vector", Set.empty]
+      lexical =
+        [ Set.fromList ["chunk-0-fts", "not-allowed"],
+          Set.singleton "chunk-1-fts"
+        ]
+      expected =
+        [ Set.fromList ["chunk-0-vector", "chunk-0-fts"],
+          Set.singleton "chunk-1-fts"
+        ]
+  mergeRelevantSectionCandidates allowed base lexical @?= (expected, 1)
 
 fixtureSearch :: [SourceTemplate] -> SearchMaterialization
 fixtureSearch sources =

@@ -4,10 +4,12 @@ module Adrai.CurrentSearchTest (tests, p304ConflictSnapshot) where
 
 import Adrai.Compiler (materializeCurrentSearch)
 import Adrai.CompilerMaterializationTest (p303RationaleSnapshot)
+import Adrai.Format.Document
 import Adrai.Format.Json (JsonValue (..))
 import Adrai.Graph (GraphAxis (..), reduceManagedGraph)
 import Adrai.History (ActorSelector (..), ReadSnapshot (..), RevisionIdentity (..))
 import Adrai.Property.Generators
+import Adrai.Provenance (ProvenanceObjectId (..))
 import Adrai.Query
 import Adrai.Retrieval
 import Adrai.Sqlite
@@ -24,6 +26,7 @@ tests =
   testGroup
     "P3-04 current weighted search"
     [ testCase "blank query is a filtered deterministic ADR listing" blankSearchContract,
+      testCase "blank provenance omits single-head semantic conflicts and absent axes" blankSpecialAxisPathContract,
       testCase "fts, vector, and hybrid run without optional dependencies" threeModeContract,
       testCase "eligibility filters run before retrieval" filterBeforeRetrievalContract,
       testCase "obsolete actor time and validation filters are exact" ordinaryFilterValidationContract,
@@ -39,6 +42,47 @@ blankSearchContract = withSearch p303RationaleSnapshot $ \connection materializa
   map searchResultAdr (searchProjectionResults projection) @?= map searchDocumentAdrId (searchMaterializationDocuments materialization)
   map searchResultScore (searchProjectionResults projection) @?= [1]
   assertBool "blank retrieval is explicitly labelled" (all (hasAlgorithm "filtered-list" . searchResultRetrieval) (searchProjectionResults projection))
+  let result = onlyResult projection
+      document = onlyDocument materialization
+      expectedPaths =
+        [ "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000003--applies_to.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000002--domains.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md"
+        ]
+  searchResultSourcePaths result @?= expectedPaths
+  length expectedPaths @?= 4
+  assertBool
+    "blank collapsed provenance excludes amendment/search evidence"
+    (length (searchDocumentSourcePaths document) > length (searchResultSourcePaths result))
+  withSearch p304ScopeConflictSnapshot $ \conflictConnection conflictMaterialization -> do
+    conflicted <- mustSearch =<< runCurrentSearch conflictConnection p304ScopeConflictSnapshot conflictMaterialization (defaultSearchRequest "")
+    let conflictResult = onlyResult conflicted
+        conflictPaths = richPathsFor p304ScopeConflictSnapshot (searchResultAdr conflictResult)
+    searchResultSourcePaths conflictResult @?= conflictPaths
+    assertBool "conflicted scope contributes no collapsed source path" (length conflictPaths < length (searchDocumentSourcePaths (onlyDocument conflictMaterialization)))
+
+blankSpecialAxisPathContract :: IO ()
+blankSpecialAxisPathContract = do
+  withSearch staleStatusConflictSnapshot $ \connection materialization -> do
+    projection <- mustSearch =<< runCurrentSearch connection staleStatusConflictSnapshot materialization ((defaultSearchRequest "") {searchRequestIncludeObsolete = True})
+    let result = resultForAdr edgeAdr projection
+    searchResultStatus result @?= "conflict"
+    searchResultSourcePaths result
+      @?= [ "architecture/adrai/decisions/R000/R00000000000000000000000001--path-edge-v2.decision.md",
+            "architecture/adrai/connections/C000/C00000000000000000000000004--applies_to.connection.md",
+            "architecture/adrai/connections/C000/C00000000000000000000000001--domains.connection.md"
+          ]
+    assertBool "single-head conflicted status path is omitted" (all (not . Text.isSuffixOf "--status.connection.md") (searchResultSourcePaths result))
+  withSearch absentScopeSnapshot $ \connection materialization -> do
+    projection <- mustSearch =<< runCurrentSearch connection absentScopeSnapshot materialization ((defaultSearchRequest "") {searchRequestIncludeObsolete = True})
+    let result = resultForAdr edgeAdr projection
+    searchResultSourcePaths result
+      @?= [ "architecture/adrai/decisions/R000/R00000000000000000000000001--path-edge-v2.decision.md",
+            "architecture/adrai/connections/C000/C00000000000000000000000001--domains.connection.md",
+            "architecture/adrai/connections/C000/C00000000000000000000000005--status.connection.md"
+          ]
+    assertBool "absent scope contributes no path" (all (not . Text.isSuffixOf "--applies_to.connection.md") (searchResultSourcePaths result))
 
 threeModeContract :: IO ()
 threeModeContract = withSearch p303RationaleSnapshot $ \connection materialization -> do
@@ -59,6 +103,11 @@ threeModeContract = withSearch p303RationaleSnapshot $ \connection materializati
           "three-fts+exact-summary+section-rerank+weighted-rrf"
         ]
   assertBool "vector evidence is finite and non-zero" (all ((> 0) . searchResultVectorScore . onlyResult) [vector, hybrid])
+  lookupJsonPath ["fts", "channel_candidates"] (searchResultRetrieval (onlyResult vector)) @?= Just (JsonObject [])
+  lookupJsonPath ["fts", "queries"] (searchResultRetrieval (onlyResult vector)) @?= Nothing
+  assertBool "FTS diagnostics retain channel counts" (nonEmptyJsonObject (lookupJsonPath ["fts", "channel_candidates"] (searchResultRetrieval (onlyResult fts))))
+  assertBool "hybrid diagnostics retain channel counts" (nonEmptyJsonObject (lookupJsonPath ["fts", "channel_candidates"] (searchResultRetrieval (onlyResult hybrid))))
+  lookupJsonPath ["fts", "queries", "prefix"] (searchResultRetrieval (onlyResult fts)) @?= Just (JsonString "")
   semanticSummaryText (onlyDocument materialization)
     @?= Text.intercalate
       "\n"
@@ -181,6 +230,59 @@ axisConflictSnapshot axis =
     resolved = requested <> "-resolved"
     axisLabel = case axis of DecisionAxis -> "conflict"; ScopeAxis -> "scope-conflict"; DomainAxis -> "domain-conflict"; StatusAxis -> "status-conflict"
 
+edgeFixture :: ProjectionFixture
+edgeFixture = materializeProjectionDag (ProjectionDagSpec edgePool (DomainSpec ["compiler"]) (ScopeSpec ["src"] True) "Path Edge")
+
+edgePool :: IdentifierPool
+edgePool = IdentifierPool 0
+
+edgeAdr :: AdrId
+edgeAdr = projectionFixturePrimaryAdr edgeFixture
+
+staleStatusConflictSnapshot :: ReadSnapshot
+staleStatusConflictSnapshot = snapshotFromRecords "p3-07-stale-status" staleRecords
+  where
+    r0 = recordIdAt edgePool 0
+    status0 = connectionIdAt edgePool 2
+    status1 = connectionIdAt edgePool 5
+    staleRecords =
+      map staleStatus
+        [ record
+          | document <- readSnapshotDocuments (projectionFixtureAfter edgeFixture),
+            let record = parsedManagedRecord document,
+            managedObjectId record /= ProvenanceConnection status1
+        ]
+    staleStatus (ManagedConnection connection)
+      | connectionRecordId connection == status0 =
+          ManagedConnection
+            connection
+              { connectionPayload = StatusConnection (StatusPayload edgeAdr [] StatusObsolete [r0] Nothing)
+              }
+    staleStatus record = record
+
+absentScopeSnapshot :: ReadSnapshot
+absentScopeSnapshot = snapshotFromRecords "p3-07-absent-scope" records
+  where
+    records =
+      [ record
+        | document <- readSnapshotDocuments (projectionFixtureAfter edgeFixture),
+          let record = parsedManagedRecord document,
+          not (isPrimaryScopeConnection record)
+      ]
+    isPrimaryScopeConnection (ManagedConnection connection) =
+      case connectionPayload connection of
+        AppliesToConnection payload -> appliesToSubjectAdr payload == edgeAdr
+        _ -> False
+    isPrimaryScopeConnection _ = False
+
+snapshotFromRecords :: Text.Text -> [ManagedRecord] -> ReadSnapshot
+snapshotFromRecords label records =
+  ReadSnapshot
+    (RevisionIdentity label (label <> "-resolved"))
+    (zipWith (\ordinal record -> parsedDocument edgePool ordinal (1000 + fromIntegral ordinal) [] record) [0 ..] records)
+    (reduceManagedGraph records)
+    Map.empty
+
 withSearch :: ReadSnapshot -> (Connection -> SearchMaterialization -> IO value) -> IO value
 withSearch snapshot action = bracket (open ":memory:") close $ \connection -> do
   initializeSearchSchema connection >>= (@?= Right ())
@@ -205,6 +307,12 @@ onlyResult projection = case searchProjectionResults projection of
   [result] -> result
   results -> error ("expected one search result, got " <> show (length results))
 
+resultForAdr :: AdrId -> SearchProjection -> SearchResult
+resultForAdr adr projection =
+  case filter ((== adr) . searchResultAdr) (searchProjectionResults projection) of
+    [result] -> result
+    results -> error ("expected one search result for ADR, got " <> show (length results))
+
 mustRepoPath :: Text.Text -> RepoPath
 mustRepoPath value = case mkRepoPath value of
   Right path -> path
@@ -217,3 +325,23 @@ retrievalAlgorithmText :: JsonValue -> Text.Text
 retrievalAlgorithmText value = case value of
   JsonObject members -> case lookup "algorithm" members of Just (JsonString algorithm) -> algorithm; _ -> ""
   _ -> ""
+
+lookupJsonPath :: [Text.Text] -> JsonValue -> Maybe JsonValue
+lookupJsonPath [] value = Just value
+lookupJsonPath (key : remaining) (JsonObject members) = lookup key members >>= lookupJsonPath remaining
+lookupJsonPath _ _ = Nothing
+
+nonEmptyJsonObject :: Maybe JsonValue -> Bool
+nonEmptyJsonObject (Just (JsonObject (_ : _))) = True
+nonEmptyJsonObject _ = False
+
+richPathsFor :: ReadSnapshot -> AdrId -> [Text.Text]
+richPathsFor snapshot adr =
+  case projectCollapsed RichProjection snapshot adr >>= requireRich of
+    Right detail -> richSourcePaths detail
+    Left problem -> error (show problem)
+  where
+    requireRich projection =
+      case collapsedRichDetail projection of
+        Just detail -> Right detail
+        Nothing -> Left (QueryAdrNotFound adr)

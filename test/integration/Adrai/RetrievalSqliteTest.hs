@@ -32,7 +32,8 @@ tests =
     [ testCase "six target DDLs introspect to exact ordered columns and tokenizers" schemaContract,
       testCase "empty inputs short-circuit while parser and missing-index errors stay distinct and sanitized" errorContract,
       testCase "allowed filtering batching parameterization ranking and stemming are deterministic" rankedContract,
-      testCase "prefix trigger excludes phrase and terms merge has no post-merge cap" channelContract
+      testCase "prefix trigger excludes phrase and terms merge has no post-merge cap" channelContract,
+      testCase "an attempted prefix fallback is published only when it returns hits" prefixMissContract
     ]
 
 schemaContract :: IO ()
@@ -122,6 +123,25 @@ channelContract = withMemory $ \connection -> do
   summaryFtsPrefixUsed channels @?= True
   length (summaryFtsPhrase channels) @?= 39
   length (summaryFtsTerms channels) @?= 259
+
+prefixMissContract :: IO ()
+prefixMissContract = withMemory $ \connection -> do
+  initializeFtsTargets connection >>= (@?= Right ())
+  insertExact connection "present" "" "" "unrelated" "" "" "" "" ""
+  let base = buildQueryPlan "unused" []
+      plan =
+        base
+          { queryPlanFtsExactPhrase = "",
+            queryPlanFtsExactTerms = [],
+            queryPlanFtsNear = "",
+            queryPlanFtsPrefix = "\"absent\"*",
+            queryPlanFtsStemmed = "",
+            queryPlanFtsIdentifier = ""
+          }
+  result <- runSummaryFtsChannels connection plan (Set.singleton "present") (mustRight (mkCandidateLimit 1))
+  let channels = mustRight result
+  summaryFtsTerms channels @?= []
+  summaryFtsPrefixUsed channels @?= False
 
 insertExact :: Connection -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> IO ()
 insertExact connection itemId title summary decision domains rationale context consequences identifiers =

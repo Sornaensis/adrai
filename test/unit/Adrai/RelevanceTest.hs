@@ -18,6 +18,7 @@ tests =
   testGroup
     "P3-05 relevance core"
     [ testCase "relevance whitespace binary and size limits are explicit" rawTextBoundaryContract,
+      testCase "only CRLF and CR are relevance line boundaries" newlineNormalizationContract,
       testCase "embedding normalization does not mutate evidence text" embeddingContract,
       testCase "informative selection is bounded content-only and ordinal stable" informativeContract,
       testCase "focused excerpts retain exact source line ranges" excerptContract,
@@ -44,6 +45,34 @@ rawTextBoundaryContract = do
   chunkTextWithLimit 64 decoded @?= Left (ChunkTooLarge 96 64)
   map textChunkText (chunkDecodedText decoded) @?= [decoded]
   chunkText " \t\r\n  " @?= Right []
+
+newlineNormalizationContract :: IO ()
+newlineNormalizationContract = do
+  normalizeNewlines "alpha\r\nbeta\rgamma" @?= "alpha\nbeta\ngamma"
+  let source =
+        Text.concat
+          [ "abcdefghij",
+            Text.singleton '\v',
+            "klmnopqrst",
+            Text.singleton '\f',
+            "uvwxyzabcd",
+            Text.singleton '\x001c',
+            "efghijklmn",
+            Text.singleton '\x001d',
+            "opqrstuvwx",
+            Text.singleton '\x001e',
+            "yzabcdefgh",
+            Text.singleton '\x0085',
+            "ijklmnopqr",
+            Text.singleton '\x2028',
+            "stuvwxyzab",
+            Text.singleton '\x2029',
+            "cdefghijkl"
+          ]
+      bytes = TextEncoding.encodeUtf8 source
+  normalizeNewlines source @?= source
+  decodeTextBytes "separators" bytes @?= Right source
+  chunkText source @?= Right [TextChunk 0 1 1 source]
 
 embeddingContract :: IO ()
 embeddingContract = do

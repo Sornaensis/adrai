@@ -9,11 +9,11 @@
       "typed_equal": true
     },
     "search": {
-      "bytes": 20979,
-      "cold_sha256": "sha256:nF5h6gkWpSL_X5U60LFE0yk4iuz82d_ck6UOrVv06XI",
+      "bytes": 20980,
+      "cold_sha256": "sha256:WYtdALnllKLgwSoJEdnpukFLZR1-UMwLqyZV7ELBY8M",
       "rendered_bytes_equal": true,
-      "repeated_sha256": "sha256:nF5h6gkWpSL_X5U60LFE0yk4iuz82d_ck6UOrVv06XI",
-      "reused_sha256": "sha256:nF5h6gkWpSL_X5U60LFE0yk4iuz82d_ck6UOrVv06XI",
+      "repeated_sha256": "sha256:WYtdALnllKLgwSoJEdnpukFLZR1-UMwLqyZV7ELBY8M",
+      "reused_sha256": "sha256:WYtdALnllKLgwSoJEdnpukFLZR1-UMwLqyZV7ELBY8M",
       "typed_equal": true
     }
   },
@@ -193,12 +193,12 @@
   },
   "schema": "adrai/p3-06-quality-golden/v1",
   "search_vector_corpus": {
-    "compatibility_fingerprint": "sha256:C5CfKT2ry2_44ShGVIFlhlGtWTXERZmK2ca58aoR3Rc",
+    "compatibility_fingerprint": "sha256:9sB9jXtOpY_btPOgx_ZAS10RhSwVu0RlKBZXYuqb55o",
     "identifier_vector_id": "adrai-identifier:-JSyvxW6dxoDl9Pzpm6Q_aoG:768",
     "identifier_vectors": 6,
     "materialization_documents": 6,
     "materialization_passages": 24,
-    "packed_corpus_sha256": "sha256:CcxJDW9veonP_l-nXGTZXjVDaD1zqHwG1HsloeXPU0I",
+    "packed_corpus_sha256": "sha256:OvijMthkRKERWEOXt5pTUoH764ySw7trnIxH9uxubzQ",
     "section_vectors": 24,
     "semantic_vector_id": "adrai-semantic:T_yApQ2sJvyBH21HYYBYuQ1X:1024",
     "source_and_query_vectors_ephemeral": true,

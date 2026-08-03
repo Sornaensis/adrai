@@ -13,6 +13,7 @@ import Adrai.Relevance
 import Adrai.Retrieval
 import Adrai.Scope (mkScopePattern)
 import Adrai.Types
+import Adrai.Vector (identifierTerms)
 import Data.List (sort, sortOn)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -31,7 +32,7 @@ tests =
       testCase "rationale uses only path-sorted current validated relations" currentRationaleProjection,
       testCase "superseded and quarantined content and aliases are excluded" historicalContentExclusion,
       testCase "passage IDs, section identities, and inclusive line ranges are exact" exactPassageProjection,
-      testCase "chunking normalizes every line boundary and enforces the UTF-8 byte limit" chunkBoundaryContract
+      testCase "chunking normalizes CR boundaries and preserves other separators" chunkBoundaryContract
     ]
 
 resolvedIdentityAndVisibility :: IO ()
@@ -115,6 +116,32 @@ currentRationaleProjection = do
   searchDocumentDomains document @?= ["current.domain"]
   searchDocumentScope document @?= ["src/current/**"]
   searchDocumentObsolete document @?= True
+  let expectedBody =
+        Text.intercalate
+          "\n"
+          [ "# Context",
+            "context first",
+            "context second",
+            "# Decision",
+            "decision first",
+            "decision second",
+            "# Consequences",
+            "consequence",
+            "# Notes",
+            "other note"
+          ]
+      expectedIdentifierSource =
+        Text.intercalate
+          "\n"
+          [ "Current Decision API (CDAPI)",
+            "Current summary",
+            expectedBody,
+            "current.domain",
+            searchDocumentRationale document
+          ]
+  searchDocumentIdentifierSource document @?= expectedIdentifierSource
+  searchDocumentIdentifiers document
+    @?= Text.unwords (identifierTerms True expectedIdentifierSource)
   visibleSearchItemIds ExcludeObsolete materialization @?= Set.empty
   visibleSearchItemIds IncludeObsolete materialization @?= Set.singleton (adrIdText (rationaleAdr fixture))
 
@@ -184,10 +211,10 @@ chunkBoundaryContract = do
             '\x2029',
             'k'
           ]
-      normalized = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk"
+      normalized = "a\nb\nc\vd\fe\x001c\&f\x001d\&g\x001e\&h\x0085\&i\x2028\&j\x2029\&k"
       exactlyFourMiB = Text.replicate (maxTextBytes `div` 2) "é"
   normalizeNewlines everyBoundary @?= normalized
-  chunkText everyBoundary @?= Right [TextChunk 0 1 11 normalized]
+  chunkText everyBoundary @?= Right [TextChunk 0 1 3 normalized]
   case chunkText exactlyFourMiB of
     Right _ -> pure ()
     Left problem -> assertFailure ("exact 4 MiB UTF-8 input was rejected: " <> show problem)
@@ -348,6 +375,7 @@ documentTexts document =
     searchDocumentOther document,
     Text.unlines (searchDocumentScope document),
     Text.unlines (searchDocumentSourcePaths document),
+    searchDocumentIdentifierSource document,
     searchDocumentIdentifiers document
   ]
 

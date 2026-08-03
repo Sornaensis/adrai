@@ -171,12 +171,21 @@ materializeCandidate indexes reduced conflicted rationale connectionPaths curren
           Just status -> reducedStatusState status == StatusObsolete
           Nothing -> False
       itemId = if conflicted then adrIdText adrId <> "@" <> recordIdText recordId else adrIdText adrId
-      body = decisionBody decision
+      body = Text.strip (decisionBody decision)
+      identifierSource =
+        Text.intercalate
+          "\n"
+          [ decisionTitle decision,
+            decisionSummary decision,
+            body,
+            Text.unwords effectiveDomains,
+            rationale
+          ]
       identifiers =
         Text.unwords
           ( identifierTerms
               True
-              (Text.unwords ([decisionTitle decision, decisionSummary decision, body] <> effectiveDomains <> [rationale]))
+              identifierSource
           )
       sourcePaths = stableUniqueTexts (documentPathText decisionDocument : connectionPaths)
   Right
@@ -197,6 +206,7 @@ materializeCandidate indexes reduced conflicted rationale connectionPaths curren
         searchDocumentConflicted = conflicted,
         searchDocumentStateToken = reducedStateToken reduced,
         searchDocumentSourcePaths = sourcePaths,
+        searchDocumentIdentifierSource = identifierSource,
         searchDocumentIdentifiers = identifiers
       }
   where

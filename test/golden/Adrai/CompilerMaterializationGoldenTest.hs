@@ -56,6 +56,7 @@ renderDocument document =
       escaped (searchDocumentConsequences document),
       escaped (Text.intercalate "\n" (searchDocumentDomains document)),
       escaped (searchDocumentRationale document),
+      escaped (searchDocumentIdentifierSource document),
       escaped (searchDocumentIdentifiers document),
       escaped (searchDocumentOther document),
       escaped (Text.intercalate "\n" (searchDocumentScope document)),

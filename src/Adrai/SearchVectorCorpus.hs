@@ -16,6 +16,7 @@ module Adrai.SearchVectorCorpus
     searchVectorCorpusIdentifierVectors,
     searchVectorCorpusSectionVectors,
     searchVectorSemanticSummaryText,
+    searchVectorIdentifierSourceText,
   )
 where
 
@@ -77,7 +78,7 @@ buildSearchVectorCorpus :: SearchMaterialization -> Either SearchVectorCorpusErr
 buildSearchVectorCorpus materialization = do
   validateUniqueKeys materialization
   summaries <- buildVectors "semantic summary" searchDocumentItemId (semanticEmbedding . searchVectorSemanticSummaryText) documents
-  identifiers <- buildVectors "identifier" searchDocumentItemId (identifierEmbedding . searchDocumentIdentifiers) documents
+  identifiers <- buildVectors "identifier" searchDocumentItemId (identifierEmbedding . searchVectorIdentifierSourceText) documents
   sections <- buildVectors "semantic section" searchPassageId (semanticEmbedding . searchPassageText) passages
   Right
     SearchVectorCorpus
@@ -138,6 +139,11 @@ searchVectorSemanticSummaryText document =
         ]
     )
 
+-- | The raw, newline-delimited compiler input used by the identifier
+-- embedder.  The normalized identifier field remains the lexical/FTS input.
+searchVectorIdentifierSourceText :: SearchDocument -> Text
+searchVectorIdentifierSourceText = searchDocumentIdentifierSource
+
 buildVectors :: Text -> (value -> Text) -> (value -> DenseVector) -> [value] -> Either SearchVectorCorpusError (Map Text DenseVector)
 buildVectors context key embedValue values =
   Map.fromAscList <$> traverse buildOne values
@@ -190,7 +196,7 @@ documentFingerprint document =
       ("adr_id", JsonString (adrIdText (searchDocumentAdrId document))),
       ("candidate_record_id", JsonString (recordIdText (searchDocumentCandidateRecordId document))),
       ("semantic_input", JsonString (searchVectorSemanticSummaryText document)),
-      ("identifier_input", JsonString (searchDocumentIdentifiers document))
+      ("identifier_input", JsonString (searchVectorIdentifierSourceText document))
     ]
 
 passageFingerprint :: SearchPassage -> JsonValue

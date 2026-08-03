@@ -186,6 +186,7 @@ testDocument item adr record =
       searchDocumentConflicted = False,
       searchDocumentStateToken = mustStateToken,
       searchDocumentSourcePaths = ["docs/adr.md"],
+      searchDocumentIdentifierSource = item,
       searchDocumentIdentifiers = item
     }
 

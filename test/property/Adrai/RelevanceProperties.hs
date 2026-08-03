@@ -19,6 +19,7 @@ tests =
   testGroup
     "P3-05 relevance properties"
     [ testProperty "relevance chunk normalization ranges and fingerprint are deterministic" propChunkNormalization,
+      testProperty "accepted non-CR separators remain literal evidence" propSeparatorPreservation,
       testProperty "relevance replaces malformed utf8 and chunks long lines" propMalformedAndLongLine,
       testProperty "identical bytes yield identical chunks across filenames" propFilenameIndependent,
       testProperty "embedding whitespace collapses without evidence mutation" propEmbeddingEvidence,
@@ -36,6 +37,18 @@ propChunkNormalization = withTests 80 . property $ do
       normalized = normalizeNewlines windows
   chunkText windows === chunkText normalized
   relevanceChunkingFingerprint === "sha256:Nh2G1cvQT0C8UX8nxSoUMS7NI2caJ_rJOHgTwncHEc4"
+
+propSeparatorPreservation :: Property
+propSeparatorPreservation = withTests 1 . property $ do
+  let separators = ['\v', '\f', '\x001c', '\x001d', '\x001e', '\x0085', '\x2028', '\x2029']
+      source = Text.concat (zipWith (\ordinal separator -> Text.replicate 12 (Text.pack (show ordinal)) <> Text.singleton separator) [1 :: Int ..] separators) <> "literal-tail"
+  normalizeNewlines source === source
+  case chunkText source of
+    Right [single] -> do
+      textChunkText single === source
+      textChunkStartLine single === 1
+      textChunkEndLine single === 1
+    _ -> assert False
 
 propMalformedAndLongLine :: Property
 propMalformedAndLongLine = withTests 40 . property $ do
