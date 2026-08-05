@@ -12,6 +12,7 @@ import qualified Adrai.ColdCompilerTest
 import qualified Adrai.ColdCompilerGoldenTest
 import qualified Adrai.Compiler.CacheSelectionTest
 import qualified Adrai.Compiler.CacheSyncTest
+import qualified Adrai.Compiler.DocumentCacheTest
 import qualified Adrai.CurrentSearchTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
@@ -37,6 +38,7 @@ import qualified Adrai.ManagedDocumentFormatTest
 import qualified Adrai.ManagedPathContractTest
 import qualified Adrai.MarkdownTest
 import qualified Adrai.ProvenanceFormatTest
+import qualified Adrai.Provenance.LockTest
 import qualified Adrai.P206GoldenTest
 import qualified Adrai.P306QualityGoldenTest
 import qualified Adrai.PassageFtsTest
@@ -204,6 +206,8 @@ tests =
           ],
       testGroup
           "P4-05"
-          [ Adrai.Compiler.CacheSyncTest.tests
+          [ Adrai.Compiler.CacheSyncTest.tests,
+            Adrai.Provenance.LockTest.tests,
+            Adrai.Compiler.DocumentCacheTest.tests
           ]
     ]
