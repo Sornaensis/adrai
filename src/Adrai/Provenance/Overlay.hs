@@ -21,6 +21,7 @@ module Adrai.Provenance.Overlay
 
     -- * Operation classification
     OperationClassification (..),
+    operationClassificationValue,
 
     -- * Line landing record
     LineLanding,

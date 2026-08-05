@@ -59,7 +59,7 @@ module Adrai.Git
     decodeGitBlobPayload,
     validateGitBatchTrailing,
     runRepository,
-    GitOid,
+    GitOid(..),
     gitOidText,
     OverlayFingerprint,
     mkOverlayFingerprint,
@@ -67,7 +67,7 @@ module Adrai.Git
 where
 
 import Adrai.ManagedPath (ManagedReadPathError (..), resolveRepositoryReadPath)
-import Adrai.Provenance (GitOid, gitOidText, mkGitOid, OverlayFingerprint (..), mkOverlayFingerprint)
+import Adrai.Provenance (GitOid(..), gitOidText, mkGitOid, OverlayFingerprint (..), mkOverlayFingerprint)
 import Adrai.Types (GitRef, RepoPath, RepoPathViolation, mkGitRef, mkRepoPath, repoPathText)
 import qualified Control.Concurrent.Async as Async
 import Control.Exception (IOException, finally, try)

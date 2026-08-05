@@ -2,7 +2,7 @@
 {-# LANGUAGE StrictData #-}
 
 module Adrai.Provenance
-  ( GitOid,
+  ( GitOid(..),
     mkGitOid,
     gitOidText,
     OverlayFingerprint (..),
