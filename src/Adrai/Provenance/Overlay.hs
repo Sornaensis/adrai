@@ -70,6 +70,7 @@ module Adrai.Provenance.Overlay
 
     -- * Schema helpers
     overlaySchemaDdl,
+    overlaySchemaIndexes,
 
     -- * Schema validation and creation
     overlayValid,
