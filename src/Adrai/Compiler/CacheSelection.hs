@@ -5,18 +5,23 @@
 
 -- | Cache path selection logic for the ADRAI cold compiler.
 --
--- Implements the 5-path cascade described in the Python prototype
+-- Implements the cache cascade described in the Python prototype
 -- (``ADRAI_1_Source/adrai_core/compiler.py`` ``compile_repo()`` cache path
 -- selection, ~lines 2800-3350).  The cascade orders cache reuse from
 -- most aggressive (exact hit) to least (cold compile):
 --
 -- 1. **Exact** — current database exists with matching schema, source
 --    revision, and resolved OID.
--- 2. **Tree-identical** — an ancestor database's managed tree is
+-- 2. **Provenance-delta** — schema matches, source revision matches,
+--    but resolved OID differs (new commits since last compile).
+-- 3. **Tree-identical** — an ancestor database's managed tree is
 --    byte-identical at the target revision.
--- 3. **Semantic-reuse** — an ancestor database is available for the
+-- 4. **Semantic-reuse** — an ancestor database is available for the
 --    same semantic revision, requiring only incremental provenance refresh.
--- 4. **Cold compile** — no usable ancestor; rebuild from scratch.
+-- 5. **Cold compile** — no usable ancestor; rebuild from scratch.
+--
+-- "Provenance-sync" (same source revision, ref heads moved, no new
+-- commits) is handled in P4-05.3 (overlay-to-cache provenance sync).
 --
 -- Ancestor distance is measured by Git first-parent BFS (immediate parents
 -- are closer than siblings) and full reachable BFS as a tiebreaker.
@@ -26,6 +31,7 @@ module Adrai.Compiler.CacheSelection
     AncestorRank (..),
     ReuseCacheInfo (..),
     CompileCachePath (..),
+    semanticReuseScore,
     loadCacheMeta,
     computeAncestorRank,
     treeIdenticalCheck,
@@ -41,7 +47,7 @@ import Control.Monad (guard, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.Char (toLower)
-import Data.List (find, isSuffixOf, sortBy)
+import Data.List (elemIndex, find, isSuffixOf, sortBy)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Maybe (listToMaybe, mapMaybe)
@@ -150,8 +156,8 @@ computeAncestorRank repository repoRoot targetOid candidateOid
       let firstParentOids = case firstParentResult of
             Right pr -> parseRevList $ processStdout pr
             Left _   -> []
-      case find (== candidateOid) firstParentOids of
-        Just _  -> pure Unrelated
+      case elemIndex candidateOid firstParentOids of
+        Just dist -> pure (FirstParent dist)
         Nothing -> do
           -- Full reachable BFS.
           fullResult <- runRepository repository "full rev-list"
@@ -160,18 +166,43 @@ computeAncestorRank repository repoRoot targetOid candidateOid
           let fullOids = case fullResult of
                 Right pr -> parseRevList $ processStdout pr
                 Left _   -> []
-          case find (== candidateOid) fullOids of
-            Just _  -> pure Unrelated
+          case elemIndex candidateOid fullOids of
+            Just dist -> pure (Reachable dist)
             Nothing -> pure Unrelated
 
 -- | Parse a newline-separated rev-list output into a list of OIDs.
+-- Handles both Unix (LF) and Windows (CRLF) line endings.
 parseRevList :: BS.ByteString -> [Text]
 parseRevList raw
   | BS.null raw = []
   | otherwise =
-      map (Text.pack . BS8.unpack) $
-        filter (not . BS.null) $
-          BS.split 10 raw
+      let cleaned = BS.concat $ BS.split 13 raw
+          parts = BS.split 10 cleaned
+       in map (Text.pack . BS8.unpack) $
+          filter (not . BS.null) parts
+
+-- ============================================================
+-- semanticReuseScore
+-- ============================================================
+
+-- | Compute a numeric reuse score for a candidate cache.
+--
+-- Higher scores indicate better reuse potential.  The scoring model
+-- rewards closer ancestry and tree identity:
+--
+-- * @ExactMatch@ → 1000
+-- * @FirstParent N@ → 900 - N * 100 (clamped to ≥ 0)
+-- * @Reachable N@ → 500 - N * 50 (clamped to ≥ 0)
+-- * @Unrelated@ → 0
+--
+-- This is a simple linear decay model; the Python prototype uses
+-- a similar scoring scheme in the cache-selection cascade.
+semanticReuseScore :: AncestorRank -> Int
+semanticReuseScore = \case
+  ExactMatch      -> 1000
+  FirstParent n   -> max 0 (900 - n * 100)
+  Reachable n     -> max 0 (500 - n * 50)
+  Unrelated       -> 0
 
 -- ============================================================
 -- treeIdenticalCheck
@@ -214,12 +245,12 @@ treeIdenticalCheck repository managedPaths ancestorRev descendantRev = do
 -- Scoring order: ExactMatch > FirstParent > Reachable > Unrelated.
 -- Ties are broken by closer position (list order), then more recent mtime.
 chooseReuseCache
-  :: FilePath     -- ^ Repository root.
+  :: Repository   -- ^ Git repository handle.
   -> FilePath     -- ^ Cache directory.
   -> Text         -- ^ Required schema (e.g. @"adrai-cache/1"@).
   -> Text         -- ^ Target revision OID.
   -> IO (Maybe ReuseCacheInfo)
-chooseReuseCache _repoRoot cacheDir requiredSchema _targetRev = do
+chooseReuseCache repo cacheDir requiredSchema targetRev = do
   entries <- listDirectory cacheDir
   let candidateFiles = filter isCacheFile entries
   if null candidateFiles
@@ -251,11 +282,12 @@ chooseReuseCache _repoRoot cacheDir requiredSchema _targetRev = do
           (Just schema, Just srcRev, Just cacheKey')
             | schema == requiredSchema && not (Text.null srcRev) -> do
                 mtime <- tryGetMtime fullPath
+                rank <- computeAncestorRank repo (repositoryCommandDirectory repo) targetRev srcRev
                 pure (Just ReuseCacheInfo
                   { rcPath = fullPath,
                     rcSourceRev = srcRev,
                     rcCacheKey = cacheKey',
-                    rcRank = Unrelated,
+                    rcRank = rank,
                     rcMtime = mtime
                   })
             | otherwise -> pure Nothing
@@ -277,25 +309,34 @@ chooseReuseCache _repoRoot cacheDir requiredSchema _targetRev = do
 -- cachePathSelection
 -- ============================================================
 
--- | Implement the full 5-path cache selection cascade.
+-- | Implement the cache path selection cascade.
 --
--- Steps:
+-- The cascade evaluates cache reuse from most aggressive (exact hit) to
+-- least (cold compile):
 --
--- 1. If the current database exists with matching exact keys → 'Exact'.
--- 2. If 'chooseReuseCache' finds an ancestor with identical tree → 'TreeIdentical'.
--- 3. If 'chooseReuseCache' finds an ancestor → 'SemanticReuse'.
--- 4. Otherwise → 'FullCompile'.
+-- 1. **Exact** — the provided cache path has matching schema, source
+--    revision, and resolved OID.
+-- 2. **Provenance-delta** — schema matches, source revision matches,
+--    but resolved OID differs (new commits since last compile).
+-- 3. **Tree-identical** — an ancestor database's managed tree is
+--    byte-identical at the target revision (checked via
+--    'treeIdenticalCheck').
+-- 4. **Semantic-reuse** — an ancestor database is available for the
+--    same semantic revision, requiring only incremental provenance
+--    refresh.
+-- 5. **Cold compile** — no usable ancestor; rebuild from scratch.
 --
 -- Returns @(cacheMode, incrementalKind, bestReuseInfo)@.
 cachePathSelection
-    :: FilePath       -- ^ Repository root.
-    -> FilePath       -- ^ Cache directory.
-    -> Text           -- ^ Current database alias.
-    -> Text           -- ^ Required schema (e.g. "adrai-cache/1").
-    -> Text           -- ^ Target revision OID.
-    -> Maybe FilePath -- ^ Optional exact-match cache path.
+    :: Repository      -- ^ Git repository handle (needed for ancestor ranking).
+    -> FilePath        -- ^ Cache directory.
+    -> Text            -- ^ Current database alias.
+    -> Text            -- ^ Required schema (e.g. "adrai-cache/1").
+    -> Text            -- ^ Target revision OID.
+    -> Maybe FilePath  -- ^ Optional exact-match cache path.
+    -> [FilePath]      -- ^ Managed paths for tree-identical comparison.
     -> IO (CacheMode, IncrementalKind, Maybe ReuseCacheInfo)
-cachePathSelection repoRoot cacheDir dbAlias requiredSchema targetRev exactCache = do
+cachePathSelection repo cacheDir dbAlias requiredSchema targetRev exactCache managedPaths = do
   -- Path 1: Check for exact match on the provided cache path.
   let tryExact = case exactCache of
         Just cachePath -> do
@@ -306,9 +347,11 @@ cachePathSelection repoRoot cacheDir dbAlias requiredSchema targetRev exactCache
                 | s == requiredSchema && srcRev == dbAlias && resolvedOid == targetRev ->
                     return (Just (Exact, FullCompile, Nothing))
                 | s == requiredSchema && srcRev == dbAlias ->
-                    return (Just (Incremental ProvenanceDelta, ProvenanceDelta, Just (ReuseCacheInfo cachePath srcRev s Unrelated 0)))
+                    return (Just (Incremental ProvenanceDelta, ProvenanceDelta,
+                      Just (ReuseCacheInfo cachePath srcRev s Unrelated 0)))
                 | s == requiredSchema ->
-                    return (Just (Incremental SemanticReuse, SemanticReuse, Just (ReuseCacheInfo cachePath srcRev s Unrelated 0)))
+                    return (Just (Incremental SemanticReuse, SemanticReuse,
+                      Just (ReuseCacheInfo cachePath srcRev s Unrelated 0)))
                 | otherwise ->
                     return Nothing
               _ -> return Nothing
@@ -318,14 +361,15 @@ cachePathSelection repoRoot cacheDir dbAlias requiredSchema targetRev exactCache
   case exactResult of
     Just result -> return result
     Nothing -> do
-      -- Paths 2-4: Search the cache directory for reusable ancestors.
-      bestCandidate <- chooseReuseCache repoRoot cacheDir requiredSchema targetRev
+      -- Paths 2-5: Search the cache directory for reusable ancestors.
+      bestCandidate <- chooseReuseCache repo cacheDir requiredSchema targetRev
       case bestCandidate of
         Nothing ->
-          -- Path 4: No reusable ancestor found.
+          -- Path 5 (fall-through): No reusable ancestor found → cold compile.
           pure (Full, FullCompile, Nothing)
-        Just candidate ->
-          -- Paths 2-3: Reusable ancestor found.
-          -- In production this would check tree identity.
-          -- For now we treat any candidate as a semantic-reuse candidate.
-          pure (Incremental SemanticReuse, SemanticReuse, Just candidate)
+        Just candidate -> do
+          let srcRev = rcSourceRev candidate
+          isIdentical <- treeIdenticalCheck repo managedPaths srcRev targetRev
+          pure $ if isIdentical
+            then (Incremental TreeIdentical, TreeIdentical, Just candidate)
+            else (Incremental SemanticReuse, SemanticReuse, Just candidate)

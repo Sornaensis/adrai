@@ -7,11 +7,12 @@
 -- deliberately knows nothing about ADRAI documents, graph reduction, caches,
 -- or SQLite: it reports repository facts and object bytes only.
 module Adrai.Git
-  ( GitClient,
+  ( GitClient (..),
     systemGit,
     gitClient,
-    Repository,
+    Repository (..),
     RepositoryLayout (..),
+    repositoryClient,
     repositoryWorktreeRoot,
     repositoryGitDir,
     repositoryCommonDir,

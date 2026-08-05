@@ -3,6 +3,18 @@
 module Adrai.Compiler.CacheSelectionTest (tests) where
 
 import Adrai.Compiler.CacheSelection
+  ( AncestorRank (..),
+    CacheMode (..),
+    IncrementalKind (..),
+    ReuseCacheInfo (..),
+    cachePathSelection,
+    chooseReuseCache,
+    computeAncestorRank,
+    loadCacheMeta,
+    semanticReuseScore,
+    treeIdenticalCheck,
+  )
+import Adrai.Git (GitClient (..), Repository (..), RepositoryLayout (BareRepository), systemGit)
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import Data.List (sortBy)
@@ -19,6 +31,30 @@ tests =
   testGroup
     "CacheSelection"
     [ testGroup
+        "semanticReuseScore"
+        [ testCase "ExactMatch yields highest score" $ do
+              semanticReuseScore ExactMatch @?= 1000
+
+          , testCase "FirstParent N decays linearly" $ do
+              semanticReuseScore (FirstParent 0) @?= 900
+              semanticReuseScore (FirstParent 1) @?= 800
+              semanticReuseScore (FirstParent 5) @?= 400
+
+          , testCase "Reachable N decays linearly" $ do
+              semanticReuseScore (Reachable 0) @?= 500
+              semanticReuseScore (Reachable 1) @?= 450
+              semanticReuseScore (Reachable 10) @?= 0
+
+          , testCase "Unrelated yields zero" $ do
+              semanticReuseScore Unrelated @?= 0
+
+          , testCase "score ordering mirrors AncestorRank ordering" $ do
+              semanticReuseScore ExactMatch > semanticReuseScore (FirstParent 0) @?= True
+              semanticReuseScore (FirstParent 0) > semanticReuseScore (FirstParent 1) @?= True
+              semanticReuseScore (FirstParent 1) > semanticReuseScore (Reachable 0) @?= True
+              semanticReuseScore (Reachable 0) > semanticReuseScore Unrelated @?= True
+        ],
+      testGroup
         "computeAncestorRank"
         [ testCase "identical OIDs yield ExactMatch" $ do
             -- When target and candidate are the same OID, the rank is ExactMatch.
@@ -104,9 +140,10 @@ tests =
         [ testCase "returns Full when no cache is available" $ do
             withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
               let cacheDir = tmpDir </> "cache"
+                  repo = minimalRepository tmpDir
               createDirectory cacheDir
               -- No exact cache, empty cache dir → Full
-              result <- cachePathSelection cacheDir cacheDir "alias1" "adrai-cache/1" "abc123" Nothing
+              result <- cachePathSelection repo cacheDir "alias1" "adrai-cache/1" "abc123" Nothing []
               let (mode, kind, _) = result
               mode @?= Full
               kind @?= FullCompile
@@ -117,6 +154,7 @@ tests =
                   targetRev = "abc123"
                   dbAlias = "alias1"
                   schema' = "adrai-cache/1"
+                  repo = minimalRepository tmpDir
               -- Create a SQLite DB with the expected meta keys
               conn <- open cachePath
               execute_ conn "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -124,9 +162,8 @@ tests =
               execute_ conn "INSERT INTO meta(key,value) VALUES ('source_revision', 'alias1')"
               execute_ conn "INSERT INTO meta(key,value) VALUES ('resolved_oid', 'abc123')"
               close conn
-              -- Debug: check what loadCacheMeta returns
-              meta <- loadCacheMeta cachePath
               -- Verify meta loaded correctly
+              meta <- loadCacheMeta cachePath
               case meta of
                 Nothing -> assertBool "meta should not be Nothing" False
                 Just m -> do
@@ -134,13 +171,71 @@ tests =
                   Map.lookup "source_revision" m @?= Just "alias1"
                   Map.lookup "resolved_oid" m @?= Just "abc123"
                   -- Now check cachePathSelection
-                  result <- cachePathSelection cachePath tmpDir dbAlias schema' targetRev (Just cachePath)
+                  result <- cachePathSelection repo tmpDir dbAlias schema' targetRev (Just cachePath) []
                   let (mode, kind, _) = result
                   mode @?= Exact
                   kind @?= FullCompile
+
+          , testCase "returns ProvenanceDelta when schema+srcRev match but resolved_oid differs" $ do
+            withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
+              let cachePath = tmpDir </> "delta.db"
+                  targetRev = "abc123"
+                  dbAlias = "alias1"
+                  schema' = "adrai-cache/1"
+                  repo = minimalRepository tmpDir
+              conn <- open cachePath
+              execute_ conn "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+              execute_ conn "INSERT INTO meta(key,value) VALUES ('schema', 'adrai-cache/1')"
+              execute_ conn "INSERT INTO meta(key,value) VALUES ('source_revision', 'alias1')"
+              execute_ conn "INSERT INTO meta(key,value) VALUES ('resolved_oid', 'def456')"
+              close conn
+              result <- cachePathSelection repo tmpDir dbAlias schema' targetRev (Just cachePath) []
+              let (mode, kind, _) = result
+              mode @?= Incremental ProvenanceDelta
+              kind @?= ProvenanceDelta
+
+          , testCase "returns TreeIdentical when candidate tree is identical" $ do
+            withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
+              let cachePath = tmpDir </> "identical.db"
+                  targetRev = "abc123"
+                  srcRev = "def456"
+                  schema' = "adrai-cache/1"
+                  repo = minimalRepository tmpDir
+              -- Create a cache DB with source_revision matching srcRev
+              -- and resolved_oid matching targetRev (so it passes schema check)
+              conn <- open cachePath
+              execute_ conn "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+              execute_ conn "INSERT INTO meta(key,value) VALUES ('schema', 'adrai-cache/1')"
+              execute_ conn "INSERT INTO meta(key,value) VALUES ('source_revision', 'srcRev')"
+              execute_ conn "INSERT INTO meta(key,value) VALUES ('cache_key', 'test-key')"
+              close conn
+              -- When managedPaths is empty, treeIdenticalCheck returns True
+              -- (no paths to diff). So the cascade should return TreeIdentical.
+              result <- cachePathSelection repo tmpDir "alias1" schema' targetRev Nothing []
+              let (mode, kind, info) = result
+              mode @?= Incremental TreeIdentical
+              kind @?= TreeIdentical
+              -- Info should be the best candidate found
+              case info of
+                Just ri -> rcPath ri @?= cachePath
+                Nothing -> assertBool "cache info should not be Nothing" False
         ]
     ]
   where
+    -- Construct a minimal Repository for tests that don't exercise git.
+    -- We build it directly since discoverRepository requires a real git repo.
+    minimalRepository :: FilePath -> Repository
+    minimalRepository root =
+      Repository
+        { repositoryClient = GitClient "git",
+          repositoryWorktreeRoot = Just root,
+          repositoryGitDir = root </> ".git",
+          repositoryCommonDir = root </> ".git",
+          repositoryLayout = BareRepository,
+          repositoryCommonIsBare = False,
+          repositoryCommandDirectory = root
+        }
+
     -- Helper: assert that a is "more ranked" (better) than b.
     -- Since AncestorRank derives Ord with ExactMatch < FirstParent < Reachable < Unrelated,
     -- "more ranked" means *smaller* in the Ord sense (ExactMatch is the best).
