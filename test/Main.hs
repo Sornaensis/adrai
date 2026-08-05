@@ -11,6 +11,7 @@ import qualified Adrai.CompilerSnapshotTest
 import qualified Adrai.ColdCompilerTest
 import qualified Adrai.ColdCompilerGoldenTest
 import qualified Adrai.Compiler.CacheSelectionTest
+import qualified Adrai.Compiler.CacheSyncTest
 import qualified Adrai.CurrentSearchTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
@@ -200,5 +201,9 @@ tests =
             Adrai.ColdCompilerTest.tests,
             Adrai.IntegrityAdversarialTest.tests,
             Adrai.Compiler.CacheSelectionTest.tests
+          ],
+      testGroup
+          "P4-05"
+          [ Adrai.Compiler.CacheSyncTest.tests
           ]
     ]
