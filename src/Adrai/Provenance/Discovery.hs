@@ -37,6 +37,9 @@ module Adrai.Provenance.Discovery
 
     -- | Observation fingerprint
     observationFingerprint,
+
+    -- | First-parent path landings (line landing support)
+    firstParentPathLandings,
   )
 where
 
@@ -621,3 +624,70 @@ boundedDiagnostic raw =
 -- | Convert a 'Digest' to a hex-encoded 'Text' (40-char SHA-256 hex string).
 digestToHex :: Digest -> Text
 digestToHex = Text.pack . concatMap (\b -> showHex b "") . BS.unpack . digestBytes
+
+-- | Return the first first-parent commit that adds each managed path on a
+-- logical line.  Mirrors the Python @first_parent_path_landings()@ from
+-- @adrai_core.gitops@.
+--
+-- Uses @git log --first-parent --reverse --diff-filter=A --no-renames@ to
+-- find the earliest commit on the first-parent chain that introduces each
+-- managed path, scoped to the given reference and optionally restricted to
+-- paths under the supplied root directories.
+firstParentPathLandings
+  :: Repository
+  -> Text           -- ^ Git ref (branch name) to walk
+  -> [Text]         -- ^ Root directory paths to scope the walk (-- <roots>)
+  -> IO (Either GitError (Map Text GitOid))
+firstParentPathLandings repo ref roots = do
+  let args = [ "log",
+               "--first-parent",
+               "--reverse",
+               "--diff-filter=A",
+               "--no-renames",
+               "--format=%x1e%H",
+               "--name-only",
+               Text.unpack ref
+             ] ++ if null roots then []
+                  else ["--"] ++ map Text.unpack roots
+  result <- runRepository repo "first parent path landings" args BS.empty
+  pure $ do
+    processResult <- result
+    if processExitCode processResult /= ExitSuccess
+      then Left (commandFailure "first parent path landings" processResult)
+      else pure (decodeFirstParentPathLandings (processStdout processResult))
+
+-- | Decode first-parent path landing output.
+--
+-- Format: @%x1e@ separated records, each containing one commit OID followed
+-- by one path per line.
+decodeFirstParentPathLandings :: ByteString -> Map Text GitOid
+decodeFirstParentPathLandings raw
+  | BS.null raw = Map.empty
+  | otherwise =
+      let text = TextEncoding.decodeUtf8 raw
+          records = Text.splitOn "\x1e" text
+          result = go Map.empty records
+      in result
+  where
+    go :: Map Text GitOid -> [Text] -> Map Text GitOid
+    go acc [] = acc
+    go acc (record:rest) =
+      case Text.stripStart record of
+        "" -> go acc rest
+        rec
+          | Text.null rec -> go acc rest
+          | otherwise ->
+              let pathLines = Text.lines rec
+                  filteredPaths = [Text.strip l | l <- pathLines, not (Text.null (Text.strip l))]
+              in case filteredPaths of
+                   [] -> go acc rest
+                   (commitHash:pathLines') ->
+                     case mkGitOid commitHash of
+                       Left _ -> go acc rest
+                       Right commitOid ->
+                         let acc' = foldl (\m p ->
+                                case Text.strip p of
+                                  "" -> m
+                                  path | Map.notMember path m -> Map.insert path commitOid m
+                                       | otherwise -> m) acc pathLines'
+                         in go acc' rest

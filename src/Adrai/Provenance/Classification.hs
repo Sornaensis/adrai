@@ -19,6 +19,7 @@
 -- * @_issue_key@
 module Adrai.Provenance.Classification
   ( operationSignature
+  , ParsedManagedDocument (..)
   , RegisteredOperationData (..)
   , RegisteredObjectData (..)
   , registeredOperations

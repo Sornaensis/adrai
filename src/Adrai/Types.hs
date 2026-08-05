@@ -62,7 +62,7 @@ module Adrai.Types
     PublicSchema (..),
 
     -- * Configuration foundations
-    GitRef,
+    GitRef (..),
     mkGitRef,
     gitRefText,
     GitRefViolation (..),
@@ -71,7 +71,7 @@ module Adrai.Types
     managedDecisionPath,
     managedConnectionPath,
     ManagedPathsViolation (..),
-    LogicalLine,
+    LogicalLine (..),
     mkLogicalLine,
     logicalLineId,
     logicalLineRefs,

@@ -24,13 +24,7 @@ module Adrai.Provenance.Overlay
     operationClassificationValue,
 
     -- * Line landing record
-    LineLanding,
-    lineLandingConfigKey,
-    lineLandingOpId,
-    lineLandingLineId,
-    lineLandingRefName,
-    lineLandingCommitOid,
-    lineLandingComplete,
+    LineLanding (..),
 
     -- * Provenance issue record
     ProvenanceIssue,
