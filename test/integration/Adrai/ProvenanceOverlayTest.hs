@@ -49,6 +49,7 @@ import Adrai.Provenance
     provenanceActor,
     provenanceBasis,
     provenanceEventKind,
+    provenanceObjectFromRef,
     provenanceObjectId,
     provenanceOperationContext,
     provenanceTimestampMs,
@@ -103,23 +104,20 @@ import Adrai.Types
   ( Actor (..),
     ActorKind (..),
     AdrId (..),
-    Config (..),
+    Config,
     ConfigSchema (..),
     ConnectionId (..),
     Digest (..),
     GitRef (..),
     LogicalLine (..),
-    ManagedPaths (..),
-    ObjectRef (..),
+    ObjectRef,
     OperationId (..),
     ProvenanceInputs (..),
     RecordId (..),
     RepoPath (..),
     StateToken (..),
+    adrObjectRef,
     mkActor,
-    actorId,
-    actorKind,
-    actorModel,
     adrIdText,
     connectionIdText,
     configManagedPaths,
@@ -129,11 +127,14 @@ import Adrai.Types
     gitRefText,
     logicalLineId,
     logicalLineRefs,
+    managedConnectionPath,
+    managedDecisionPath,
     mkAdrId,
     mkConfig,
     mkConnectionId,
     mkGitRef,
     mkLogicalLine,
+    mkManagedPaths,
     mkOperationId,
     mkRecordId,
     mkRepoPath,
@@ -156,7 +157,7 @@ import qualified Data.ByteString.Lazy as Lazy
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import qualified Data.Set as Set
-import Data.Text (Text)
+import Data.Text (Text, pack, replicate, unpack)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Vector as Vector
@@ -176,6 +177,11 @@ import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
+-- | Convert a Digest to Text for use in test data.
+-- The exact representation is not critical; it just needs to be stable Text.
+digestToText :: Digest -> Text
+digestToText = pack . show
+
 -- | Create an ADRAI decision / connection file body containing a sealed
 -- capsule.  The capsule carries a single operation member that the
 -- classification engine will register and later classify.
@@ -183,11 +189,11 @@ createAdraiFile
   :: ObjectRef -- ^ ID of this document
   -> Text -- ^ Semantic content (before sealing)
   -> Text -- ^ Operation ID
-  -> ByteString -- ^ Blob OID of the operation file
+  -> Text -- ^ Blob OID of the operation file
   -> IO Text -- ^ Sealed file content (UTF-8)
 createAdraiFile objRef semantic opId blobOid = do
   let op = requireOperationId opId
-      oid = provenanceObjectId objRef
+      oid = provenanceObjectFromRef objRef
       basis = GitOid (Text.replicate 40 "0")
       now = 1700000000000
       actor = case mkActor HumanActor "test" Nothing of
@@ -280,13 +286,18 @@ makeParsedDoc objRef repoPath capsule blobOid semanticHash =
 -- | Build a logical line config for test repos.
 mkTestConfig :: Config
 mkTestConfig =
-  Config ConfigSchemaV1
-    (ManagedPaths (RepoPath "architecture/adrai/decisions") (RepoPath "architecture/adrai/connections"))
-    [ LogicalLine "trunk"
-        [ GitRef "refs/heads/main",
-          GitRef "refs/heads/feature"
-        ]
-    ]
+  case mkRepoPath "architecture/adrai/decisions" of
+    Left e -> error ("mkRepoPath: " <> show e)
+    Right decisionsPath ->
+      case mkRepoPath "architecture/adrai/connections" of
+        Left e -> error ("mkRepoPath: " <> show e)
+        Right connectionsPath ->
+          case mkManagedPaths decisionsPath connectionsPath of
+            Left _ -> error "path overlap in test config"
+            Right mp ->
+              case mkConfig ConfigSchemaV1 mp [LogicalLine "trunk" [GitRef "refs/heads/main", GitRef "refs/heads/feature"]] of
+                Left _ -> error "config violation in test config"
+                Right c -> c
 
 -- | Run the full ensure_provenance pipeline on a given repository at a
 -- specific revision, returning the ProvenanceUpdate result and the path to
@@ -323,12 +334,14 @@ setupTestRepo extraSetup =
     _ <- commitFile repoDir "seed.txt" "seed"
     extraSetup repoDir
     -- Discover and resolve
-    repo <- case discoverRepository systemGit repoDir of
+    discoverResult <- discoverRepository systemGit repoDir
+    case discoverResult of
       Left e -> assertFailure (show e)
-      Right r -> pure r
-    resolved <- case resolveRepositoryRevision repo (requireRevision "HEAD") of
-      Left e -> assertFailure (show e)
-      Right r -> pure r
+      Right repo -> do
+        resolveResult <- resolveRepositoryRevision repo (requireRevision "HEAD")
+        case resolveResult of
+          Left e -> assertFailure (show e)
+          Right r -> pure r
     pure (repoDir, dbPath)
 
 -- | Ensure the overlay schema exists in the database.
@@ -366,7 +379,7 @@ classifyOperations repo dbPath parsedDocs newOps = do
     Left _ -> pure () -- might not have commits stored yet
     Right _ -> pure ()
   -- Find candidates
-  candidatesResult <- try @SomeException $ candidateCommits conn allOids newOps
+  candidatesResult <- candidateCommits conn allOids newOps
   case candidatesResult of
     Left e -> assertFailure ("candidateCommits: " <> show e)
     Right candidates -> do
@@ -386,7 +399,7 @@ tests =
     "Provenance overlay topology"
     [ -- 1. A single commit on main with an ADRAI op is classified as original.
       testCase "immediate_commit_is_original" $
-        withSystemTempDirectory "adrai overlay immediate original" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay immediate original" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -395,10 +408,10 @@ tests =
 
           -- Create a decision file
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000001"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000001"))
             "# Decision 1\nThis is a test decision."
             "O00000000000000000000000001"
-            (Text.unpack basisOid)
+            basisOid
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000001--first.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
@@ -429,15 +442,15 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000001"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000001"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000001--first.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
           let groups = Map.singleton "O00000000000000000000000001" [doc]
           conn <- open overlayPath
-          _ <- try @SomeException (registerOperationGroups conn groups) :: IO (Either SomeException [Text])
+          _ <- registerOperationGroups conn groups
           close conn
 
           -- Run ensure_provenance
@@ -449,11 +462,12 @@ tests =
               assertBool "should have a placement" (not (null placements))
               let classified = map snd placements
               assertBool "classification should be 'original'" ("original" `elem` classified)
-              assertBool "commit_oid matches HEAD" (any (\(oid, _) -> oid == basisOid) placements),
+              assertBool "commit_oid matches HEAD" (any (\(oid, _) -> oid == basisOid) placements)
+        ),
 
       -- 2. Feature branch op, fast-forward merge preserves "original" classification.
       testCase "fast_forward_preserves_original" $
-        withSystemTempDirectory "adrai overlay ff preserves original" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay ff preserves original" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -466,7 +480,7 @@ tests =
 
           -- Create ADRAI file on feature
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000002"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000002"))
             "# Decision 2\nFeature decision."
             "O00000000000000000000000002"
             featureOid
@@ -504,11 +518,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000002"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000002"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000002--feature.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000002"] basis
@@ -519,10 +533,11 @@ tests =
               assertBool "should have placement" (not (null placements))
               let classified = map snd placements
               assertBool "ff merge preserves original classification" ("original" `elem` classified)
+        ),
 
       -- 3. Feature op, diverge main, no-ff merge creates "introduction".
       testCase "no_ff_merge_introduction" $
-        withSystemTempDirectory "adrai overlay no-ff introduction" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay no-ff introduction" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -534,7 +549,7 @@ tests =
           featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000003"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000003"))
             "# Decision 3\nFeature decision for no-ff."
             "O00000000000000000000000003"
             featureOid
@@ -575,11 +590,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000003"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000003"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000003--feature.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000003"] basis
@@ -591,10 +606,11 @@ tests =
               let classified = map snd placements
               -- No-ff merge should show as introduction because main changed
               assertBool "no-ff merge should be introduction" ("introduction" `elem` classified)
+        ),
 
       -- 4. Merge with ADRAI-Op trailer should be classified as introduction.
       testCase "merge_trailer_is_introduction" $
-        withSystemTempDirectory "adrai overlay merge trailer introduction" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay merge trailer introduction" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -606,7 +622,7 @@ tests =
           featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000004"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000004"))
             "# Decision 4\nWith trailer."
             "O00000000000000000000000004"
             featureOid
@@ -645,11 +661,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000004"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000004"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000004--trailer.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000004"] basis
@@ -660,10 +676,11 @@ tests =
               assertBool "should have placement" (not (null placements))
               let classified = map snd placements
               assertBool "merge with trailer is introduction" ("introduction" `elem` classified)
+        ),
 
       -- 5. Cherry-pick of an op commit to a diverged main is a "copy".
       testCase "cherry_pick_copy" $
-        withSystemTempDirectory "adrai overlay cherry-pick copy" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay cherry-pick copy" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -675,7 +692,7 @@ tests =
           featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000005"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000005"))
             "# Decision 5\nCherry-pick test."
             "O00000000000000000000000005"
             featureOid
@@ -714,11 +731,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000005"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000005"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000005--cherry.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000005"] basis
@@ -729,10 +746,11 @@ tests =
               assertBool "should have placement" (not (null placements))
               let classified = map snd placements
               assertBool "cherry-pick should be copy" ("copy" `elem` classified)
+        ),
 
       -- 6. Rebase of feature onto new main — the rebased commit is a copy.
       testCase "rebase_surviving_copy" $
-        withSystemTempDirectory "adrai overlay rebase copy" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay rebase copy" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -744,7 +762,7 @@ tests =
           featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000006"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000006"))
             "# Decision 6\nRebase test."
             "O00000000000000000000000006"
             featureOid
@@ -787,11 +805,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000006"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000006"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000006--rebase.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000006"] basis
@@ -802,10 +820,11 @@ tests =
               assertBool "should have placement" (not (null placements))
               let classified = map snd placements
               assertBool "rebased commit should be copy" ("copy" `elem` classified)
+        ),
 
       -- 7. Squash merge creates an introduction (new commit with all files).
       testCase "squash_merge_introduction" $
-        withSystemTempDirectory "adrai overlay squash introduction" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay squash introduction" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -817,7 +836,7 @@ tests =
           featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000007"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000007"))
             "# Decision 7\nSquash test."
             "O00000000000000000000000007"
             featureOid
@@ -857,11 +876,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000007"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000007"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000007--squash.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000007"] basis
@@ -872,10 +891,11 @@ tests =
               assertBool "should have placement" (not (null placements))
               let classified = map snd placements
               assertBool "squash merge should be introduction" ("introduction" `elem` classified)
+        ),
 
       -- 8. After GC, squash merge still shows as introduction.
       testCase "squash_survives_gc" $
-        withSystemTempDirectory "adrai overlay squash survives gc" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay squash survives gc" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -887,7 +907,7 @@ tests =
           featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000008"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000008"))
             "# Decision 8\nGC survival test."
             "O00000000000000000000000008"
             featureOid
@@ -929,11 +949,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000008"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000008"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000008--gc.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000008"] basis
@@ -944,10 +964,11 @@ tests =
               assertBool "should have placement after GC" (not (null placements))
               let classified = map snd placements
               assertBool "squash still introduction after GC" ("introduction" `elem` classified)
+        ),
 
       -- 9. Branch rename preserves the branch hint.
       testCase "branch_rename_preserves_hint" $
-        withSystemTempDirectory "adrai overlay branch rename preserves hint" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay branch rename preserves hint" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -959,7 +980,7 @@ tests =
           featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000009"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000009"))
             "# Decision 9\nBranch rename test."
             "O00000000000000000000000009"
             featureOid
@@ -999,11 +1020,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000009"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000009"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000009--rename.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000009"] basis
@@ -1017,11 +1038,12 @@ tests =
               -- but the operation should still be registered
               registered <- queryRegisteredOperations overlayPath
               assertBool "operation is registered" (not (null registered))
+        ),
 
       -- 10. A commit that repeats an ADRAI-Op trailer when the first parent
       --     already contains every sealed file should get the REDUNDANT_OPERATION_TRAILER issue.
       testCase "redundant_trailer_no_copy" $
-        withSystemTempDirectory "adrai overlay redundant trailer" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay redundant trailer" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -1030,7 +1052,7 @@ tests =
 
           -- First commit with the ADRAI file (this is the original)
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000010"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000010"))
             "# Decision 10\nRedundant trailer."
             "O00000000000000000000000010"
             (Text.replicate 40 "0")
@@ -1071,11 +1093,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000010"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000010"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000010--redundant.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000010"] basis
@@ -1088,11 +1110,12 @@ tests =
               -- Check that redundant trailer issue was recorded
               issues <- queryIssueCodes overlayPath
               assertBool "redundant trailer issue should be recorded" ("REDUNDANT_OPERATION_TRAILER" `elem` issues || "original" `elem` map snd placements)
+        ),
 
       -- 11. A trailer on a commit that doesn't contain the sealed objects
       --     should trigger a TRAILER_WITHOUT_SEALED_OBJECTS warning.
       testCase "trailer_without_sealed_warned" $
-        withSystemTempDirectory "adrai overlay trailer without sealed" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay trailer without sealed" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -1104,7 +1127,7 @@ tests =
           featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000011"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000011"))
             "# Decision 11\nTrailer without sealed."
             "O00000000000000000000000011"
             featureOid
@@ -1142,11 +1165,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000011"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000011"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000011--sealed.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000011"] basis
@@ -1156,10 +1179,11 @@ tests =
               issues <- queryIssueCodes overlayPath
               assertBool "TRAILER_WITHOUT_SEALED_OBJECTS warning should be recorded"
                 ("TRAILER_WITHOUT_SEALED_OBJECTS" `elem` issues)
+        ),
 
       -- 12. Wrong object set declared in trailer generates OPERATION_OBJECT_SET_MISMATCH.
       testCase "wrong_object_set_is_warning" $
-        withSystemTempDirectory "adrai overlay wrong object set" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay wrong object set" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
@@ -1171,7 +1195,7 @@ tests =
           featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000012"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000012"))
             "# Decision 12\nWrong object set."
             "O00000000000000000000000012"
             featureOid
@@ -1211,11 +1235,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000012"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000012"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000012--wrong.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000012"] basis
@@ -1226,10 +1250,11 @@ tests =
               -- The mismatch warning should be recorded
               -- (depends on whether the commit contains the sealed file)
               assertBool "issue was recorded (either mismatch or other)" (not (null issues))
+        ),
 
       -- 13. Shallow repository history is flagged as incomplete.
       testCase "shallow_history_incomplete" $
-        withSystemTempDirectory "adrai overlay shallow history" $ \temp -> do
+        (withSystemTempDirectory "adrai overlay shallow history" $ \temp -> do
           let source = temp </> "source"
               shallow = temp </> "shallow"
           initTestRepository source
@@ -1240,7 +1265,7 @@ tests =
           featureOid <- outputText <$> gitSuccess source ["rev-parse", "HEAD"] BS.empty
 
           decisionContent <- createAdraiFile
-            (AdrObjectRef (requireAdrId "A00000000000000000000000013"))
+            (adrObjectRef (requireAdrId "A00000000000000000000000013"))
             "# Decision 13\nShallow history."
             "O00000000000000000000000013"
             featureOid
@@ -1280,11 +1305,11 @@ tests =
                 Left e -> error $ show e
                 Right c -> c
           let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = "A00000000000000000000000013"
+                { parsedDocumentObjectRef = pack "A00000000000000000000000013"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000013--shallow.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Nothing
-                , parsedSemanticHash = Text.unpack $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
+                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
           -- Shallow clone database path
@@ -1300,6 +1325,7 @@ tests =
               -- Classification should still work
               placements <- queryPlacements shallow "O00000000000000000000000013"
               assertBool "should still have placements despite shallow history" (not (null placements))
+        )
     ]
 
 -- =====================================================================
@@ -1337,11 +1363,13 @@ requireGitOid value =
     Right o -> o
 
 resolveTestRepo :: FilePath -> Text -> IO ResolvedRepositoryRevision
-resolveTestRepo repoDir revision =
-  case discoverRepository systemGit repoDir of
+resolveTestRepo repoDir revision = do
+  discoverResult <- discoverRepository systemGit repoDir
+  case discoverResult of
     Left e -> assertFailure ("discoverRepository: " <> show e)
-    Right repo ->
-      case resolveRepositoryRevision repo (requireRevision revision) of
+    Right repo -> do
+      resolveResult <- resolveRepositoryRevision repo (requireRevision revision)
+      case resolveResult of
         Left e -> assertFailure ("resolveRepositoryRevision: " <> show e)
         Right r -> pure r
 
