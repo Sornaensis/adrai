@@ -193,8 +193,10 @@ refreshLineLandings
   -> Text               -- ^ Connections path
   -> [LogicalLine]      -- ^ Logical lines
   -> [Text]             -- ^ New operation IDs
+  -> Maybe [ParsedManagedDocument]  -- ^ Operation members (for future use)
+  -> Maybe GroupsLoader   -- ^ Lazy groups loader (for future use)
   -> IO (Either SomeException Bool)
-refreshLineLandings repo conn decisionsPath connectionsPath logicalLines newOps = do
+refreshLineLandings repo conn decisionsPath connectionsPath logicalLines newOps _maybeParsedDocs _groupsLoader = do
   result <- try @SomeException $ do
     -- Compute config key and JSON
     let lineIds = [llId | LogicalLine llId _ <- logicalLines]
@@ -357,6 +359,11 @@ data ProvenanceUpdate = ProvenanceUpdate
 -- Main orchestration entry point
 -- ============================================================
 
+-- | Lazy operation group loader: loads operation groups on demand.
+-- Used for the exact-reuse fast path where we avoid loading all documents
+-- if every required operation is already registered in the overlay.
+type GroupsLoader = IO (Map Text [ParsedManagedDocument])
+
 -- | The main orchestration entry point mirroring Python's
 -- @ensure_provenance()@.
 --
@@ -384,12 +391,13 @@ ensureProvenance
   -> Text                 -- ^ Decisions path
   -> Text                 -- ^ Connections path
   -> [LogicalLine]        -- ^ Logical lines
-  -> [ParsedManagedDocument]  -- ^ Operation members grouped by op ID
-  -> [Text]               -- ^ Operation IDs (from groups or explicit)
+  -> Maybe [ParsedManagedDocument]  -- ^ Operation members grouped by op ID (lazy)
+  -> [Text]               -- ^ Operation IDs (required_ops)
+  -> Maybe GroupsLoader   -- ^ Lazy groups loader
   -> GitOid               -- ^ Target revision
   -> IO (Either SomeException ProvenanceUpdate)
 ensureProvenance repo conn currentDbPath _logicalLineIds
-  decisionsPath connectionsPath logicalLines parsedDocs operationIds targetRevision = do
+  decisionsPath connectionsPath logicalLines maybeParsedDocs operationIds groupsLoader targetRevision = do
   result <- try @SomeException $ do
     let dbPath = provenanceDatabasePath currentDbPath
 
@@ -439,75 +447,26 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
           Right c -> c
           Left _  -> []
 
-    -- Register new operations
-    let groups = groupParsedDocs parsedDocs
-    newOpsResult <- registerOperationGroups conn groups
+    -- Check if all required operations are already registered
+    registeredOps <- query_ conn "SELECT op_id FROM registered_operation"
+      :: IO [(Only Text)]
+    let registeredSet = Set.fromList (map fromOnly registeredOps)
 
-    -- Store commit observations + managed path additions
-    when (not (null newCommits)) $ do
-      storeResult <- storeNewCommits repo conn newCommits
-      case storeResult of
-        Right _ -> pure ()
-        Left e  -> recordIssue conn "error" "STORE_NEW_COMMITS_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
-
-    -- Find candidate commits per operation
-    let newOpList :: [Text]
-        newOpList = case newOpsResult of
-          Right ops -> ops
-          Left _  -> []
-
-    candidatesResult <- candidateCommits conn newCommits newOpList
-
-    -- Classify candidates
-    case (candidatesResult, newOpsResult) of
-      (Right candidates, Right newOps) ->
-        void (processCandidates repo conn candidates newOps)
-      _ -> pure ()
-
-    -- Prune unavailable placements
-    prunedResult <- pruneUnavailablePlacements repo conn
-
-    -- Refresh line landings (only if new ops or pruned)
-    let opsForRefresh = case newOpsResult of
-          Right ops ->
-            case prunedResult of
-              Right n | n > 0 -> []
-              _ -> ops
-          Left _ -> []
-
-    lineChangedResult <- refreshLineLandings repo conn decisionsPath connectionsPath
-      logicalLines opsForRefresh
-    let lineChanged = case lineChangedResult of
-          Right b -> b
-          Left _  -> False
-
-    -- Update ref observation table
-    execute_ conn "DELETE FROM ref_observation"
-    case refsResult of
-      Right refs -> do
-        forM_ refs $ \refObs ->
-          execute conn "INSERT INTO ref_observation VALUES(?,?,?)"
-            [ SQLText (refObservationRefName refObs)
-            , SQLText (refObservationTipOid refObs)
-            , SQLText (refObservationObjectType refObs)
-            ]
-      Left _ -> pure ()
-
-    -- Update observation root table
-    execute_ conn "DELETE FROM observation_root"
-    let roots' = case observationRoots' of
-          Right (_, roots) -> roots
-          Left _  -> []
-    forM_ roots' $ \root ->
-      execute conn "INSERT INTO observation_root VALUES(?,?,?)"
-        [ SQLText (observationRootKind root)
-        , SQLText (observationRootName root)
-        , SQLText (gitOidText (observationRootCommitOid root))
-        ]
-
-    -- Update meta table
+    -- Compute fingerprint value for cached result
     let fingerprintVal = gitOidText (case fp of OverlayFingerprint t -> GitOid t)
 
+    -- Compute generation from DB
+    generationRows <- query_ conn "SELECT value FROM meta WHERE key='generation'" :: IO [Only Text]
+    let currentGeneration = case generationRows of
+          [Only g] -> case reads (Text.unpack g) of
+            [(n, _)] -> n
+            _ -> 0
+          _ -> 0
+        generation = currentGeneration + 1
+        generationSql :: Int64
+        generationSql = fromIntegral generation
+
+    -- Read observed commit count for cached result
     observedCountRows <- query_ conn "SELECT count(*) FROM observed_commit"
       :: IO [Only Integer]
     let observedCount :: Int
@@ -517,44 +476,168 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
         observedCountSql :: Int64
         observedCountSql = fromIntegral observedCount
 
-    -- Read current generation from DB and increment
-    generationRows <- query_ conn "SELECT value FROM meta WHERE key='generation'" :: IO [Only Text]
-    let currentGeneration = case generationRows of
-          [Only g] -> case reads (Text.unpack g) of
-            [(n, _)] -> n
-            _ -> 0
-          _ -> 0
-        generation :: Int
-        generation = currentGeneration + 1
-        generationSql :: Int64
-        generationSql = fromIntegral generation
+    -- Check if overlay exists and fingerprint matches
+    metaFingerprintRows <- query_ conn "SELECT value FROM meta WHERE key='observation_fingerprint'" :: IO [Only Text]
+    let fingerprintMatches = case metaFingerprintRows of
+          [Only f] -> f == fingerprintVal
+          _ -> False
 
-    execute conn
-      "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-      [SQLText "schema", SQLText "adrai-provenance-cache/1"]
-    execute conn
-      "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-      [SQLText "observation_fingerprint", SQLText fingerprintVal]
-    execute conn
-      "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-      [SQLText "generation", SQLInteger generationSql]
-    execute conn
-      "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-      [SQLText "observed_commit_count", SQLInteger observedCountSql]
+    configExistsRows <- query_ conn "SELECT count(*) FROM line_config" :: IO [Only Integer]
+    let configExists = case configExistsRows of
+          [Only c] -> c > 0
+          _ -> False
 
-    let newOpsCount = case newOpsResult of
-          Right ops -> length ops
-          Left _ -> 0
+    -- Fast path check: fingerprint matches, all ops registered, config exists.
+    -- When all conditions hold, the overlay is already fully up to date.
+    let fastPath = fingerprintMatches
+                    && Set.fromList operationIds `Set.isSubsetOf` registeredSet
+                    && configExists
 
-    pure (ProvenanceUpdate
-      { databasePath = dbPath
-      , fingerprint = fp
-      , generation = generation
-      , commitsScanned = length newCommits
-      , observedCommitCount = observedCount
-      , changed = lineChanged || not (null newCommits) || newOpsCount > 0
-      , newOperations = newOpsCount
-      })
+    if fastPath
+      then do
+        -- Update meta table and return cached result.
+        -- changed=False and newOperations=0 because the overlay was already
+        -- consistent; we only advance the generation counter as a "refresh tick".
+        execute conn
+          "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+          [SQLText "schema", SQLText "adrai-provenance-cache/1"]
+        execute conn
+          "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+          [SQLText "observation_fingerprint", SQLText fingerprintVal]
+        execute conn
+          "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+          [SQLText "generation", SQLInteger generationSql]
+        execute conn
+          "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+          [SQLText "observed_commit_count", SQLInteger observedCountSql]
+        pure (ProvenanceUpdate
+          { databasePath = dbPath
+          , fingerprint = fp
+          , generation = generation
+          , commitsScanned = length newCommits
+          , observedCommitCount = observedCount
+          , changed = False
+          , newOperations = 0
+          })
+      else do
+        -- LoadMissing helper: load only operations not yet in the overlay
+        let loadMissing :: Set.Set Text -> IO (Map Text [ParsedManagedDocument])
+            loadMissing missing
+              | Set.null missing = pure Map.empty
+              | otherwise = case (maybeParsedDocs, groupsLoader) of
+                  (Just docs, _) -> pure (Map.filterWithKey (\k _ -> k `Set.member` missing) (groupParsedDocs docs))
+                  (Nothing, Just gl) -> do
+                    allGroups <- gl
+                    let absent = Set.toList (missing `Set.difference` Map.keysSet allGroups)
+                    when (not (null absent)) $
+                      recordIssue conn "warning" "MISSING_OPERATIONS"
+                        ("Operations not available for loading: " <> Text.intercalate "," (sort absent))
+                        Nothing Nothing Nothing Nothing
+                    pure (Map.filterWithKey (\k _ -> k `Set.member` missing) allGroups)
+                  (Nothing, Nothing) -> pure Map.empty
+
+        -- Register new operations using optional parsed docs or groupsLoader
+        let groups = maybe Map.empty groupParsedDocs maybeParsedDocs
+        newOpsResult <- registerOperationGroups conn groups
+
+        -- Load missing operations for classification.
+        -- loadMissing is called primarily for its side effect (MISSING_OPERATIONS
+        -- warning) when groupsLoader is used but some operations are absent.
+        -- The result is filtered and discarded because the classification
+        -- pipeline uses registeredOperation data, not pre-loaded docs.
+        let requiredOps = Set.fromList operationIds
+        _ <- loadMissing requiredOps
+
+        -- Build the new op list from registration result
+        let newOpList :: [Text]
+            newOpList = case newOpsResult of
+              Right ops -> ops
+              Left _  -> []
+
+        -- Store commit observations + managed path additions
+        when (not (null newCommits)) $ do
+          storeResult <- storeNewCommits repo conn newCommits
+          case storeResult of
+            Right _ -> pure ()
+            Left e  -> recordIssue conn "error" "STORE_NEW_COMMITS_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
+
+        -- Find candidate commits per operation
+        candidatesResult <- candidateCommits conn newCommits newOpList
+
+        -- Classify candidates
+        case (candidatesResult, newOpsResult) of
+          (Right candidates, Right newOps) ->
+            void (processCandidates repo conn candidates newOps)
+          _ -> pure ()
+
+        -- Prune unavailable placements
+        prunedResult <- pruneUnavailablePlacements repo conn
+
+        -- Refresh line landings (only if new ops or pruned)
+        let opsForRefresh = case newOpsResult of
+              Right ops ->
+                case prunedResult of
+                  Right n | n > 0 -> []
+                  _ -> ops
+              Left _ -> []
+
+        lineChangedResult <- refreshLineLandings repo conn decisionsPath connectionsPath
+          logicalLines opsForRefresh maybeParsedDocs groupsLoader
+        let lineChanged = case lineChangedResult of
+              Right b -> b
+              Left _  -> False
+
+        -- Update ref observation table
+        execute_ conn "DELETE FROM ref_observation"
+        case refsResult of
+          Right refs -> do
+            forM_ refs $ \refObs ->
+              execute conn "INSERT INTO ref_observation VALUES(?,?,?)"
+                [ SQLText (refObservationRefName refObs)
+                , SQLText (refObservationTipOid refObs)
+                , SQLText (refObservationObjectType refObs)
+                ]
+          Left _ -> pure ()
+
+        -- Update observation root table
+        execute_ conn "DELETE FROM observation_root"
+        let roots' = case observationRoots' of
+              Right (_, roots) -> roots
+              Left _  -> []
+        forM_ roots' $ \root ->
+          execute conn "INSERT INTO observation_root VALUES(?,?,?)"
+            [ SQLText (observationRootKind root)
+            , SQLText (observationRootName root)
+            , SQLText (gitOidText (observationRootCommitOid root))
+            ]
+
+        -- Update meta table
+        execute conn
+          "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+          [SQLText "schema", SQLText "adrai-provenance-cache/1"]
+        execute conn
+          "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+          [SQLText "observation_fingerprint", SQLText fingerprintVal]
+        execute conn
+          "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+          [SQLText "generation", SQLInteger generationSql]
+        execute conn
+          "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+          [SQLText "observed_commit_count", SQLInteger observedCountSql]
+
+        let newOpsCount = case newOpsResult of
+              Right ops -> length ops
+              Left _ -> 0
+
+        pure (ProvenanceUpdate
+          { databasePath = dbPath
+          , fingerprint = fp
+          , generation = generation
+          , commitsScanned = length newCommits
+          , observedCommitCount = observedCount
+          , changed = lineChanged || not (null newCommits) || newOpsCount > 0
+          , newOperations = newOpsCount
+          })
 
   pure result
 

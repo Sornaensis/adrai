@@ -319,7 +319,7 @@ runProvenanceEnsure repo currentDbPath parsedDocs opIds targetRevision = do
   result <- ensureProvenance repo conn currentDbPath
     [logicalLineId ll | ll <- logicalLines]
     decisionsPath connectionsPath
-    logicalLines parsedDocs opIds targetRevision
+    logicalLines (Just parsedDocs) opIds Nothing targetRevision
   pure (dbPath, result)
 
 -- | Create a test repository, seed it, add an ADRAI decision file, and run
