@@ -5,7 +5,7 @@ module Adrai.Provenance
   ( GitOid,
     mkGitOid,
     gitOidText,
-    OverlayFingerprint,
+    OverlayFingerprint (..),
     mkOverlayFingerprint,
     EventKind,
     mkEventKind,
