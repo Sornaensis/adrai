@@ -10,6 +10,7 @@ module Adrai.Sqlite
     ftsTargetBm25Weights,
     ftsTargetDdl,
     allFtsTargets,
+    asQuery,
     RetrievalSqlError (..),
     retrievalSqlErrorToAdraiError,
     CandidateLimit,

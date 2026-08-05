@@ -5,6 +5,8 @@ module Adrai.Provenance
   ( GitOid,
     mkGitOid,
     gitOidText,
+    OverlayFingerprint,
+    mkOverlayFingerprint,
     EventKind,
     mkEventKind,
     eventKindText,
@@ -93,6 +95,14 @@ import Numeric (showHex)
 
 newtype GitOid = GitOid Text
   deriving (Eq, Ord, Show)
+
+newtype OverlayFingerprint = OverlayFingerprint Text
+  deriving (Eq, Ord, Show)
+
+mkOverlayFingerprint :: Text -> Maybe OverlayFingerprint
+mkOverlayFingerprint value
+  | T.length value == 64 = Just (OverlayFingerprint value)
+  | otherwise = Nothing
 
 mkGitOid :: Text -> Either ProvenanceError GitOid
 mkGitOid value
