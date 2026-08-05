@@ -14,6 +14,7 @@ import qualified Adrai.Compiler.CacheSelectionTest
 import qualified Adrai.Compiler.CacheSyncTest
 import qualified Adrai.Compiler.DocumentCacheTest
 import qualified Adrai.CurrentSearchTest
+import qualified Adrei.CachePathIntegrationTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
 import qualified Adrai.DomainProperties
@@ -206,7 +207,8 @@ tests =
           ],
       testGroup
           "P4-05"
-          [ Adrai.Compiler.CacheSyncTest.tests,
+          [ Adrei.CachePathIntegrationTest.tests,
+            Adrai.Compiler.CacheSyncTest.tests,
             Adrai.Provenance.LockTest.tests,
             Adrai.Compiler.DocumentCacheTest.tests
           ]
