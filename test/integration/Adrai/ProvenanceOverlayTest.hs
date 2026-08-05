@@ -1306,35 +1306,35 @@ tests =
 -- Helper functions
 -- =====================================================================
 
-requireAdrId :: Text -> IO AdrId
+requireAdrId :: Text -> AdrId
 requireAdrId value =
   case mkAdrId value of
-    Left v -> assertFailure ("invalid AdrId: " <> show v)
-    Right a -> pure a
+    Left v -> error ("invalid AdrId: " <> show v)
+    Right a -> a
 
-requireRecordId :: Text -> IO RecordId
+requireRecordId :: Text -> RecordId
 requireRecordId value =
   case mkRecordId value of
-    Left v -> assertFailure ("invalid RecordId: " <> show v)
-    Right r -> pure r
+    Left v -> error ("invalid RecordId: " <> show v)
+    Right r -> r
 
-requireConnectionId :: Text -> IO ConnectionId
+requireConnectionId :: Text -> ConnectionId
 requireConnectionId value =
   case mkConnectionId value of
-    Left v -> assertFailure ("invalid ConnectionId: " <> show v)
-    Right c -> pure c
+    Left v -> error ("invalid ConnectionId: " <> show v)
+    Right c -> c
 
-requireOperationId :: Text -> IO OperationId
+requireOperationId :: Text -> OperationId
 requireOperationId value =
   case mkOperationId value of
-    Left v -> assertFailure ("invalid OperationId: " <> show v)
-    Right o -> pure o
+    Left v -> error ("invalid OperationId: " <> show v)
+    Right o -> o
 
-requireGitOid :: Text -> IO GitOid
+requireGitOid :: Text -> GitOid
 requireGitOid value =
   case mkGitOid value of
-    Left v -> assertFailure ("invalid GitOid: " <> show v)
-    Right o -> pure o
+    Left v -> error ("invalid GitOid: " <> show v)
+    Right o -> o
 
 resolveTestRepo :: FilePath -> Text -> IO ResolvedRepositoryRevision
 resolveTestRepo repoDir revision =
