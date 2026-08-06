@@ -21,13 +21,24 @@ module Adrai.Cli
     doctorDatabaseBuildJson,
     ShowCommand (..),
     showCommandJson,
+    HistoryCommand (..),
+    historyCommandJson,
     run,
   )
 where
 
 import Adrai.Compiler (ColdCompilerResult (..))
 import Adrai.Format.Json (JsonValue (..))
-import Adrai.History (ReadSnapshot (..))
+import Adrai.History
+  ( HistoryError (..),
+    HistoryOptions (..),
+    HistoryOrder (..),
+    ActorSelector (..),
+    projectHistory,
+    historyProjectionJson,
+    ReadSnapshot (..),
+  )
+import Adrai.Graph (lookupReducedAdr)
 import Adrai.Query
   ( ProjectionMode (..),
     projectCollapsed,
@@ -40,10 +51,11 @@ import Adrai.Query
 import Adrai.Sqlite (ColdDatabaseStats (..))
 import Adrai.Types
   ( ViewMode (..),
-    AdrId (..),
-    IdViolation (..),
+    ActorKind (..),
+    AdrId,
     mkAdrId,
   )
+import Unsafe.Coerce (unsafeCoerce)
 import Data.Aeson ( (.=) )
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
@@ -319,7 +331,71 @@ requireAdrId value =
     Left v  -> error ("invalid AdrId: " <> show v)
     Right a -> a
 
+-- | CLI argument representation for the @history@ command.
+data HistoryCommand = HistoryCommand
+  { historyAdrId    :: Maybe Text  -- optional ADR prefix to filter
+  , historyOrder    :: HistoryOrder
+  , historyLimit    :: Int
+  , historyActor    :: Maybe (Text, Text)  -- (kind, model)
+  , historySince    :: Maybe Integer
+  , historyUntil    :: Maybe Integer
+  , historyReverse  :: Bool
+  , historyJson     :: Bool
+  }
+  deriving (Eq, Show)
+
+-- | Convert CLI Text kind to ActorKind enum.
+textToActorKind :: Text -> Maybe ActorKind
+textToActorKind "human"  = Just HumanActor
+textToActorKind "llm"    = Just LlmActor
+textToActorKind "service" = Just ServiceActor
+textToActorKind _        = Nothing
+
+-- | Resolve an optional ADR reference text into an AdrId for history queries.
+resolveAdrReference :: ReadSnapshot -> Text -> Either HistoryError AdrId
+resolveAdrReference snapshot ref
+  | Text.null ref  = Left (HistoryAdrNotFound (case mkAdrId (Text.empty :: Text) of Right a -> a; Left _ -> unsafeCoerce (Text.empty :: Text)))
+  | otherwise = case mkAdrId ref of
+      Left v    -> Left (HistoryAdrNotFound (case mkAdrId (Text.pack (show v)) of Right a -> a; Left _ -> unsafeCoerce (Text.pack (show v))))
+      Right adr -> case lookupReducedAdr adr (readSnapshotReduction snapshot) of
+        Nothing -> Left (HistoryAdrNotFound adr)
+        Just _  -> Right adr
+
+adrFromText :: Text -> AdrId
+adrFromText t = case mkAdrId t of
+  Right a -> a
+  Left _  -> unsafeCoerce t
+
+-- | Dispatch a history command on a read snapshot.
+historyCommandJson :: ReadSnapshot -> HistoryCommand -> IO Aeson.Value
+historyCommandJson snapshot cmd =
+  let options = HistoryOptions
+        { historyOptionOrder = if historyReverse cmd then OldestFirst else NewestFirst
+        , historyOptionLimit = min (max (historyLimit cmd) 1) 1000
+        , historyOptionActor = case historyActor cmd of
+            Nothing -> Nothing
+            Just (kind, model) -> ActorSelector <$> textToActorKind kind <*> pure model
+        , historyOptionSince = historySince cmd
+        , historyOptionUntil = historyUntil cmd
+        }
+      adrRef = case historyAdrId cmd of
+        Nothing  -> Left (HistoryAdrNotFound (adrFromText (Text.empty :: Text)))
+        Just ref -> resolveAdrReference snapshot ref
+  in case adrRef of
+       Left err -> pure $ Aeson.object
+         [ "schema" .= Aeson.String "adrai/history/v1"
+         , "error"  .= Aeson.String (Text.pack (show err))
+         ]
+       Right adr ->
+         case projectHistory snapshot (Just adr) options of
+           Left err -> pure $ Aeson.object
+             [ "schema" .= Aeson.String "adrai/history/v1"
+             , "error"  .= Aeson.String (Text.pack (show err))
+             ]
+           Right proj -> pure (toAesonValue (historyProjectionJson proj))
+
 -- | CLI scaffold entry point.  Replaced by the real CLI runner once
--- the @adrai compile@, @adrai doctor@, and @adrai show@ commands are wired up.
+-- the @adrai compile@, @adrai doctor@, @adrai show@, and @adrai history@
+-- commands are wired up.
 run :: IO ()
 run = putStrLn "ADRAI scaffold: command-line implementation pending."
