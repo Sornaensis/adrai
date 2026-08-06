@@ -43,6 +43,8 @@ import Options.Applicative
     option,
     switch,
     auto,
+    value,
+    showDefault,
     metavar,
     help,
     long,
@@ -115,7 +117,7 @@ historyParser =
     <*> ( flag' NewestFirst (long "newest-first" <> help "show newest entries first (default)")
         <|> flag' OldestFirst (long "oldest-first" <> help "show oldest entries first")
         )
-    <*> option auto (long "limit" <> help "max results (default 50)")
+    <*> option auto (long "limit" <> value 50 <> showDefault <> help "max results (default 50)")
     <*> optional (liftA2 (,) (strArgument (metavar "ACTOR" <> help "actor kind"))
                                  (strArgument (metavar "MODEL" <> help "model name")))
     <*> optional (option auto (long "since" <> help "show entries after this timestamp"))
@@ -147,7 +149,7 @@ searchParser =
     <*> optional (option auto (long "since" <> help "entries after this timestamp"))
     <*> optional (option auto (long "until" <> help "entries before this timestamp"))
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
-    <*> option auto (long "limit" <> help "max results (default 20)")
+    <*> option auto (long "limit" <> value 20 <> showDefault <> help "max results (default 20)")
     <*> switch (long "json" <> help "output JSON")
 
 -- | Relevant command parser.
@@ -156,7 +158,7 @@ relevantParser =
   RelevantCommand
     <$> strArgument (metavar "FILE" <> help "file path to find relevant ADRs for")
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
-    <*> option auto (long "limit" <> help "max results (default 10)")
+    <*> option auto (long "limit" <> value 10 <> showDefault <> help "max results (default 10)")
     <*> switch (long "json" <> help "output JSON")
 
 -- | Compare command parser.

@@ -181,7 +181,9 @@ adrFromText t = case mkAdrId t of
 historyCommandJson :: ReadSnapshot -> HistoryCommand -> IO Aeson.Value
 historyCommandJson snapshot cmd =
   let options = HistoryOptions
-        { historyOptionOrder = if historyReverse cmd then OldestFirst else NewestFirst
+        { historyOptionOrder = case historyOrder cmd of
+            NewestFirst -> if historyReverse cmd then OldestFirst else NewestFirst
+            OldestFirst -> if historyReverse cmd then NewestFirst else OldestFirst
         , historyOptionLimit = min (max (historyLimit cmd) 1) 1000
         , historyOptionActor = case historyActor cmd of
             Nothing -> Nothing
