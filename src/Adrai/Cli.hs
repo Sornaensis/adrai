@@ -29,6 +29,8 @@ module Adrai.Cli
     CompareCommand (..),
     compareCommandJson,
     toAesonValue,
+    textToActorKind,
+    HistoryOrder (..),
     CliCommand (..),
     CliParser,
     run,
@@ -49,9 +51,11 @@ import Adrai.CliTypes
     CompareCommand (..),
     compareCommandJson,
     toAesonValue,
+    textToActorKind,
   )
 import Adrai.Compiler (ColdCompilerResult (..))
 import Adrai.Format.Json (JsonValue (..))
+import Adrai.History (HistoryOrder (..))
 import Adrai.Sqlite
   ( ColdDatabaseStats (..),
   )

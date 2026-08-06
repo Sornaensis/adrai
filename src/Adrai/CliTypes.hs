@@ -19,6 +19,7 @@ module Adrai.CliTypes
     CompareCommand (..),
     compareCommandJson,
     toAesonValue,
+    textToActorKind,
   )
 where
 

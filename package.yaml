@@ -32,6 +32,7 @@ dependencies:
   - wai-websockets
   - warp
   - websockets
+  - scientific
 
 library:
   source-dirs: src

@@ -15,6 +15,7 @@ import qualified Adrai.Compiler.CacheSyncTest
 import qualified Adrai.Compiler.DocumentCacheTest
 import qualified Adrai.CurrentSearchTest
 import qualified Adrei.CachePathIntegrationTest
+import qualified Adrai.CliContractTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
 import qualified Adrai.DomainProperties
@@ -211,5 +212,9 @@ tests =
             Adrai.Compiler.CacheSyncTest.tests,
             Adrai.Provenance.LockTest.tests,
             Adrai.Compiler.DocumentCacheTest.tests
+          ],
+      testGroup
+          "P4-06"
+          [ Adrai.CliContractTest.tests
           ]
     ]
