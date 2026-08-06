@@ -27,6 +27,8 @@ module Adrai.Cli
     searchCommandJson,
     RelevantCommand (..),
     relevantCommandJson,
+    CompareCommand (..),
+    compareCommandJson,
     run,
   )
 where
@@ -45,7 +47,12 @@ import Adrai.History
   )
 import Adrai.Graph (lookupReducedAdr)
 import Adrai.Query
-  ( ProjectionMode (..),
+  ( CompareOptions (..),
+    CompareProjection,
+    CompareSnapshot,
+    compareSnapshots,
+    compareProjectionJson,
+    ProjectionMode (..),
     SearchRequest (..),
     SearchError (..),
     defaultSearchRequest,
@@ -508,6 +515,28 @@ relevantCommandJson snapshot source cmd =
             , "error"  .= Aeson.String (Text.pack (show err))
             ]
         Right proj -> pure (toAesonValue (relevantProjectionJson proj))
+
+-- | CLI argument representation for the @compare@ command.
+data CompareCommand = CompareCommand
+  { compareBefore       :: Text  -- revision or path for "before" snapshot
+  , compareAfter        :: Text  -- revision or path for "after" snapshot
+  , compareUnchanged    :: Bool
+  , compareJson         :: Bool
+  } deriving (Eq, Show)
+
+-- | Dispatch a compare command given two read snapshots.
+compareCommandJson :: ReadSnapshot -> ReadSnapshot -> CompareCommand -> IO Aeson.Value
+compareCommandJson beforeSnap afterSnap cmd =
+  let options = CompareOptions
+        { compareIncludeUnchanged = compareUnchanged cmd
+        , compareCacheMetadata = []
+        }
+  in case compareSnapshots options beforeSnap afterSnap of
+       Left err -> pure $ Aeson.object
+         [ "schema" .= Aeson.String "adrai/compare/v1"
+         , "error"  .= Aeson.String (Text.pack (show err))
+         ]
+       Right proj -> pure (toAesonValue (compareProjectionJson proj))
 
 -- | CLI scaffold entry point.  Replaced by the real CLI runner once
 -- the @adrai compile@, @adrai doctor@, @adrai show@, @adrai history@,
