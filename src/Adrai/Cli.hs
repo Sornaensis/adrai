@@ -19,14 +19,34 @@ module Adrai.Cli
     doctorCountsJson,
     doctorCacheAccessJson,
     doctorDatabaseBuildJson,
+    ShowCommand (..),
+    showCommandJson,
     run,
   )
 where
 
 import Adrai.Compiler (ColdCompilerResult (..))
+import Adrai.Format.Json (JsonValue (..))
+import Adrai.History (ReadSnapshot (..))
+import Adrai.Query
+  ( ProjectionMode (..),
+    projectCollapsed,
+    projectExploded,
+    collapsedProjectionJson,
+    explodedProjectionJson,
+    ExplodedOptions (..),
+    explodedIncludeRawSemantic,
+  )
 import Adrai.Sqlite (ColdDatabaseStats (..))
+import Adrai.Types
+  ( ViewMode (..),
+    AdrId (..),
+    IdViolation (..),
+    mkAdrId,
+  )
 import Data.Aeson ( (.=) )
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Vector as Vector
 import Data.List (sortOn)
 
@@ -248,7 +268,58 @@ doctorDatabaseBuildJson build = Aeson.object $ sortOn fst
   , "source_revision"         .= maybeJson (Aeson.String) (dbBuildSourceRevision build)
   ]
 
+-- | CLI argument representation for the @show@ command.
+data ShowCommand = ShowCommand
+  { showAdrId       :: Text
+  , showView        :: ViewMode         -- CollapsedView | ExplodedView
+  , showJson        :: Bool             -- output JSON
+  , showRaw         :: Bool             -- include raw_semantic
+  , showRich        :: Bool             -- rich detail
+  }
+  deriving (Eq, Show)
+
+-- | Dispatch a show command: either render to bytes or emit JSON.
+showCommandJson :: ReadSnapshot -> ShowCommand -> IO Aeson.Value
+showCommandJson snapshot cmd = case showView cmd of
+  CollapsedView ->
+    case projectCollapsed projMode snapshot adr of
+      Left err -> pure $ Aeson.object
+        [ "schema" .= Aeson.String "adrai/show-collapsed/v1"
+        , "error"  .= Aeson.String (Text.pack (show err))
+        ]
+      Right proj -> pure (toAesonValue (collapsedProjectionJson proj))
+  ExplodedView ->
+    case projectExploded opts snapshot adr of
+      Left err -> pure $ Aeson.object
+        [ "schema" .= Aeson.String "adrai/show-exploded/v1"
+        , "error"  .= Aeson.String (Text.pack (show err))
+        ]
+      Right proj -> pure (toAesonValue (explodedProjectionJson proj))
+  where
+    projMode = if showRich cmd then RichProjection else CompactProjection
+    opts     = ExplodedOptions { explodedIncludeRawSemantic = showRaw cmd }
+    adr      = requireAdrId (showAdrId cmd)
+
+-- | Convert a @JsonValue@ to an Aeson 'Aeson.Value' for JSON serialization.
+toAesonValue :: JsonValue -> Aeson.Value
+toAesonValue (JsonObject fields) = Aeson.object (map toAesonField fields)
+  where
+    toAesonField (key, val) = (Aeson.Key.fromText key, toAesonValue val)
+toAesonValue (JsonArray items)    = Aeson.Array (Vector.fromList (map toAesonValue items))
+toAesonValue (JsonString s)       = Aeson.String s
+toAesonValue (JsonNumber n)       = Aeson.Number (fromInteger n)
+toAesonValue (JsonDecimal d)      = Aeson.Number (realToFrac d)
+toAesonValue (JsonBool b)         = Aeson.Bool b
+toAesonValue JsonNull             = Aeson.Null
+
+-- | Parse an 'AdrId' from text, raising a runtime error on failure.
+requireAdrId :: Text -> AdrId
+requireAdrId value =
+  case mkAdrId value of
+    Left v  -> error ("invalid AdrId: " <> show v)
+    Right a -> a
+
 -- | CLI scaffold entry point.  Replaced by the real CLI runner once
--- the @adrai compile@ and @adrai doctor@ commands are wired up.
+-- the @adrai compile@, @adrai doctor@, and @adrai show@ commands are wired up.
 run :: IO ()
 run = putStrLn "ADRAI scaffold: command-line implementation pending."
