@@ -25,6 +25,8 @@ module Adrai.Cli
     historyCommandJson,
     SearchCommand (..),
     searchCommandJson,
+    RelevantCommand (..),
+    relevantCommandJson,
     run,
   )
 where
@@ -39,6 +41,7 @@ import Adrai.History
     projectHistory,
     historyProjectionJson,
     ReadSnapshot (..),
+    revisionRequested,
   )
 import Adrai.Graph (lookupReducedAdr)
 import Adrai.Query
@@ -56,6 +59,11 @@ import Adrai.Query
     explodedProjectionJson,
     ExplodedOptions (..),
     explodedIncludeRawSemantic,
+    RelevantRequest (..),
+    RelevantSource (..),
+    RelevantProjection (..),
+    runRelevant,
+    relevantProjectionJson,
   )
 import Adrai.Retrieval
   ( RetrievalMode (..),
@@ -68,6 +76,7 @@ import Adrai.Types
   ( ViewMode (..),
     ActorKind (..),
     AdrId,
+    RevisionSelector (AtRevision),
     mkAdrId,
     mkRepoPath,
     RepoPath,
@@ -457,8 +466,51 @@ searchCommandJson snapshot conn cmd = do
       ]
     Right proj -> pure (toAesonValue (searchProjectionJson proj))
 
+-- | CLI argument representation for the @relevant@ command.
+data RelevantCommand = RelevantCommand
+  { relevantFile             :: Text  -- RepoPath as text
+  , relevantIncludeObsolete :: Bool
+  , relevantLimit           :: Int
+  , relevantJson            :: Bool
+  } deriving (Eq, Show)
+
+-- | Dispatch a relevant command on a read snapshot.
+relevantCommandJson
+  :: ReadSnapshot
+  -> RelevantSource
+  -> RelevantCommand
+  -> IO Aeson.Value
+relevantCommandJson snapshot source cmd =
+  case mkRepoPath (relevantFile cmd) of
+    Left err ->
+      pure $ Aeson.object
+        [ "schema" .= Aeson.String "adrai/relevant/v1"
+        , "error"  .= Aeson.String (Text.pack (show err))
+        ]
+    Right repoPath -> do
+      let request = RelevantRequest
+            { relevantRequestFile = repoPath
+            , relevantRequestRevision =
+                case readSnapshotRevision snapshot of
+                  ri
+                    | Text.null (revisionRequested ri) -> AtRevision "HEAD"
+                    | otherwise -> AtRevision (revisionRequested ri)
+            , relevantRequestIncludeObsolete = relevantIncludeObsolete cmd
+            , relevantRequestLimit = min (max (relevantLimit cmd) 1) 1000
+            }
+          materialization = SearchMaterialization [] [] []
+      conn <- open ":memory:"
+      result <- runRelevant conn snapshot materialization request source
+      case result of
+        Left err ->
+          pure $ Aeson.object
+            [ "schema" .= Aeson.String "adrai/relevant/v1"
+            , "error"  .= Aeson.String (Text.pack (show err))
+            ]
+        Right proj -> pure (toAesonValue (relevantProjectionJson proj))
+
 -- | CLI scaffold entry point.  Replaced by the real CLI runner once
--- the @adrai compile@, @adrai doctor@, @adrai show@, and @adrai history@
--- commands are wired up.
+-- the @adrai compile@, @adrai doctor@, @adrai show@, @adrai history@,
+-- and @adrai relevant@ commands are wired up.
 run :: IO ()
 run = putStrLn "ADRAI scaffold: command-line implementation pending."
