@@ -23,6 +23,8 @@ module Adrai.Cli
     showCommandJson,
     HistoryCommand (..),
     historyCommandJson,
+    SearchCommand (..),
+    searchCommandJson,
     run,
   )
 where
@@ -41,6 +43,13 @@ import Adrai.History
 import Adrai.Graph (lookupReducedAdr)
 import Adrai.Query
   ( ProjectionMode (..),
+    SearchRequest (..),
+    SearchError (..),
+    defaultSearchRequest,
+    runCurrentSearch,
+    searchProjectionJson,
+    searchResultMatches,
+    searchResultCounts,
     projectCollapsed,
     projectExploded,
     collapsedProjectionJson,
@@ -48,12 +57,20 @@ import Adrai.Query
     ExplodedOptions (..),
     explodedIncludeRawSemantic,
   )
+import Adrai.Retrieval
+  ( RetrievalMode (..),
+    retrievalModeName,
+    SearchMaterialization (..),
+  )
 import Adrai.Sqlite (ColdDatabaseStats (..))
+import Database.SQLite.Simple (Connection, open)
 import Adrai.Types
   ( ViewMode (..),
     ActorKind (..),
     AdrId,
     mkAdrId,
+    mkRepoPath,
+    RepoPath,
   )
 import Unsafe.Coerce (unsafeCoerce)
 import Data.Aeson ( (.=) )
@@ -393,6 +410,52 @@ historyCommandJson snapshot cmd =
              , "error"  .= Aeson.String (Text.pack (show err))
              ]
            Right proj -> pure (toAesonValue (historyProjectionJson proj))
+
+-- | CLI argument representation for the @search@ command.
+data SearchCommand = SearchCommand
+  { searchQuery          :: Text
+  , searchMode           :: RetrievalMode
+  , searchView           :: ViewMode
+  , searchFile           :: Maybe Text  -- RepoPath as text
+  , searchDomains        :: [Text]
+  , searchActor          :: Maybe (Text, Text)  -- (kind, model)
+  , searchSince          :: Maybe Integer
+  , searchUntil          :: Maybe Integer
+  , searchIncludeObsolete :: Bool
+  , searchLimit          :: Int
+  , searchJson           :: Bool
+  } deriving (Eq, Show)
+
+-- | Dispatch a search command on a read snapshot.  Uses an empty
+-- 'SearchMaterialization' since the CLI does not materialize
+-- documents inline; FTS-only retrieval still works correctly.
+searchCommandJson :: ReadSnapshot -> Connection -> SearchCommand -> IO Aeson.Value
+searchCommandJson snapshot conn cmd = do
+  let request = SearchRequest
+        { searchRequestQuery = searchQuery cmd
+        , searchRequestMode = searchMode cmd
+        , searchRequestView = searchView cmd
+        , searchRequestIncludeObsolete = searchIncludeObsolete cmd
+        , searchRequestDomains = searchDomains cmd
+        , searchRequestFile = searchFile cmd >>= \p ->
+            case mkRepoPath p of
+              Left _  -> Nothing
+              Right rp -> Just rp
+        , searchRequestActor = searchActor cmd >>= \(kind, model) ->
+            ActorSelector <$> textToActorKind kind <*> pure model
+        , searchRequestSince = searchSince cmd
+        , searchRequestUntil = searchUntil cmd
+        , searchRequestLimit = min (max (searchLimit cmd) 1) 1000
+        , searchRequestShallowHistory = False
+        }
+      materialization = SearchMaterialization [] [] []
+  result <- runCurrentSearch conn snapshot materialization request
+  case result of
+    Left err -> pure $ Aeson.object
+      [ "schema" .= Aeson.String "adrai/search/v1"
+      , "error"  .= Aeson.String (Text.pack (show err))
+      ]
+    Right proj -> pure (toAesonValue (searchProjectionJson proj))
 
 -- | CLI scaffold entry point.  Replaced by the real CLI runner once
 -- the @adrai compile@, @adrai doctor@, @adrai show@, and @adrai history@
