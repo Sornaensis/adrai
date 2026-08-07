@@ -15,6 +15,8 @@ import qualified Adrai.Compiler.CacheSyncTest
 import qualified Adrai.Compiler.DocumentCacheTest
 import qualified Adrai.CurrentSearchTest
 import qualified Adrei.CachePathIntegrationTest
+import qualified Adrai.CacheIntegrationTest
+import qualified Adrai.EnvironmentTest
 import qualified Adrai.CliContractTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
@@ -46,6 +48,7 @@ import qualified Adrai.P306QualityGoldenTest
 import qualified Adrai.PassageFtsTest
 import qualified Adrai.ProjectionProperties
 import qualified Adrai.QueryHistoryTest
+import qualified Adrai.QueryIntegrationTest
 import qualified Adrai.ReconciliationProperties
 import qualified Adrai.RepositoryIsolationTest
 import qualified Adrai.RepositorySnapshotTest
@@ -216,5 +219,11 @@ tests =
       testGroup
           "P4-06"
           [ Adrai.CliContractTest.tests
+          ],
+      testGroup
+          "P4-07"
+          [ Adrai.CacheIntegrationTest.tests,
+            Adrai.QueryIntegrationTest.tests,
+            Adrai.EnvironmentTest.tests
           ]
     ]
