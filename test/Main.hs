@@ -18,6 +18,7 @@ import qualified Adrai.EvolutionCompareAnnTest
 import qualified Adrei.CachePathIntegrationTest
 import qualified Adrei.SearchCliTest
 import qualified Adrai.CacheIntegrationTest
+import qualified Adrai.MutationE2ETest
 import qualified Adrai.EnvironmentTest
 import qualified Adrai.CliContractTest
 import qualified Adrai.CoverageLedgerTest
@@ -231,5 +232,8 @@ tests =
             Adrai.EvolutionCompareAnnTest.tests,
             Adrai.ProvenanceOverlayTest.tests,
             Adrei.SearchCliTest.tests
-          ]
+          ],
+      testGroup
+          "P5-05"
+          [ Adrai.MutationE2ETest.tests ]
     ]
