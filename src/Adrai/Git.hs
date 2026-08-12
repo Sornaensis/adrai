@@ -23,7 +23,7 @@ module Adrai.Git
     GitHeadState (..),
     repositoryHeadState,
     decodeGitHeadState,
-    RevisionSpec,
+    RevisionSpec (..),
     mkRevisionSpec,
     revisionSpecText,
     resolveRevision,

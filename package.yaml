@@ -35,6 +35,7 @@ dependencies:
   - warp
   - websockets
   - scientific
+  - random
 
 library:
   source-dirs: src

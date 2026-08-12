@@ -28,6 +28,8 @@ module Adrai.Service.Transaction
     GeneratedFile (..),
     -- * Transaction configuration
     TransactionConfig (..),
+    -- * Null OID constant
+    nullOid,
     -- * Core transaction functions
     commitAppendOnlyOperation,
     commitBootstrapFiles,

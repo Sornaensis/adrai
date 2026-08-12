@@ -37,7 +37,7 @@ module Adrai.Types
     resolveIdPrefix,
 
     -- * Repository paths and content identities
-    RepoPath,
+    RepoPath (..),
     mkRepoPath,
     repoPathText,
     RepoPathViolation (..),
