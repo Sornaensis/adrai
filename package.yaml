@@ -20,6 +20,8 @@ dependencies:
   - memory
   - network
   - optparse-applicative
+  - process
+  - Win32
   - sqlite-simple
   - stm
   - text

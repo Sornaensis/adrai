@@ -9,3 +9,5 @@ flags:
 
 ghc-options:
   "$locals": -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns
+
+
