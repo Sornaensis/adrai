@@ -16,6 +16,7 @@ import qualified Adrai.Compiler.DocumentCacheTest
 import qualified Adrai.CurrentSearchTest
 import qualified Adrai.EvolutionCompareAnnTest
 import qualified Adrei.CachePathIntegrationTest
+import qualified Adrei.SearchCliTest
 import qualified Adrai.CacheIntegrationTest
 import qualified Adrai.EnvironmentTest
 import qualified Adrai.CliContractTest
@@ -226,6 +227,7 @@ tests =
           [ Adrai.CacheIntegrationTest.tests,
             Adrai.QueryIntegrationTest.tests,
             Adrai.EnvironmentTest.tests,
-            Adrai.EvolutionCompareAnnTest.tests
+            Adrai.EvolutionCompareAnnTest.tests,
+            Adrei.SearchCliTest.tests
           ]
     ]
