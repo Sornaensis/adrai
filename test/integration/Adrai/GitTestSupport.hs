@@ -9,6 +9,13 @@ module Adrai.GitTestSupport
     gitSuccess,
     gitResult,
     outputText,
+    cherryPick,
+    createWorktree,
+    hardReset,
+    rebase,
+    removeWorktree,
+    squashMerge,
+    switchBranch,
     requireRepoPath,
     requireRevision,
   )
@@ -16,6 +23,7 @@ where
 
 import Adrai.Git (RevisionSpec, mkRevisionSpec)
 import Adrai.Types (RepoPath, mkRepoPath)
+import Control.Monad (void)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LBS
@@ -94,6 +102,36 @@ hashObject repository bytes = outputText <$> gitSuccess repository ["hash-object
 
 outputText :: ByteString -> Text
 outputText = Text.strip . TextEncoding.decodeUtf8Lenient
+
+-- | Switch to a branch.
+switchBranch :: FilePath -> Text -> IO ()
+switchBranch repo branch = void $ gitSuccess repo ["switch", Text.unpack branch] BS.empty
+
+-- | Create a new worktree with its own branch.
+createWorktree :: FilePath -> FilePath -> Text -> IO ()
+createWorktree repo path branch = void $ gitSuccess repo ["worktree", "add", "-b", Text.unpack branch, path, "HEAD"] BS.empty
+
+-- | Remove a worktree (forcefully).
+removeWorktree :: FilePath -> FilePath -> IO ()
+removeWorktree repo path = void $ gitSuccess repo ["worktree", "remove", "--force", path] BS.empty
+
+-- | Hard reset the current branch to the given target.
+hardReset :: FilePath -> Text -> IO ()
+hardReset repo target = void $ gitSuccess repo ["reset", "--hard", Text.unpack target] BS.empty
+
+-- | Cherry-pick a commit onto the current branch.
+cherryPick :: FilePath -> Text -> IO ()
+cherryPick repo commit = void $ gitSuccess repo ["cherry-pick", Text.unpack commit] BS.empty
+
+-- | Rebase the current branch onto the given target.
+rebase :: FilePath -> Text -> IO ()
+rebase repo target = void $ gitSuccess repo ["rebase", Text.unpack target] BS.empty
+
+-- | Squash-merge a branch into the current branch.
+squashMerge :: FilePath -> Text -> IO ()
+squashMerge repo branch = do
+  void $ gitSuccess repo ["merge", "--squash", Text.unpack branch] BS.empty
+  void $ gitSuccess repo ["commit", "-m", "squash"] BS.empty
 
 requireRepoPath :: Text -> RepoPath
 requireRepoPath value =

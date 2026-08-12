@@ -15,13 +15,18 @@ module Adrai.Integration.CLI
     createAdraiInit,
     createAdr,
     amendAdr,
+    amendAdrStatus,
+    amendAdrScope,
+    amendAdrDomain,
     createAdrWithTitle,
     parseCompileResult,
     parseDoctorOutput,
     parseShowCollapsed,
     parseShowExploded,
     parseHistory,
+    parseHistoryCompact,
     parseSearchResults,
+    parseRelevantResults,
     parseCompareResults,
     sqliteTableContents,
     tablesEqual,
@@ -304,6 +309,44 @@ amendAdr repo adrId maybeTitle maybeSummary maybeBody =
         maybe [] (\v -> ["--body", unpack v]) maybeBody
       ]
 
+-- | Amend an ADR's status (active\/obsolete\/archived) via CLI.
+amendAdrStatus
+  :: FilePath
+  -> Text
+  -> Text
+  -> IO Value
+amendAdrStatus repo adrId status =
+  adraiJsonOrThrow repo
+    [ "amend-adr", unpack adrId, "--status", unpack status, "--actor", "human:test", "--json" ]
+
+-- | Amend ADR scope via add\/remove lists.
+amendAdrScope
+  :: FilePath
+  -> Text
+  -> [Text]
+  -> [Text]
+  -> IO Value
+amendAdrScope repo adrId addScopes removeScopes =
+  adraiJsonOrThrow repo
+    ( [ "amend-adr", unpack adrId ]
+        <> concatMap (\s -> ["--add-scope", unpack s]) addScopes
+        <> concatMap (\s -> ["--remove-scope", unpack s]) removeScopes
+        <> ["--actor", "human:test", "--json"]
+    )
+
+-- | Amend ADR domains via change-domain flags.
+amendAdrDomain
+  :: FilePath
+  -> Text
+  -> [Text]
+  -> IO Value
+amendAdrDomain repo adrId changes =
+  adraiJsonOrThrow repo
+    ( [ "amend-adr", unpack adrId ]
+        <> concatMap (\c -> ["--change-domain", unpack c]) changes
+        <> ["--actor", "human:test", "--json"]
+    )
+
 -- | Parse a 'CompileResult' from an Aeson Value.
 -- Returns 'Nothing' when the shape does not match (e.g. error object).
 parseCompileResult :: Value -> Maybe CompileResult
@@ -373,6 +416,33 @@ parseHistory obj
       order <- o .: "order"
       results <- o .: "results"
       pure (schema, revision, order, results)
+  | otherwise = Nothing
+
+-- | Parse a compact history projection from an Aeson Value.
+-- Returns a tuple of (schema, revision, order, results).
+parseHistoryCompact
+  :: Value -> Maybe (Text, Text, Text, [Value])
+parseHistoryCompact obj
+  | Just o <- _Object obj = do
+      schema <- o .: "schema"
+      revision <- o .: "revision"
+      order <- o .: "order"
+      results <- o .: "results"
+      pure (schema, revision, order, results)
+  | otherwise = Nothing
+
+-- | Parse 'adrai relevant' JSON output.
+-- Returns (schema, as_of, file, retrieval, results).
+parseRelevantResults
+  :: Value -> Maybe (Text, Text, Text, Text, [Value])
+parseRelevantResults obj
+  | Just o <- _Object obj = do
+      schema <- o .: "schema"
+      as_of <- o .: "as_of"
+      file <- o .: "file"
+      retrieval <- o .: "retrieval"
+      results <- o .: "results"
+      pure (schema, as_of, file, retrieval, results)
   | otherwise = Nothing
 
 -- | Parse search results from an Aeson Value.
