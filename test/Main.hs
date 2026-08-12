@@ -51,6 +51,7 @@ import qualified Adrai.PassageFtsTest
 import qualified Adrai.ProjectionProperties
 import qualified Adrai.QueryHistoryTest
 import qualified Adrai.QueryIntegrationTest
+import qualified Adrai.ProvenanceOverlayTest
 import qualified Adrai.ReconciliationProperties
 import qualified Adrai.RepositoryIsolationTest
 import qualified Adrai.RepositorySnapshotTest
@@ -228,6 +229,7 @@ tests =
             Adrai.QueryIntegrationTest.tests,
             Adrai.EnvironmentTest.tests,
             Adrai.EvolutionCompareAnnTest.tests,
+            Adrai.ProvenanceOverlayTest.tests,
             Adrei.SearchCliTest.tests
           ]
     ]
