@@ -9,6 +9,7 @@
 --
 -- * 'Adrei.Explorer.Types' — core types (session, commands, state)
 -- * 'Adrei.Explorer.Render' — terminal rendering with ANSI colors
+-- * 'Adrei.Explorer.Mutation' — mutation command runner (exit gate)
 -- * 'Adrei.Explorer.Interactive' — REPL loop and scripted mode
 
 module Adrei.Explorer
@@ -40,6 +41,10 @@ module Adrei.Explorer
     -- * Interactive
     interactiveSession,
     scriptedMode,
+
+    -- * Mutation
+    MutationResult (..),
+    runMutation,
   )
   where
 
@@ -71,4 +76,8 @@ import Adrei.Explorer.Render
 import Adrei.Explorer.Interactive
   ( interactiveSession,
     scriptedMode,
+  )
+import Adrei.Explorer.Mutation
+  ( MutationResult (..),
+    runMutation,
   )

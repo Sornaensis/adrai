@@ -16,6 +16,14 @@
 -- The explorer delegates all query and mutation work to shared services
 -- ('Adrai.Query', 'Adrei.Service.Mutation', 'Adrai.Graph') rather than
 -- duplicating reducer / compiler / transaction paths.
+--
+-- === Exit gate
+--
+-- After a mutation command (create, amend, status) the explorer shows
+-- a summary and returns 'True' from the handler to signal the REPL
+-- loop should exit. This matches the Python reference where these
+-- are one-shot commands that produce output and terminate.
+-- For scripted mode, mutations always exit after completion.
 
 module Adrei.Explorer.Interactive
   ( interactiveSession,
@@ -23,9 +31,15 @@ module Adrei.Explorer.Interactive
   )
 where
 
+import Adrei.Explorer.Mutation
+  ( MutationResult (..),
+    runMutation,
+  )
 import Adrei.Explorer.Render
   ( ansiBold,
+    ansiBlue,
     ansiCyan,
+    ansiGreen,
     ansiRed,
     ansiReset,
     renderCollapsed,
@@ -50,6 +64,12 @@ import Adrei.Explorer.Types
   )
 import Adrai.Query (CollapsedProjection, SearchProjection, projectCollapsed)
 import Adrai.Domain (Domain (..), domainText)
+import Adrai.Git
+  ( Repository (..),
+    discoverRepository,
+    gitOidText,
+    systemGit,
+  )
 import Adrai.Types
   ( Actor,
     AdrId (..),
@@ -59,7 +79,10 @@ import Adrai.Types
     RepoPath (..),
     adrIdText,
     mkActor,
+    recordIdText,
+    repoPathText,
   )
+import Control.Monad (when, unless)
 import Data.List (intercalate)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -72,27 +95,37 @@ import System.IO
 
 -- | Run the interactive explorer session.
 --
+-- Discovers the repository at the given path, then enters the REPL loop.
 -- Reads commands from stdin, renders output to stdout. The session
--- is initialized with the provided repository path and runs until
--- the user types @exit@ or @quit@, or sends EOF / ^C.
+-- runs until the user types @exit@ or @quit@, or sends EOF / ^C.
 interactiveSession ::
   FilePath ->          -- ^ Repository root
   Actor ->             -- ^ Actor performing mutations
   IO ()
 interactiveSession repoPath actor = do
-  let session =
-        defaultSession
-          { sessionRepo = repoPath,
-            sessionActor = actor
-          }
-  let state = initialState
-  hSetBuffering stdout LineBuffering
-  TIO.putStrLn "ADRAI Terminal Explorer. Type :help for commands."
-  replLoop session state
+  repoResult <- discoverRepository systemGit repoPath
+  case repoResult of
+    Left err -> do
+      TIO.putStrLn $ "Error: cannot open repository: " <> T.pack (show err)
+    Right repository -> do
+      let session =
+            defaultSession
+              { sessionRepo = repoPath,
+                sessionActor = actor
+              }
+      let state = initialState
+      hSetBuffering stdout LineBuffering
+      TIO.putStrLn "ADRAI Terminal Explorer. Type :help for commands."
+      replLoop repository session state
 
 -- | Main REPL loop. Reads a line, dispatches, and recurses.
-replLoop :: ExplorerSession -> ExplorerState -> IO ()
-replLoop session state = do
+--
+-- The 'Bool' return value signals whether to exit:
+-- * 'True' after a successful mutation (exit gate)
+-- * 'False' for all other commands (continue the loop)
+replLoop ::
+  Repository -> ExplorerSession -> ExplorerState -> IO ()
+replLoop repository session state = do
   hFlush stdout
   let prompt =
         "adrai[" <> sessionRevision session <> " "
@@ -102,17 +135,19 @@ replLoop session state = do
   line <- TIO.getLine
   let trimmed = T.strip line
   if T.null trimmed
-    then replLoop session state
+    then replLoop repository session state
     else do
       case parseCommand trimmed of
         ExitCommand -> pure ()
         HelpCommand -> do
           mapM_ TIO.putStrLn (renderHelp)
-          replLoop session state
+          replLoop repository session state
         cmd -> do
-          (session', state') <- handleCommand cmd session state
+          (session', state', exitGate) <- handleCommand repository cmd session state
           mapM_ TIO.putStrLn (stateOutput state')
-          replLoop session' state'
+          if exitGate
+            then TIO.putStrLn "" >> TIO.putStrLn "Mutation complete. Exiting."
+            else replLoop repository session' state'
 
 viewModeText :: ViewMode -> Text
 viewModeText vm = case vm of
@@ -131,25 +166,34 @@ searchModeText sm = case sm of
 
 -- | Run in scripted (non-interactive) mode.
 --
--- Reads commands from stdin (one per line), writes output to stdout.
--- Returns immediately on EOF. Designed for CI testing.
+-- Discovers the repository, reads commands from stdin (one per line),
+-- writes output to stdout. Returns immediately on EOF or after a
+-- mutation command (exit gate). Designed for CI testing.
 scriptedMode ::
   FilePath ->     -- ^ Repository root
   Actor ->        -- ^ Actor for mutations
   IO ()
 scriptedMode repoPath actor = do
-  let session =
-        defaultSession
-          { sessionRepo = repoPath,
-            sessionActor = actor
-          }
-  let state = initialState
-  hSetBuffering stdout LineBuffering
-  scriptLoop session state
+  repoResult <- discoverRepository systemGit repoPath
+  case repoResult of
+    Left err -> do
+      TIO.putStrLn $ "Error: cannot open repository: " <> T.pack (show err)
+    Right repository -> do
+      let session =
+            defaultSession
+              { sessionRepo = repoPath,
+                sessionActor = actor
+              }
+      let state = initialState
+      hSetBuffering stdout LineBuffering
+      scriptLoop repository session state
 
 -- | Scripted loop: read line, handle, recurse.
-scriptLoop :: ExplorerSession -> ExplorerState -> IO ()
-scriptLoop session state = do
+--
+-- Returns on EOF or after a mutation command (exit gate).
+scriptLoop ::
+  Repository -> ExplorerSession -> ExplorerState -> IO ()
+scriptLoop repository session state = do
   eof <- hIsEOF stdin
   if eof
     then pure ()
@@ -157,82 +201,88 @@ scriptLoop session state = do
       line <- TIO.getLine
       let trimmed = T.strip line
       if T.null trimmed
-        then scriptLoop session state
+        then scriptLoop repository session state
         else do
           case parseCommand trimmed of
             ExitCommand -> pure ()
             HelpCommand -> do
               mapM_ TIO.putStrLn (renderHelp)
-              scriptLoop session state
+              scriptLoop repository session state
             cmd -> do
-              (session', state') <- handleCommand cmd session state
+              (session', state', exitGate) <- handleCommand repository cmd session state
               mapM_ TIO.putStrLn (stateOutput state')
-              scriptLoop session' state'
+              when exitGate $ pure ()
+              unless exitGate $ scriptLoop repository session' state'
 
 -- ---------------------------------------------------------------------------
 -- Command dispatch
 -- ---------------------------------------------------------------------------
 
+-- | Handle a command, returning updated session, state, and an exit-gate flag.
+--
+-- The exit gate is triggered ('True') when a mutation completes successfully,
+-- matching the one-shot semantics of create/amend/status commands.
 handleCommand ::
+  Repository ->
   ExplorerCommand ->
   ExplorerSession ->
   ExplorerState ->
-  IO (ExplorerSession, ExplorerState)
-handleCommand cmd session state =
+  IO (ExplorerSession, ExplorerState, Bool)
+handleCommand repository cmd session state =
   case cmd of
-    -- Core commands
+    -- Core commands (no exit gate)
     SearchCommand query ->
-      handleSearch session state query
+      (\(s, st) -> (s, st, False)) <$> handleSearch session state query
 
     ShowCommand adr ->
-      handleShow session state adr
+      (\(s, st) -> (s, st, False)) <$> handleShow session state adr
 
     ViewCommand adr mode ->
-      handleView session state adr mode
+      (\(s, st) -> (s, st, False)) <$> handleView session state adr mode
 
     HistoryCommand maybeAdr ->
-      handleHistory session state maybeAdr
+      (\(s, st) -> (s, st, False)) <$> handleHistory session state maybeAdr
 
     ConflictsCommand ->
-      handleConflicts session state
+      (\(s, st) -> (s, st, False)) <$> handleConflicts session state
 
-    -- Mutations
-    CreateCommand title body domains ->
-      handleCreate session state title body domains
-
-    AmendCommand adr title body ->
-      handleAmend session state adr title body
-
-    StatusCommand adr newStatus ->
-      handleStatus session state adr newStatus
-
-    -- Configuration
+    -- Configuration (no exit gate)
     SetViewCommand vm ->
-      handleSetView session state vm
+      (\(s, st) -> (s, st, False)) <$> handleSetView session state vm
 
     SetModeCommand sm ->
-      handleSetMode session state sm
+      (\(s, st) -> (s, st, False)) <$> handleSetMode session state sm
 
     SetObsoleteCommand val ->
-      handleSetObsolete session state val
+      (\(s, st) -> (s, st, False)) <$> handleSetObsolete session state val
 
     SetRevisionCommand rev ->
-      handleSetRevision session state rev
+      (\(s, st) -> (s, st, False)) <$> handleSetRevision session state rev
 
     SetFilePathCommand fp ->
-      handleSetFilePath session state fp
+      (\(s, st) -> (s, st, False)) <$> handleSetFilePath session state fp
 
     SetActorCommand act ->
-      handleSetActor session state act
+      (\(s, st) -> (s, st, False)) <$> handleSetActor session state act
+
+    -- Mutations (exit gate)
+    CreateCommand title body domains ->
+      handleCreateMutation repository session state title body domains
+
+    AmendCommand adr title body ->
+      handleAmendMutation repository session state adr title body
+
+    StatusCommand adr newStatus ->
+      handleStatusMutation repository session state adr newStatus
 
     ExitCommand ->
-      pure (session, state)
+      pure (session, state, False)
 
     HelpCommand ->
-      pure (session, state)
+      pure (session, state, False)
 
 -- ---------------------------------------------------------------------------
--- Command handlers
+-- Query command handlers (no exit gate)
 -- ---------------------------------------------------------------------------
 
 handleSearch ::
@@ -280,33 +330,6 @@ handleConflicts session state =
     , stateLastResults  = []
     })
 
-handleCreate ::
-  ExplorerSession -> ExplorerState -> Text -> Text -> [Domain] -> IO (ExplorerSession, ExplorerState)
-handleCreate session state title body domains =
-  pure (session, ExplorerState
-    { stateOutput       = ["create: " <> title <> " (domains: " <> T.intercalate ", " (map domainText domains) <> ")"]
-    , stateCursorPosition = 0
-    , stateLastResults  = []
-    })
-
-handleAmend ::
-  ExplorerSession -> ExplorerState -> AdrId -> Text -> Text -> IO (ExplorerSession, ExplorerState)
-handleAmend session state adr title body =
-  pure (session, ExplorerState
-    { stateOutput       = ["amend " <> adrIdText adr <> ": " <> title]
-    , stateCursorPosition = 0
-    , stateLastResults  = []
-    })
-
-handleStatus ::
-  ExplorerSession -> ExplorerState -> AdrId -> Text -> IO (ExplorerSession, ExplorerState)
-handleStatus session state adr newStatus =
-  pure (session, ExplorerState
-    { stateOutput       = ["status " <> adrIdText adr <> " -> " <> newStatus]
-    , stateCursorPosition = 0
-    , stateLastResults  = []
-    })
-
 handleSetView ::
   ExplorerSession -> ExplorerState -> ViewMode -> IO (ExplorerSession, ExplorerState)
 handleSetView session state vm =
@@ -340,3 +363,153 @@ handleSetActor ::
   ExplorerSession -> ExplorerState -> Actor -> IO (ExplorerSession, ExplorerState)
 handleSetActor session state act =
   pure (session { sessionActor = act }, state)
+
+-- ---------------------------------------------------------------------------
+-- Mutation command handlers (exit gate)
+-- ---------------------------------------------------------------------------
+
+-- | Handle a create mutation: run the mutation via the mutation service,
+-- show the result, and signal exit.
+handleCreateMutation ::
+  Repository ->
+  ExplorerSession ->
+  ExplorerState ->
+  Text ->
+  Text ->
+  [Domain] ->
+  IO (ExplorerSession, ExplorerState, Bool)
+handleCreateMutation repository session state title body domains = do
+  result <- runMutation session (CreateCommand title body domains)
+  pure (session, renderMutationResult state result, True)
+
+-- | Handle an amend mutation: run the mutation via the mutation service,
+-- show the result, and signal exit.
+handleAmendMutation ::
+  Repository ->
+  ExplorerSession ->
+  ExplorerState ->
+  AdrId ->
+  Text ->
+  Text ->
+  IO (ExplorerSession, ExplorerState, Bool)
+handleAmendMutation repository session state adr title body = do
+  result <- runMutation session (AmendCommand adr title body)
+  pure (session, renderMutationResult state result, True)
+
+-- | Handle a status mutation (obsolete/reactivate): run the mutation
+-- via the mutation service, show the result, and signal exit.
+handleStatusMutation ::
+  Repository ->
+  ExplorerSession ->
+  ExplorerState ->
+  AdrId ->
+  Text ->
+  IO (ExplorerSession, ExplorerState, Bool)
+handleStatusMutation repository session state adr newStatus = do
+  result <- runMutation session (StatusCommand adr newStatus)
+  pure (session, renderMutationResult state result, True)
+
+-- ---------------------------------------------------------------------------
+-- Result rendering for mutations
+-- ---------------------------------------------------------------------------
+
+-- | Render a mutation result into explorer output state.
+renderMutationResult :: ExplorerState -> MutationResult -> ExplorerState
+renderMutationResult state result =
+  case result of
+    CreateMutationResult{..} ->
+      ExplorerState
+        { stateOutput       =
+            [ ansiGreen "✓ ADR created successfully."
+            , "  Operation: " <> T.pack resultOperationId
+            , "  ADR: " <> ansiBold (T.take 12 (adrIdText resultAdrId))
+            , "  Record: " <> ansiBold (T.take 12 (recordIdText resultRecordId))
+            , "  Commit: " <> ansiBlue (T.take 16 (gitOidText resultCommitOid))
+            , "  Files created: " <> T.pack (show (length resultCreatedPaths))
+            , ""
+            , ansiCyan "Mutation complete. Use :help for available commands."
+            ]
+        , stateCursorPosition = 0
+        , stateLastResults  = []
+        }
+
+    AmendMutationResult{..} ->
+      ExplorerState
+        { stateOutput       =
+            [ ansiGreen "✓ ADR amended successfully."
+            , "  Operation: " <> T.pack resultOperationId
+            , "  ADR: " <> ansiBold (T.take 12 (adrIdText resultAdrId))
+            , "  Record: " <> ansiBold (T.take 12 (recordIdText resultRecordId))
+            , "  Commit: " <> ansiBlue (T.take 16 (gitOidText resultCommitOid))
+            , "  Updated path: " <> ansiBlue (repoPathText resultUpdatedPath)
+            , ""
+            , ansiCyan "Mutation complete. Use :help for available commands."
+            ]
+        , stateCursorPosition = 0
+        , stateLastResults  = []
+        }
+
+    ObsoleteMutationResult{..} ->
+      ExplorerState
+        { stateOutput       =
+            [ ansiRed "✗ ADR marked obsolete."
+            , "  Operation: " <> T.pack resultOperationId
+            , "  ADR: " <> ansiBold (T.take 12 (adrIdText resultAdrId))
+            , "  Commit: " <> ansiBlue (T.take 16 (gitOidText resultCommitOid))
+            , ""
+            , ansiCyan "Mutation complete. Use :help for available commands."
+            ]
+        , stateCursorPosition = 0
+        , stateLastResults  = []
+        }
+
+    ReactivateMutationResult{..} ->
+      ExplorerState
+        { stateOutput       =
+            [ ansiGreen "✓ ADR reactivated successfully."
+            , "  Operation: " <> T.pack resultOperationId
+            , "  ADR: " <> ansiBold (T.take 12 (adrIdText resultAdrId))
+            , "  Commit: " <> ansiBlue (T.take 16 (gitOidText resultCommitOid))
+            , ""
+            , ansiCyan "Mutation complete. Use :help for available commands."
+            ]
+        , stateCursorPosition = 0
+        , stateLastResults  = []
+        }
+
+    ScopeMutationResult{..} ->
+      ExplorerState
+        { stateOutput       =
+            [ ansiGreen "✓ Scope updated successfully."
+            , "  Operation: " <> T.pack resultOperationId
+            , "  ADR: " <> ansiBold (T.take 12 (adrIdText resultAdrId))
+            , "  Commit: " <> ansiBlue (T.take 16 (gitOidText resultCommitOid))
+            , ""
+            , ansiCyan "Mutation complete. Use :help for available commands."
+            ]
+        , stateCursorPosition = 0
+        , stateLastResults  = []
+        }
+
+    DomainMutationResult{..} ->
+      ExplorerState
+        { stateOutput       =
+            [ ansiGreen "✓ Domain updated successfully."
+            , "  Operation: " <> T.pack resultOperationId
+            , "  ADR: " <> ansiBold (T.take 12 (adrIdText resultAdrId))
+            , "  Commit: " <> ansiBlue (T.take 16 (gitOidText resultCommitOid))
+            , ""
+            , ansiCyan "Mutation complete. Use :help for available commands."
+            ]
+        , stateCursorPosition = 0
+        , stateLastResults  = []
+        }
+
+    MutationError{..} ->
+      ExplorerState
+        { stateOutput       =
+            [ ansiRed ("Error: " <> resultError)
+            ]
+        , stateCursorPosition = 0
+        , stateLastResults  = []
+        }
