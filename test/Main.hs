@@ -14,6 +14,7 @@ import qualified Adrai.Compiler.CacheSelectionTest
 import qualified Adrai.Compiler.CacheSyncTest
 import qualified Adrai.Compiler.DocumentCacheTest
 import qualified Adrai.CurrentSearchTest
+import qualified Adrai.EvolutionCompareAnnTest
 import qualified Adrei.CachePathIntegrationTest
 import qualified Adrai.CacheIntegrationTest
 import qualified Adrai.EnvironmentTest
@@ -224,6 +225,7 @@ tests =
           "P4-07"
           [ Adrai.CacheIntegrationTest.tests,
             Adrai.QueryIntegrationTest.tests,
-            Adrai.EnvironmentTest.tests
+            Adrai.EnvironmentTest.tests,
+            Adrai.EvolutionCompareAnnTest.tests
           ]
     ]
