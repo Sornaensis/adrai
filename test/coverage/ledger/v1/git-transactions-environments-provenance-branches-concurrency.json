@@ -224,30 +224,30 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
                      "pythonMethod":  "test_init_creates_root_commit_in_unborn_repository",
                      "behaviorContract":  "Initialization in an unborn repository creates the root ADRAI bootstrap commit.",
-                     "haskellTestName":  "init creates root commit in unborn repository",
-                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestName":  "P6-02A init creates a parentless root commit",
+                     "haskellTestPath":  "test/integration/Adrai/MutationE2ETest.hs",
                      "haskellTestType":  "integration",
-                     "phaseOwner":  "P4",
-                     "state":  "planned",
+                     "phaseOwner":  "P6",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"init creates root commit in unborn repository\"",
-                                      "fixture":  "Static read of test_transactions.py::test_init_creates_root_commit_in_unborn_repository; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_init_creates_root_commit_in_unborn_repository; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"P6-02A\" -j 1'",
+                                      "fixture":  "test/integration/Adrai/MutationE2ETest.hs::p602aInitUnborn creates a fresh unborn Git repository with an unrelated staged binary; ADRAI_EXE names the executable under test.",
+                                      "result":  "Commit 19798ef; reviewed focused P6-02A validation passed 19/19, asserting a parentless bootstrap commit, exact committed bootstrap bytes, and the expected committed tree."
                                   }
                  },
                  {
                      "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
                      "pythonMethod":  "test_init_preserves_unrelated_staged_entry_in_unborn_repository",
                      "behaviorContract":  "Initialization in an unborn repository preserves unrelated staged index entries.",
-                     "haskellTestName":  "init preserves unrelated staged entry in unborn repository",
-                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestName":  "P6-02A init preserves unrelated staged binary",
+                     "haskellTestPath":  "test/integration/Adrai/MutationE2ETest.hs",
                      "haskellTestType":  "integration",
-                     "phaseOwner":  "P4",
-                     "state":  "planned",
+                     "phaseOwner":  "P6",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"init preserves unrelated staged entry in unborn repository\"",
-                                      "fixture":  "Static read of test_transactions.py::test_init_preserves_unrelated_staged_entry_in_unborn_repository; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_init_preserves_unrelated_staged_entry_in_unborn_repository; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"P6-02A\" -j 1'",
+                                      "fixture":  "test/integration/Adrai/MutationE2ETest.hs::p602aInitUnborn stages unrelated-staged.bin before invoking the real init executable; ADRAI_EXE names the executable under test.",
+                                      "result":  "Commit 19798ef; reviewed focused P6-02A validation passed 19/19, preserving the exact staged binary/index entry while excluding it from HEAD."
                                   }
                  },
                  {

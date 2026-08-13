@@ -209,15 +209,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_committed_footprint.py",
                      "pythonMethod":  "test_bootstrap_commits_shared_config_but_not_local_cache_state",
                      "behaviorContract":  "Repository initialization commits only shared configuration and ignore attributes while local cache configuration and generated cache files remain untracked.",
-                     "haskellTestName":  "bootstrap commits shared configuration but excludes local cache state",
-                     "haskellTestPath":  "test/integration/Adrai/CommittedFootprintTest.hs",
+                     "haskellTestName":  "P6-02A init commits shared config but not local cache",
+                     "haskellTestPath":  "test/integration/Adrai/MutationE2ETest.hs",
                      "haskellTestType":  "integration",
-                     "phaseOwner":  "P4",
-                     "state":  "planned",
+                     "phaseOwner":  "P6",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"bootstrap commits shared configuration but excludes local cache state\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_committed_footprint.py:52-77",
-                                      "result":  "ADRAI_1_Source/tests/test_committed_footprint.py:52-77 | test/fixtures/contracts/v1/config/default.toml:1-9"
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"P6-02A\" -j 1'",
+                                      "fixture":  "test/integration/Adrai/MutationE2ETest.hs::p602aInitUnborn inspects the real init commit tree, exact .adrai.toml/.gitattributes/.gitignore bytes, and .adrai/index.sqlite; ADRAI_EXE names the executable under test.",
+                                      "result":  "Commit 19798ef; reviewed focused P6-02A validation passed 19/19, committing only shared bootstrap configuration and ignore attributes while index.sqlite exists only as untracked local cache state."
                                   }
                  },
                  {
