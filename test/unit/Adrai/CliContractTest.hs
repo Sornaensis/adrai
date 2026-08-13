@@ -28,7 +28,34 @@ import Adrai.Cli
     toAesonValue,
   )
 import Adrai.CliTypes (ViewMode (..), RetrievalMode (..), textToActorKind)
-import Adrai.Types (ActorKind (..))
+import Adrai.CliRunner
+  ( CliConfig (..),
+    CliCommand (..),
+    CliInvocation (..),
+    ContentSource (..),
+    CreateRequest (..),
+    CliDispatchDependencies (..),
+    CreateCommand (..),
+    InitCommand (..),
+    defaultCliConfig,
+    parseActor,
+    parseDigest,
+    parseStructuredCreate,
+    CliFailure (..),
+    CliRendered (..),
+    parseArguments,
+    parser,
+    dispatchWith,
+    renderCreateOutcome,
+    renderFailureOutcome,
+    renderInitOutcome,
+  )
+import Adrai.Git (GitOid (..))
+import Adrai.Domain (canonicalDomains)
+import Adrai.Scope (mkScopePattern)
+import Adrai.Service.Mutation (CreateResult (..), InitResult (..))
+import Adrai.Service.PostCommitIndex (IndexWarning (..), PostCommitIndexError (..), PostCommitIndexResult (..))
+import Adrai.Types (ActorKind (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
 import Adrai.Format.Json (JsonValue (..))
 import Adrai.Compiler (ColdCompilerResult (..))
 import Adrai.Retrieval (SearchMaterialization(..))
@@ -49,6 +76,9 @@ import qualified Data.Vector as Vector
 import Data.Vector ((!))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
+import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
+import System.Exit (ExitCode (..))
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Foldable (for_)
 import Data.List (sort)
 
@@ -663,7 +693,189 @@ schemaContractTests =
               }
             buildKeys = objectKeys (doctorDatabaseBuildJson build)
         buildKeys @?= sort buildKeys
-        ]
+         ]
+
+mutationCliContractTests :: TestTree
+mutationCliContractTests =
+  testGroup "init/create CLI contracts"
+    [ testCase "global repo defaults before init" $ do
+        parseCli ["init"] @?= Right (CliInvocation defaultCliConfig (CmdInit (InitCommand False)))
+    , testCase "global repo selects create and repeatable fields" $ do
+        let expected =
+              CreateCommand
+                { createTitle = Just "Title"
+                , createSummary = Just "Summary"
+                , createDomains = ["platform", "runtime"]
+                , createAppliesTo = ["src/**", "test/**"]
+                , createActorSpec = Just "human:architect"
+                , createModel = Just "editor"
+                , createInputDigest = Nothing
+                , createPromptDigest = Nothing
+                , createContextDigest = Nothing
+                , createPromptFile = Nothing
+                , createContextFile = Nothing
+                , createContentSources = [BodyText "Decision body"]
+                , createJson = True
+                }
+        parseCli
+          [ "--repo", "fixture-repo", "create"
+          , "--title", "Title", "--summary", "Summary"
+          , "--domain", "platform", "--domain", "runtime"
+          , "--applies-to", "src/**", "--applies-to", "test/**"
+          , "--actor", "human:architect", "--model", "editor"
+          , "--body", "Decision body", "--json"
+          ]
+          @?= Right (CliInvocation (defaultCliConfig {configRepo = "fixture-repo"}) (CmdCreate expected))
+    , testCase "create-adr alias and out-of-scope create options are rejected" $ do
+        assertParserFailure ["create-adr"]
+        assertParserFailure ["create", "--title-rev", "unsupported", "--body", "body"]
+        assertParserFailure ["create", "--body", "first", "--body-file", "second.md"]
+    , testCase "parser failures map to exit 2" $
+        case parseArguments ["create-adr"] of
+          Left rendered -> renderedExitCode rendered @?= ExitFailure 2
+          Right _ -> assertFailure "create-adr unexpectedly parsed"
+    , testCase "structured create rejects unknown and wrong scalar/list fields" $ do
+        assertBool "unknown field accepted" (isLeft (parseStructuredCreate "{\"body\":\"x\",\"unknown\":true}"))
+        assertBool "wrong domains type accepted" (isLeft (parseStructuredCreate "{\"body\":\"x\",\"domains\":\"platform\"}"))
+        assertBool "wrong actor type accepted" (isLeft (parseStructuredCreate "{\"body\":\"x\",\"actor\":[]}"))
+    , testCase "actor, scope/domain, and digest validation stay typed" $ do
+        assertBool "invalid actor accepted" (isLeft (parseActor "machine:agent" Nothing))
+        assertBool "short digest accepted" (isLeft (parseDigest "sha256:abcd"))
+        assertBool "hex digest accepted" (isLeft (parseDigest (T.replicate 64 "a")))
+        assertBool "valid compact digest rejected" (not (isLeft (parseDigest ("sha256:" <> T.replicate 43 "A"))))
+    , testCase "init success JSON maps to stdout, empty stderr, and exit 0" $ do
+        let rendered = renderInitOutcome initResult indexedResult True
+        renderedExitCode rendered @?= ExitSuccess
+        renderedStderr rendered @?= ""
+        assertBool "missing initialized" ("\"initialized\": true" `T.isInfixOf` renderedStdout rendered)
+        assertBool "missing commit" ("\"commit\": \"0123456789012345678901234567890123456789\"" `T.isInfixOf` renderedStdout rendered)
+    , testCase "init JSON is exact canonical public v1 bytes" $
+        renderedStdout (renderInitOutcome initResult indexedResult True) @?=
+          "{\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"initialized\": true,\n  \"operation\": \"init\"\n}\n"
+    , testCase "create plain output uses canonical ID order and index failure remains success" $ do
+        let rendered = renderCreateOutcome createResult [] indexFailureResult False
+        renderedExitCode rendered @?= ExitSuccess
+        renderedStderr rendered @?= ""
+        renderedStdout rendered @?= "Committed operation-42 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  record=R0123456789ABCDEFGHJKMNPQRS  scope=C0123456789ABCDEFGHJKMNPQRS  domain=C1123456789ABCDEFGHJKMNPQRS  status=C2123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
+    , testCase "create index-failure JSON is exact canonical public v1 bytes" $
+        renderedStdout (renderCreateOutcome createResult [] indexFailureResult True) @?=
+          "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"domain\": \"C1123456789ABCDEFGHJKMNPQRS\",\n  \"domains\": [],\n  \"index_error\": \"PostCommitIndexOpenFailure \\\"readonly\\\"\",\n  \"index_updated\": true,\n  \"indexed\": false,\n  \"operation\": \"operation-42\",\n  \"record\": \"R0123456789ABCDEFGHJKMNPQRS\",\n  \"scope\": \"C0123456789ABCDEFGHJKMNPQRS\",\n  \"status\": \"C2123456789ABCDEFGHJKMNPQRS\"\n}\n"
+    , testCase "create JSON emits integer index warning count" $ do
+        let warnings = indexedResult {postCommitIndexWarnings = [IndexWarning "Z" "last", IndexWarning "A" "first"]}
+            rendered = renderCreateOutcome createResult [] warnings True
+        assertBool "warning count is not an integer" ("\"index_warnings\": 2" `T.isInfixOf` renderedStdout rendered)
+        assertBool "warning detail leaked into public mutation JSON" (not ("\"code\"" `T.isInfixOf` renderedStdout rendered))
+    , testCase "user and conflict outcomes have exact exit classes and stderr" $ do
+        let user = renderFailureOutcome (CliUserFailure "invalid input")
+            conflict = renderFailureOutcome (CliConflictFailure "stale head")
+        renderedExitCode user @?= ExitFailure 2
+        renderedStdout user @?= ""
+        renderedStderr user @?= "adrai: invalid input\n"
+        renderedExitCode conflict @?= ExitFailure 3
+        renderedStdout conflict @?= ""
+        renderedStderr conflict @?= "adrai: conflict: stale head\n"
+    , testCase "dispatch seam selects create service with parsed repo and materialized request" $ do
+        selectedRepo <- newIORef Nothing
+        selectedRequest <- newIORef Nothing
+        let command = CreateCommand (Just "CLI title") (Just "CLI summary") ["platform"] ["src/**"] (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing [BodyText "CLI body"] True
+            invocation = CliInvocation (defaultCliConfig {configRepo = "selected-repo"}) (CmdCreate command)
+            dependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \received -> do
+                  received @?= command
+                  pure (Right request)
+              , cliRunInit = \_ -> error "init service must not be selected"
+              , cliRunCreate = \repo received -> do
+                  writeIORef selectedRepo (Just (configRepo repo))
+                  writeIORef selectedRequest (Just received)
+                  pure (Right (createResult, indexFailureResult))
+              }
+        exitCode <- dispatchWith dependencies invocation
+        repo <- readIORef selectedRepo
+        receivedRequest <- readIORef selectedRequest
+        exitCode @?= ExitSuccess
+        repo @?= Just "selected-repo"
+        receivedRequest @?= Just request
+    , testCase "dispatch seam selects init service and preserves successful output contract" $ do
+        selectedRepo <- newIORef Nothing
+        let dependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliRunInit = \repo -> do
+                  writeIORef selectedRepo (Just (configRepo repo))
+                  pure (Right (initResult, indexedResult))
+              , cliRunCreate = \_ _ -> error "create service must not be selected"
+              }
+            invocation = CliInvocation (defaultCliConfig {configRepo = "init-repo"}) (CmdInit (InitCommand True))
+        exitCode <- dispatchWith dependencies invocation
+        repo <- readIORef selectedRepo
+        exitCode @?= ExitSuccess
+        repo @?= Just "init-repo"
+        let rendered = renderInitOutcome initResult indexedResult True
+        renderedStderr rendered @?= ""
+        renderedExitCode rendered @?= ExitSuccess
+    , testCase "dispatch seam maps precommit user failure to exit 2 without mutation" $ do
+        mutationCalled <- newIORef False
+        let dependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \_ -> pure (Left "unreadable body")
+              , cliRunInit = \_ -> error "init service must not be selected"
+              , cliRunCreate = \_ _ -> writeIORef mutationCalled True >> error "mutation must not run"
+              }
+            invocation = CliInvocation defaultCliConfig (CmdCreate createCommand)
+        exitCode <- dispatchWith dependencies invocation
+        called <- readIORef mutationCalled
+        exitCode @?= ExitFailure 2
+        called @?= False
+    , testCase "dispatch seam preserves service user and conflict exit classes" $ do
+        let invocation = CliInvocation defaultCliConfig (CmdInit (InitCommand False))
+            userDependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliRunInit = \_ -> pure (Left (CliUserFailure "service rejected input"))
+              , cliRunCreate = \_ _ -> error "create service must not be selected"
+              }
+            conflictDependencies = userDependencies
+              { cliRunInit = \_ -> pure (Left (CliConflictFailure "stale CAS")) }
+        userExit <- dispatchWith userDependencies invocation
+        conflictExit <- dispatchWith conflictDependencies invocation
+        userExit @?= ExitFailure 2
+        conflictExit @?= ExitFailure 3
+    ]
+  where
+    parseCli arguments =
+      case execParserPure defaultPrefs (info parser mempty) arguments of
+        Success value -> Right value
+        Failure _ -> Left "parser failure"
+        CompletionInvoked _ -> Left "completion invoked"
+    assertParserFailure arguments =
+      case execParserPure defaultPrefs (info parser mempty) arguments of
+        Failure _ -> pure ()
+        _ -> assertFailure ("expected parser failure for " <> show arguments)
+    isLeft result = case result of
+      Left _ -> True
+      Right _ -> False
+    oid = GitOid "0123456789012345678901234567890123456789"
+    path = requireRight (mkRepoPath "architecture/adrai/decisions/fixture.md")
+    initResult = InitResult True "init" oid [path] True
+    createResult =
+      CreateResult
+        "operation-42"
+        (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkRecordId "R0123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkConnectionId "C0123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkConnectionId "C1123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkConnectionId "C2123456789ABCDEFGHJKMNPQRS"))
+        oid [path] True
+    indexedResult = PostCommitIndexResult True (Just "fixture.sqlite") (Just oid) [] Nothing
+    indexFailureResult = PostCommitIndexResult False Nothing Nothing [] (Just (PostCommitIndexOpenFailure "readonly"))
+    request =
+      CreateRequest
+        "materialized title" "materialized summary" "materialized body"
+        (requireRight (canonicalDomains ["platform"]))
+        [requireRight (mkScopePattern "src/**")]
+        (requireRight (parseActor "human:cli" Nothing))
+        Nothing Nothing Nothing
+    createCommand = CreateCommand Nothing Nothing [] [] Nothing Nothing Nothing Nothing Nothing Nothing Nothing [BodyText "body"] False
+    requireRight result = case result of
+      Right value -> value
+      Left problem -> error (show problem)
 
 -- ============================================================
 -- Top-level tests
@@ -674,7 +886,8 @@ tests =
   testGroup "cli-contracts"
     [ compileResultTests,
       doctorOutputTests,
-      toAesonValueTests,
-      cliTypeConstructorTests,
-      schemaContractTests
-    ]
+       toAesonValueTests,
+       cliTypeConstructorTests,
+       schemaContractTests,
+       mutationCliContractTests
+     ]
