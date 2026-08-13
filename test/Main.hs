@@ -46,6 +46,7 @@ import qualified Adrai.IntegrityTest
 import qualified Adrai.ManagedDocumentFormatTest
 import qualified Adrai.ManagedPathContractTest
 import qualified Adrai.MarkdownTest
+import qualified Adrai.MutationServiceTest
 import qualified Adrai.ProvenanceFormatTest
 import qualified Adrai.Provenance.LockTest
 import qualified Adrai.P206GoldenTest
@@ -144,6 +145,7 @@ tests =
       Adrai.StateTest.tests,
       Adrai.ManagedPathContractTest.tests,
       Adrai.MarkdownTest.tests,
+      Adrai.MutationServiceTest.tests,
       Adrai.TransactionTest.tests,
       Adrai.SemanticIdentityTest.tests,
       Adrai.IntegrityTest.tests,

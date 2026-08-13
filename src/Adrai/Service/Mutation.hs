@@ -66,6 +66,7 @@ import Adrai.Provenance
     LineAnchor,
     ProvenanceObjectId (..),
     mkEventKind,
+    sha256Digest,
     semanticDigest,
     ProvenanceError (..),
     provenanceOperationId,
@@ -115,6 +116,7 @@ import Adrai.Types
     Actor (..),
     ActorKind (..),
     Digest (..),
+    digestBytes,
     ProvenanceInputs (..),
   )
 import Adrai.Domain
@@ -137,10 +139,9 @@ import Data.Char (isDigit)
 import qualified Data.ByteString as BS
 import Data.Word (Word8)
 import qualified Data.Map.Strict as Map
-import Data.List (sort)
+import Data.List (intercalate, sort)
 import Data.Maybe (mapMaybe, fromMaybe)
 import qualified Data.Text as T
-import Data.Text (intercalate)
 import Data.Text.Encoding (decodeUtf8, decodeUtf8With, encodeUtf8)
 import Data.Text.Encoding.Error (lenientDecode)
 import Control.Exception (try, SomeException)
@@ -230,18 +231,23 @@ initCommand repository =
 -- Utility helpers
 -- ---------------------------------------------------------------------------
 
--- | Current timestamp in milliseconds, encoded as 8-byte big-endian.
+-- | Current timestamp in milliseconds.
+currentTimestamp :: IO Integer
+currentTimestamp = floor . (* 1000) <$> getPOSIXTime
+
+-- | Current timestamp encoded as the canonical 6-byte big-endian sortable-ID
+-- field.
 currentTimestampMs :: IO BS.ByteString
-currentTimestampMs = do
-  now <- round <$> getPOSIXTime
-  let ms = now * 1000
-  pure (BS.pack (take 8 (toBytesBE ms)))
+currentTimestampMs = encodeTimestampMs <$> currentTimestamp
+
+encodeTimestampMs :: Integer -> BS.ByteString
+encodeTimestampMs ms = BS.pack (toBytesBE ms)
   where
     toBytesBE :: Integer -> [Word8]
-    toBytesBE n = take 8 $ map toWord8 (iterate (div 256) n)
-      where
-        toWord8 :: Integer -> Word8
-        toWord8 i = fromIntegral (i `mod` 256)
+    toBytesBE n =
+      [ fromIntegral ((n `div` (256 ^ byteOffset)) `mod` 256)
+      | byteOffset <- [5, 4 .. 0]
+      ]
 
 -- | 10 bytes of pseudo-random entropy (sufficient for testing).
 randomEntropy :: IO BS.ByteString
@@ -269,6 +275,7 @@ data CreateResult
       , createStatusId     :: ConnectionId
       , createCommitOid    :: GitOid
       , createCreatedPaths :: [RepoPath]
+      , createIndexUpdated :: Bool
       }
   deriving (Eq, Show)
 
@@ -322,16 +329,18 @@ createAdrCommand
         headStateResult <- repositoryHeadState repository
         let branchName =
               case headStateResult of
-                Right (GitHeadAttached ref) -> T.unpack (gitRefText ref)
+                Right (GitHeadAttached ref) ->
+                  fromMaybe (gitRefText ref) (T.stripPrefix "refs/heads/" (gitRefText ref))
                 Right GitHeadDetached -> "HEAD"
                 Left _ -> "HEAD"
-        timestampMs <- currentTimestampMs
+        timestampMs <- currentTimestamp
+        let timestampBytes = encodeTimestampMs timestampMs
         entropy <- randomEntropy
-        let opIdResult = sortableOperationId timestampMs entropy
-            recIdResult = sortableRecordId timestampMs entropy
-            scopeIdResult = sortableConnectionId timestampMs entropy
-            domainIdResult = sortableConnectionId timestampMs entropy
-            statusIdResult = sortableConnectionId timestampMs entropy
+        let opIdResult = sortableOperationId timestampBytes entropy
+            recIdResult = sortableRecordId timestampBytes entropy
+            scopeIdResult = sortableConnectionId timestampBytes (createConnectionEntropy "scope" entropy)
+            domainIdResult = sortableConnectionId timestampBytes (createConnectionEntropy "domain" entropy)
+            statusIdResult = sortableConnectionId timestampBytes (createConnectionEntropy "status" entropy)
         case (opIdResult, recIdResult, scopeIdResult, domainIdResult, statusIdResult) of
           (Right opId, Right recId, Right scopeId, Right domainId, Right statusId) -> do
             let decisionRec =
@@ -349,12 +358,12 @@ createAdrCommand
                       connectionPayload = AppliesToConnection (AppliesToPayload
                         { appliesToSubjectAdr = adrId
                         , appliesToParentConnections = []
-                        , appliesToChange = "initial scope definition"
+                        , appliesToChange = "initial"
                         , appliesToAdded = patterns
                         , appliesToRemoved = []
                         , appliesToEffective = patterns
                         }),
-                      connectionRationale = "Scope connection for initial ADR definition"
+                      connectionRationale = "Initial scope.\n"
                     }
             let domainConn =
                   ConnectionRecord
@@ -362,13 +371,13 @@ createAdrCommand
                       connectionPayload = DomainsConnection (DomainsPayload
                         { domainsSubjectAdr = adrId
                         , domainsParentConnections = []
-                        , domainsChange = "initial domain assignment"
+                        , domainsChange = "initial"
                         , domainsAdded = domains
                         , domainsRemoved = []
                         , domainsEffective = domains
                         , domainsRefinements = []
                         }),
-                      connectionRationale = "Domain connection for initial ADR definition"
+                      connectionRationale = "Initial domain.\n"
                     }
             let statusConn =
                   ConnectionRecord
@@ -377,24 +386,135 @@ createAdrCommand
                         { statusSubjectAdr = adrId
                         , statusParentConnections = []
                         , statusState = StatusActive
-                        , statusRecordHeads = []
+                        , statusRecordHeads = [recId]
                         , statusReplacementAdr = Nothing
                         }),
-                      connectionRationale = "Status connection for initial ADR definition"
+                      connectionRationale = "Initial active status.\n"
                     }
-            let createdPaths =
-                  mapMaybe extractPath
-                    [ canonicalManagedPath managedPaths (ManagedDecision decisionRec)
-                    , canonicalManagedPath managedPaths (ManagedConnection scopeConn)
-                    , canonicalManagedPath managedPaths (ManagedConnection domainConn)
-                    , canonicalManagedPath managedPaths (ManagedConnection statusConn)
-                    ]
-            pure (Right (CreateResult (T.unpack (operationIdText opId)) adrId recId scopeId domainId statusId oldHead createdPaths))
-              where
-                extractPath :: Either DocumentError RepoPath -> Maybe RepoPath
-                extractPath = either (const Nothing) Just
+            let managedRecords =
+                  [ ManagedDecision decisionRec
+                  , ManagedConnection scopeConn
+                  , ManagedConnection domainConn
+                  , ManagedConnection statusConn
+                  ]
+                operationId = T.unpack (operationIdText opId)
+                inputs = ProvenanceInputs inputDigest promptDigest contextDigest
+                generatedResult =
+                  traverse
+                    (sealCreatedRecord opId oldHead branchName actor timestampMs recId inputs managedPaths)
+                    managedRecords
+            case generatedResult of
+              Left transactionError ->
+                pure (Left transactionError)
+              Right generated -> do
+                let config =
+                      TransactionConfig
+                        { configOperationId = operationId
+                        , configSubject = "adrai: create " <> adrIdText adrId
+                        , configTrailers =
+                            Map.fromList
+                              [ ("ADR", T.unpack (adrIdText adrId))
+                              , ( "Objects"
+                                , intercalate
+                                    ","
+                                    [ T.unpack (recordIdText recId)
+                                    , T.unpack (connectionIdText scopeId)
+                                    , T.unpack (connectionIdText domainId)
+                                    , T.unpack (connectionIdText statusId)
+                                    ]
+                                )
+                              ]
+                        , configExpectedHead = oldHead
+                        , configGenerated = generated
+                        }
+                commitAppendOnlyOperation repository config >>= \case
+                  Left transactionError ->
+                    pure (Left transactionError)
+                  Right TransactionResult {..} ->
+                    pure
+                      ( Right
+                          CreateResult
+                            { createOperationId = transactionOperationId
+                            , createAdrId = adrId
+                            , createRecordId = recId
+                            , createScopeId = scopeId
+                            , createDomainId = domainId
+                            , createStatusId = statusId
+                            , createCommitOid = transactionCommitOid
+                            , createCreatedPaths = transactionCreatedPaths
+                            , createIndexUpdated = transactionIndexUpdated
+                            }
+                      )
           _ ->
             pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+
+-- | Derive independent 10-byte entropy fields for the three connection
+-- identities created by one operation. The timestamp field remains shared so
+-- sortable ordering is preserved, while the domain tag prevents collisions.
+createConnectionEntropy :: T.Text -> BS.ByteString -> BS.ByteString
+createConnectionEntropy domainTag entropy =
+  BS.take 10 . digestBytes . sha256Digest $
+    encodeUtf8 ("adrai:create-connection:" <> domainTag <> "\NUL") <> entropy
+
+sealCreatedRecord ::
+  OperationId ->
+  GitOid ->
+  T.Text ->
+  Actor ->
+  Integer ->
+  RecordId ->
+  ProvenanceInputs ->
+  ManagedPaths ->
+  ManagedRecord ->
+  Either TransactionError GeneratedFile
+sealCreatedRecord opId oldHead branchName actor timestampMs parentRecord inputs managedPaths managed = do
+  semantic <-
+    first (Stage5ValidateGenerated . ("create render: " <>) . T.pack . show) $
+      case managed of
+        ManagedDecision decision -> renderDecisionSemantic decision
+        ManagedConnection connection -> renderConnectionSemantic connection
+  eventKind <-
+    first (Stage5ValidateGenerated . ("create eventKind: " <>) . T.pack . show) $
+      mkEventKind eventName
+  capsule <-
+    first (Stage5ValidateGenerated . ("create capsule: " <>) . T.pack . show) $
+      mkProvenanceCapsule
+        ProvenanceCapsuleInput
+          { capsuleInputOperationId = opId
+          , capsuleInputObjectId = objectId
+          , capsuleInputEventKind = eventKind
+          , capsuleInputActor = actor
+          , capsuleInputTimestampMs = timestampMs
+          , capsuleInputBasis = oldHead
+          , capsuleInputParents = parents
+          , capsuleInputBranchHint = Just branchName
+          , capsuleInputUpstreamHint = Nothing
+          , capsuleInputLineAnchors = []
+          , capsuleInputSemanticDigest = semanticDigest semantic
+          , capsuleInputToolVersion = "adrai/1.0.0"
+          , capsuleInputDigests = inputs
+          }
+  sealed <-
+    first (Stage5ValidateGenerated . ("create seal: " <>) . T.pack . show) $
+      sealManagedDocument managed capsule
+  path <-
+    first (Stage4GenerateFiles . ("create path: " <>) . T.pack . show) $
+      canonicalManagedPath managedPaths managed
+  pure (GeneratedFile path sealed)
+  where
+    (objectId, eventName, parents) =
+      case managed of
+        ManagedDecision decision ->
+          (ProvenanceRecord (decisionRecord decision), "decision.create", [])
+        ManagedConnection connection ->
+          ( ProvenanceConnection (connectionRecordId connection)
+          , case connectionPayload connection of
+              AppliesToConnection _ -> "scope.initial"
+              DomainsConnection _ -> "domain.initial"
+              StatusConnection _ -> "status.initial"
+              AmendsConnection _ -> "connection.create"
+          , [ProvenanceRecord parentRecord]
+          )
 
 -- ---------------------------------------------------------------------------
 -- Amend ADR
