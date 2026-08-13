@@ -30,6 +30,8 @@ module Adrai.Service.Transaction
     TransactionConfig (..),
     -- * Null OID constant
     nullOid,
+    -- * Git plumbing output
+    parseSingleOidFromOutput,
     -- * Core transaction functions
     commitAppendOnlyOperation,
     commitBootstrapFiles,
@@ -94,6 +96,7 @@ import Control.Exception
   )
 import System.Exit (ExitCode (ExitSuccess))
 import Control.Monad (when, void, unless, forM_, filterM)
+import Data.Char (toLower)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -517,23 +520,25 @@ removeTempFile path = void $ try @SomeException (removeFile path)
 parseSingleOidFromOutput :: Text -> ByteString -> Either Text GitOid
 parseSingleOidFromOutput operation raw = do
   let body = stripTrailingWhitespace raw
-  case T.stripPrefix (operation <> ": ") (TE.decodeUtf8With lenientDecode body) of
-    Just oidText -> do
-      oid <- first (const ("parse " <> operation <> " OID: ")) (mkGitOid oidText)
-      Right oid
-    Nothing ->
-      case T.stripPrefix " " (TE.decodeUtf8With lenientDecode body) of
-        Just oidText -> do
-          oid <- first (const ("parse " <> operation <> " OID: ")) (mkGitOid oidText)
-          Right oid
-        Nothing ->
-          Left ("unexpected output from " <> operation <> ": " <> boundedOutput raw)
+  first
+    (const ("invalid bare OID output from " <> operation <> ": " <> boundedOutput raw))
+    (mkGitOid (normalizeAsciiHex (TE.decodeUtf8With lenientDecode body)))
 
 stripTrailingWhitespace :: ByteString -> ByteString
 stripTrailingWhitespace bs =
-  case BS.reverse (BS.takeWhile (\c -> c == 10 || c == 13 || c == 32) (BS.reverse bs)) of
-    "" -> BS.empty
-    trimmed -> BS.reverse trimmed
+  case BS.unsnoc (BS.dropWhileEnd (== 32) bs) of
+    Just (withoutLf, 10) ->
+      case BS.unsnoc withoutLf of
+        Just (withoutCr, 13) -> withoutCr
+        _ -> withoutLf
+    _ -> BS.dropWhileEnd (== 32) bs
+
+normalizeAsciiHex :: Text -> Text
+normalizeAsciiHex = T.map normalize
+  where
+    normalize character
+      | character >= 'A' && character <= 'F' = toLower character
+      | otherwise = character
 
 boundedOutput :: ByteString -> Text
 boundedOutput raw =

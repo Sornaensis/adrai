@@ -79,6 +79,7 @@ import qualified Adrai.ScopeFormatTest
 import qualified Adrai.ServiceTest
 import qualified Adrai.StateTest
 import qualified Adrai.TomlCanonicalTest
+import qualified Adrai.TransactionTest
 import qualified Adrai.TypesProperties
 import qualified Adrai.TypesTest
 import qualified Adrai.VectorProperties
@@ -143,6 +144,7 @@ tests =
       Adrai.StateTest.tests,
       Adrai.ManagedPathContractTest.tests,
       Adrai.MarkdownTest.tests,
+      Adrai.TransactionTest.tests,
       Adrai.SemanticIdentityTest.tests,
       Adrai.IntegrityTest.tests,
       testGroup
