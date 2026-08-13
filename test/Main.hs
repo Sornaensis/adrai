@@ -21,6 +21,8 @@ import qualified Adrai.CacheIntegrationTest
 import qualified Adrai.MutationE2ETest
 import qualified Adrai.EnvironmentTest
 import qualified Adrai.CliContractTest
+import qualified Adrai.CoverageLedgerAudit
+import qualified Adrai.CoverageLedgerAuditTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
 import qualified Adrai.DomainProperties
@@ -101,6 +103,8 @@ main = do
     ["--write-p3-05-goldens"] -> Adrai.RelevanceGoldenTest.writeP305Goldens
     ["--write-p3-06-goldens"] -> Adrai.P306QualityGoldenTest.writeP306Goldens
     ["--write-p4-03-goldens"] -> Adrai.ColdCompilerGoldenTest.writeP403Goldens
+    ["--coverage-ledger-report"] -> Adrai.CoverageLedgerAudit.writeCurrentLedgerReport
+    ["--require-coverage-ledger-closed"] -> Adrai.CoverageLedgerAudit.requireCurrentLedgerClosed
     _ -> defaultMain tests
 
 tests :: TestTree
@@ -120,6 +124,7 @@ tests =
       Adrai.TypesProperties.tests,
       Adrai.GoldenFixturesTest.tests,
       Adrai.CoverageLedgerTest.tests,
+      Adrai.CoverageLedgerAuditTest.tests,
       Adrai.FixturePrngTest.tests,
       Adrai.FixtureRelevanceTest.tests,
       Adrai.FixturePlanTest.tests,

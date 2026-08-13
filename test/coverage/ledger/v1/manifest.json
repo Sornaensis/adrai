@@ -41,6 +41,8 @@
     "installed-haskell-equivalent",
     "not-applicable"
   ],
+  "closureStates": ["covered", "installed-haskell-equivalent", "not-applicable"],
+  "gapStates": ["planned", "partial"],
   "allowedPhaseOwners": ["P2", "P3", "P4", "P5", "P6", "P7"],
   "allowedHaskellTestTypes": ["unit", "property", "integration", "golden", "e2e"],
   "allowedHaskellTestDirectories": [

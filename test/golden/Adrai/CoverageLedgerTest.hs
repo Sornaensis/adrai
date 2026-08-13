@@ -41,6 +41,8 @@ data LedgerManifest = LedgerManifest
     ledgerAllowedPhases :: [Text],
     ledgerAllowedTypes :: [Text],
     ledgerAllowedDirectories :: [Text],
+    ledgerClosureStates :: [Text],
+    ledgerGapStates :: [Text],
     ledgerRuntimeIndependence :: RuntimeIndependence,
     ledgerSourceDeletion :: SourceDeletion,
     ledgerDynamicGenerators :: [DynamicGenerator]
@@ -58,6 +60,8 @@ instance Aeson.FromJSON LedgerManifest where
       <*> value .: "allowedPhaseOwners"
       <*> value .: "allowedHaskellTestTypes"
       <*> value .: "allowedHaskellTestDirectories"
+      <*> value .: "closureStates"
+      <*> value .: "gapStates"
       <*> value .: "runtimeIndependence"
       <*> value .: "sourceDeletion"
       <*> value .: "dynamicGenerators"
@@ -183,14 +187,19 @@ instance Aeson.FromJSON CoverageRow where
       <*> value .: "evidence"
       <*> value .:? "translationNote"
 
-newtype Evidence = Evidence {evidenceItems :: [Text]}
+data Evidence = Evidence
+  { evidenceCommand :: Text,
+    evidenceFixture :: Text,
+    evidenceResult :: Text
+  }
   deriving (Eq, Show)
 
 instance Aeson.FromJSON Evidence where
-  parseJSON value =
-    case value of
-      Aeson.String item -> pure (Evidence [item])
-      _ -> Evidence <$> Aeson.parseJSON value
+  parseJSON = Aeson.withObject "coverage evidence" $ \value ->
+    Evidence
+      <$> value .: "command"
+      <*> value .: "fixture"
+      <*> value .: "result"
 
 testManifestIdentity :: Assertion
 testManifestIdentity = do
@@ -210,6 +219,8 @@ testManifestIdentity = do
   ledgerAllowedPhases manifest @?= exactPhases
   ledgerAllowedTypes manifest @?= exactTypes
   ledgerAllowedDirectories manifest @?= map snd exactTypeDirectories
+  ledgerClosureStates manifest @?= exactClosureStates
+  ledgerGapStates manifest @?= exactGapStates
   ledgerDynamicGenerators manifest @?= exactDynamicGenerators
   forM_ (ledgerDynamicGenerators manifest) $ \generator -> do
     assertSubstantive "generator contract" (generatorContract generator)
@@ -289,9 +300,13 @@ testEvidence :: Assertion
 testEvidence = do
   (_, _, fragments) <- loadLedger
   forM_ (allRows fragments) $ \row -> do
-    let items = evidenceItems (rowEvidence row)
-    assertBool "evidence must contain at least one item" (not (null items))
-    forM_ items (assertSubstantive "evidence item")
+    let evidence = rowEvidence row
+    assertSubstantive "evidence command" (evidenceCommand evidence)
+    assertSubstantive "evidence fixture" (evidenceFixture evidence)
+    assertSubstantive "evidence result" (evidenceResult evidence)
+    assertBool
+      "evidence command must invoke the Haskell test suite"
+      ("stack test adrai:adrai-test" `T.isPrefixOf` evidenceCommand evidence)
 
 testTranslationStates :: Assertion
 testTranslationStates = do
@@ -400,6 +415,12 @@ exactCategories =
 
 exactStates :: [Text]
 exactStates = ["planned", "partial", "covered", "installed-haskell-equivalent", "not-applicable"]
+
+exactClosureStates :: [Text]
+exactClosureStates = ["covered", "installed-haskell-equivalent", "not-applicable"]
+
+exactGapStates :: [Text]
+exactGapStates = ["planned", "partial"]
 
 exactPhases :: [Text]
 exactPhases = ["P2", "P3", "P4", "P5", "P6", "P7"]

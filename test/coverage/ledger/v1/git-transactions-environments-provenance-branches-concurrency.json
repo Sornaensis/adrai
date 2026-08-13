@@ -1,476 +1,659 @@
-{
-  "schema": "adrai/coverage-ledger-category/v1",
-  "category": "git-transactions-environments-provenance-branches-concurrency",
-  "expectedCount": 42,
-  "sourceModules": [
-    {"pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py", "expectedCount": 13},
-    {"pythonPath": "ADRAI_1_Source/tests/test_transactions.py", "expectedCount": 13},
-    {"pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py", "expectedCount": 8},
-    {"pythonPath": "ADRAI_1_Source/tests/test_branch_switch_consistency.py", "expectedCount": 5},
-    {"pythonPath": "ADRAI_1_Source/tests/test_concurrency.py", "expectedCount": 3}
-  ],
-  "rows": [
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_immediate_commit_is_original_and_first_trunk_landing",
-      "behaviorContract": "An operation committed directly on trunk records that commit as both its original introduction and first trunk landing.",
-      "haskellTestName": "immediate commit is original and first trunk landing",
-      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_immediate_commit_is_original_and_first_trunk_landing; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_fast_forward_landing_preserves_original_feature_commit",
-      "behaviorContract": "Fast-forward integration preserves the feature commit as the original operation commit and observes its trunk landing.",
-      "haskellTestName": "fast forward landing preserves original feature commit",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_fast_forward_landing_preserves_original_feature_commit; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_no_ff_merge_has_feature_origin_and_merge_commit_trunk_landing",
-      "behaviorContract": "A no-fast-forward merge keeps the feature commit as origin and records the merge commit as the trunk landing.",
-      "haskellTestName": "no ff merge separates feature origin from trunk landing",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_no_ff_merge_has_feature_origin_and_merge_commit_trunk_landing; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_merge_commit_trailer_is_an_introduction_not_a_fabricated_origin",
-      "behaviorContract": "An operation trailer on a merge commit may identify an introduction but must not fabricate the immutable operation origin.",
-      "haskellTestName": "merge trailer is introduction not fabricated origin",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_merge_commit_trailer_is_an_introduction_not_a_fabricated_origin; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_cherry_pick_binds_original_and_reachable_copy",
-      "behaviorContract": "Cherry-picking binds both the original operation commit and the reachable copied commit without confusing their roles.",
-      "haskellTestName": "cherry pick binds original and reachable copy",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_cherry_pick_binds_original_and_reachable_copy; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_rebase_binds_surviving_copy_without_changing_semantic_provenance",
-      "behaviorContract": "After rebase, provenance binds the surviving copy while claimed semantic provenance remains unchanged.",
-      "haskellTestName": "rebase binds surviving copy without semantic provenance change",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_rebase_binds_surviving_copy_without_changing_semantic_provenance; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_squash_merge_falls_back_to_surviving_introduction",
-      "behaviorContract": "When squash integration removes the original commit, provenance falls back to the surviving introduction without inventing an origin.",
-      "haskellTestName": "squash merge falls back to surviving introduction",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_squash_merge_falls_back_to_surviving_introduction; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_squash_survives_deleted_branch_reflog_expiry_and_gc",
-      "behaviorContract": "Squashed operation provenance remains discoverable after source branch deletion, reflog expiry, and garbage collection.",
-      "haskellTestName": "squash provenance survives branch deletion reflog expiry and gc",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_squash_survives_deleted_branch_reflog_expiry_and_gc; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_branch_rename_and_deletion_do_not_rewrite_recorded_hint",
-      "behaviorContract": "Renaming or deleting a branch does not retroactively rewrite the operation's recorded branch hint.",
-      "haskellTestName": "branch rename and deletion preserve recorded hint",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_branch_rename_and_deletion_do_not_rewrite_recorded_hint; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_redundant_operation_trailer_does_not_fabricate_a_copy",
-      "behaviorContract": "A redundant operation trailer on an unrelated commit does not fabricate an operation copy or placement.",
-      "haskellTestName": "redundant operation trailer does not fabricate copy",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_redundant_operation_trailer_does_not_fabricate_a_copy; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_trailer_without_sealed_files_is_warned_and_ignored",
-      "behaviorContract": "An operation trailer without its sealed managed files produces a warning and is ignored as provenance evidence.",
-      "haskellTestName": "trailer without sealed files is warned and ignored",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_trailer_without_sealed_files_is_warned_and_ignored; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_wrong_object_set_trailer_is_a_warning_not_a_false_source_error",
-      "behaviorContract": "A trailer claiming the wrong object set is warned and ignored without turning valid source provenance into a false integrity error.",
-      "haskellTestName": "wrong object set trailer warns without false source error",
-      "haskellTestPath": "test/integration/Adrai/GitProvenanceTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_git_provenance.py::test_wrong_object_set_trailer_is_a_warning_not_a_false_source_error; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_git_provenance.py",
-      "pythonMethod": "test_shallow_clone_marks_history_and_line_landings_incomplete",
-      "behaviorContract": "A shallow clone reports incomplete history and line-landing provenance instead of claiming complete ancestry.",
-      "haskellTestName": "shallow clone marks history and line landings incomplete",
-      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "P4-03 ColdCompilerTest compiles a real depth-1 clone, persists HISTORY_COVERAGE_INCOMPLETE, records history_complete=false, and retains valid semantic/search rows. Line-landing completeness remains P4-04, so this row remains partial; Python was read statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_init_creates_root_commit_in_unborn_repository",
-      "behaviorContract": "Initialization in an unborn repository creates the root ADRAI bootstrap commit.",
-      "haskellTestName": "init creates root commit in unborn repository",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_init_creates_root_commit_in_unborn_repository; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_init_preserves_unrelated_staged_entry_in_unborn_repository",
-      "behaviorContract": "Initialization in an unborn repository preserves unrelated staged index entries.",
-      "haskellTestName": "init preserves unrelated staged entry in unborn repository",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_init_preserves_unrelated_staged_entry_in_unborn_repository; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_mutation_is_one_isolated_commit_and_preserves_dirty_unrelated_state",
-      "behaviorContract": "A mutation creates exactly one isolated commit while preserving unrelated dirty worktree and index state.",
-      "haskellTestName": "mutation is isolated commit preserving unrelated dirty state",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_mutation_is_one_isolated_commit_and_preserves_dirty_unrelated_state; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_bootstrap_appends_to_existing_tracked_ignore_and_attributes",
-      "behaviorContract": "Bootstrap appends required rules to existing tracked ignore and attributes files without discarding existing content.",
-      "haskellTestName": "bootstrap appends to tracked ignore and attributes",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_bootstrap_appends_to_existing_tracked_ignore_and_attributes; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_dirty_managed_states_are_refused",
-      "behaviorContract": "Mutations refuse dirty managed files or index states before changing repository data.",
-      "haskellTestName": "dirty managed states are refused",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_dirty_managed_states_are_refused; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_detached_head_reads_but_refuses_mutation",
-      "behaviorContract": "Detached HEAD permits read-only operations but refuses mutations.",
-      "haskellTestName": "detached head reads but refuses mutation",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "P4-02 RepositoryIsolationTest asserts that detached HEAD is advisory and still permits an exact committed repository observation. Mutation refusal remains unimplemented; Python was read statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_active_git_operation_sentinels_block_mutation",
-      "behaviorContract": "Active merge, rebase, cherry-pick, revert, or bisect sentinels block ADRAI mutation.",
-      "haskellTestName": "active git operation sentinels block mutation",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_active_git_operation_sentinels_block_mutation; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_live_lock_refuses_and_stale_lock_is_recovered",
-      "behaviorContract": "A live repository mutation lock refuses a second mutation while a stale lock is safely recovered.",
-      "haskellTestName": "live lock refuses and stale lock recovers",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_live_lock_refuses_and_stale_lock_is_recovered; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_compare_and_swap_rejects_head_movement_and_cleans_generated_files",
-      "behaviorContract": "Compare-and-swap rejects concurrent HEAD movement and cleans generated managed files without damaging external changes.",
-      "haskellTestName": "compare and swap rejects head movement and cleans files",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_compare_and_swap_rejects_head_movement_and_cleans_generated_files; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_race_where_external_commit_adopts_generated_files_is_recoverable",
-      "behaviorContract": "If an external commit adopts generated files during a race, the failed mutation remains recoverable and does not erase those committed files.",
-      "haskellTestName": "external commit adopting generated files is recoverable",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_race_where_external_commit_adopts_generated_files_is_recoverable; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_post_commit_indexing_failure_reports_durable_success",
-      "behaviorContract": "An indexing failure after commit reports durable mutation success together with the indexing error.",
-      "haskellTestName": "post commit indexing failure reports durable success",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_post_commit_indexing_failure_reports_durable_success; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_real_index_refresh_failure_is_reported_without_losing_commit",
-      "behaviorContract": "A real index refresh failure is surfaced without losing the already durable operation commit.",
-      "haskellTestName": "index refresh failure is reported without losing commit",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_real_index_refresh_failure_is_reported_without_losing_commit; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_transactions.py",
-      "pythonMethod": "test_stale_state_token_prevents_semantic_lost_update",
-      "behaviorContract": "A stale expected state token rejects mutation and prevents a semantic lost update.",
-      "haskellTestName": "stale state token prevents semantic lost update",
-      "haskellTestPath": "test/integration/Adrai/TransactionsTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_transactions.py::test_stale_state_token_prevents_semantic_lost_update; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
-      "pythonMethod": "test_linked_worktree_commits_only_its_branch_and_uses_common_lock",
-      "behaviorContract": "A linked worktree commits only its checked-out branch and shares the repository-wide mutation lock.",
-      "haskellTestName": "linked worktree isolates branch and uses common lock",
-      "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "P4-01 GitDiscoveryTest asserts per-worktree git-dir, shared common-dir, command directory, and ordinary/bare-origin linked classification. P4-02 RepositoryIsolationTest additionally asserts distinct immutable observations in concurrent linked worktrees with a shared canonical common-directory namespace. Branch mutation and repository locking remain unimplemented; Python was read statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
-      "pythonMethod": "test_worktree_branch_can_merge_back_and_rebuild_from_main",
-      "behaviorContract": "A linked-worktree branch can merge to main and the main revision database rebuilds to expose the integrated ADR.",
-      "haskellTestName": "worktree branch merges back and rebuilds from main",
-      "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "Static read of test_repository_environments.py::test_worktree_branch_can_merge_back_and_rebuild_from_main; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
-      "pythonMethod": "test_sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns",
-      "behaviorContract": "Sparse checkout can create, compile, and query managed ADR files even when their roots are outside the sparse patterns.",
-      "haskellTestName": "sparse checkout supports managed roots outside patterns",
-      "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "P4-01 GitBatchTest asserts committed tree/blob observation outside sparse patterns. P4-02 RepositoryIsolationTest additionally applies the committed configuration and exact suffix selection outside sparse materialization. ADR creation, compilation, and query behavior remain unimplemented; Python was read statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
-      "pythonMethod": "test_symlinked_managed_parent_cannot_escape_repository",
-      "behaviorContract": "A symlinked managed parent cannot redirect ADRAI writes outside the repository boundary.",
-      "haskellTestName": "symlinked managed parent cannot escape repository",
-      "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "P4-01 GitBatchTest always asserts regular/non-file read containment and, when the platform permits test link creation, in-root link acceptance plus outside/dangling link rejection; the portable ManagedPath suite independently asserts write-side redirection rejection. Mutation E2E behavior and cross-platform reparse coverage remain unimplemented; Python was read statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
-      "pythonMethod": "test_custom_committed_roots_compile_and_search",
-      "behaviorContract": "Branch-committed custom managed roots are honored by creation, compilation, and search.",
-      "haskellTestName": "custom committed roots compile and search",
-      "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "P4-01 GitBatchTest and P4-02 repository suites prove exact committed custom-root observation. P4-03 ColdCompilerTest relocates a complete sealed ADR into Unicode custom roots, compiles normalized/search rows, and persists those exact managed_source paths. Public creation and query commands remain P4-06; Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
-      "pythonMethod": "test_unicode_content_round_trips_through_git_sqlite_fts_and_vector_search",
-      "behaviorContract": "Unicode decision content round-trips unchanged through Git, SQLite, full-text search, and vector search.",
-      "haskellTestName": "unicode round trips through git sqlite fts and vector search",
-      "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "P4-01/P4-02 suites preserve exact Unicode Git paths, roots, and bytes. P4-03 ColdCompilerTest compiles Unicode custom roots through SQLite normalized/search/FTS storage. A Unicode decision-body and public vector-query round trip remain P4-06, so this row remains partial; Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
-      "pythonMethod": "test_upstream_hint_line_anchor_and_ref_observation_survive_integration",
-      "behaviorContract": "Upstream hints, logical-line anchors, and observed refs survive feature integration and remain queryable provenance.",
-      "haskellTestName": "upstream hint line anchor and ref observation survive integration",
-      "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "Static read of test_repository_environments.py::test_upstream_hint_line_anchor_and_ref_observation_survive_integration; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_repository_environments.py",
-      "pythonMethod": "test_force_reset_hides_adr_until_immutable_files_are_reintroduced",
-      "behaviorContract": "Force-resetting a branch hides an ADR from that revision until its immutable files are reintroduced, while provenance remains coherent.",
-      "haskellTestName": "force reset hides adr until immutable files return",
-      "haskellTestPath": "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "P4-02 RepositoryIsolationTest creates a base commit without the selected path and a newer commit with it, binds the newer OID, hard-resets to the base, asserts a fresh observation excludes the path while the bound newer observation retains exact bytes, then recommits the path and asserts fresh restoration. ADR parsing, provenance, and public reset behavior remain unimplemented; Python was read statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
-      "pythonMethod": "test_repeated_switches_never_leak_feature_adrs_or_amendments_into_main",
-      "behaviorContract": "Repeated branch switches never leak feature-only ADRs or amendments into main revision results or caches.",
-      "haskellTestName": "repeated switches do not leak feature adrs into main",
-      "haskellTestPath": "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "P4-02 RepositoryIsolationTest repeatedly switches main and feature while asserting exact, nonleaking configured managed-path and blob observations for each resolved commit. ADR/amendment parsing and revision caches remain unimplemented; Python was read statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
-      "pythonMethod": "test_scope_and_status_are_resolved_from_the_checked_out_branch_only",
-      "behaviorContract": "Effective scope and status are resolved solely from the checked-out branch's reachable immutable documents.",
-      "haskellTestName": "scope and status resolve from checked out branch only",
-      "haskellTestPath": "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "Static read of test_branch_switch_consistency.py::test_scope_and_status_are_resolved_from_the_checked_out_branch_only; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
-      "pythonMethod": "test_branch_specific_managed_roots_use_the_checked_out_configuration",
-      "behaviorContract": "Each branch uses its own committed configuration and managed roots after branch switching.",
-      "haskellTestName": "branch specific roots use checked out configuration",
-      "haskellTestPath": "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "P4-02 RepositoryIsolationTest asserts that each branch resolves `.adrai.toml` and its selected managed roots from one branch-specific commit OID across repeated switches. Creation, document compilation, and public queries remain unimplemented; Python was read statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
-      "pythonMethod": "test_divergent_amendments_are_branch_local_then_visible_as_a_merge_conflict",
-      "behaviorContract": "Divergent amendments remain branch-local before merge and become an explicit semantic conflict after integration.",
-      "haskellTestName": "divergent amendments become merge conflict after branch local views",
-      "haskellTestPath": "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "Static read of test_branch_switch_consistency.py::test_divergent_amendments_are_branch_local_then_visible_as_a_merge_conflict; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
-      "pythonMethod": "test_two_worktrees_keep_different_adr_sets_and_compiled_databases",
-      "behaviorContract": "Two linked worktrees retain distinct reachable ADR sets and revision-specific compiled databases.",
-      "haskellTestName": "two worktrees keep distinct adr sets and databases",
-      "haskellTestPath": "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "P4-02 RepositoryIsolationTest concurrently observes two linked worktrees and asserts distinct commit OIDs and managed-path/blob sets under one canonical common-directory namespace. ADR parsing and revision-specific compiled databases remain unimplemented; Python was read statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_concurrency.py",
-      "pythonMethod": "test_concurrent_head_and_as_of_queries_do_not_cross_contaminate_databases",
-      "behaviorContract": "Concurrent HEAD and historical-revision queries use isolated revision databases and cannot cross-contaminate results.",
-      "haskellTestName": "concurrent head and as of queries isolate databases",
-      "haskellTestPath": "test/integration/Adrai/ConcurrencyTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_concurrency.py::test_concurrent_head_and_as_of_queries_do_not_cross_contaminate_databases; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_concurrency.py",
-      "pythonMethod": "test_concurrent_compile_temp_files_are_unique_and_publish_atomically",
-      "behaviorContract": "Concurrent compilation uses unique temporary files and atomically publishes complete revision databases.",
-      "haskellTestName": "concurrent compile temp files are unique and atomic",
-      "haskellTestPath": "test/integration/Adrai/ConcurrencyTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_concurrency.py::test_concurrent_compile_temp_files_are_unique_and_publish_atomically; Python not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_concurrency.py",
-      "pythonMethod": "test_repository_wide_lock_rejects_a_second_mutation_during_ref_transaction",
-      "behaviorContract": "The repository-wide lock rejects a second mutation while the first holds an in-flight reference transaction.",
-      "haskellTestName": "repository lock rejects second mutation during ref transaction",
-      "haskellTestPath": "test/integration/Adrai/ConcurrencyTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "Static read of test_concurrency.py::test_repository_wide_lock_rejects_a_second_mutation_during_ref_transaction; Python not executed."
-    }
-  ]
+﻿{
+    "schema":  "adrai/coverage-ledger-category/v1",
+    "category":  "git-transactions-environments-provenance-branches-concurrency",
+    "expectedCount":  42,
+    "sourceModules":  [
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                              "expectedCount":  13
+                          },
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                              "expectedCount":  13
+                          },
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
+                              "expectedCount":  8
+                          },
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
+                              "expectedCount":  5
+                          },
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_concurrency.py",
+                              "expectedCount":  3
+                          }
+                      ],
+    "rows":  [
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_immediate_commit_is_original_and_first_trunk_landing",
+                     "behaviorContract":  "An operation committed directly on trunk records that commit as both its original introduction and first trunk landing.",
+                     "haskellTestName":  "immediate commit is original and first trunk landing",
+                     "haskellTestPath":  "test/integration/Adrai/ColdCompilerTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"immediate commit is original and first trunk landing\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_immediate_commit_is_original_and_first_trunk_landing; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_immediate_commit_is_original_and_first_trunk_landing; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_fast_forward_landing_preserves_original_feature_commit",
+                     "behaviorContract":  "Fast-forward integration preserves the feature commit as the original operation commit and observes its trunk landing.",
+                     "haskellTestName":  "fast forward landing preserves original feature commit",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"fast forward landing preserves original feature commit\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_fast_forward_landing_preserves_original_feature_commit; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_fast_forward_landing_preserves_original_feature_commit; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_no_ff_merge_has_feature_origin_and_merge_commit_trunk_landing",
+                     "behaviorContract":  "A no-fast-forward merge keeps the feature commit as origin and records the merge commit as the trunk landing.",
+                     "haskellTestName":  "no ff merge separates feature origin from trunk landing",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"no ff merge separates feature origin from trunk landing\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_no_ff_merge_has_feature_origin_and_merge_commit_trunk_landing; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_no_ff_merge_has_feature_origin_and_merge_commit_trunk_landing; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_merge_commit_trailer_is_an_introduction_not_a_fabricated_origin",
+                     "behaviorContract":  "An operation trailer on a merge commit may identify an introduction but must not fabricate the immutable operation origin.",
+                     "haskellTestName":  "merge trailer is introduction not fabricated origin",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"merge trailer is introduction not fabricated origin\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_merge_commit_trailer_is_an_introduction_not_a_fabricated_origin; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_merge_commit_trailer_is_an_introduction_not_a_fabricated_origin; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_cherry_pick_binds_original_and_reachable_copy",
+                     "behaviorContract":  "Cherry-picking binds both the original operation commit and the reachable copied commit without confusing their roles.",
+                     "haskellTestName":  "cherry pick binds original and reachable copy",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"cherry pick binds original and reachable copy\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_cherry_pick_binds_original_and_reachable_copy; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_cherry_pick_binds_original_and_reachable_copy; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_rebase_binds_surviving_copy_without_changing_semantic_provenance",
+                     "behaviorContract":  "After rebase, provenance binds the surviving copy while claimed semantic provenance remains unchanged.",
+                     "haskellTestName":  "rebase binds surviving copy without semantic provenance change",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"rebase binds surviving copy without semantic provenance change\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_rebase_binds_surviving_copy_without_changing_semantic_provenance; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_rebase_binds_surviving_copy_without_changing_semantic_provenance; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_squash_merge_falls_back_to_surviving_introduction",
+                     "behaviorContract":  "When squash integration removes the original commit, provenance falls back to the surviving introduction without inventing an origin.",
+                     "haskellTestName":  "squash merge falls back to surviving introduction",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"squash merge falls back to surviving introduction\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_squash_merge_falls_back_to_surviving_introduction; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_squash_merge_falls_back_to_surviving_introduction; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_squash_survives_deleted_branch_reflog_expiry_and_gc",
+                     "behaviorContract":  "Squashed operation provenance remains discoverable after source branch deletion, reflog expiry, and garbage collection.",
+                     "haskellTestName":  "squash provenance survives branch deletion reflog expiry and gc",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"squash provenance survives branch deletion reflog expiry and gc\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_squash_survives_deleted_branch_reflog_expiry_and_gc; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_squash_survives_deleted_branch_reflog_expiry_and_gc; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_branch_rename_and_deletion_do_not_rewrite_recorded_hint",
+                     "behaviorContract":  "Renaming or deleting a branch does not retroactively rewrite the operation\u0027s recorded branch hint.",
+                     "haskellTestName":  "branch rename and deletion preserve recorded hint",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"branch rename and deletion preserve recorded hint\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_branch_rename_and_deletion_do_not_rewrite_recorded_hint; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_branch_rename_and_deletion_do_not_rewrite_recorded_hint; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_redundant_operation_trailer_does_not_fabricate_a_copy",
+                     "behaviorContract":  "A redundant operation trailer on an unrelated commit does not fabricate an operation copy or placement.",
+                     "haskellTestName":  "redundant operation trailer does not fabricate copy",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"redundant operation trailer does not fabricate copy\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_redundant_operation_trailer_does_not_fabricate_a_copy; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_redundant_operation_trailer_does_not_fabricate_a_copy; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_trailer_without_sealed_files_is_warned_and_ignored",
+                     "behaviorContract":  "An operation trailer without its sealed managed files produces a warning and is ignored as provenance evidence.",
+                     "haskellTestName":  "trailer without sealed files is warned and ignored",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"trailer without sealed files is warned and ignored\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_trailer_without_sealed_files_is_warned_and_ignored; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_trailer_without_sealed_files_is_warned_and_ignored; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_wrong_object_set_trailer_is_a_warning_not_a_false_source_error",
+                     "behaviorContract":  "A trailer claiming the wrong object set is warned and ignored without turning valid source provenance into a false integrity error.",
+                     "haskellTestName":  "wrong object set trailer warns without false source error",
+                     "haskellTestPath":  "test/integration/Adrai/GitProvenanceTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"wrong object set trailer warns without false source error\"",
+                                      "fixture":  "Static read of test_git_provenance.py::test_wrong_object_set_trailer_is_a_warning_not_a_false_source_error; Python not executed.",
+                                      "result":  "Static read of test_git_provenance.py::test_wrong_object_set_trailer_is_a_warning_not_a_false_source_error; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_git_provenance.py",
+                     "pythonMethod":  "test_shallow_clone_marks_history_and_line_landings_incomplete",
+                     "behaviorContract":  "A shallow clone reports incomplete history and line-landing provenance instead of claiming complete ancestry.",
+                     "haskellTestName":  "shallow clone marks history and line landings incomplete",
+                     "haskellTestPath":  "test/integration/Adrai/ColdCompilerTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"shallow clone marks history and line landings incomplete\"",
+                                      "fixture":  "P4-03 ColdCompilerTest compiles a real depth-1 clone, persists HISTORY_COVERAGE_INCOMPLETE, records history_complete=false, and retains valid semantic/search rows. Line-landing completeness remains P4-04, so this row remains partial; Python was read statically and not executed.",
+                                      "result":  "P4-03 ColdCompilerTest compiles a real depth-1 clone, persists HISTORY_COVERAGE_INCOMPLETE, records history_complete=false, and retains valid semantic/search rows. Line-landing completeness remains P4-04, so this row remains partial; Python was read statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_init_creates_root_commit_in_unborn_repository",
+                     "behaviorContract":  "Initialization in an unborn repository creates the root ADRAI bootstrap commit.",
+                     "haskellTestName":  "init creates root commit in unborn repository",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"init creates root commit in unborn repository\"",
+                                      "fixture":  "Static read of test_transactions.py::test_init_creates_root_commit_in_unborn_repository; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_init_creates_root_commit_in_unborn_repository; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_init_preserves_unrelated_staged_entry_in_unborn_repository",
+                     "behaviorContract":  "Initialization in an unborn repository preserves unrelated staged index entries.",
+                     "haskellTestName":  "init preserves unrelated staged entry in unborn repository",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"init preserves unrelated staged entry in unborn repository\"",
+                                      "fixture":  "Static read of test_transactions.py::test_init_preserves_unrelated_staged_entry_in_unborn_repository; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_init_preserves_unrelated_staged_entry_in_unborn_repository; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_mutation_is_one_isolated_commit_and_preserves_dirty_unrelated_state",
+                     "behaviorContract":  "A mutation creates exactly one isolated commit while preserving unrelated dirty worktree and index state.",
+                     "haskellTestName":  "mutation is isolated commit preserving unrelated dirty state",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"mutation is isolated commit preserving unrelated dirty state\"",
+                                      "fixture":  "Static read of test_transactions.py::test_mutation_is_one_isolated_commit_and_preserves_dirty_unrelated_state; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_mutation_is_one_isolated_commit_and_preserves_dirty_unrelated_state; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_bootstrap_appends_to_existing_tracked_ignore_and_attributes",
+                     "behaviorContract":  "Bootstrap appends required rules to existing tracked ignore and attributes files without discarding existing content.",
+                     "haskellTestName":  "bootstrap appends to tracked ignore and attributes",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"bootstrap appends to tracked ignore and attributes\"",
+                                      "fixture":  "Static read of test_transactions.py::test_bootstrap_appends_to_existing_tracked_ignore_and_attributes; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_bootstrap_appends_to_existing_tracked_ignore_and_attributes; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_dirty_managed_states_are_refused",
+                     "behaviorContract":  "Mutations refuse dirty managed files or index states before changing repository data.",
+                     "haskellTestName":  "dirty managed states are refused",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"dirty managed states are refused\"",
+                                      "fixture":  "Static read of test_transactions.py::test_dirty_managed_states_are_refused; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_dirty_managed_states_are_refused; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_detached_head_reads_but_refuses_mutation",
+                     "behaviorContract":  "Detached HEAD permits read-only operations but refuses mutations.",
+                     "haskellTestName":  "detached head reads but refuses mutation",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"detached head reads but refuses mutation\"",
+                                      "fixture":  "P4-02 RepositoryIsolationTest asserts that detached HEAD is advisory and still permits an exact committed repository observation. Mutation refusal remains unimplemented; Python was read statically and not executed.",
+                                      "result":  "P4-02 RepositoryIsolationTest asserts that detached HEAD is advisory and still permits an exact committed repository observation. Mutation refusal remains unimplemented; Python was read statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_active_git_operation_sentinels_block_mutation",
+                     "behaviorContract":  "Active merge, rebase, cherry-pick, revert, or bisect sentinels block ADRAI mutation.",
+                     "haskellTestName":  "active git operation sentinels block mutation",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"active git operation sentinels block mutation\"",
+                                      "fixture":  "Static read of test_transactions.py::test_active_git_operation_sentinels_block_mutation; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_active_git_operation_sentinels_block_mutation; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_live_lock_refuses_and_stale_lock_is_recovered",
+                     "behaviorContract":  "A live repository mutation lock refuses a second mutation while a stale lock is safely recovered.",
+                     "haskellTestName":  "live lock refuses and stale lock recovers",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"live lock refuses and stale lock recovers\"",
+                                      "fixture":  "Static read of test_transactions.py::test_live_lock_refuses_and_stale_lock_is_recovered; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_live_lock_refuses_and_stale_lock_is_recovered; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_compare_and_swap_rejects_head_movement_and_cleans_generated_files",
+                     "behaviorContract":  "Compare-and-swap rejects concurrent HEAD movement and cleans generated managed files without damaging external changes.",
+                     "haskellTestName":  "compare and swap rejects head movement and cleans files",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"compare and swap rejects head movement and cleans files\"",
+                                      "fixture":  "Static read of test_transactions.py::test_compare_and_swap_rejects_head_movement_and_cleans_generated_files; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_compare_and_swap_rejects_head_movement_and_cleans_generated_files; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_race_where_external_commit_adopts_generated_files_is_recoverable",
+                     "behaviorContract":  "If an external commit adopts generated files during a race, the failed mutation remains recoverable and does not erase those committed files.",
+                     "haskellTestName":  "external commit adopting generated files is recoverable",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"external commit adopting generated files is recoverable\"",
+                                      "fixture":  "Static read of test_transactions.py::test_race_where_external_commit_adopts_generated_files_is_recoverable; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_race_where_external_commit_adopts_generated_files_is_recoverable; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_post_commit_indexing_failure_reports_durable_success",
+                     "behaviorContract":  "An indexing failure after commit reports durable mutation success together with the indexing error.",
+                     "haskellTestName":  "post commit indexing failure reports durable success",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"post commit indexing failure reports durable success\"",
+                                      "fixture":  "Static read of test_transactions.py::test_post_commit_indexing_failure_reports_durable_success; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_post_commit_indexing_failure_reports_durable_success; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_real_index_refresh_failure_is_reported_without_losing_commit",
+                     "behaviorContract":  "A real index refresh failure is surfaced without losing the already durable operation commit.",
+                     "haskellTestName":  "index refresh failure is reported without losing commit",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"index refresh failure is reported without losing commit\"",
+                                      "fixture":  "Static read of test_transactions.py::test_real_index_refresh_failure_is_reported_without_losing_commit; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_real_index_refresh_failure_is_reported_without_losing_commit; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_transactions.py",
+                     "pythonMethod":  "test_stale_state_token_prevents_semantic_lost_update",
+                     "behaviorContract":  "A stale expected state token rejects mutation and prevents a semantic lost update.",
+                     "haskellTestName":  "stale state token prevents semantic lost update",
+                     "haskellTestPath":  "test/integration/Adrai/TransactionsTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"stale state token prevents semantic lost update\"",
+                                      "fixture":  "Static read of test_transactions.py::test_stale_state_token_prevents_semantic_lost_update; Python not executed.",
+                                      "result":  "Static read of test_transactions.py::test_stale_state_token_prevents_semantic_lost_update; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
+                     "pythonMethod":  "test_linked_worktree_commits_only_its_branch_and_uses_common_lock",
+                     "behaviorContract":  "A linked worktree commits only its checked-out branch and shares the repository-wide mutation lock.",
+                     "haskellTestName":  "linked worktree isolates branch and uses common lock",
+                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"linked worktree isolates branch and uses common lock\"",
+                                      "fixture":  "P4-01 GitDiscoveryTest asserts per-worktree git-dir, shared common-dir, command directory, and ordinary/bare-origin linked classification. P4-02 RepositoryIsolationTest additionally asserts distinct immutable observations in concurrent linked worktrees with a shared canonical common-directory namespace. Branch mutation and repository locking remain unimplemented; Python was read statically and not executed.",
+                                      "result":  "P4-01 GitDiscoveryTest asserts per-worktree git-dir, shared common-dir, command directory, and ordinary/bare-origin linked classification. P4-02 RepositoryIsolationTest additionally asserts distinct immutable observations in concurrent linked worktrees with a shared canonical common-directory namespace. Branch mutation and repository locking remain unimplemented; Python was read statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
+                     "pythonMethod":  "test_worktree_branch_can_merge_back_and_rebuild_from_main",
+                     "behaviorContract":  "A linked-worktree branch can merge to main and the main revision database rebuilds to expose the integrated ADR.",
+                     "haskellTestName":  "worktree branch merges back and rebuilds from main",
+                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"worktree branch merges back and rebuilds from main\"",
+                                      "fixture":  "Static read of test_repository_environments.py::test_worktree_branch_can_merge_back_and_rebuild_from_main; Python not executed.",
+                                      "result":  "Static read of test_repository_environments.py::test_worktree_branch_can_merge_back_and_rebuild_from_main; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
+                     "pythonMethod":  "test_sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns",
+                     "behaviorContract":  "Sparse checkout can create, compile, and query managed ADR files even when their roots are outside the sparse patterns.",
+                     "haskellTestName":  "sparse checkout supports managed roots outside patterns",
+                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"sparse checkout supports managed roots outside patterns\"",
+                                      "fixture":  "P4-01 GitBatchTest asserts committed tree/blob observation outside sparse patterns. P4-02 RepositoryIsolationTest additionally applies the committed configuration and exact suffix selection outside sparse materialization. ADR creation, compilation, and query behavior remain unimplemented; Python was read statically and not executed.",
+                                      "result":  "P4-01 GitBatchTest asserts committed tree/blob observation outside sparse patterns. P4-02 RepositoryIsolationTest additionally applies the committed configuration and exact suffix selection outside sparse materialization. ADR creation, compilation, and query behavior remain unimplemented; Python was read statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
+                     "pythonMethod":  "test_symlinked_managed_parent_cannot_escape_repository",
+                     "behaviorContract":  "A symlinked managed parent cannot redirect ADRAI writes outside the repository boundary.",
+                     "haskellTestName":  "symlinked managed parent cannot escape repository",
+                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"symlinked managed parent cannot escape repository\"",
+                                      "fixture":  "P4-01 GitBatchTest always asserts regular/non-file read containment and, when the platform permits test link creation, in-root link acceptance plus outside/dangling link rejection; the portable ManagedPath suite independently asserts write-side redirection rejection. Mutation E2E behavior and cross-platform reparse coverage remain unimplemented; Python was read statically and not executed.",
+                                      "result":  "P4-01 GitBatchTest always asserts regular/non-file read containment and, when the platform permits test link creation, in-root link acceptance plus outside/dangling link rejection; the portable ManagedPath suite independently asserts write-side redirection rejection. Mutation E2E behavior and cross-platform reparse coverage remain unimplemented; Python was read statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
+                     "pythonMethod":  "test_custom_committed_roots_compile_and_search",
+                     "behaviorContract":  "Branch-committed custom managed roots are honored by creation, compilation, and search.",
+                     "haskellTestName":  "custom committed roots compile and search",
+                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"custom committed roots compile and search\"",
+                                      "fixture":  "P4-01 GitBatchTest and P4-02 repository suites prove exact committed custom-root observation. P4-03 ColdCompilerTest relocates a complete sealed ADR into Unicode custom roots, compiles normalized/search rows, and persists those exact managed_source paths. Public creation and query commands remain P4-06; Python was reviewed statically and not executed.",
+                                      "result":  "P4-01 GitBatchTest and P4-02 repository suites prove exact committed custom-root observation. P4-03 ColdCompilerTest relocates a complete sealed ADR into Unicode custom roots, compiles normalized/search rows, and persists those exact managed_source paths. Public creation and query commands remain P4-06; Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
+                     "pythonMethod":  "test_unicode_content_round_trips_through_git_sqlite_fts_and_vector_search",
+                     "behaviorContract":  "Unicode decision content round-trips unchanged through Git, SQLite, full-text search, and vector search.",
+                     "haskellTestName":  "unicode round trips through git sqlite fts and vector search",
+                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"unicode round trips through git sqlite fts and vector search\"",
+                                      "fixture":  "P4-01/P4-02 suites preserve exact Unicode Git paths, roots, and bytes. P4-03 ColdCompilerTest compiles Unicode custom roots through SQLite normalized/search/FTS storage. A Unicode decision-body and public vector-query round trip remain P4-06, so this row remains partial; Python was reviewed statically and not executed.",
+                                      "result":  "P4-01/P4-02 suites preserve exact Unicode Git paths, roots, and bytes. P4-03 ColdCompilerTest compiles Unicode custom roots through SQLite normalized/search/FTS storage. A Unicode decision-body and public vector-query round trip remain P4-06, so this row remains partial; Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
+                     "pythonMethod":  "test_upstream_hint_line_anchor_and_ref_observation_survive_integration",
+                     "behaviorContract":  "Upstream hints, logical-line anchors, and observed refs survive feature integration and remain queryable provenance.",
+                     "haskellTestName":  "upstream hint line anchor and ref observation survive integration",
+                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"upstream hint line anchor and ref observation survive integration\"",
+                                      "fixture":  "Static read of test_repository_environments.py::test_upstream_hint_line_anchor_and_ref_observation_survive_integration; Python not executed.",
+                                      "result":  "Static read of test_repository_environments.py::test_upstream_hint_line_anchor_and_ref_observation_survive_integration; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
+                     "pythonMethod":  "test_force_reset_hides_adr_until_immutable_files_are_reintroduced",
+                     "behaviorContract":  "Force-resetting a branch hides an ADR from that revision until its immutable files are reintroduced, while provenance remains coherent.",
+                     "haskellTestName":  "force reset hides adr until immutable files return",
+                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"force reset hides adr until immutable files return\"",
+                                      "fixture":  "P4-02 RepositoryIsolationTest creates a base commit without the selected path and a newer commit with it, binds the newer OID, hard-resets to the base, asserts a fresh observation excludes the path while the bound newer observation retains exact bytes, then recommits the path and asserts fresh restoration. ADR parsing, provenance, and public reset behavior remain unimplemented; Python was read statically and not executed.",
+                                      "result":  "P4-02 RepositoryIsolationTest creates a base commit without the selected path and a newer commit with it, binds the newer OID, hard-resets to the base, asserts a fresh observation excludes the path while the bound newer observation retains exact bytes, then recommits the path and asserts fresh restoration. ADR parsing, provenance, and public reset behavior remain unimplemented; Python was read statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
+                     "pythonMethod":  "test_repeated_switches_never_leak_feature_adrs_or_amendments_into_main",
+                     "behaviorContract":  "Repeated branch switches never leak feature-only ADRs or amendments into main revision results or caches.",
+                     "haskellTestName":  "repeated switches do not leak feature adrs into main",
+                     "haskellTestPath":  "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"repeated switches do not leak feature adrs into main\"",
+                                      "fixture":  "P4-02 RepositoryIsolationTest repeatedly switches main and feature while asserting exact, nonleaking configured managed-path and blob observations for each resolved commit. ADR/amendment parsing and revision caches remain unimplemented; Python was read statically and not executed.",
+                                      "result":  "P4-02 RepositoryIsolationTest repeatedly switches main and feature while asserting exact, nonleaking configured managed-path and blob observations for each resolved commit. ADR/amendment parsing and revision caches remain unimplemented; Python was read statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
+                     "pythonMethod":  "test_scope_and_status_are_resolved_from_the_checked_out_branch_only",
+                     "behaviorContract":  "Effective scope and status are resolved solely from the checked-out branch\u0027s reachable immutable documents.",
+                     "haskellTestName":  "scope and status resolve from checked out branch only",
+                     "haskellTestPath":  "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"scope and status resolve from checked out branch only\"",
+                                      "fixture":  "Static read of test_branch_switch_consistency.py::test_scope_and_status_are_resolved_from_the_checked_out_branch_only; Python not executed.",
+                                      "result":  "Static read of test_branch_switch_consistency.py::test_scope_and_status_are_resolved_from_the_checked_out_branch_only; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
+                     "pythonMethod":  "test_branch_specific_managed_roots_use_the_checked_out_configuration",
+                     "behaviorContract":  "Each branch uses its own committed configuration and managed roots after branch switching.",
+                     "haskellTestName":  "branch specific roots use checked out configuration",
+                     "haskellTestPath":  "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"branch specific roots use checked out configuration\"",
+                                      "fixture":  "P4-02 RepositoryIsolationTest asserts that each branch resolves `.adrai.toml` and its selected managed roots from one branch-specific commit OID across repeated switches. Creation, document compilation, and public queries remain unimplemented; Python was read statically and not executed.",
+                                      "result":  "P4-02 RepositoryIsolationTest asserts that each branch resolves `.adrai.toml` and its selected managed roots from one branch-specific commit OID across repeated switches. Creation, document compilation, and public queries remain unimplemented; Python was read statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
+                     "pythonMethod":  "test_divergent_amendments_are_branch_local_then_visible_as_a_merge_conflict",
+                     "behaviorContract":  "Divergent amendments remain branch-local before merge and become an explicit semantic conflict after integration.",
+                     "haskellTestName":  "divergent amendments become merge conflict after branch local views",
+                     "haskellTestPath":  "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"divergent amendments become merge conflict after branch local views\"",
+                                      "fixture":  "Static read of test_branch_switch_consistency.py::test_divergent_amendments_are_branch_local_then_visible_as_a_merge_conflict; Python not executed.",
+                                      "result":  "Static read of test_branch_switch_consistency.py::test_divergent_amendments_are_branch_local_then_visible_as_a_merge_conflict; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
+                     "pythonMethod":  "test_two_worktrees_keep_different_adr_sets_and_compiled_databases",
+                     "behaviorContract":  "Two linked worktrees retain distinct reachable ADR sets and revision-specific compiled databases.",
+                     "haskellTestName":  "two worktrees keep distinct adr sets and databases",
+                     "haskellTestPath":  "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"two worktrees keep distinct adr sets and databases\"",
+                                      "fixture":  "P4-02 RepositoryIsolationTest concurrently observes two linked worktrees and asserts distinct commit OIDs and managed-path/blob sets under one canonical common-directory namespace. ADR parsing and revision-specific compiled databases remain unimplemented; Python was read statically and not executed.",
+                                      "result":  "P4-02 RepositoryIsolationTest concurrently observes two linked worktrees and asserts distinct commit OIDs and managed-path/blob sets under one canonical common-directory namespace. ADR parsing and revision-specific compiled databases remain unimplemented; Python was read statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_concurrency.py",
+                     "pythonMethod":  "test_concurrent_head_and_as_of_queries_do_not_cross_contaminate_databases",
+                     "behaviorContract":  "Concurrent HEAD and historical-revision queries use isolated revision databases and cannot cross-contaminate results.",
+                     "haskellTestName":  "concurrent head and as of queries isolate databases",
+                     "haskellTestPath":  "test/integration/Adrai/ConcurrencyTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"concurrent head and as of queries isolate databases\"",
+                                      "fixture":  "Static read of test_concurrency.py::test_concurrent_head_and_as_of_queries_do_not_cross_contaminate_databases; Python not executed.",
+                                      "result":  "Static read of test_concurrency.py::test_concurrent_head_and_as_of_queries_do_not_cross_contaminate_databases; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_concurrency.py",
+                     "pythonMethod":  "test_concurrent_compile_temp_files_are_unique_and_publish_atomically",
+                     "behaviorContract":  "Concurrent compilation uses unique temporary files and atomically publishes complete revision databases.",
+                     "haskellTestName":  "concurrent compile temp files are unique and atomic",
+                     "haskellTestPath":  "test/integration/Adrai/ConcurrencyTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"concurrent compile temp files are unique and atomic\"",
+                                      "fixture":  "Static read of test_concurrency.py::test_concurrent_compile_temp_files_are_unique_and_publish_atomically; Python not executed.",
+                                      "result":  "Static read of test_concurrency.py::test_concurrent_compile_temp_files_are_unique_and_publish_atomically; Python not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_concurrency.py",
+                     "pythonMethod":  "test_repository_wide_lock_rejects_a_second_mutation_during_ref_transaction",
+                     "behaviorContract":  "The repository-wide lock rejects a second mutation while the first holds an in-flight reference transaction.",
+                     "haskellTestName":  "repository lock rejects second mutation during ref transaction",
+                     "haskellTestPath":  "test/integration/Adrai/ConcurrencyTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"repository lock rejects second mutation during ref transaction\"",
+                                      "fixture":  "Static read of test_concurrency.py::test_repository_wide_lock_rejects_a_second_mutation_during_ref_transaction; Python not executed.",
+                                      "result":  "Static read of test_concurrency.py::test_repository_wide_lock_rejects_a_second_mutation_during_ref_transaction; Python not executed."
+                                  }
+                 }
+             ]
 }

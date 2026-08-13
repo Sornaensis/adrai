@@ -1,579 +1,779 @@
-{
-  "schema": "adrai/coverage-ledger-category/v1",
-  "category": "graph-service-conflicts-integrity",
-  "expectedCount": 50,
-  "sourceModules": [
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "expectedCount": 12
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "expectedCount": 13
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_release_stable_conflicts.py",
-      "expectedCount": 2
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_public_workflows.py",
-      "expectedCount": 5
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "expectedCount": 18
-    }
-  ],
-  "rows": [
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_create_emits_decision_domain_scope_and_active_status_in_one_commit",
-      "behaviorContract": "Creating an ADR atomically commits one decision record plus initial applies-to, domain, and active-status connections, and the collapsed ADR is active and conflict-free.",
-      "haskellTestName": "create commits complete active ADR graph atomically",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:12 (static prototype test); existing golden: test/fixtures/contracts/v1/documents/decision-create.sealed.md and test/fixtures/contracts/v1/documents/decision-create.semantic.md"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_single_head_amendment_inherits_omitted_fields_and_is_full_snapshot",
-      "behaviorContract": "A single-head amendment inherits omitted decision fields while committing a complete immutable decision snapshot with a new head.",
-      "haskellTestName": "single-head amend inherits fields into full snapshot",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:33 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_noop_amendment_is_rejected_without_commit",
-      "behaviorContract": "An amendment whose effective state is unchanged is rejected and leaves the repository tip and committed object set untouched.",
-      "haskellTestName": "no-op amend is rejected without a commit",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:61 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_parallel_amendments_are_visible_then_reconciled_by_ordinary_amend",
-      "behaviorContract": "Parallel decision heads remain visible as a semantic conflict until an ordinary amendment explicitly reconciles them into one head.",
-      "haskellTestName": "parallel amendments remain visible until reconciled",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:77 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_expand_contract_mixed_and_replace_scope",
-      "behaviorContract": "Scope mutation supports expand, contract, mixed delta, and full replacement while producing the expected effective scope at each revision.",
-      "haskellTestName": "scope supports expand contract mixed and replace",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:133 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_invalid_scope_delta_and_empty_change_are_rejected",
-      "behaviorContract": "Scope mutations reject invalid deltas and effective no-op changes without creating a commit.",
-      "haskellTestName": "invalid or empty scope changes are rejected",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:168 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_parallel_scope_heads_require_explicit_full_set_resolution",
-      "behaviorContract": "Divergent scope heads produce a conflict that can only be reconciled by an explicit complete scope set.",
-      "haskellTestName": "parallel scope heads require explicit full resolution",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:200 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_obsolete_is_hidden_by_default_and_reactivation_preserves_history",
-      "behaviorContract": "Obsolete ADRs are hidden from default reads, while reactivation restores visibility without discarding prior status history.",
-      "haskellTestName": "obsolete ADR hiding and reactivation preserve history",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:251 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_obsoletion_with_active_replacement",
-      "behaviorContract": "Obsoleting an ADR may name an active replacement and the collapsed status exposes that replacement relationship.",
-      "haskellTestName": "obsoletion records an active replacement",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:282 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_obsolete_adr_cannot_be_amended_or_rescoped",
-      "behaviorContract": "Decision and scope mutations are rejected while an ADR is obsolete, with no repository commit created.",
-      "haskellTestName": "obsolete ADR rejects amend and rescope",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:304 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_parallel_status_heads_are_resolved_append_only",
-      "behaviorContract": "Parallel status heads remain auditable and are reconciled by appending a resolution rather than rewriting either head.",
-      "haskellTestName": "parallel status heads resolve append-only",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:335 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_graph_lifecycle.py",
-      "pythonMethod": "test_obsolete_vs_amend_merge_exposes_coverage_conflict_and_can_reactivate",
-      "behaviorContract": "Merging obsoletion against amendment exposes the status/decision coverage conflict and permits an append-only reactivation resolution.",
-      "haskellTestName": "obsolete-versus-amend merge exposes and resolves conflict",
-      "haskellTestPath": "test/integration/Adrai/GraphLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_graph_lifecycle.py:383 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_create_missing_initial_domain_revision_is_incomplete",
-      "behaviorContract": "Deleting an ADR's initial domain revision makes doctor report both missing historical content and an incomplete operation.",
-      "haskellTestName": "missing initial domain revision is incomplete",
-      "haskellTestPath": "test/integration/Adrai/DomainLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:15 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_user_input_is_canonicalized_to_root_or_dotted_names",
-      "behaviorContract": "Domain input normalization accepts single-segment root domain names and canonical dotted names while producing one stable canonical representation.",
-      "haskellTestName": "domain input canonicalizes root and dotted names",
-      "haskellTestPath": "test/unit/Adrai/DomainFormatTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P2",
-      "state": "covered",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:32 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:17-59 | test/property/Adrai/DomainProperties.hs:25-52"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_invalid_or_redundant_domain_names_are_rejected_without_a_commit",
-      "behaviorContract": "Invalid, duplicate, ancestor-redundant, or otherwise noncanonical domain sets are rejected without advancing Git history.",
-      "haskellTestName": "invalid or redundant domains do not commit",
-      "haskellTestPath": "test/integration/Adrai/DomainLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:80 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_refinement_syntax_requires_a_strict_descendant",
-      "behaviorContract": "A domain refinement mapping must name a strict dotted descendant rather than the same domain or an unrelated domain.",
-      "haskellTestName": "domain refinement requires strict descendant",
-      "haskellTestPath": "test/unit/Adrai/DomainFormatTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P2",
-      "state": "covered",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:113 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:60-69 | test/property/Adrai/DomainProperties.hs:54-70"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_root_domain_refines_to_a_dotted_child",
-      "behaviorContract": "The root domain can be refined to a canonical dotted child and the ADR's effective classification follows the new revision.",
-      "haskellTestName": "root domain refines to dotted child",
-      "haskellTestPath": "test/integration/Adrai/DomainLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:138 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_refinement_is_one_append_only_operation_with_visible_evolution",
-      "behaviorContract": "Domain refinement is committed as one append-only operation and history exposes both the prior and refined classifications.",
-      "haskellTestName": "domain refinement is one visible append-only operation",
-      "haskellTestPath": "test/integration/Adrai/DomainLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:165 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_expand_contract_replace_clear_and_readd_domains",
-      "behaviorContract": "Domain mutation supports expansion, contraction, replacement, clearing, and later re-adding while preserving revision history.",
-      "haskellTestName": "domains expand contract replace clear and re-add",
-      "haskellTestPath": "test/integration/Adrai/DomainLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:219 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_amend_cannot_silently_change_domains_but_inherits_refined_domains",
-      "behaviorContract": "Decision amendment cannot alter domains through a backdoor and correctly inherits the latest refined domain set.",
-      "haskellTestName": "amend inherits refined domains without changing them",
-      "haskellTestPath": "test/integration/Adrai/DomainLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:291 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_domain_changes_require_an_active_adr_and_nonempty_operation",
-      "behaviorContract": "Domain changes require an active ADR and an effective nonempty delta; violations do not create commits.",
-      "haskellTestName": "domain changes require active ADR and nonempty delta",
-      "haskellTestPath": "test/integration/Adrai/DomainLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:323 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_domain_filters_are_hierarchical_and_repeated_filters_are_anded",
-      "behaviorContract": "Domain query filters include descendants hierarchically and combine repeated filters by intersection rather than union.",
-      "haskellTestName": "domain filters are hierarchical and intersect",
-      "haskellTestPath": "test/property/Adrai/DomainProperties.hs",
-      "haskellTestType": "property",
-      "phaseOwner": "P2",
-      "state": "partial",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:380 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:50-59 | test/property/Adrai/DomainProperties.hs:72-85 (pure hierarchy primitive only; repeated search-filter conjunction remains P5 consumer work)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_cli_refines_domains_and_returns_stable_json",
-      "behaviorContract": "The public CLI refines domains and emits the stable compact JSON response and exit behavior promised by the public contract.",
-      "haskellTestName": "CLI domain refinement returns stable JSON",
-      "haskellTestPath": "test/e2e/Adrai/DomainCliTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:462 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_old_release_and_main_keep_revision_local_domain_classification",
-      "behaviorContract": "Queries at an old release and at main retain revision-local domain classifications after later changes on another line.",
-      "haskellTestName": "domain classification remains revision-local",
-      "haskellTestPath": "test/integration/Adrai/DomainLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:490 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_domains.py",
-      "pythonMethod": "test_divergent_domain_refinements_merge_as_a_conflict_then_reconcile",
-      "behaviorContract": "Divergent domain refinements merge into an explicit domain conflict and an append-only operation reconciles them.",
-      "haskellTestName": "divergent domain refinements conflict then reconcile",
-      "haskellTestPath": "test/integration/Adrai/DomainLifecycleTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_domains.py:539 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_release_stable_conflicts.py",
-      "pythonMethod": "test_automatic_release_merge_surfaces_semantic_conflict_and_one_resolution_propagates",
-      "behaviorContract": "Automatic stable/release/feature merging exposes the semantic decision conflict and one resolution propagates consistently across affected lines.",
-      "haskellTestName": "release merge semantic conflict resolves once and propagates",
-      "haskellTestPath": "test/integration/Adrai/ConflictReconciliationTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_release_stable_conflicts.py:11 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_release_stable_conflicts.py",
-      "pythonMethod": "test_release_merge_reports_and_resolves_scope_domain_and_status_axes",
-      "behaviorContract": "A release merge reports independent scope, domain, and status conflict axes and resolves each with stable post-resolution state.",
-      "haskellTestName": "release merge reports and resolves all conflict axes",
-      "haskellTestPath": "test/integration/Adrai/ConflictReconciliationTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_release_stable_conflicts.py:142 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_public_workflows.py",
-      "pythonMethod": "test_complete_public_lifecycle_is_one_commit_per_mutation_and_consistent",
-      "behaviorContract": "The complete public ADR lifecycle performs exactly one commit per successful mutation and all public read models remain consistent.",
-      "haskellTestName": "complete public lifecycle commits once per mutation",
-      "haskellTestPath": "test/e2e/Adrai/PublicWorkflowTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_public_workflows.py:40 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_public_workflows.py",
-      "pythonMethod": "test_structured_json_input_and_digest_provenance_are_supported",
-      "behaviorContract": "Structured JSON input is accepted and prompt, input, and context digest provenance is retained in committed operation results.",
-      "haskellTestName": "structured JSON preserves digest provenance",
-      "haskellTestPath": "test/e2e/Adrai/PublicWorkflowTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "ADRAI_1_Source/tests/test_public_workflows.py:173 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_public_workflows.py",
-      "pythonMethod": "test_structured_json_is_strict_and_amend_has_no_domain_backdoor",
-      "behaviorContract": "Structured JSON rejects unknown or malformed fields and amendment input cannot use JSON to change domains outside the domain mutation API.",
-      "haskellTestName": "structured JSON is strict and blocks domain backdoor",
-      "haskellTestPath": "test/e2e/Adrai/PublicWorkflowTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "ADRAI_1_Source/tests/test_public_workflows.py:202 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_public_workflows.py",
-      "pythonMethod": "test_failed_public_mutations_do_not_create_commits",
-      "behaviorContract": "Every failed public mutation preserves the repository tip and leaves no partial committed operation.",
-      "haskellTestName": "failed public mutations create no commits",
-      "haskellTestPath": "test/e2e/Adrai/PublicWorkflowTest.hs",
-      "haskellTestType": "e2e",
-      "phaseOwner": "P6",
-      "state": "planned",
-      "evidence": "ADRAI_1_Source/tests/test_public_workflows.py:244 (static prototype test)"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_public_workflows.py",
-      "pythonMethod": "test_parser_exposes_exactly_the_implemented_public_commands",
-      "behaviorContract": "The command parser exposes exactly the supported public commands and does not advertise unimplemented operations.",
-      "haskellTestName": "parser exposes exactly supported public commands",
-      "haskellTestPath": "test/golden/Adrai/CliContractTest.hs",
-      "haskellTestType": "golden",
-      "phaseOwner": "P6",
-      "state": "partial",
-      "evidence": "ADRAI_1_Source/tests/test_public_workflows.py:273 (static prototype test); existing golden: test/fixtures/contracts/v1/cli/commands.json"
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_reads_use_committed_tree_while_doctor_and_mutations_reject_dirty_managed_file",
-      "behaviorContract": "Reads are isolated to the committed tree, while doctor and mutations explicitly reject a dirty managed worktree file.",
-      "haskellTestName": "reads use committed tree while dirty mutations fail",
-      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "P4-02 RepositoryIsolationTest and P4-03 ColdCompilerTest prove exact-OID compilation ignores dirty managed worktree bytes. Public doctor and mutation rejection remain P4-06; Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_internally_resealed_rewrite_is_still_an_append_only_violation",
-      "behaviorContract": "Rewriting an immutable object remains an append-only violation even when its internal semantic digest and capsule are resealed.",
-      "haskellTestName": "resealed rewrite still violates append-only history",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "covered",
-      "evidence": "P4-03 IntegrityAdversarialTest changes a typed connection rationale, recomputes its semantic digest, rebuilds the provenance capsule, reseals the managed document at the same path, and asserts persisted APPEND_ONLY_REWRITE with semantics gated; Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_deleted_immutable_file_is_reported_as_missing_and_incomplete_operation",
-      "behaviorContract": "Deleting an immutable managed object is diagnosed as missing historical content and makes its operation incomplete.",
-      "haskellTestName": "deleted immutable object is missing and incomplete",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "covered",
-      "evidence": "P4-03 IntegrityAdversarialTest deletes one member of a valid committed scope operation and asserts persisted MISSING_HISTORICAL_OBJECT plus INCOMPLETE_OPERATION with semantic/search rows gated; Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_renamed_object_is_noncanonical_and_records_the_old_path_deletion",
-      "behaviorContract": "Renaming a managed object is diagnosed both as a noncanonical destination and as deletion of its immutable canonical path.",
-      "haskellTestName": "renamed object diagnoses destination and deletion",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "covered",
-      "evidence": "P4-03 IntegrityAdversarialTest performs a real-Git managed rename and asserts NON_CANONICAL_PATH plus MISSING_HISTORICAL_OBJECT in the diagnostic database; Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_invalid_capsule_and_semantic_digest_are_reported_without_crashing_doctor",
-      "behaviorContract": "Doctor reports malformed capsule data and an invalid semantic digest as integrity issues without crashing.",
-      "haskellTestName": "doctor survives invalid capsule and digest",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "ManagedDocumentFormatTest and ProvenanceFormatTest reject malformed capsule data and digest mismatches, and P4-03 persists malformed managed input without crashing. Public doctor rendering remains P4-06; Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_duplicate_object_id_at_another_path_is_detected",
-      "behaviorContract": "The integrity scan rejects the same object identifier appearing at more than one managed path.",
-      "haskellTestName": "duplicate object identifier is detected",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "covered",
-      "evidence": "P4-03 IntegrityAdversarialTest commits a duplicate sealed decision at a second managed path and asserts DUPLICATE_OBJECT_ID plus deterministic semantic gating; Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_historical_revision_can_be_queried_after_head_is_corrupt",
-      "behaviorContract": "A valid historical revision remains queryable even when the current HEAD contains corrupt managed data.",
-      "haskellTestName": "historical revision remains queryable after HEAD corruption",
-      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "P4-03 ColdCompilerTest binds a healthy historical full OID, corrupts later HEAD, and still materializes normalized/search rows from the bound revision. Public query command behavior remains P4-06; Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_capsule_types_are_validated_even_when_semantic_hash_is_resealed",
-      "behaviorContract": "Capsule field types are validated independently of a matching resealed semantic hash.",
-      "haskellTestName": "resealed semantic hash cannot hide capsule type errors",
-      "haskellTestPath": "test/unit/Adrai/ManagedDocumentFormatTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "ProvenanceFormatTest and ManagedDocumentFormatTest independently reject closed-schema capsule type/key violations and semantic/object digest mismatches; P4-03 maps managed parse failures to stable diagnostics, but an exact resealed capsule-type cold-database fixture is still pending. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_resealed_decision_still_validates_human_readable_frontmatter",
-      "behaviorContract": "Human-readable decision frontmatter remains subject to schema validation after an attacker reseals the document.",
-      "haskellTestName": "resealed decision still validates frontmatter",
-      "haskellTestPath": "test/unit/Adrai/ManagedDocumentFormatTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "ManagedDocumentFormatTest exercises strict decision frontmatter, closed keys, canonical semantic rendering, and capsule validation; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT, but an exact resealed frontmatter cold-database fixture is still pending. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_resealed_connection_rejects_non_array_graph_fields",
-      "behaviorContract": "Connection graph fields that require arrays reject scalar or object substitutions even when the document is resealed.",
-      "haskellTestName": "resealed connection rejects non-array graph fields",
-      "haskellTestPath": "test/unit/Adrai/ManagedDocumentFormatTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "ManagedDocumentFormatTest exercises strict typed connection arrays and canonical relation payloads; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT and blocks semantics, but an exact resealed non-array cold-database fixture is still pending. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_operation_members_must_share_prompt_input_and_context_digests",
-      "behaviorContract": "Every object in one operation must share identical prompt, input, and context provenance digests.",
-      "haskellTestName": "operation members share provenance digests",
-      "haskellTestPath": "test/unit/Adrai/CompilerSnapshotTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P4",
-      "state": "covered",
-      "evidence": "P4-03 CompilerSnapshotTest changes one member's ProvenanceInputs and shared timestamp independently and asserts INCONSISTENT_OPERATION_CAPSULE through the extracted OperationContext validator. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_unavailable_basis_commit_is_explicitly_reported",
-      "behaviorContract": "An operation that cites a basis commit unavailable from the repository is diagnosed explicitly rather than silently accepted.",
-      "haskellTestName": "unavailable basis commit is explicit",
-      "haskellTestPath": "test/integration/Adrai/ColdCompilerTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "covered",
-      "evidence": "P4-03 ColdCompilerTest covers both missing and present-noncommit basis OIDs and asserts stable BASIS_COMMIT_UNAVAILABLE warnings without blocking semantic rows. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_amendment_to_missing_parent_is_not_silently_collapsed",
-      "behaviorContract": "An amendment whose parent record is missing produces an integrity issue and is not silently collapsed into current ADR state.",
-      "haskellTestName": "amendment with missing parent is not collapsed",
-      "haskellTestPath": "test/integration/Adrai/IntegrityAdversarialTest.hs",
-      "haskellTestType": "integration",
-      "phaseOwner": "P4",
-      "state": "covered",
-      "evidence": "GraphTest missing-parent coverage and P4-03 IntegrityAdversarialTest's orphan amendment/zero-head fixture persist graph-origin errors and block semantic/search rows. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_scope_self_cycle_and_invalid_delta_are_diagnosed",
-      "behaviorContract": "Scope reduction diagnoses self-cycles and deltas whose additions and removals do not form a valid transition.",
-      "haskellTestName": "scope self-cycle and invalid delta are diagnosed",
-      "haskellTestPath": "test/unit/Adrai/GraphTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "GraphTest compound malformed records asserts SCOPE_CYCLE and SCOPE_DELTA_MISMATCH together; P4-03 maps graph issues into strict compiler diagnostics, but an exact persisted cold-database fixture for this pair is still pending. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_domain_refinement_mapping_must_match_the_committed_delta",
-      "behaviorContract": "The declared domain refinement mapping must exactly explain the committed domain delta.",
-      "haskellTestName": "domain refinement mapping matches committed delta",
-      "haskellTestPath": "test/unit/Adrai/GraphTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "GraphTest refinementAndReplacementDiagnostics asserts DOMAIN_REFINEMENT_MISMATCH and P4-03 maps the same reducer output into strict graph-origin diagnostics, but an exact persisted cold-database refinement fixture is still pending. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_status_with_unknown_replacement_is_diagnosed_even_when_well_sealed",
-      "behaviorContract": "An obsolete status pointing to an unknown replacement ADR is diagnosed even when the status object is otherwise correctly sealed.",
-      "haskellTestName": "unknown status replacement is diagnosed",
-      "haskellTestPath": "test/unit/Adrai/GraphTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P4",
-      "state": "partial",
-      "evidence": "GraphTest refinementAndReplacementDiagnostics asserts MISSING_REPLACEMENT_ADR for a typed status record and P4-03 maps reducer issues into strict compiler diagnostics, but an exact persisted cold-database replacement fixture is still pending. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_status_event_and_state_mismatch_is_detected",
-      "behaviorContract": "A status event whose declared transition disagrees with its stored state is detected as an integrity violation.",
-      "haskellTestName": "status event and state mismatch is detected",
-      "haskellTestPath": "test/unit/Adrai/CompilerSnapshotTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P4",
-      "state": "covered",
-      "evidence": "P4-03 CompilerSnapshotTest mutates the exact status event independently of the typed status payload and asserts STATUS_EVENT_KIND_MISMATCH. Python was reviewed statically and not executed."
-    },
-    {
-      "pythonPath": "ADRAI_1_Source/tests/test_integrity_adversarial.py",
-      "pythonMethod": "test_cross_adr_operation_group_is_rejected",
-      "behaviorContract": "One operation group cannot contain objects belonging to different ADR identities.",
-      "haskellTestName": "cross-ADR operation group is rejected",
-      "haskellTestPath": "test/unit/Adrai/CompilerSnapshotTest.hs",
-      "haskellTestType": "unit",
-      "phaseOwner": "P4",
-      "state": "covered",
-      "evidence": "P4-03 CompilerSnapshotTest groups otherwise valid members across two ADR identities and asserts CROSS_ADR_OPERATION. Python was reviewed statically and not executed."
-    }
-  ]
+﻿{
+    "schema":  "adrai/coverage-ledger-category/v1",
+    "category":  "graph-service-conflicts-integrity",
+    "expectedCount":  50,
+    "sourceModules":  [
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                              "expectedCount":  12
+                          },
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                              "expectedCount":  13
+                          },
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py",
+                              "expectedCount":  2
+                          },
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_public_workflows.py",
+                              "expectedCount":  5
+                          },
+                          {
+                              "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                              "expectedCount":  18
+                          }
+                      ],
+    "rows":  [
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_create_emits_decision_domain_scope_and_active_status_in_one_commit",
+                     "behaviorContract":  "Creating an ADR atomically commits one decision record plus initial applies-to, domain, and active-status connections, and the collapsed ADR is active and conflict-free.",
+                     "haskellTestName":  "create commits complete active ADR graph atomically",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"create commits complete active ADR graph atomically\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:12 (static prototype test); existing golden: test/fixtures/contracts/v1/documents/decision-create.sealed.md and test/fixtures/contracts/v1/documents/decision-create.semantic.md",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:12 (static prototype test); existing golden: test/fixtures/contracts/v1/documents/decision-create.sealed.md and test/fixtures/contracts/v1/documents/decision-create.semantic.md"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_single_head_amendment_inherits_omitted_fields_and_is_full_snapshot",
+                     "behaviorContract":  "A single-head amendment inherits omitted decision fields while committing a complete immutable decision snapshot with a new head.",
+                     "haskellTestName":  "single-head amend inherits fields into full snapshot",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"single-head amend inherits fields into full snapshot\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:33 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:33 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_noop_amendment_is_rejected_without_commit",
+                     "behaviorContract":  "An amendment whose effective state is unchanged is rejected and leaves the repository tip and committed object set untouched.",
+                     "haskellTestName":  "no-op amend is rejected without a commit",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"no-op amend is rejected without a commit\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:61 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:61 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_parallel_amendments_are_visible_then_reconciled_by_ordinary_amend",
+                     "behaviorContract":  "Parallel decision heads remain visible as a semantic conflict until an ordinary amendment explicitly reconciles them into one head.",
+                     "haskellTestName":  "parallel amendments remain visible until reconciled",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"parallel amendments remain visible until reconciled\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:77 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:77 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_expand_contract_mixed_and_replace_scope",
+                     "behaviorContract":  "Scope mutation supports expand, contract, mixed delta, and full replacement while producing the expected effective scope at each revision.",
+                     "haskellTestName":  "scope supports expand contract mixed and replace",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"scope supports expand contract mixed and replace\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:133 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:133 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_invalid_scope_delta_and_empty_change_are_rejected",
+                     "behaviorContract":  "Scope mutations reject invalid deltas and effective no-op changes without creating a commit.",
+                     "haskellTestName":  "invalid or empty scope changes are rejected",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"invalid or empty scope changes are rejected\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:168 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:168 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_parallel_scope_heads_require_explicit_full_set_resolution",
+                     "behaviorContract":  "Divergent scope heads produce a conflict that can only be reconciled by an explicit complete scope set.",
+                     "haskellTestName":  "parallel scope heads require explicit full resolution",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"parallel scope heads require explicit full resolution\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:200 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:200 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_obsolete_is_hidden_by_default_and_reactivation_preserves_history",
+                     "behaviorContract":  "Obsolete ADRs are hidden from default reads, while reactivation restores visibility without discarding prior status history.",
+                     "haskellTestName":  "obsolete ADR hiding and reactivation preserve history",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"obsolete ADR hiding and reactivation preserve history\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:251 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:251 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_obsoletion_with_active_replacement",
+                     "behaviorContract":  "Obsoleting an ADR may name an active replacement and the collapsed status exposes that replacement relationship.",
+                     "haskellTestName":  "obsoletion records an active replacement",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"obsoletion records an active replacement\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:282 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:282 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_obsolete_adr_cannot_be_amended_or_rescoped",
+                     "behaviorContract":  "Decision and scope mutations are rejected while an ADR is obsolete, with no repository commit created.",
+                     "haskellTestName":  "obsolete ADR rejects amend and rescope",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"obsolete ADR rejects amend and rescope\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:304 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:304 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_parallel_status_heads_are_resolved_append_only",
+                     "behaviorContract":  "Parallel status heads remain auditable and are reconciled by appending a resolution rather than rewriting either head.",
+                     "haskellTestName":  "parallel status heads resolve append-only",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"parallel status heads resolve append-only\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:335 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:335 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
+                     "pythonMethod":  "test_obsolete_vs_amend_merge_exposes_coverage_conflict_and_can_reactivate",
+                     "behaviorContract":  "Merging obsoletion against amendment exposes the status/decision coverage conflict and permits an append-only reactivation resolution.",
+                     "haskellTestName":  "obsolete-versus-amend merge exposes and resolves conflict",
+                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"obsolete-versus-amend merge exposes and resolves conflict\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:383 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:383 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_create_missing_initial_domain_revision_is_incomplete",
+                     "behaviorContract":  "Deleting an ADR\u0027s initial domain revision makes doctor report both missing historical content and an incomplete operation.",
+                     "haskellTestName":  "missing initial domain revision is incomplete",
+                     "haskellTestPath":  "test/integration/Adrai/DomainLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"missing initial domain revision is incomplete\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:15 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:15 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_user_input_is_canonicalized_to_root_or_dotted_names",
+                     "behaviorContract":  "Domain input normalization accepts single-segment root domain names and canonical dotted names while producing one stable canonical representation.",
+                     "haskellTestName":  "domain input canonicalizes root and dotted names",
+                     "haskellTestPath":  "test/unit/Adrai/DomainFormatTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P2",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain input canonicalizes root and dotted names\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:32 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:17-59 | test/property/Adrai/DomainProperties.hs:25-52",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:32 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:17-59 | test/property/Adrai/DomainProperties.hs:25-52"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_invalid_or_redundant_domain_names_are_rejected_without_a_commit",
+                     "behaviorContract":  "Invalid, duplicate, ancestor-redundant, or otherwise noncanonical domain sets are rejected without advancing Git history.",
+                     "haskellTestName":  "invalid or redundant domains do not commit",
+                     "haskellTestPath":  "test/integration/Adrai/DomainLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"invalid or redundant domains do not commit\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:80 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:80 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_refinement_syntax_requires_a_strict_descendant",
+                     "behaviorContract":  "A domain refinement mapping must name a strict dotted descendant rather than the same domain or an unrelated domain.",
+                     "haskellTestName":  "domain refinement requires strict descendant",
+                     "haskellTestPath":  "test/unit/Adrai/DomainFormatTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P2",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain refinement requires strict descendant\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:113 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:60-69 | test/property/Adrai/DomainProperties.hs:54-70",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:113 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:60-69 | test/property/Adrai/DomainProperties.hs:54-70"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_root_domain_refines_to_a_dotted_child",
+                     "behaviorContract":  "The root domain can be refined to a canonical dotted child and the ADR\u0027s effective classification follows the new revision.",
+                     "haskellTestName":  "root domain refines to dotted child",
+                     "haskellTestPath":  "test/integration/Adrai/DomainLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"root domain refines to dotted child\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:138 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:138 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_refinement_is_one_append_only_operation_with_visible_evolution",
+                     "behaviorContract":  "Domain refinement is committed as one append-only operation and history exposes both the prior and refined classifications.",
+                     "haskellTestName":  "domain refinement is one visible append-only operation",
+                     "haskellTestPath":  "test/integration/Adrai/DomainLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain refinement is one visible append-only operation\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:165 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:165 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_expand_contract_replace_clear_and_readd_domains",
+                     "behaviorContract":  "Domain mutation supports expansion, contraction, replacement, clearing, and later re-adding while preserving revision history.",
+                     "haskellTestName":  "domains expand contract replace clear and re-add",
+                     "haskellTestPath":  "test/integration/Adrai/DomainLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domains expand contract replace clear and re-add\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:219 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:219 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_amend_cannot_silently_change_domains_but_inherits_refined_domains",
+                     "behaviorContract":  "Decision amendment cannot alter domains through a backdoor and correctly inherits the latest refined domain set.",
+                     "haskellTestName":  "amend inherits refined domains without changing them",
+                     "haskellTestPath":  "test/integration/Adrai/DomainLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"amend inherits refined domains without changing them\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:291 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:291 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_domain_changes_require_an_active_adr_and_nonempty_operation",
+                     "behaviorContract":  "Domain changes require an active ADR and an effective nonempty delta; violations do not create commits.",
+                     "haskellTestName":  "domain changes require active ADR and nonempty delta",
+                     "haskellTestPath":  "test/integration/Adrai/DomainLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain changes require active ADR and nonempty delta\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:323 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:323 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_domain_filters_are_hierarchical_and_repeated_filters_are_anded",
+                     "behaviorContract":  "Domain query filters include descendants hierarchically and combine repeated filters by intersection rather than union.",
+                     "haskellTestName":  "domain filters are hierarchical and intersect",
+                     "haskellTestPath":  "test/property/Adrai/DomainProperties.hs",
+                     "haskellTestType":  "property",
+                     "phaseOwner":  "P2",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain filters are hierarchical and intersect\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:380 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:50-59 | test/property/Adrai/DomainProperties.hs:72-85 (pure hierarchy primitive only; repeated search-filter conjunction remains P5 consumer work)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:380 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:50-59 | test/property/Adrai/DomainProperties.hs:72-85 (pure hierarchy primitive only; repeated search-filter conjunction remains P5 consumer work)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_cli_refines_domains_and_returns_stable_json",
+                     "behaviorContract":  "The public CLI refines domains and emits the stable compact JSON response and exit behavior promised by the public contract.",
+                     "haskellTestName":  "CLI domain refinement returns stable JSON",
+                     "haskellTestPath":  "test/e2e/Adrai/DomainCliTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"CLI domain refinement returns stable JSON\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:462 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:462 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_old_release_and_main_keep_revision_local_domain_classification",
+                     "behaviorContract":  "Queries at an old release and at main retain revision-local domain classifications after later changes on another line.",
+                     "haskellTestName":  "domain classification remains revision-local",
+                     "haskellTestPath":  "test/integration/Adrai/DomainLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain classification remains revision-local\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:490 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:490 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
+                     "pythonMethod":  "test_divergent_domain_refinements_merge_as_a_conflict_then_reconcile",
+                     "behaviorContract":  "Divergent domain refinements merge into an explicit domain conflict and an append-only operation reconciles them.",
+                     "haskellTestName":  "divergent domain refinements conflict then reconcile",
+                     "haskellTestPath":  "test/integration/Adrai/DomainLifecycleTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"divergent domain refinements conflict then reconcile\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:539 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_domains.py:539 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py",
+                     "pythonMethod":  "test_automatic_release_merge_surfaces_semantic_conflict_and_one_resolution_propagates",
+                     "behaviorContract":  "Automatic stable/release/feature merging exposes the semantic decision conflict and one resolution propagates consistently across affected lines.",
+                     "haskellTestName":  "release merge semantic conflict resolves once and propagates",
+                     "haskellTestPath":  "test/integration/Adrai/ConflictReconciliationTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"release merge semantic conflict resolves once and propagates\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py:11 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py:11 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py",
+                     "pythonMethod":  "test_release_merge_reports_and_resolves_scope_domain_and_status_axes",
+                     "behaviorContract":  "A release merge reports independent scope, domain, and status conflict axes and resolves each with stable post-resolution state.",
+                     "haskellTestName":  "release merge reports and resolves all conflict axes",
+                     "haskellTestPath":  "test/integration/Adrai/ConflictReconciliationTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"release merge reports and resolves all conflict axes\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py:142 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py:142 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_public_workflows.py",
+                     "pythonMethod":  "test_complete_public_lifecycle_is_one_commit_per_mutation_and_consistent",
+                     "behaviorContract":  "The complete public ADR lifecycle performs exactly one commit per successful mutation and all public read models remain consistent.",
+                     "haskellTestName":  "complete public lifecycle commits once per mutation",
+                     "haskellTestPath":  "test/e2e/Adrai/PublicWorkflowTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"complete public lifecycle commits once per mutation\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:40 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:40 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_public_workflows.py",
+                     "pythonMethod":  "test_structured_json_input_and_digest_provenance_are_supported",
+                     "behaviorContract":  "Structured JSON input is accepted and prompt, input, and context digest provenance is retained in committed operation results.",
+                     "haskellTestName":  "structured JSON preserves digest provenance",
+                     "haskellTestPath":  "test/e2e/Adrai/PublicWorkflowTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"structured JSON preserves digest provenance\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:173 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json",
+                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:173 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_public_workflows.py",
+                     "pythonMethod":  "test_structured_json_is_strict_and_amend_has_no_domain_backdoor",
+                     "behaviorContract":  "Structured JSON rejects unknown or malformed fields and amendment input cannot use JSON to change domains outside the domain mutation API.",
+                     "haskellTestName":  "structured JSON is strict and blocks domain backdoor",
+                     "haskellTestPath":  "test/e2e/Adrai/PublicWorkflowTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"structured JSON is strict and blocks domain backdoor\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:202 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json",
+                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:202 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_public_workflows.py",
+                     "pythonMethod":  "test_failed_public_mutations_do_not_create_commits",
+                     "behaviorContract":  "Every failed public mutation preserves the repository tip and leaves no partial committed operation.",
+                     "haskellTestName":  "failed public mutations create no commits",
+                     "haskellTestPath":  "test/e2e/Adrai/PublicWorkflowTest.hs",
+                     "haskellTestType":  "e2e",
+                     "phaseOwner":  "P6",
+                     "state":  "planned",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"failed public mutations create no commits\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:244 (static prototype test)",
+                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:244 (static prototype test)"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_public_workflows.py",
+                     "pythonMethod":  "test_parser_exposes_exactly_the_implemented_public_commands",
+                     "behaviorContract":  "The command parser exposes exactly the supported public commands and does not advertise unimplemented operations.",
+                     "haskellTestName":  "parser exposes exactly supported public commands",
+                     "haskellTestPath":  "test/golden/Adrai/CliContractTest.hs",
+                     "haskellTestType":  "golden",
+                     "phaseOwner":  "P6",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"parser exposes exactly supported public commands\"",
+                                      "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:273 (static prototype test); existing golden: test/fixtures/contracts/v1/cli/commands.json",
+                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:273 (static prototype test); existing golden: test/fixtures/contracts/v1/cli/commands.json"
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_reads_use_committed_tree_while_doctor_and_mutations_reject_dirty_managed_file",
+                     "behaviorContract":  "Reads are isolated to the committed tree, while doctor and mutations explicitly reject a dirty managed worktree file.",
+                     "haskellTestName":  "reads use committed tree while dirty mutations fail",
+                     "haskellTestPath":  "test/integration/Adrai/ColdCompilerTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"reads use committed tree while dirty mutations fail\"",
+                                      "fixture":  "P4-02 RepositoryIsolationTest and P4-03 ColdCompilerTest prove exact-OID compilation ignores dirty managed worktree bytes. Public doctor and mutation rejection remain P4-06; Python was reviewed statically and not executed.",
+                                      "result":  "P4-02 RepositoryIsolationTest and P4-03 ColdCompilerTest prove exact-OID compilation ignores dirty managed worktree bytes. Public doctor and mutation rejection remain P4-06; Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_internally_resealed_rewrite_is_still_an_append_only_violation",
+                     "behaviorContract":  "Rewriting an immutable object remains an append-only violation even when its internal semantic digest and capsule are resealed.",
+                     "haskellTestName":  "resealed rewrite still violates append-only history",
+                     "haskellTestPath":  "test/integration/Adrai/IntegrityAdversarialTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"resealed rewrite still violates append-only history\"",
+                                      "fixture":  "P4-03 IntegrityAdversarialTest changes a typed connection rationale, recomputes its semantic digest, rebuilds the provenance capsule, reseals the managed document at the same path, and asserts persisted APPEND_ONLY_REWRITE with semantics gated; Python was reviewed statically and not executed.",
+                                      "result":  "P4-03 IntegrityAdversarialTest changes a typed connection rationale, recomputes its semantic digest, rebuilds the provenance capsule, reseals the managed document at the same path, and asserts persisted APPEND_ONLY_REWRITE with semantics gated; Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_deleted_immutable_file_is_reported_as_missing_and_incomplete_operation",
+                     "behaviorContract":  "Deleting an immutable managed object is diagnosed as missing historical content and makes its operation incomplete.",
+                     "haskellTestName":  "deleted immutable object is missing and incomplete",
+                     "haskellTestPath":  "test/integration/Adrai/IntegrityAdversarialTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"deleted immutable object is missing and incomplete\"",
+                                      "fixture":  "P4-03 IntegrityAdversarialTest deletes one member of a valid committed scope operation and asserts persisted MISSING_HISTORICAL_OBJECT plus INCOMPLETE_OPERATION with semantic/search rows gated; Python was reviewed statically and not executed.",
+                                      "result":  "P4-03 IntegrityAdversarialTest deletes one member of a valid committed scope operation and asserts persisted MISSING_HISTORICAL_OBJECT plus INCOMPLETE_OPERATION with semantic/search rows gated; Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_renamed_object_is_noncanonical_and_records_the_old_path_deletion",
+                     "behaviorContract":  "Renaming a managed object is diagnosed both as a noncanonical destination and as deletion of its immutable canonical path.",
+                     "haskellTestName":  "renamed object diagnoses destination and deletion",
+                     "haskellTestPath":  "test/integration/Adrai/IntegrityAdversarialTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"renamed object diagnoses destination and deletion\"",
+                                      "fixture":  "P4-03 IntegrityAdversarialTest performs a real-Git managed rename and asserts NON_CANONICAL_PATH plus MISSING_HISTORICAL_OBJECT in the diagnostic database; Python was reviewed statically and not executed.",
+                                      "result":  "P4-03 IntegrityAdversarialTest performs a real-Git managed rename and asserts NON_CANONICAL_PATH plus MISSING_HISTORICAL_OBJECT in the diagnostic database; Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_invalid_capsule_and_semantic_digest_are_reported_without_crashing_doctor",
+                     "behaviorContract":  "Doctor reports malformed capsule data and an invalid semantic digest as integrity issues without crashing.",
+                     "haskellTestName":  "doctor survives invalid capsule and digest",
+                     "haskellTestPath":  "test/integration/Adrai/IntegrityAdversarialTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"doctor survives invalid capsule and digest\"",
+                                      "fixture":  "ManagedDocumentFormatTest and ProvenanceFormatTest reject malformed capsule data and digest mismatches, and P4-03 persists malformed managed input without crashing. Public doctor rendering remains P4-06; Python was reviewed statically and not executed.",
+                                      "result":  "ManagedDocumentFormatTest and ProvenanceFormatTest reject malformed capsule data and digest mismatches, and P4-03 persists malformed managed input without crashing. Public doctor rendering remains P4-06; Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_duplicate_object_id_at_another_path_is_detected",
+                     "behaviorContract":  "The integrity scan rejects the same object identifier appearing at more than one managed path.",
+                     "haskellTestName":  "duplicate object identifier is detected",
+                     "haskellTestPath":  "test/integration/Adrai/IntegrityAdversarialTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"duplicate object identifier is detected\"",
+                                      "fixture":  "P4-03 IntegrityAdversarialTest commits a duplicate sealed decision at a second managed path and asserts DUPLICATE_OBJECT_ID plus deterministic semantic gating; Python was reviewed statically and not executed.",
+                                      "result":  "P4-03 IntegrityAdversarialTest commits a duplicate sealed decision at a second managed path and asserts DUPLICATE_OBJECT_ID plus deterministic semantic gating; Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_historical_revision_can_be_queried_after_head_is_corrupt",
+                     "behaviorContract":  "A valid historical revision remains queryable even when the current HEAD contains corrupt managed data.",
+                     "haskellTestName":  "historical revision remains queryable after HEAD corruption",
+                     "haskellTestPath":  "test/integration/Adrai/ColdCompilerTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"historical revision remains queryable after HEAD corruption\"",
+                                      "fixture":  "P4-03 ColdCompilerTest binds a healthy historical full OID, corrupts later HEAD, and still materializes normalized/search rows from the bound revision. Public query command behavior remains P4-06; Python was reviewed statically and not executed.",
+                                      "result":  "P4-03 ColdCompilerTest binds a healthy historical full OID, corrupts later HEAD, and still materializes normalized/search rows from the bound revision. Public query command behavior remains P4-06; Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_capsule_types_are_validated_even_when_semantic_hash_is_resealed",
+                     "behaviorContract":  "Capsule field types are validated independently of a matching resealed semantic hash.",
+                     "haskellTestName":  "resealed semantic hash cannot hide capsule type errors",
+                     "haskellTestPath":  "test/unit/Adrai/ManagedDocumentFormatTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"resealed semantic hash cannot hide capsule type errors\"",
+                                      "fixture":  "ProvenanceFormatTest and ManagedDocumentFormatTest independently reject closed-schema capsule type/key violations and semantic/object digest mismatches; P4-03 maps managed parse failures to stable diagnostics, but an exact resealed capsule-type cold-database fixture is still pending. Python was reviewed statically and not executed.",
+                                      "result":  "ProvenanceFormatTest and ManagedDocumentFormatTest independently reject closed-schema capsule type/key violations and semantic/object digest mismatches; P4-03 maps managed parse failures to stable diagnostics, but an exact resealed capsule-type cold-database fixture is still pending. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_resealed_decision_still_validates_human_readable_frontmatter",
+                     "behaviorContract":  "Human-readable decision frontmatter remains subject to schema validation after an attacker reseals the document.",
+                     "haskellTestName":  "resealed decision still validates frontmatter",
+                     "haskellTestPath":  "test/unit/Adrai/ManagedDocumentFormatTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"resealed decision still validates frontmatter\"",
+                                      "fixture":  "ManagedDocumentFormatTest exercises strict decision frontmatter, closed keys, canonical semantic rendering, and capsule validation; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT, but an exact resealed frontmatter cold-database fixture is still pending. Python was reviewed statically and not executed.",
+                                      "result":  "ManagedDocumentFormatTest exercises strict decision frontmatter, closed keys, canonical semantic rendering, and capsule validation; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT, but an exact resealed frontmatter cold-database fixture is still pending. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_resealed_connection_rejects_non_array_graph_fields",
+                     "behaviorContract":  "Connection graph fields that require arrays reject scalar or object substitutions even when the document is resealed.",
+                     "haskellTestName":  "resealed connection rejects non-array graph fields",
+                     "haskellTestPath":  "test/unit/Adrai/ManagedDocumentFormatTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"resealed connection rejects non-array graph fields\"",
+                                      "fixture":  "ManagedDocumentFormatTest exercises strict typed connection arrays and canonical relation payloads; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT and blocks semantics, but an exact resealed non-array cold-database fixture is still pending. Python was reviewed statically and not executed.",
+                                      "result":  "ManagedDocumentFormatTest exercises strict typed connection arrays and canonical relation payloads; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT and blocks semantics, but an exact resealed non-array cold-database fixture is still pending. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_operation_members_must_share_prompt_input_and_context_digests",
+                     "behaviorContract":  "Every object in one operation must share identical prompt, input, and context provenance digests.",
+                     "haskellTestName":  "operation members share provenance digests",
+                     "haskellTestPath":  "test/unit/Adrai/CompilerSnapshotTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P4",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"operation members share provenance digests\"",
+                                      "fixture":  "P4-03 CompilerSnapshotTest changes one member\u0027s ProvenanceInputs and shared timestamp independently and asserts INCONSISTENT_OPERATION_CAPSULE through the extracted OperationContext validator. Python was reviewed statically and not executed.",
+                                      "result":  "P4-03 CompilerSnapshotTest changes one member\u0027s ProvenanceInputs and shared timestamp independently and asserts INCONSISTENT_OPERATION_CAPSULE through the extracted OperationContext validator. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_unavailable_basis_commit_is_explicitly_reported",
+                     "behaviorContract":  "An operation that cites a basis commit unavailable from the repository is diagnosed explicitly rather than silently accepted.",
+                     "haskellTestName":  "unavailable basis commit is explicit",
+                     "haskellTestPath":  "test/integration/Adrai/ColdCompilerTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"unavailable basis commit is explicit\"",
+                                      "fixture":  "P4-03 ColdCompilerTest covers both missing and present-noncommit basis OIDs and asserts stable BASIS_COMMIT_UNAVAILABLE warnings without blocking semantic rows. Python was reviewed statically and not executed.",
+                                      "result":  "P4-03 ColdCompilerTest covers both missing and present-noncommit basis OIDs and asserts stable BASIS_COMMIT_UNAVAILABLE warnings without blocking semantic rows. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_amendment_to_missing_parent_is_not_silently_collapsed",
+                     "behaviorContract":  "An amendment whose parent record is missing produces an integrity issue and is not silently collapsed into current ADR state.",
+                     "haskellTestName":  "amendment with missing parent is not collapsed",
+                     "haskellTestPath":  "test/integration/Adrai/IntegrityAdversarialTest.hs",
+                     "haskellTestType":  "integration",
+                     "phaseOwner":  "P4",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"amendment with missing parent is not collapsed\"",
+                                      "fixture":  "GraphTest missing-parent coverage and P4-03 IntegrityAdversarialTest\u0027s orphan amendment/zero-head fixture persist graph-origin errors and block semantic/search rows. Python was reviewed statically and not executed.",
+                                      "result":  "GraphTest missing-parent coverage and P4-03 IntegrityAdversarialTest\u0027s orphan amendment/zero-head fixture persist graph-origin errors and block semantic/search rows. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_scope_self_cycle_and_invalid_delta_are_diagnosed",
+                     "behaviorContract":  "Scope reduction diagnoses self-cycles and deltas whose additions and removals do not form a valid transition.",
+                     "haskellTestName":  "scope self-cycle and invalid delta are diagnosed",
+                     "haskellTestPath":  "test/unit/Adrai/GraphTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"scope self-cycle and invalid delta are diagnosed\"",
+                                      "fixture":  "GraphTest compound malformed records asserts SCOPE_CYCLE and SCOPE_DELTA_MISMATCH together; P4-03 maps graph issues into strict compiler diagnostics, but an exact persisted cold-database fixture for this pair is still pending. Python was reviewed statically and not executed.",
+                                      "result":  "GraphTest compound malformed records asserts SCOPE_CYCLE and SCOPE_DELTA_MISMATCH together; P4-03 maps graph issues into strict compiler diagnostics, but an exact persisted cold-database fixture for this pair is still pending. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_domain_refinement_mapping_must_match_the_committed_delta",
+                     "behaviorContract":  "The declared domain refinement mapping must exactly explain the committed domain delta.",
+                     "haskellTestName":  "domain refinement mapping matches committed delta",
+                     "haskellTestPath":  "test/unit/Adrai/GraphTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain refinement mapping matches committed delta\"",
+                                      "fixture":  "GraphTest refinementAndReplacementDiagnostics asserts DOMAIN_REFINEMENT_MISMATCH and P4-03 maps the same reducer output into strict graph-origin diagnostics, but an exact persisted cold-database refinement fixture is still pending. Python was reviewed statically and not executed.",
+                                      "result":  "GraphTest refinementAndReplacementDiagnostics asserts DOMAIN_REFINEMENT_MISMATCH and P4-03 maps the same reducer output into strict graph-origin diagnostics, but an exact persisted cold-database refinement fixture is still pending. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_status_with_unknown_replacement_is_diagnosed_even_when_well_sealed",
+                     "behaviorContract":  "An obsolete status pointing to an unknown replacement ADR is diagnosed even when the status object is otherwise correctly sealed.",
+                     "haskellTestName":  "unknown status replacement is diagnosed",
+                     "haskellTestPath":  "test/unit/Adrai/GraphTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P4",
+                     "state":  "partial",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"unknown status replacement is diagnosed\"",
+                                      "fixture":  "GraphTest refinementAndReplacementDiagnostics asserts MISSING_REPLACEMENT_ADR for a typed status record and P4-03 maps reducer issues into strict compiler diagnostics, but an exact persisted cold-database replacement fixture is still pending. Python was reviewed statically and not executed.",
+                                      "result":  "GraphTest refinementAndReplacementDiagnostics asserts MISSING_REPLACEMENT_ADR for a typed status record and P4-03 maps reducer issues into strict compiler diagnostics, but an exact persisted cold-database replacement fixture is still pending. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_status_event_and_state_mismatch_is_detected",
+                     "behaviorContract":  "A status event whose declared transition disagrees with its stored state is detected as an integrity violation.",
+                     "haskellTestName":  "status event and state mismatch is detected",
+                     "haskellTestPath":  "test/unit/Adrai/CompilerSnapshotTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P4",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"status event and state mismatch is detected\"",
+                                      "fixture":  "P4-03 CompilerSnapshotTest mutates the exact status event independently of the typed status payload and asserts STATUS_EVENT_KIND_MISMATCH. Python was reviewed statically and not executed.",
+                                      "result":  "P4-03 CompilerSnapshotTest mutates the exact status event independently of the typed status payload and asserts STATUS_EVENT_KIND_MISMATCH. Python was reviewed statically and not executed."
+                                  }
+                 },
+                 {
+                     "pythonPath":  "ADRAI_1_Source/tests/test_integrity_adversarial.py",
+                     "pythonMethod":  "test_cross_adr_operation_group_is_rejected",
+                     "behaviorContract":  "One operation group cannot contain objects belonging to different ADR identities.",
+                     "haskellTestName":  "cross-ADR operation group is rejected",
+                     "haskellTestPath":  "test/unit/Adrai/CompilerSnapshotTest.hs",
+                     "haskellTestType":  "unit",
+                     "phaseOwner":  "P4",
+                     "state":  "covered",
+                     "evidence":  {
+                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"cross-ADR operation group is rejected\"",
+                                      "fixture":  "P4-03 CompilerSnapshotTest groups otherwise valid members across two ADR identities and asserts CROSS_ADR_OPERATION. Python was reviewed statically and not executed.",
+                                      "result":  "P4-03 CompilerSnapshotTest groups otherwise valid members across two ADR identities and asserts CROSS_ADR_OPERATION. Python was reviewed statically and not executed."
+                                  }
+                 }
+             ]
 }
