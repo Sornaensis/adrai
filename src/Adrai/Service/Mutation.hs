@@ -18,9 +18,9 @@
 -- * 'reactivateCommand' — reactivate an obsolete ADR.
 --
 -- All functions use the 8-canonical-stage transaction engine from
--- 'Adrei.Service.Transaction' to guarantee atomic, lock-guarded commits.
+-- 'Adrai.Service.Transaction' to guarantee atomic, lock-guarded commits.
 
-module Adrei.Service.Mutation
+module Adrai.Service.Mutation
   ( InitResult (..),
     initCommand,
     CreateResult (..),

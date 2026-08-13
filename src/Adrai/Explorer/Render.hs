@@ -22,7 +22,7 @@
 -- * Red = error / obsolete indicators
 -- * Blue = metadata labels
 
-module Adrei.Explorer.Render
+module Adrai.Explorer.Render
   ( -- * ANSI helpers
     ansiReset,
     ansiBold,

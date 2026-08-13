@@ -14,7 +14,7 @@
 -- input and output are delivered.
 --
 -- The explorer delegates all query and mutation work to shared services
--- ('Adrai.Query', 'Adrei.Service.Mutation', 'Adrai.Graph') rather than
+-- ('Adrai.Query', 'Adrai.Service.Mutation', 'Adrai.Graph') rather than
 -- duplicating reducer / compiler / transaction paths.
 --
 -- === Exit gate
@@ -25,17 +25,17 @@
 -- are one-shot commands that produce output and terminate.
 -- For scripted mode, mutations always exit after completion.
 
-module Adrei.Explorer.Interactive
+module Adrai.Explorer.Interactive
   ( interactiveSession,
     scriptedMode,
   )
 where
 
-import Adrei.Explorer.Mutation
+import Adrai.Explorer.Mutation
   ( MutationResult (..),
     runMutation,
   )
-import Adrei.Explorer.Render
+import Adrai.Explorer.Render
   ( ansiBold,
     ansiBlue,
     ansiCyan,
@@ -50,7 +50,7 @@ import Adrei.Explorer.Render
     renderConflict,
     terminalWidth,
   )
-import Adrei.Explorer.Types
+import Adrai.Explorer.Types
   ( ExplorerCommand (..),
     ExplorerSession (..),
     ExplorerState (..),

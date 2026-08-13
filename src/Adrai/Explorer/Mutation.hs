@@ -6,20 +6,20 @@
 -- | Explorer mutations: connect 'ExplorerCommand' to the mutation service.
 --
 -- This module bridges the explorer command interface with
--- 'Adrei.Service.Mutation' functions, ensuring mutations run inside the
+-- 'Adrai.Service.Mutation' functions, ensuring mutations run inside the
 -- 8-stage transaction lock and report results back to the user.
 --
 -- The "exit gate" pattern: after a successful mutation the explorer shows
 -- a summary and terminates (or offers to continue in REPL mode).
 
-module Adrei.Explorer.Mutation
+module Adrai.Explorer.Mutation
   ( MutationResult (..),
     runMutation,
     defaultManagedPaths,
   )
 where
 
-import Adrei.Explorer.Types (ExplorerCommand (..), ExplorerSession (..))
+import Adrai.Explorer.Types (ExplorerCommand (..), ExplorerSession (..))
 import Adrai.Git
   ( Repository (..),
     runRepository,
@@ -72,7 +72,7 @@ import Adrai.Domain
   ( Domain (..),
     domainText,
   )
-import Adrei.Service.Mutation
+import Adrai.Service.Mutation
   ( CreateResult (..),
     createAdrCommand,
     AmendResult (..),
@@ -171,8 +171,8 @@ defaultManagedPaths =
 -- 3. Returns a 'MutationResult' with success/failure information.
 --
 -- The lock acquisition and release are handled internally by the
--- underlying 'Adrei.Service.Mutation' functions via
--- 'Adrei.Provenance.Git.Lock.withGitLock'.
+-- underlying 'Adrai.Service.Mutation' functions via
+-- 'Adrai.Provenance.Git.Lock.withGitLock'.
 runMutation ::
   ExplorerSession ->  -- ^ Session (provides repo path and actor)
   ExplorerCommand ->  -- ^ Mutation command to execute

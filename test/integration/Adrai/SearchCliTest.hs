@@ -7,7 +7,7 @@
 -- Tests cover FTS search, vector search, hybrid search, domain/scope
 -- filters, pagination, obsolete filtering, relevance scoring, scope
 -- bonus, Unicode content, and result schema validation.
-module Adrei.SearchCliTest (tests) where
+module Adrai.SearchCliTest (tests) where
 
 import Adrai.Integration.CLI
 import Control.Monad (forM_, void)

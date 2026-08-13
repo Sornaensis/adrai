@@ -14,7 +14,7 @@
 --    managed tree (cloned, zero docs parsed).
 -- 4. **Semantic-reuse** - partial change, some docs reused, some parsed.
 -- 5. **Full cold compile** - first-time compile, full parse.
-module Adrei.CachePathIntegrationTest (tests) where
+module Adrai.CachePathIntegrationTest (tests) where
 
 import Adrai.Compiler
   ( ColdCompilerResult (..),

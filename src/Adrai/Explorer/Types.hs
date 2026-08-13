@@ -6,7 +6,7 @@
 --
 -- The explorer provides an interactive REPL and scripted (non-interactive)
 -- mode over the shared typed services. It delegates all query and mutation
--- work to 'Adrai.Query' and 'Adrei.Service.Mutation' rather than
+-- work to 'Adrai.Query' and 'Adrai.Service.Mutation' rather than
 -- duplicating reducer / compiler / transaction paths.
 --
 -- Key types:
@@ -28,7 +28,7 @@
 -- * 'status <id> [active|obsolete]' — change status
 -- * 'exit' — quit
 
-module Adrei.Explorer.Types
+module Adrai.Explorer.Types
   ( -- * Session state
     ExplorerSession (..),
     defaultSession,

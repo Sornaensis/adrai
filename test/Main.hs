@@ -15,8 +15,8 @@ import qualified Adrai.Compiler.CacheSyncTest
 import qualified Adrai.Compiler.DocumentCacheTest
 import qualified Adrai.CurrentSearchTest
 import qualified Adrai.EvolutionCompareAnnTest
-import qualified Adrei.CachePathIntegrationTest
-import qualified Adrei.SearchCliTest
+import qualified Adrai.CachePathIntegrationTest
+import qualified Adrai.SearchCliTest
 import qualified Adrai.CacheIntegrationTest
 import qualified Adrai.MutationE2ETest
 import qualified Adrai.EnvironmentTest
@@ -220,7 +220,7 @@ tests =
           ],
       testGroup
           "P4-05"
-          [ Adrei.CachePathIntegrationTest.tests,
+          [ Adrai.CachePathIntegrationTest.tests,
             Adrai.Compiler.CacheSyncTest.tests,
             Adrai.Provenance.LockTest.tests,
             Adrai.Compiler.DocumentCacheTest.tests
@@ -236,7 +236,7 @@ tests =
             Adrai.EnvironmentTest.tests,
             Adrai.EvolutionCompareAnnTest.tests,
             Adrai.ProvenanceOverlayTest.tests,
-            Adrei.SearchCliTest.tests
+            Adrai.SearchCliTest.tests
           ],
       testGroup
           "P5-05"

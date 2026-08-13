@@ -2,17 +2,17 @@
 --
 -- Provides an interactive REPL and scripted mode for querying and mutating
 -- architectural decision records. All query and mutation work is delegated
--- to the shared typed services ('Adrei.Query', 'Adrei.Service.Mutation',
--- 'Adrei.Graph') — no duplicate reducer / compiler / transaction path.
+-- to the shared typed services ('Adrai.Query', 'Adrai.Service.Mutation',
+-- 'Adrai.Graph') — no duplicate reducer / compiler / transaction path.
 --
 -- Sub-modules:
 --
--- * 'Adrei.Explorer.Types' — core types (session, commands, state)
--- * 'Adrei.Explorer.Render' — terminal rendering with ANSI colors
--- * 'Adrei.Explorer.Mutation' — mutation command runner (exit gate)
--- * 'Adrei.Explorer.Interactive' — REPL loop and scripted mode
+-- * 'Adrai.Explorer.Types' — core types (session, commands, state)
+-- * 'Adrai.Explorer.Render' — terminal rendering with ANSI colors
+-- * 'Adrai.Explorer.Mutation' — mutation command runner (exit gate)
+-- * 'Adrai.Explorer.Interactive' — REPL loop and scripted mode
 
-module Adrei.Explorer
+module Adrai.Explorer
   ( -- * Types
     ExplorerSession (..),
     defaultSession,
@@ -48,7 +48,7 @@ module Adrei.Explorer
   )
   where
 
-import Adrei.Explorer.Types
+import Adrai.Explorer.Types
   ( ExplorerSession (..),
     defaultSession,
     ExplorerCommand (..),
@@ -57,7 +57,7 @@ import Adrei.Explorer.Types
     SearchMode (..),
     SearchFilter (..),
   )
-import Adrei.Explorer.Render
+import Adrai.Explorer.Render
   ( ansiBold,
     ansiCyan,
     ansiGreen,
@@ -73,11 +73,11 @@ import Adrei.Explorer.Render
     terminalWidth,
     wrapText,
   )
-import Adrei.Explorer.Interactive
+import Adrai.Explorer.Interactive
   ( interactiveSession,
     scriptedMode,
   )
-import Adrei.Explorer.Mutation
+import Adrai.Explorer.Mutation
   ( MutationResult (..),
     runMutation,
   )
