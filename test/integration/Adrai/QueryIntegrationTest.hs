@@ -7,7 +7,9 @@
 -- ``ADRAI_1_Source/tests/test_evolution_compare_ann.py``.
 module Adrai.QueryIntegrationTest (tests) where
 
-import Adrai.Integration.CLI
+import Adrai.Integration.CLI hiding (parseCompareResults, parseHistory, parseSearchResults)
+import Control.Exception (SomeException)
+import qualified Control.Exception as Exception
 import Control.Monad (forM_, unless, void)
 import qualified Data.Aeson
 import qualified Data.Aeson.Key as AesonKey
@@ -15,10 +17,11 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.List (find, isPrefixOf, sortOn)
-import Data.Maybe (fromMaybe, mapMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text, strip)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
+import qualified Data.Vector as Vector
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -63,12 +66,12 @@ valInt _                     = Nothing
 
 valTextList :: Data.Aeson.Value -> Maybe [Text]
 valTextList (Data.Aeson.Array arr) =
-  pure (mapMaybe valText (Data.Vector.toList arr))
+  pure (mapMaybe valText (Vector.toList arr))
 valTextList _ = Nothing
 
 headVal :: Data.Aeson.Value -> Maybe Data.Aeson.Value
 headVal (Data.Aeson.Array arr) =
-  if Data.Vector.null arr then Nothing else Just (Data.Vector.head arr)
+  if Vector.null arr then Nothing else Just (Vector.head arr)
 headVal _ = Nothing
 
 -- | Extract the ADR ID from a create-adr result value.
@@ -291,7 +294,7 @@ testHistoryLimitAndTruncation =
 
       -- Create several ADRs
       forM_ [1 :: Int .. 5] $ \i -> do
-        _ <- createAdr repo
+        void $ createAdr repo
           ("ADR number " <> T.pack (show i))
           ("Test ADR " <> T.pack (show i))
           ("## Decision\nADR #" <> T.pack (show i) <> ".")
@@ -396,8 +399,8 @@ testHistoryConflictAndReconcile =
 
           -- Merge feature back (may create conflict)
           git repo ["switch", "main"]
-          void $ git repo ["merge", "--no-ff", "feature", "-m", "merge feature"]
-            `catchGitFailure` pure ()
+          catchGitFailure $
+            git repo ["merge", "--no-ff", "feature", "-m", "merge feature"]
 
           -- History should show the conflict operations
           hist <- adraiJsonOrThrow repo
@@ -559,16 +562,16 @@ testShowCollapsedEvolution =
           -- Verify evolution is present
           case _Object collapsed of
             Just o -> do
-              evolution <- o .: "evolution"
-              case _Object evolution of
-                Just ev -> do
-                  count <- ev .: "operation_count"
-                  assertBool "evolution has operation count"
-                    (maybe False (> 0) count)
-                  -- Should have a summary text
-                  summary <- ev .: "summary"
-                  assertBool "evolution has summary"
-                    (isJust summary)
+              case o .: "evolution" of
+                Just evolution ->
+                  case _Object evolution of
+                    Just ev ->
+                      case (ev .: "operation_count" :: Maybe Int, ev .: "summary" :: Maybe (Maybe Text)) of
+                        (Just count, Just summary) -> do
+                          assertBool "evolution has operation count" (count > 0)
+                          assertBool "evolution has summary" (isJust summary)
+                        _ -> assertFailure "could not parse evolution fields"
+                    Nothing -> assertFailure "could not parse evolution"
                 Nothing -> assertFailure "could not parse evolution"
             Nothing -> assertFailure "could not parse collapsed"
 
@@ -658,7 +661,46 @@ testCompareBranchOnly =
         Nothing -> assertFailure "compare parse failed"
 
 -- =====================================================================
--- Test 11: Compare CLI uses same read service
+-- Test 11: Reverse compare reports branch-only ADRs as removed
+-- =====================================================================
+
+testCompareReverseShowsRemoved :: TestTree
+testCompareReverseShowsRemoved =
+  testCase "compare_reverse_reports_removed_adrs" $
+    withSystemTempDirectory "adrai compare reverse" $ \tmpDir -> do
+      repo <- createTestRepo tmpDir
+      _ <- createAdr repo
+        "Main ADR"
+        "Decision on main branch"
+        "## Decision\nMain decision."
+        ["main"]
+        ["src/**"]
+      mainHead <- headCommit repo
+
+      git repo ["switch", "-c", "feature"]
+      _ <- createAdr repo
+        "Feature ADR"
+        "Decision on feature branch"
+        "## Decision\nFeature decision."
+        ["feature"]
+        ["src/feature/**"]
+      featureHead <- headCommit repo
+
+      reverseCompare <- adraiJsonOrThrow repo
+        [ "compare",
+          T.unpack featureHead,
+          T.unpack mainHead,
+          "--json"
+        ]
+      case parseCompareResults reverseCompare of
+        Just (schema, _, _, entries) -> do
+          schema @?= "adrai/compare/v1"
+          let kinds = mapMaybe compareEntryKind entries
+          assertBool "reverse compare shows removed" ("removed" `elem` kinds)
+        Nothing -> assertFailure "reverse compare parse failed"
+
+-- =====================================================================
+-- Test 12: Compare CLI uses same read service
 -- =====================================================================
 
 testCompareJsonMatchesProgrammatic :: TestTree
@@ -851,6 +893,10 @@ isLeft :: Either a b -> Bool
 isLeft (Left _)  = True
 isLeft (Right _) = False
 
+isRight :: Either a b -> Bool
+isRight (Left _)  = False
+isRight (Right _) = True
+
 -- | Encode Aeson Value to Lazy ByteString (needed for Text checking).
 encode :: Data.Aeson.Value -> LBS.ByteString
 encode = Data.Aeson.encode
@@ -858,7 +904,4 @@ encode = Data.Aeson.encode
 -- | Catch git failure and return unit (useful for merges that may fail).
 catchGitFailure :: IO () -> IO ()
 catchGitFailure action =
-  action `catch` (\(_ :: SomeException) -> pure ())
-  where
-    catch :: IO () -> (SomeException -> IO ()) -> IO ()
-    catch m handler = m `catch` handler
+  action `Exception.catch` (\(_ :: SomeException) -> pure ())

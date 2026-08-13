@@ -113,7 +113,7 @@ commitFilesWithMsg repo files message = do
 getMeta :: FilePath -> String -> IO (Maybe String)
 getMeta dbPath key = do
   conn <- open dbPath
-  result <- query conn "SELECT value FROM meta WHERE key = ?" [Only key] :: IO [Only String]
+  result <- query conn "SELECT value FROM meta WHERE key = ?" (Only key) :: IO [Only String]
   close conn
   pure $ listToMaybe result >>= \(Only v) -> Just v
 
@@ -473,7 +473,8 @@ testTrailerInNoise =
             compileDocsParsed cr @?= 0
             -- Check that doctor finds REDUNDANT_OPERATION_TRAILER
             issues <- doctorIssuesFromCli repo
-            let codes = [ code
+            let codes :: [Text]
+                codes = [ code
                         | issue <- issues,
                           Just o <- [_Object issue],
                           Just code <- [o .: "code"]
@@ -627,7 +628,7 @@ testStableReleaseSurvivesMerges =
       commitFilesWithMsg repo
         [ ( "src/noise/" ++ show train ++ "/change.txt",
             encodeUtf8 (T.pack ("train=" ++ show train ++ "\n")) ) ]
-        ("product noise " ++ show train)
+        (T.pack ("product noise " ++ show train))
       git repo ["switch", "develop"]
       git repo
         [ "merge", "--no-ff", "feature/noise-" ++ show train,
@@ -679,7 +680,7 @@ testNearestCachedAncestor =
       commitFilesWithMsg repo
         [ ( "src/main-noise/" ++ show i ++ ".txt",
             encodeUtf8 (T.pack (show i ++ "\n")) ) ]
-        ("main noise " ++ show i)
+        (T.pack ("main noise " ++ show i))
 
     -- Compile - should use nearest cached ancestor
     result <- adraiJsonOrThrow repo ["compile", "--json"]
@@ -762,8 +763,8 @@ testDivergentAdStates =
       git repo ["switch", "-c", "feature/noise-" ++ show train]
       commitFilesWithMsg repo
         [ ( "src/noise/" ++ show train ++ "/change.txt",
-            encodeUtf8 ("train=" <> show train <> "\n") ) ]
-        ("product noise " <> show train)
+             encodeUtf8 ("train=" <> T.pack (show train) <> "\n") ) ]
+        ("product noise " <> T.pack (show train))
       git repo ["switch", "develop"]
       git repo
         [ "merge", "--no-ff", "feature/noise-" ++ show train,
@@ -796,7 +797,7 @@ testDivergentAdStates =
 -- =====================================================================
 
 infix 4 <=?
-(<=?) :: (Ord a) => a -> a -> IO ()
+(<=?) :: (Ord a, Show a) => a -> a -> IO ()
 a <=? b = assertBool (show a <> " should be <= " <> show b) (a <= b)
 
 -- ---------------------------------------------------------------------------
@@ -839,7 +840,7 @@ getFileStat path = do
 getFileModTime :: FilePath -> IO Integer
 getFileModTime path = do
   t <- getModificationTime path
-  let secs = realToFrac (t :: UTCTime) :: Double
+  let secs = realToFrac (utcTimeToPOSIXSeconds t) :: Double
   pure $ ceiling (secs * 1e9 :: Double)
 
 -- ---------------------------------------------------------------------------
