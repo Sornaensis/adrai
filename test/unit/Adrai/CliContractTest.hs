@@ -46,6 +46,7 @@ import Adrai.CliRunner
     parseArguments,
     parser,
     dispatchWith,
+    emitRenderedToHandles,
     renderCreateOutcome,
     renderFailureOutcome,
     renderInitOutcome,
@@ -67,6 +68,7 @@ import Adrai.Types (RepoPath (..))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Key as Aeson.Key
+import qualified Data.ByteString as BS
 import Data.Aeson (Value (..), Object)
 import qualified Data.Text.Encoding as Text.Encoding
 import Data.Text (Text)
@@ -78,6 +80,8 @@ import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
 import System.Exit (ExitCode (..))
+import System.IO (IOMode (WriteMode), withBinaryFile)
+import System.IO.Temp (withSystemTempDirectory)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Foldable (for_)
 import Data.List (sort)
@@ -752,6 +756,29 @@ mutationCliContractTests =
     , testCase "init JSON is exact canonical public v1 bytes" $
         renderedStdout (renderInitOutcome initResult indexedResult True) @?=
           "{\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"initialized\": true,\n  \"operation\": \"init\"\n}\n"
+    , testCase "emitted success and failure output preserves exact UTF-8 LF bytes" $ do
+        withSystemTempDirectory "adrai cli bytes" $ \temporary -> do
+          let success = renderInitOutcome initResult indexedResult True
+              failure = renderFailureOutcome (CliUserFailure "invalid input")
+              successStdout = temporary <> "/success.stdout"
+              successStderr = temporary <> "/success.stderr"
+              failureStdout = temporary <> "/failure.stdout"
+              failureStderr = temporary <> "/failure.stderr"
+          successExit <- withBinaryFile successStdout WriteMode $ \output ->
+            withBinaryFile successStderr WriteMode $ \errorOutput ->
+              emitRenderedToHandles output errorOutput success
+          failureExit <- withBinaryFile failureStdout WriteMode $ \output ->
+            withBinaryFile failureStderr WriteMode $ \errorOutput ->
+              emitRenderedToHandles output errorOutput failure
+          successExit @?= ExitSuccess
+          failureExit @?= ExitFailure 2
+          successBytes <- BS.readFile successStdout
+          failureBytes <- BS.readFile failureStderr
+          successBytes @?= Text.Encoding.encodeUtf8 (renderedStdout success)
+          failureBytes @?= Text.Encoding.encodeUtf8 (renderedStderr failure)
+          assertBool "canonical JSON LF bytes were translated to CRLF" (not ("\r\n" `BS.isInfixOf` successBytes))
+          BS.readFile successStderr >>= (@?= BS.empty)
+          BS.readFile failureStdout >>= (@?= BS.empty)
     , testCase "create plain output uses canonical ID order and index failure remains success" $ do
         let rendered = renderCreateOutcome createResult [] indexFailureResult False
         renderedExitCode rendered @?= ExitSuccess

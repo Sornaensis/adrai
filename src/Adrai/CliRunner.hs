@@ -28,6 +28,7 @@ module Adrai.CliRunner
     renderInitOutcome,
     renderCreateOutcome,
     renderFailureOutcome,
+    emitRenderedToHandles,
     run,
   )
 where
@@ -84,7 +85,7 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Directory (createDirectoryIfMissing)
 import System.Environment (getArgs, lookupEnv)
 import System.FilePath ((</>))
-import System.IO (hGetContents, hPutStr, stderr, stdin, stdout)
+import System.IO (Handle, hGetContents, stderr, stdin, stdout)
 import System.Random (randomRIO)
 import Control.Monad (replicateM)
 import Control.Exception (SomeException, displayException, try)
@@ -338,7 +339,7 @@ run = do
     Opt.Failure failure -> do
       let (message, parserExit) = Opt.renderFailure failure "adrai"
           exitCode = if parserExit == ExitSuccess then ExitSuccess else ExitFailure 2
-      hPutStr stderr message
+      writeUtf8 stderr (Text.pack message)
       exitWith exitCode
     Opt.CompletionInvoked completion -> Opt.execCompletion completion "adrai" >>= putStr
   where
@@ -768,7 +769,16 @@ renderFailureOutcome failure =
     CliConflictFailure message -> CliRendered "" ("adrai: conflict: " <> message <> "\n") (ExitFailure 3)
 
 emitRendered :: CliRendered -> IO ExitCode
-emitRendered rendered = do
-  if Text.null (renderedStdout rendered) then pure () else hPutStr stdout (Text.unpack (renderedStdout rendered))
-  if Text.null (renderedStderr rendered) then pure () else hPutStr stderr (Text.unpack (renderedStderr rendered))
+emitRendered = emitRenderedToHandles stdout stderr
+
+-- | Emit CLI output as raw UTF-8 bytes.  This deliberately avoids the
+-- platform text-mode newline translation performed by 'hPutStr' on Windows,
+-- so canonical JSON's LF bytes stay canonical on every supported platform.
+emitRenderedToHandles :: Handle -> Handle -> CliRendered -> IO ExitCode
+emitRenderedToHandles output errorOutput rendered = do
+  if Text.null (renderedStdout rendered) then pure () else writeUtf8 output (renderedStdout rendered)
+  if Text.null (renderedStderr rendered) then pure () else writeUtf8 errorOutput (renderedStderr rendered)
   pure (renderedExitCode rendered)
+
+writeUtf8 :: Handle -> Text -> IO ()
+writeUtf8 handle = ByteString.hPut handle . TextEncoding.encodeUtf8
