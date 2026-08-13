@@ -164,7 +164,7 @@ manifestJson mutation =
   "{\"schema\":\"adrai/coverage-ledger/v1\",\"expectedTotal\":206,\"categories\":["
     <> intercalate "," ["{\"file\":\"" <> fileName <> "\",\"category\":\"" <> category <> "\",\"expectedCount\":" <> show count <> "}" | (fileName, category, count) <- frozenCategories]
     <> "],\"allowedStates\":[\"planned\",\"partial\",\"covered\",\"installed-haskell-equivalent\",\"not-applicable\"],\"closureStates\":"
-    <> if mutation == PolicyDrift then "[\"planned\",\"covered\",\"installed-haskell-equivalent\",\"not-applicable\"]" else "[\"covered\",\"installed-haskell-equivalent\",\"not-applicable\"]"
+    <> (if mutation == PolicyDrift then "[\"planned\",\"covered\",\"installed-haskell-equivalent\",\"not-applicable\"]" else "[\"covered\",\"installed-haskell-equivalent\",\"not-applicable\"]")
     <> ",\"gapStates\":[\"planned\",\"partial\"],\"allowedPhaseOwners\":[\"P2\",\"P3\",\"P4\",\"P5\",\"P6\",\"P7\"],\"allowedHaskellTestTypes\":[\"unit\",\"property\",\"integration\",\"golden\",\"e2e\"],\"allowedHaskellTestDirectories\":[\"test/unit/\",\"test/property/\",\"test/integration/\",\"test/golden/\",\"test/e2e/\"]}"
 
 fragmentJson :: Mutation -> Int -> String -> Int -> String
