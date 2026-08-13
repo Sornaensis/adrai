@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Adrai.MutationServiceTest (tests) where
 
@@ -18,6 +19,7 @@ import Adrai.Format.Document
   )
 import Adrai.Git
   ( GitHeadState (..),
+    GitOid (..),
     Repository,
     discoverRepository,
     gitOidText,
@@ -26,10 +28,12 @@ import Adrai.Git
   )
 import Adrai.GitTestSupport
   ( commitFile,
+    commitFiles,
     gitSuccess,
     initTestRepository,
     outputText,
   )
+import Adrai.Fixture.CompilerRepository (healthyCompilerFiles)
 import Adrai.Provenance
   ( ProvenanceObjectId (..),
     eventKindText,
@@ -46,7 +50,18 @@ import Adrai.Provenance
 import Adrai.Scope (mkScopePattern)
 import Adrai.Service.Mutation
   ( CreateResult (..),
+    InitResult (..),
     createAdrCommand,
+    initCommand,
+  )
+import Adrai.Service.PostCommitIndex
+  ( IndexWarning (..),
+    PostCommitIndexError (..),
+    PostCommitIndexDependencies (..),
+    PostCommitIndexResult (..),
+    compilePostCommitIndex,
+    compilePostCommitIndexWith,
+    postCommitIndexDependencies,
   )
 import Adrai.Service.Transaction (TransactionError)
 import Adrai.Types
@@ -66,6 +81,8 @@ import qualified Data.Text as Text
 import Data.Either (isLeft)
 import Data.List (sort)
 import qualified Data.Set as Set
+import Control.Exception (bracket, throwIO)
+import Database.SQLite.Simple (Only (..), close, open, query_)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -75,10 +92,147 @@ import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 tests :: TestTree
 tests =
   testGroup
-    "P6-02A.0a create service transaction"
-    [ testCase "create commits four sealed records and returns transaction result" createCommitsExactlyFourRecords
+    "P6-02A mutation service results"
+    [ testCase "init commits bootstrap files and returns transaction result" initCommitsBootstrapFiles
+    , testCase "init transaction failure returns no success result" initFailureReturnsTransactionError
+    , testCase "post-commit indexing projects exact commits without changing mutation truth" postCommitIndexProjectsExactCommit
+    , testCase "post-commit indexing projects actual compiler warnings in stable order" postCommitIndexProjectsCompilerWarnings
+    , testCase "post-commit index failure preserves the committed HEAD" postCommitIndexFailurePreservesCommit
+    , testCase "post-commit index exposes representative open compile and close failures" postCommitIndexFailureBoundaries
+    , testCase "create commits four sealed records and returns transaction result" createCommitsExactlyFourRecords
     , testCase "create failure leaves HEAD and unrelated staged index entry unchanged" createFailurePreservesRepositoryState
     ]
+
+initCommitsBootstrapFiles :: IO ()
+initCommitsBootstrapFiles =
+  withSystemTempDirectory "adrai init service" $ \temporary -> do
+    let directory = temporary </> "repository"
+    initTestRepository directory
+    repository <- assertRight =<< discoverRepository systemGit directory
+    initialized <- assertRight =<< initCommand repository
+    headAfter <- gitText directory ["rev-parse", "HEAD"]
+    initInitialized initialized @?= True
+    initOperationId initialized @?= "init"
+    headAfter @?= gitOidText (initCommitOid initialized)
+    sort (map repoPathText (initCreatedPaths initialized)) @?= [".adrai.toml", ".gitattributes", ".gitignore"]
+    assertBool "bootstrap transaction reports its own index refresh result" (initIndexUpdated initialized)
+
+initFailureReturnsTransactionError :: IO ()
+initFailureReturnsTransactionError =
+  withCreateRepository $ \directory repository oldHead -> do
+    _ <- gitSuccess directory ["checkout", "--detach"] BS.empty
+    result <- initCommand repository
+    assertBool "detached bootstrap transaction must not produce InitResult" (isLeft result)
+    gitText directory ["rev-parse", "HEAD"] >>= (@?= oldHead)
+
+postCommitIndexProjectsExactCommit :: IO ()
+postCommitIndexProjectsExactCommit =
+  withSystemTempDirectory "adrai post-commit index" $ \temporary -> do
+    let directory = temporary </> "repository"
+        initDatabase = temporary </> "init.sqlite"
+        createDatabase = temporary </> "create.sqlite"
+    initTestRepository directory
+    repository <- assertRight =<< discoverRepository systemGit directory
+    initialized <- assertRight =<< initCommand repository
+    assertIndexed repository (initCommitOid initialized) initDatabase
+    created <- assertRight =<< runCreate repository
+    assertIndexed repository (createCommitOid created) createDatabase
+
+postCommitIndexFailurePreservesCommit :: IO ()
+postCommitIndexFailurePreservesCommit =
+  withSystemTempDirectory "adrai post-commit index failure" $ \temporary -> do
+    let directory = temporary </> "repository"
+        database = temporary </> "failed.sqlite"
+    initTestRepository directory
+    repository <- assertRight =<< discoverRepository systemGit directory
+    initialized <- assertRight =<< initCommand repository
+    let missing = GitOid "0000000000000000000000000000000000000000"
+    result <- compilePostCommitIndex repository missing database
+    postCommitIndexed result @?= False
+    postCommitDatabase result @?= Nothing
+    postCommitIndexRevision result @?= Nothing
+    postCommitIndexWarnings result @?= []
+    case postCommitIndexError result of
+      Just (PostCommitIndexResolveFailure _) -> pure ()
+      other -> assertFailure ("expected actual resolve failure, got " <> show other)
+    gitText directory ["rev-parse", "HEAD"] >>= (@?= gitOidText (initCommitOid initialized))
+
+postCommitIndexProjectsCompilerWarnings :: IO ()
+postCommitIndexProjectsCompilerWarnings =
+  withSystemTempDirectory "adrai post-commit warning projection" $ \temporary -> do
+    let directory = temporary </> "repository"
+        database = temporary </> "warnings.sqlite"
+        missingBasis = GitOid "ffffffffffffffffffffffffffffffffffffffff"
+    initTestRepository directory
+    _ <- commitFile directory "seed.txt" "seed\n"
+    files <- assertRight (healthyCompilerFiles missingBasis)
+    commitText <- commitFiles directory files
+    repository <- assertRight =<< discoverRepository systemGit directory
+    let commitOid = GitOid commitText
+        expectedWarnings = [IndexWarning "BASIS_COMMIT_UNAVAILABLE" "provenance basis is missing or is not a commit object"]
+    result <- compilePostCommitIndex repository commitOid database
+    postCommitIndexed result @?= True
+    postCommitIndexRevision result @?= Just commitOid
+    postCommitIndexWarnings result @?= expectedWarnings
+    bracket (open database) close $ \connection -> do
+      resolved <- query_ connection "SELECT value FROM meta WHERE key = 'resolved_oid'" :: IO [Only Text.Text]
+      resolved @?= [Only (gitOidText commitOid)]
+
+postCommitIndexFailureBoundaries :: IO ()
+postCommitIndexFailureBoundaries =
+  withSystemTempDirectory "adrai post-commit injected failures" $ \temporary -> do
+    let directory = temporary </> "repository"
+        database = temporary </> "failure.sqlite"
+    initTestRepository directory
+    repository <- assertRight =<< discoverRepository systemGit directory
+    initialized <- assertRight =<< initCommand repository
+    let commitOid = initCommitOid initialized
+        openFailure = postCommitIndexDependencies {postCommitOpenDatabase = \_ -> throwIO (userError "open failure")}
+        compileFailure = postCommitIndexDependencies {postCommitColdCompile = \_ _ -> throwIO (userError "compile failure")}
+        closeFailure = postCommitIndexDependencies {postCommitCloseDatabase = \connection -> close connection >> throwIO (userError "close failure")}
+        combinedFailure =
+          postCommitIndexDependencies
+            { postCommitColdCompile = \_ _ -> throwIO (userError "compile failure"),
+              postCommitCloseDatabase = \connection -> close connection >> throwIO (userError "close failure")
+            }
+    assertFailureKind (compilePostCommitIndexWith openFailure repository commitOid database) isOpenFailure
+    assertFailureKind (compilePostCommitIndexWith compileFailure repository commitOid database) isCompileFailure
+    assertFailureKind (compilePostCommitIndexWith closeFailure repository commitOid database) isCloseFailure
+    assertFailureKind (compilePostCommitIndexWith combinedFailure repository commitOid database) isOrderedCombinedFailure
+  where
+    assertFailureKind action predicate = do
+      result <- action
+      postCommitIndexed result @?= False
+      postCommitDatabase result @?= Nothing
+      postCommitIndexRevision result @?= Nothing
+      postCommitIndexWarnings result @?= []
+      assertBool ("unexpected index failure: " <> show (postCommitIndexError result)) (maybe False predicate (postCommitIndexError result))
+    isOpenFailure = \case
+      PostCommitIndexOpenFailure _ -> True
+      _ -> False
+    isCompileFailure = \case
+      PostCommitIndexCompileException _ -> True
+      _ -> False
+    isCloseFailure = \case
+      PostCommitIndexCloseFailure _ -> True
+      _ -> False
+    isOrderedCombinedFailure = \case
+      PostCommitIndexMultipleFailures [PostCommitIndexCompileException _, PostCommitIndexCloseFailure _] -> True
+      _ -> False
+
+assertIndexed :: Repository -> GitOid -> FilePath -> IO ()
+assertIndexed repository commitOid database = do
+  result <- compilePostCommitIndex repository commitOid database
+  postCommitIndexed result @?= True
+  postCommitDatabase result @?= Just database
+  postCommitIndexRevision result @?= Just commitOid
+  postCommitIndexError result @?= Nothing
+  postCommitIndexWarnings result @?= sort (postCommitIndexWarnings result)
+  bracket (open database) close $ \connection -> do
+    schemas <- query_ connection "SELECT value FROM meta WHERE key = 'schema'" :: IO [Only Text.Text]
+    schemas @?= [Only "adrai-cache/1"]
+    resolved <- query_ connection "SELECT value FROM meta WHERE key = 'resolved_oid'" :: IO [Only Text.Text]
+    resolved @?= [Only (gitOidText commitOid)]
 
 createCommitsExactlyFourRecords :: IO ()
 createCommitsExactlyFourRecords =

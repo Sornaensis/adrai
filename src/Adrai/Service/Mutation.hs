@@ -154,6 +154,10 @@ import System.Random (StdGen, getStdRandom, uniformR)
 data InitResult
   = InitResult
       { initInitialized :: Bool
+      , initOperationId :: String
+      , initCommitOid :: GitOid
+      , initCreatedPaths :: [RepoPath]
+      , initIndexUpdated :: Bool
       }
   deriving (Eq, Show)
 
@@ -182,8 +186,20 @@ initCommand repository =
                     configExpectedHead = oldHead,
                     configGenerated = generated
                   }
-          _ <- commitBootstrapFiles repository config
-          pure (Right (InitResult True))
+          commitBootstrapFiles repository config >>= \case
+            Left transactionError ->
+              pure (Left transactionError)
+            Right TransactionResult {..} ->
+              pure
+                ( Right
+                    InitResult
+                      { initInitialized = True
+                      , initOperationId = transactionOperationId
+                      , initCommitOid = transactionCommitOid
+                      , initCreatedPaths = transactionCreatedPaths
+                      , initIndexUpdated = transactionIndexUpdated
+                      }
+                )
         Left err ->
           pure (Left (Stage3ValidateState ("resolve HEAD: " <> err)))
   where
