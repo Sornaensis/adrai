@@ -44,6 +44,7 @@ import Adrai.Git
     GitOid (..),
     gitOidText,
     runRepository,
+    runRepositoryWithEnvironment,
     GitError (..),
     GitProcessResult (..),
     repositoryCommonDir,
@@ -467,7 +468,7 @@ createTemporaryIndex repository oldHead generatedPaths = do
 
   let env = Map.singleton "GIT_INDEX_FILE" idxPath
   let gitCmd = \args ->
-        runRepository repository ("temp-index " <> T.pack (show args)) args BS.empty
+        runRepositoryWithEnvironment repository env ("temp-index " <> T.pack (show args)) args BS.empty
 
   -- read-tree <old_head> (or --empty for unborn)
   readTreeResult <-
