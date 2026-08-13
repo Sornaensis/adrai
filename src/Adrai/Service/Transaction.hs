@@ -32,6 +32,7 @@ module Adrai.Service.Transaction
     nullOid,
     -- * Git plumbing output
     parseSingleOidFromOutput,
+    commitTree,
     -- * Core transaction functions
     commitAppendOnlyOperation,
     commitBootstrapFiles,
@@ -565,8 +566,8 @@ commitTree repository oldHead treeOid subject operationId trailers = do
 
   args <-
     if isNullOid oldHead
-      then pure ["commit-tree", Text.unpack (gitOidText treeOid), "-i"]
-      else pure ["commit-tree", Text.unpack (gitOidText treeOid), "-p", Text.unpack (gitOidText oldHead), "-i"]
+      then pure ["commit-tree", Text.unpack (gitOidText treeOid)]
+      else pure ["commit-tree", Text.unpack (gitOidText treeOid), "-p", Text.unpack (gitOidText oldHead)]
 
   result <- runRepository repository "commit-tree" args (encodeUtf8 message)
   pure $
@@ -953,8 +954,8 @@ commitBootstrapFiles repository config@TransactionConfig{..} = do
                 -- Stage 7: Commit tree
                 commitArgs <-
                   if isNullOid oldHead
-                    then pure ["commit-tree", Text.unpack (gitOidText treeOid), "-i"]
-                    else pure ["commit-tree", Text.unpack (gitOidText treeOid), "-p", Text.unpack (gitOidText oldHead), "-i"]
+                    then pure ["commit-tree", Text.unpack (gitOidText treeOid)]
+                    else pure ["commit-tree", Text.unpack (gitOidText treeOid), "-p", Text.unpack (gitOidText oldHead)]
 
                 let message =
                       T.unlines
