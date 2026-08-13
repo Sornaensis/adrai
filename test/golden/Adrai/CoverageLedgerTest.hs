@@ -29,7 +29,8 @@ tests =
       testCase "test directories, types, phases, and states are approved" testApprovedEnums,
       testCase "every row carries substantive evidence" testEvidence,
       testCase "translation-only states are limited to distribution rows" testTranslationStates,
-      testCase "source-module declarations account for every row" testSourceModuleTotals
+      testCase "source-module declarations account for every row" testSourceModuleTotals,
+      testCase "JSON decoder strips exactly one leading UTF-8 BOM" testUtf8BomDecoding
     ]
 
 data LedgerManifest = LedgerManifest
@@ -363,9 +364,34 @@ loadFragment root specification = do
 decodeJsonFile :: (Aeson.FromJSON value) => FilePath -> IO value
 decodeJsonFile path = do
   bytes <- BS.readFile path
-  case Aeson.eitherDecodeStrict' bytes of
+  case decodeJsonBytes bytes of
     Left problem -> assertFailure (path <> " is invalid: " <> problem) >> fail "unreachable"
     Right value -> pure value
+
+decodeJsonBytes :: Aeson.FromJSON value => BS.ByteString -> Either String value
+decodeJsonBytes = Aeson.eitherDecodeStrict' . stripUtf8Bom
+
+stripUtf8Bom :: BS.ByteString -> BS.ByteString
+stripUtf8Bom bytes
+  | utf8Bom `BS.isPrefixOf` bytes = BS.drop (BS.length utf8Bom) bytes
+  | otherwise = bytes
+  where
+    utf8Bom = BS.pack [0xEF, 0xBB, 0xBF]
+
+testUtf8BomDecoding :: Assertion
+testUtf8BomDecoding = do
+  let json = "{\"ok\":true}"
+      utf8Bom = BS.pack [0xEF, 0xBB, 0xBF]
+      decoded = Aeson.eitherDecodeStrict' json :: Either String Aeson.Value
+  decodeJsonBytes (utf8Bom <> json) @?= decoded
+  stripUtf8Bom json @?= json
+  stripUtf8Bom (utf8Bom <> utf8Bom <> json) @?= utf8Bom <> json
+  case (decodeJsonBytes (utf8Bom <> utf8Bom <> json) :: Either String Aeson.Value) of
+    Left _ -> pure ()
+    Right _ -> assertFailure "only one leading BOM may be removed"
+  case (decodeJsonBytes (utf8Bom <> "{") :: Either String Aeson.Value) of
+    Left _ -> pure ()
+    Right _ -> assertFailure "malformed JSON must remain rejected after BOM stripping"
 
 findLedgerRoot :: IO FilePath
 findLedgerRoot = do
