@@ -60,6 +60,7 @@ module Adrai.Git
     decodeGitBlobPayload,
     validateGitBatchTrailing,
     runRepository,
+    runRepositoryWithEnvironment,
     GitOid(..),
     gitOidText,
     OverlayFingerprint,
@@ -86,6 +87,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Text.Encoding.Error (lenientDecode)
 import Data.Word (Word64)
 import System.Directory (canonicalizePath, doesDirectoryExist)
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath (equalFilePath)
 import System.IO (Handle, hClose, hFlush)
@@ -96,6 +98,7 @@ import System.Process.Typed
     getStdin,
     getStdout,
     proc,
+    setEnv,
     setStderr,
     setStdin,
     setStdout,
@@ -247,10 +250,13 @@ boundedDiagnostic raw =
   where
     normalizeNewlines = Text.replace "\r" "\n" . Text.replace "\r\n" "\n"
 
-runGit :: GitClient -> FilePath -> Text -> [String] -> ByteString -> IO (Either GitError GitProcessResult)
-runGit (GitClient executable) commandDirectory operation arguments stdinBytes = do
-  let config =
-        setStderr createPipe
+runGit :: GitClient -> FilePath -> Map String String -> Text -> [String] -> ByteString -> IO (Either GitError GitProcessResult)
+runGit (GitClient executable) commandDirectory environment operation arguments stdinBytes = do
+  inheritedEnvironment <- Map.fromList <$> getEnvironment
+  let effectiveEnvironment = Map.toList (environment `Map.union` inheritedEnvironment)
+      config =
+        setEnv effectiveEnvironment
+          . setStderr createPipe
           . setStdout createPipe
           . setStdin createPipe
           $ proc executable ("-C" : commandDirectory : arguments)
@@ -300,8 +306,8 @@ exitCodeNumber (ExitFailure value) = value
 
 discoverRepository :: GitClient -> FilePath -> IO (Either GitError Repository)
 discoverRepository client input = do
-  insideResult <- runGit client input "discover inside-worktree" ["rev-parse", "--is-inside-work-tree"] BS.empty
-  bareResult <- runGit client input "discover bare" ["rev-parse", "--is-bare-repository"] BS.empty
+  insideResult <- runGit client input Map.empty "discover inside-worktree" ["rev-parse", "--is-inside-work-tree"] BS.empty
+  bareResult <- runGit client input Map.empty "discover bare" ["rev-parse", "--is-bare-repository"] BS.empty
   case (insideResult, bareResult) of
     (Left problem, _) -> pure (Left problem)
     (_, Left problem) -> pure (Left problem)
@@ -361,6 +367,7 @@ discoverDetails client input hasWorktree = do
         runGit
           client
           commonDirectory
+          Map.empty
           "discover common storage"
           ["--git-dir", commonDirectory, "rev-parse", "--is-bare-repository"]
           BS.empty
@@ -396,7 +403,7 @@ discoverDetails client input hasWorktree = do
 
 pathProbe :: GitClient -> FilePath -> Text -> [String] -> IO (Either GitError FilePath)
 pathProbe client directory operation arguments = do
-  result <- runGit client directory operation arguments BS.empty
+  result <- runGit client directory Map.empty operation arguments BS.empty
   case result of
     Left problem -> pure (Left problem)
     Right processResult
@@ -518,7 +525,16 @@ decodeGitCommitGraph raw
     rejectDuplicate _ = Left (GitInvalidOutput "reachable commit graph" (GitMalformedObjectHeader "duplicate commit node"))
 
 runRepository :: Repository -> Text -> [String] -> ByteString -> IO (Either GitError GitProcessResult)
-runRepository repository = runGit (repositoryClient repository) (repositoryCommandDirectory repository)
+runRepository repository = runRepositoryWithEnvironment repository Map.empty
+
+-- | Run a repository command with explicit environment-variable overrides.
+--
+-- The override map is layered over the process environment so that callers can
+-- direct a single Git invocation (for example, with @GIT_INDEX_FILE@) without
+-- losing inherited variables such as @PATH@.
+runRepositoryWithEnvironment :: Repository -> Map String String -> Text -> [String] -> ByteString -> IO (Either GitError GitProcessResult)
+runRepositoryWithEnvironment repository environment =
+  runGit (repositoryClient repository) (repositoryCommandDirectory repository) environment
 
 listTreeEntriesAt :: Repository -> GitOid -> [RepoPath] -> IO (Either GitError [GitTreeEntry])
 listTreeEntriesAt repository revision roots = do

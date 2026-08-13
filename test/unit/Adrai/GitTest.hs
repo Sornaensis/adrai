@@ -1,16 +1,22 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Adrai.GitTest (tests) where
 
 import Adrai.Git
+import Adrai.GitTestSupport (commitFile, gitSuccess, initTestRepository)
 import Adrai.Provenance (mkGitOid)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.Either (isLeft)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Numeric (showHex)
+import System.Exit (ExitCode (ExitSuccess))
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit ((@?=), assertBool, testCase)
+import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
 tests :: TestTree
 tests =
@@ -69,6 +75,43 @@ tests =
         assertBool "missing framing LF" (isLeft (decodeGitBlobPayload expected 3 "abc" "x"))
         validateGitBatchTrailing BS.empty @?= Right ()
         assertBool "trailing bytes" (isLeft (validateGitBatchTrailing "x"))
+    , testCase "environment overrides isolate alternate Git indexes" $
+        withSystemTempDirectory "adrai-git-environment" $ \temporary -> do
+          let repositoryPath = temporary </> "repository"
+              originalPath = "original-staged.txt"
+              alternatePath = "alternate-staged.txt"
+              alternateIndex = repositoryPath </> ".git" </> "adrai-alternate.index"
+          initTestRepository repositoryPath
+          _ <- commitFile repositoryPath "seed.txt" "seed"
+          BS.writeFile (repositoryPath </> originalPath) "original staged content"
+          _ <- gitSuccess repositoryPath ["add", "--", originalPath] BS.empty
+          originalIndexBefore <- BS.readFile (repositoryPath </> ".git" </> "index")
+          BS.writeFile (repositoryPath </> alternatePath) "alternate staged content"
+          repository <- discoverRepository systemGit repositoryPath >>= \case
+            Left problem -> assertFailure (show problem)
+            Right discovered -> pure discovered
+          alternateAdd <-
+            runRepositoryWithEnvironment
+              repository
+              (Map.singleton "GIT_INDEX_FILE" alternateIndex)
+              "alternate index add"
+              ["add", "--", alternatePath]
+              BS.empty
+          case alternateAdd of
+            Left problem -> assertFailure (show problem)
+            Right result -> processExitCode result @?= ExitSuccess
+          alternateEntries <-
+            runRepositoryWithEnvironment
+              repository
+              (Map.singleton "GIT_INDEX_FILE" alternateIndex)
+              "alternate index entries"
+              ["diff", "--cached", "--name-only"]
+              BS.empty
+          case alternateEntries of
+            Left problem -> assertFailure (show problem)
+            Right result -> processStdout result @?= BS8.pack (alternatePath <> "\nseed.txt\n")
+          originalIndexAfter <- BS.readFile (repositoryPath </> ".git" </> "index")
+          originalIndexAfter @?= originalIndexBefore
     ]
 
 oid :: Int -> GitOid
