@@ -20,8 +20,57 @@
 module Adrai.MutationE2ETest (tests) where
 
 import Adrai.Integration.CLI
+import Adrai.Domain (mkDomain)
+import Adrai.Format.Config (defaultConfigText)
+import Adrai.Format.Document
+  ( AppliesToPayload (..),
+    ConnectionPayload (..),
+    ConnectionRecord (..),
+    DecisionRecord (..),
+    DomainsPayload (..),
+    ManagedRecord (..),
+    ParsedManagedDocument (..),
+    StatusPayload (..),
+    StatusState (StatusActive),
+    parseManagedDocument,
+    sealManagedDocument,
+  )
+import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
+import Adrai.Git (gitOidText)
+import Adrai.Provenance
+  ( ProvenanceCapsule,
+    ProvenanceObjectId (..),
+    eventKindText,
+    provenanceActor,
+    provenanceBasis,
+    provenanceBranchHint,
+    provenanceEventKind,
+    provenanceInputs,
+    provenanceLineAnchors,
+    provenanceObjectId,
+    provenanceOperationId,
+    provenanceParents,
+    sha256Digest,
+    provenanceTimestampMs,
+    provenanceToolVersion,
+    provenanceUpstreamHint,
+  )
+import Adrai.Scope (mkScopePattern)
+import Adrai.Types
+  ( Actor,
+    ActorKind (HumanActor),
+    ProvenanceInputs (..),
+    adrIdText,
+    connectionIdText,
+    mkActor,
+    mkRepoPath,
+    operationIdText,
+    recordIdText,
+    repoPathText,
+  )
+import Control.Exception (bracket)
 import Control.Monad (unless, void)
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, sort)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text, strip, unpack)
 import qualified Data.Text as T
@@ -31,6 +80,7 @@ import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
+import Database.SQLite.Simple (Only (..), close, open, query_)
 import System.Directory
   ( createDirectoryIfMissing,
     doesDirectoryExist,
@@ -40,7 +90,7 @@ import System.Directory
 import System.FilePath ((</>), takeDirectory)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Exit (ExitCode (..))
-import System.Environment (lookupEnv)
+import System.Environment (getEnvironment, lookupEnv)
 import System.Process.Typed
   ( readProcess,
     setEnv,
@@ -120,6 +170,118 @@ adraiRaw :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString
 adraiRaw repoPath args = do
   exe <- lookupEnv "ADRAI_EXE" >>= \p -> pure $ maybe "adrai" id p
   readProcess (setEnv gitEnv (proc exe ("--repo" : repoPath : args)))
+
+-- | Launch the real executable selected explicitly by the test environment.
+-- These P6-02A cases deliberately never fall back to a PATH lookup: they are
+-- executable-bound contract tests rather than tests of a development shell.
+adraiRequiredRaw :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
+adraiRequiredRaw repoPath args = do
+  maybeExe <- lookupEnv "ADRAI_EXE"
+  exe <-
+    case maybeExe of
+      Nothing -> assertFailure "P6-02A requires ADRAI_EXE to name the executable under test" >> fail "unreachable"
+      Just "" -> assertFailure "P6-02A requires ADRAI_EXE to be non-empty" >> fail "unreachable"
+      Just path -> pure path
+  inheritedEnv <- getEnvironment
+  let mergedEnv = isolatedGitEnvironment inheritedEnv
+  readProcess (setEnv mergedEnv (proc exe ("--repo" : repoPath : args)))
+
+-- | Retain only the variables required to launch child processes on Windows,
+-- comparing names case-insensitively, then overlay the deterministic Git test
+-- environment.  This excludes inherited repository/config controls such as
+-- mixed-case GIT_DIR, GIT_INDEX_FILE, GIT_CONFIG_*, HOME, and USERPROFILE.
+isolatedGitEnvironment :: [(String, String)] -> [(String, String)]
+isolatedGitEnvironment inheritedEnv =
+  gitEnv
+    <> filter
+      ( \(key, _) ->
+          foldedEnvironmentKey key `elem` requiredProcessEnvironment
+            && all ((/= foldedEnvironmentKey key) . foldedEnvironmentKey . fst) gitEnv
+      )
+      inheritedEnv
+  where
+    requiredProcessEnvironment =
+      map foldedEnvironmentKey
+        [ "PATH",
+          "PATHEXT",
+          "SYSTEMROOT",
+          "WINDIR",
+          "COMSPEC",
+          "TEMP",
+          "TMP"
+        ]
+
+foldedEnvironmentKey :: String -> Text
+foldedEnvironmentKey = T.toCaseFold . T.pack
+
+assertIndexResolvedOid :: FilePath -> Text -> IO ()
+assertIndexResolvedOid database expected =
+  bracket (open database) close $ \connection -> do
+    resolved <- query_ connection "SELECT value FROM meta WHERE key = 'resolved_oid'" :: IO [Only Text]
+    resolved @?= [Only expected]
+
+configureDeterministicGit :: FilePath -> IO ()
+configureDeterministicGit repo = do
+  git repo ["config", "user.name", "ADRAI P6-02A"]
+  git repo ["config", "user.email", "p6-02a@example.invalid"]
+  git repo ["config", "commit.gpgSign", "false"]
+  git repo ["config", "tag.gpgSign", "false"]
+  git repo ["config", "core.autocrlf", "false"]
+  git repo ["config", "core.safecrlf", "false"]
+  git repo ["config", "core.hooksPath", ".git/adrai-no-hooks"]
+
+assertExitSuccess :: String -> (ExitCode, LBS.ByteString, LBS.ByteString) -> IO LBS.ByteString
+assertExitSuccess label (exitCode, stdout, stderr) =
+  case exitCode of
+    ExitFailure _ ->
+      assertFailure
+        ( label <> " exited " <> show exitCode
+            <> "\nstdout:\n" <> T.unpack (decodeUtf8 (LBS.toStrict stdout))
+            <> "\nstderr:\n" <> T.unpack (decodeUtf8 (LBS.toStrict stderr))
+        )
+    ExitSuccess -> do
+      stderr @?= ""
+      assertBool (label <> " JSON must end in exactly one LF") (LBS.isSuffixOf "\n" stdout && not (LBS.isSuffixOf "\n\n" stdout))
+      pure stdout
+
+requireJsonField :: Data.Aeson.FromJSON a => String -> Data.Aeson.Value -> Text -> IO a
+requireJsonField label value key =
+  case _Object value >>= (.: key) of
+    Nothing ->
+      assertFailure
+        ( label <> " JSON has no valid " <> unpack key <> " field"
+            <> "; full JSON: " <> T.unpack (decodeUtf8 (LBS.toStrict (Data.Aeson.encode value)))
+        )
+        >> fail "unreachable"
+    Just result -> pure result
+
+decodeCanonicalJson :: String -> LBS.ByteString -> IO Data.Aeson.Value
+decodeCanonicalJson label bytes =
+  case Data.Aeson.eitherDecode bytes of
+    Left problem -> assertFailure (label <> " stdout was not JSON: " <> problem) >> fail "unreachable"
+    Right value -> pure value
+
+gitText :: FilePath -> [String] -> IO Text
+gitText repo arguments = strip . decodeUtf8 . LBS.toStrict <$> gitStdout repo arguments
+
+commitMessageBytes :: FilePath -> Text -> IO BS.ByteString
+commitMessageBytes repo commit = do
+  rawCommit <- LBS.toStrict <$> gitStdout repo ["cat-file", "commit", T.unpack commit]
+  let (_, messageWithSeparator) = BS.breakSubstring "\n\n" rawCommit
+  if BS.null messageWithSeparator
+    then assertFailure "Git commit object has no header/message separator" >> fail "unreachable"
+    else pure (BS.drop 2 messageWithSeparator)
+
+assertStagedBinaryPreserved :: FilePath -> FilePath -> BS.ByteString -> LBS.ByteString -> IO ()
+assertStagedBinaryPreserved repo relativePath expected indexBefore = do
+  indexAfter <- gitStdout repo ["ls-files", "-s", "--", relativePath]
+  indexAfter @?= indexBefore
+  BS.readFile (repo </> relativePath) >>= (@?= expected)
+
+assertUntracked :: FilePath -> FilePath -> IO ()
+assertUntracked repo relativePath = do
+  (exitCode, _, _) <- readProcess (setEnv gitEnv (proc "git" ["-C", repo, "ls-files", "--error-unmatch", "--", relativePath]))
+  assertBool (relativePath <> " must remain untracked") (exitCode /= ExitSuccess)
 
 -- | Check if an ADR file exists at the managed path.
 adrFileExists :: FilePath -> Text -> IO Bool
@@ -813,6 +975,335 @@ testAmendAcrossEnvironments =
             [ "show", unpack id', "--json" ]
 
 -- =====================================================================
+-- P6-02A: public init/create through the executable under test
+-- =====================================================================
+
+testP602ARealExecutable :: TestTree
+testP602ARealExecutable =
+  testGroup
+    "P6-02A real executable init/create"
+    [ testCase "launcher scrubs hostile mixed-case Git environment controls" p602aHostileEnvironmentScrubbed,
+      testCase "init bootstraps an unborn repository without touching a staged binary" p602aInitUnborn,
+      testCase "create commits sealed documents without touching a staged binary" p602aCreate
+    ]
+
+p602aHostileEnvironmentScrubbed :: IO ()
+p602aHostileEnvironmentScrubbed = do
+  let inherited =
+        [ ("gIt_DiR", "hostile-dir"),
+          ("GiT_ObJeCt_DiReCtOrY", "hostile-objects"),
+          ("gIt_CoNfIg_CoUnT", "1"),
+          ("hOmE", "hostile-home"),
+          ("UsErPrOfIlE", "hostile-profile"),
+          ("PaTh", "deterministic-path"),
+          ("sYsTeMrOoT", "deterministic-system-root"),
+          ("GiT_PaGeR", "hostile-pager")
+        ]
+  isolatedGitEnvironment inherited
+    @?= gitEnv
+      <> [ ("PaTh", "deterministic-path"),
+           ("sYsTeMrOoT", "deterministic-system-root")
+         ]
+
+p602aInitUnborn :: IO ()
+p602aInitUnborn =
+  withSystemTempDirectory "adrai p6-02a init" $ \temporary -> do
+    let repo = temporary </> "unborn"
+        stagedName = "unrelated-staged.bin"
+        stagedBytes = BS.pack [0, 255, 17, 0, 128, 64, 10]
+        database = repo </> ".adrai" </> "index.sqlite"
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> stagedName) stagedBytes
+    git repo ["add", "--", stagedName]
+    indexBefore <- gitStdout repo ["ls-files", "-s", "--", stagedName]
+
+    stdout <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    result <- decodeCanonicalJson "init" stdout
+    commit <- requireJsonField "init" result "commit" :: IO Text
+    indexRevision <- requireJsonField "init" result "index_revision" :: IO Text
+    renderedDatabase <- requireJsonField "init" result "database" :: IO Text
+    warningCount <- requireJsonField "init" result "index_warnings" :: IO Integer
+    currentHead <- headCommit repo
+    commit @?= currentHead
+    indexRevision @?= currentHead
+    renderedDatabase @?= T.pack database
+    warningCount @?= 0
+    stdout
+      @?= LBS.fromStrict (encodeUtf8 (renderCanonicalJson (expectedInitJson currentHead (T.pack database))))
+
+    parents <- gitText repo ["show", "-s", "--format=%P", T.unpack currentHead]
+    parents @?= ""
+    commitMessage <- commitMessageBytes repo currentHead
+    commitMessage
+      @?= "adrai: initialize repository\n\nADRAI-Op: init\nADRAI-Objects: bootstrap\n\n"
+    treePaths <- fmap (sort . T.lines) (gitText repo ["ls-tree", "-r", "--name-only", "HEAD"])
+    treePaths
+      @?= [".adrai.toml", ".gitattributes", ".gitignore"]
+    configBytes <- gitStdout repo ["show", "HEAD:.adrai.toml"]
+    configBytes @?= LBS.fromStrict (encodeUtf8 defaultConfigText)
+    let expectedAttributes =
+          "architecture/adrai/decisions/** text eol=lf\n"
+            <> "architecture/adrai/connections/** text eol=lf\n"
+    BS.length (encodeUtf8 expectedAttributes) @?= 90
+    attributesBytes <- gitStdout repo ["show", "HEAD:.gitattributes"]
+    attributesBytes @?= LBS.fromStrict (encodeUtf8 expectedAttributes)
+    ignoreBytes <- gitStdout repo ["show", "HEAD:.gitignore"]
+    ignoreBytes @?= ".adrai/\n"
+    exists <- doesFileExist database
+    assertBool "post-commit index database must exist" exists
+    assertIndexResolvedOid database currentHead
+    assertUntracked repo ".adrai/index.sqlite"
+    assertStagedBinaryPreserved repo stagedName stagedBytes indexBefore
+    (catExit, _, _) <- readProcess (setEnv gitEnv (proc "git" ["-C", repo, "cat-file", "-e", "HEAD:" <> stagedName]))
+    assertBool "unrelated staged binary must be absent from bootstrap commit" (catExit /= ExitSuccess)
+    stagedPaths <- gitStdout repo ["diff", "--cached", "--name-only"]
+    stagedPaths @?= LBS.fromStrict (encodeUtf8 (T.pack stagedName <> "\n"))
+
+p602aCreate :: IO ()
+p602aCreate =
+  withSystemTempDirectory "adrai p6-02a create" $ \temporary -> do
+    let repo = temporary </> "seeded"
+        stagedName = "unrelated-create.bin"
+        stagedBytes = BS.pack [222, 173, 0, 190, 239, 10]
+        title = "Real executable decision"
+        summary = "Exercise the public create command."
+        body = "## Decision\nUse the real executable.\n"
+        database = repo </> ".adrai" </> "index.sqlite"
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "normal seed\n"
+    git repo ["add", "--", "seed.txt"]
+    git repo ["commit", "-m", "normal seed"]
+    _ <- assertExitSuccess "setup init" =<< adraiRequiredRaw repo ["init", "--json"]
+    initCommit <- headCommit repo
+    assertIndexResolvedOid database initCommit
+    BS.writeFile (repo </> stagedName) stagedBytes
+    git repo ["add", "--", stagedName]
+    indexBefore <- gitStdout repo ["ls-files", "-s", "--", stagedName]
+
+    stdout <-
+      assertExitSuccess "create" =<< adraiRequiredRaw repo
+        [ "create",
+          "--title", title,
+          "--summary", summary,
+          "--body", body,
+          "--domain", "compiler",
+          "--applies-to", "src/**",
+          "--actor", "human:e2e",
+          "--json"
+        ]
+    result <- decodeCanonicalJson "create" stdout
+    operation <- requireJsonField "create" result "operation" :: IO Text
+    adr <- requireJsonField "create" result "adr" :: IO Text
+    record <- requireJsonField "create" result "record" :: IO Text
+    scope <- requireJsonField "create" result "scope" :: IO Text
+    domain <- requireJsonField "create" result "domain" :: IO Text
+    status <- requireJsonField "create" result "status" :: IO Text
+    commit <- requireJsonField "create" result "commit" :: IO Text
+    created <- requireJsonField "create" result "created" :: IO [Text]
+    indexRevision <- requireJsonField "create" result "index_revision" :: IO Text
+    renderedDatabase <- requireJsonField "create" result "database" :: IO Text
+    warningCount <- requireJsonField "create" result "index_warnings" :: IO Integer
+    let expectedPaths =
+          [ "architecture/adrai/decisions/" <> T.take 4 record <> "/" <> record <> "--real-executable-decision.decision.md",
+            "architecture/adrai/connections/" <> T.take 4 scope <> "/" <> scope <> "--applies_to.connection.md",
+            "architecture/adrai/connections/" <> T.take 4 domain <> "/" <> domain <> "--domains.connection.md",
+            "architecture/adrai/connections/" <> T.take 4 status <> "/" <> status <> "--status.connection.md"
+          ]
+    currentHead <- headCommit repo
+    assertBool "create must advance beyond the init commit" (currentHead /= initCommit)
+    assertIndexResolvedOid database currentHead
+    commit @?= currentHead
+    indexRevision @?= currentHead
+    renderedDatabase @?= T.pack database
+    warningCount @?= 0
+    created @?= expectedPaths
+    assertCanonicalIdentifier "operation" 'O' operation
+    assertCanonicalIdentifier "ADR" 'A' adr
+    assertCanonicalIdentifier "record" 'R' record
+    mapM_ (assertCanonicalIdentifier "connection" 'C') [scope, domain, status]
+    stdout
+      @?= LBS.fromStrict (encodeUtf8 (createJson operation adr record scope domain status currentHead expectedPaths (T.pack database)))
+
+    parents <- gitText repo ["show", "-s", "--format=%P", T.unpack currentHead]
+    parents @?= initCommit
+    commitMessage <- commitMessageBytes repo currentHead
+    commitMessage
+      @?= encodeUtf8
+        ( "adrai: create " <> adr <> "\n\n"
+            <> "ADRAI-Op: " <> operation <> "\n"
+            <> "ADRAI-ADR: " <> adr <> "\n"
+            <> "ADRAI-Objects: " <> T.intercalate "," [record, scope, domain, status] <> "\n"
+        )
+    changedPaths <- fmap (sort . T.lines) (gitText repo ["diff-tree", "--no-commit-id", "--name-only", "-r", T.unpack currentHead])
+    changedPaths
+      @?= sort expectedPaths
+
+    documents <- mapM (parseCommittedAndWorktreeDocument repo currentHead) expectedPaths
+    assertCreatedDocumentSemantics operation initCommit adr record scope domain status title summary body documents
+    assertStagedBinaryPreserved repo stagedName stagedBytes indexBefore
+    stagedPaths <- gitStdout repo ["diff", "--cached", "--name-only"]
+    stagedPaths @?= LBS.fromStrict (encodeUtf8 (T.pack stagedName <> "\n"))
+    mapM_ (assertGeneratedPathUnstaged repo) expectedPaths
+    assertUntracked repo ".adrai/index.sqlite"
+
+expectedInitJson :: Text -> Text -> JsonValue
+expectedInitJson commit database =
+  JsonObject
+        [ ("commit", JsonString commit),
+          ("committed", JsonBool True),
+          ("created", JsonArray (map JsonString [".adrai.toml", ".gitattributes", ".gitignore"])),
+          ("database", JsonString database),
+          ("index_revision", JsonString commit),
+          ("index_updated", JsonBool True),
+          ("index_warnings", JsonNumber 0),
+          ("indexed", JsonBool True),
+          ("initialized", JsonBool True),
+          ("operation", JsonString "init")
+        ]
+
+createJson :: Text -> Text -> Text -> Text -> Text -> Text -> Text -> [Text] -> Text -> Text
+createJson operation adr record scope domain status commit created database =
+  renderCanonicalJson
+    ( JsonObject
+        [ ("adr", JsonString adr),
+          ("commit", JsonString commit),
+          ("committed", JsonBool True),
+          ("created", JsonArray (map JsonString created)),
+          ("database", JsonString database),
+          ("domain", JsonString domain),
+          ("domains", JsonArray [JsonString "compiler"]),
+          ("index_revision", JsonString commit),
+          ("index_updated", JsonBool True),
+          ("index_warnings", JsonNumber 0),
+          ("indexed", JsonBool True),
+          ("operation", JsonString operation),
+          ("record", JsonString record),
+          ("scope", JsonString scope),
+          ("status", JsonString status)
+        ]
+    )
+
+assertCanonicalIdentifier :: String -> Char -> Text -> IO ()
+assertCanonicalIdentifier label prefix identifier = do
+  assertBool (label <> " identifier has its expected prefix") (T.isPrefixOf (T.singleton prefix) identifier)
+  T.length identifier @?= 27
+
+parseCommittedAndWorktreeDocument :: FilePath -> Text -> Text -> IO ParsedManagedDocument
+parseCommittedAndWorktreeDocument repo commit pathText = do
+  path <-
+    case mkRepoPath pathText of
+      Left problem -> assertFailure ("invalid expected managed path " <> unpack pathText <> ": " <> show problem) >> fail "unreachable"
+      Right value -> pure value
+  committed <- LBS.toStrict <$> gitStdout repo ["show", T.unpack (commit <> ":" <> pathText)]
+  worktree <- BS.readFile (repo </> T.unpack pathText)
+  worktree @?= committed
+  parsed <-
+    case parseManagedDocument path committed of
+      Left problem -> assertFailure ("cannot parse committed managed document " <> unpack pathText <> ": " <> show problem) >> fail "unreachable"
+      Right value -> pure value
+  sealManagedDocument (parsedManagedRecord parsed) (parsedManagedCapsule parsed) @?= Right committed
+  parsedManagedBytes parsed @?= committed
+  pure parsed
+
+assertCreatedDocumentSemantics
+  :: Text -> Text -> Text -> Text -> Text -> Text -> Text -> String -> String -> String -> [ParsedManagedDocument] -> IO ()
+assertCreatedDocumentSemantics operation basis adr record scope domain status title summary body documents = do
+  expectedActor <-
+    case mkActor HumanActor "e2e" Nothing of
+      Left problem -> assertFailure (show problem) >> fail "unreachable"
+      Right actor -> pure actor
+  expectedDomain <-
+    case mkDomain "compiler" of
+      Left problem -> assertFailure (show problem) >> fail "unreachable"
+      Right value -> pure value
+  expectedScope <-
+    case mkScopePattern "src/**" of
+      Left problem -> assertFailure (show problem) >> fail "unreachable"
+      Right value -> pure value
+  let capsules = map parsedManagedCapsule documents
+      timestamps = map provenanceTimestampMs capsules
+      expectedInputs = ProvenanceInputs (Just (sha256Digest (encodeUtf8 (T.pack body)))) Nothing Nothing
+  length documents @?= 4
+  mapM_ (assertSharedCapsule operation basis expectedActor expectedInputs) capsules
+  assertBool "all created documents share one positive timestamp" (not (null timestamps) && head timestamps > 0 && all (== head timestamps) timestamps)
+  case [(decision, capsule) | ParsedManagedDocument _ (ManagedDecision decision) capsule _ _ <- documents] of
+    [(decision, capsule)] -> do
+      adrIdText (decisionAdr decision) @?= adr
+      recordIdText (decisionRecord decision) @?= record
+      decisionTitle decision @?= T.pack title
+      decisionSummary decision @?= T.pack summary
+      decisionBody decision @?= T.pack body
+      decisionDomains decision @?= [expectedDomain]
+      provenanceObjectId capsule @?= ProvenanceRecord (decisionRecord decision)
+      eventKindText (provenanceEventKind capsule) @?= "decision.create"
+      provenanceParents capsule @?= []
+    other -> assertFailure ("expected one decision document, got " <> show (length other))
+  case [(connection, payload, capsule) | ParsedManagedDocument _ (ManagedConnection connection) capsule _ _ <- documents, AppliesToConnection payload <- [connectionPayload connection]] of
+    [(connection, payload, capsule)] -> do
+      connectionIdText (connectionRecordId connection) @?= scope
+      adrIdText (appliesToSubjectAdr payload) @?= adr
+      appliesToParentConnections payload @?= []
+      appliesToChange payload @?= "initial"
+      appliesToAdded payload @?= [expectedScope]
+      appliesToRemoved payload @?= []
+      appliesToEffective payload @?= [expectedScope]
+      connectionRationale connection @?= "Initial scope.\n"
+      eventKindText (provenanceEventKind capsule) @?= "scope.initial"
+      provenanceParents capsule @?= [ProvenanceRecord (recordFromText record)]
+    other -> assertFailure ("expected one scope document, got " <> show (length other))
+  case [(connection, payload, capsule) | ParsedManagedDocument _ (ManagedConnection connection) capsule _ _ <- documents, DomainsConnection payload <- [connectionPayload connection]] of
+    [(connection, payload, capsule)] -> do
+      connectionIdText (connectionRecordId connection) @?= domain
+      adrIdText (domainsSubjectAdr payload) @?= adr
+      domainsParentConnections payload @?= []
+      domainsChange payload @?= "initial"
+      domainsAdded payload @?= [expectedDomain]
+      domainsRemoved payload @?= []
+      domainsEffective payload @?= [expectedDomain]
+      domainsRefinements payload @?= []
+      connectionRationale connection @?= "Initial domain.\n"
+      eventKindText (provenanceEventKind capsule) @?= "domain.initial"
+      provenanceParents capsule @?= [ProvenanceRecord (recordFromText record)]
+    other -> assertFailure ("expected one domain document, got " <> show (length other))
+  case [(connection, payload, capsule) | ParsedManagedDocument _ (ManagedConnection connection) capsule _ _ <- documents, StatusConnection payload <- [connectionPayload connection]] of
+    [(connection, payload, capsule)] -> do
+      connectionIdText (connectionRecordId connection) @?= status
+      adrIdText (statusSubjectAdr payload) @?= adr
+      statusParentConnections payload @?= []
+      statusState payload @?= StatusActive
+      map recordIdText (statusRecordHeads payload) @?= [record]
+      statusReplacementAdr payload @?= Nothing
+      connectionRationale connection @?= "Initial active status.\n"
+      eventKindText (provenanceEventKind capsule) @?= "status.initial"
+      provenanceParents capsule @?= [ProvenanceRecord (recordFromText record)]
+    other -> assertFailure ("expected one status document, got " <> show (length other))
+  where
+    recordFromText value =
+      case [decisionRecord decision | ParsedManagedDocument _ (ManagedDecision decision) _ _ _ <- documents, recordIdText (decisionRecord decision) == value] of
+        [identifier] -> identifier
+        _ -> error "the decision record was not available for connection provenance assertions"
+
+assertSharedCapsule :: Text -> Text -> Actor -> ProvenanceInputs -> ProvenanceCapsule -> IO ()
+assertSharedCapsule operation basis expectedActor expectedInputs capsule = do
+  operationIdText (provenanceOperationId capsule) @?= operation
+  gitOidText (provenanceBasis capsule) @?= basis
+  provenanceActor capsule @?= expectedActor
+  provenanceBranchHint capsule @?= Just "main"
+  provenanceUpstreamHint capsule @?= Nothing
+  provenanceLineAnchors capsule @?= []
+  provenanceToolVersion capsule @?= "adrai/1.0.0"
+  provenanceInputs capsule @?= expectedInputs
+
+assertGeneratedPathUnstaged :: FilePath -> Text -> IO ()
+assertGeneratedPathUnstaged repo path = do
+  staged <- gitStdout repo ["diff", "--cached", "--name-only", "--", T.unpack path]
+  staged @?= ""
+
+-- =====================================================================
 -- Test suite
 -- =====================================================================
 
@@ -820,7 +1311,8 @@ tests :: TestTree
 tests =
   testGroup
     "Mutation E2E across hostile environments (P5-05)"
-    [ testUnbornRepository,
+    [ testP602ARealExecutable,
+      testUnbornRepository,
       testUnrelatedStagedEntry,
       testDetachedHead,
       testActiveGitOperations,
