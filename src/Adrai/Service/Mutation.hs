@@ -27,6 +27,7 @@ module Adrai.Service.Mutation
     createAdrCommand,
     AmendResult (..),
     amendAdrCommand,
+    amendCurrentAdrCommand,
     amendAdmCommand,
     ScopeChangeResult (..),
     changeScopeCommand,
@@ -126,6 +127,8 @@ import Adrai.Types
     Digest (..),
     digestBytes,
     ProvenanceInputs (..),
+    StateToken,
+    stateTokenText,
   )
 import Adrai.Domain
   ( Domain,
@@ -157,6 +160,7 @@ import Adrai.Graph
     ReducedAdr (..),
     ReducedStatus (..),
     lookupReducedAdr,
+    reducedStateToken,
     reduceManagedGraph,
   )
 
@@ -568,6 +572,7 @@ data AmendResult
       { amendOperationId  :: String,
         amendAdrId        :: AdrId,
         amendRecordId     :: RecordId,
+        amendAmends       :: RecordId,
         amendConnectionId :: ConnectionId,
         amendCommitOid    :: GitOid,
         amendUpdatedPath  :: RepoPath,
@@ -603,19 +608,38 @@ amendAdrCommand
   newTitle
   newSummary
   newBody
-  inputs =
-    requireAttachedHead repository >>= \case
-      Left err -> pure (Left err)
-      Right branchName -> amendAtAttachedHead branchName
-  where
-    inherit replacement original = if T.null replacement then original else replacement
-    amendAtAttachedHead branchName = do
+  inputs = amendWithSource repository actor adrId (selectAmendmentSource adrId recordId) "Amends current decision head.\n" newTitle newSummary newBody inputs
+
+-- | Amend the uniquely current committed decision for an ADR.  The optional
+-- state token is checked against the same committed graph snapshot that
+-- supplies the source record, avoiding a read-then-amend race in the CLI.
+amendCurrentAdrCommand ::
+  Repository ->
+  Actor ->
+  AdrId ->
+  Maybe StateToken ->
+  T.Text ->
+  T.Text ->
+  T.Text ->
+  T.Text ->
+  ProvenanceInputs ->
+  IO (Either TransactionError AmendResult)
+amendCurrentAdrCommand repository actor adrId expectedState changeSummary newTitle newSummary newBody inputs =
+  case normalizeChangeSummary changeSummary of
+    Left err -> pure (Left err)
+    Right rationale ->
+      amendWithSource repository actor adrId (selectCurrentAmendmentSource adrId expectedState) rationale newTitle newSummary newBody inputs
+
+amendWithSource repository actor adrId selectSource rationale newTitle newSummary newBody inputs =
+  requireAttachedHead repository >>= \case
+    Left err -> pure (Left err)
+    Right branchName -> do
       snapshotResult <- repositorySnapshot repository (RevisionSpec "HEAD")
       case snapshotResult of
         Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
         Right snapshot -> case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot of
           Left err -> pure (Left err)
-          Right documents -> case selectAmendmentSource adrId recordId documents of
+          Right documents -> case selectSource documents of
             Left err -> pure (Left err)
             Right (sourceRecord, sourceHead, currentDomains) -> do
               let title = inherit newTitle (decisionTitle sourceRecord)
@@ -623,15 +647,17 @@ amendAdrCommand
                   body = inherit newBody (decisionBody sourceRecord)
               if title == decisionTitle sourceRecord && summary == decisionSummary sourceRecord && body == decisionBody sourceRecord
                 then pure (Left (Stage3ValidateState "amend would not change the current decision"))
-                else createAmendment snapshot branchName sourceRecord sourceHead currentDomains title summary body
-    createAmendment snapshot branchName _sourceRecord sourceHead currentDomains title summary body = do
+                else createAmendment snapshot branchName sourceHead currentDomains rationale title summary body
+  where
+    inherit replacement original = if T.null replacement then original else replacement
+    createAmendment snapshot branchName sourceHead currentDomains rationale title summary body = do
       timestampMs <- currentTimestamp
       let timestampBytes = encodeTimestampMs timestampMs
       entropy <- randomEntropy
       case (sortableOperationId timestampBytes entropy, sortableRecordId timestampBytes entropy, sortableConnectionId timestampBytes (createConnectionEntropy "amends" entropy)) of
         (Right opId, Right amendedId, Right connectionId) -> do
           let amendedRecord = DecisionRecord adrId amendedId title summary currentDomains body
-              amendsConnection = ConnectionRecord connectionId (AmendsConnection (AmendsPayload adrId amendedId [sourceHead])) "Amends current decision head.\n"
+              amendsConnection = ConnectionRecord connectionId (AmendsConnection (AmendsPayload adrId amendedId [sourceHead])) rationale
               members = [ManagedDecision amendedRecord, ManagedConnection amendsConnection]
               paths = repositorySnapshotManagedPaths snapshot
           case traverse (sealAmendMember opId (repositorySnapshotRevision snapshot) branchName actor timestampMs sourceHead inputs paths) members of
@@ -645,7 +671,7 @@ amendAdrCommand
                 Left transactionError -> pure (Left transactionError)
                 Right TransactionResult {..} -> case transactionCreatedPaths of
                   decisionPath : _ -> pure (Right AmendResult
-                    { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId,
+                    { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId, amendAmends = sourceHead,
                       amendConnectionId = connectionId, amendCommitOid = transactionCommitOid, amendUpdatedPath = decisionPath,
                       amendCreatedPaths = transactionCreatedPaths, amendIndexUpdated = transactionIndexUpdated })
                   [] -> pure (Left (Stage8UpdateRef "amend transaction reported no created paths"))
@@ -702,6 +728,27 @@ selectAmendmentSource adr requestedRecord documents = do
       | head == requestedRecord -> Right (record, head, axisResolutionEffective (reducedDomainAxis reduced))
       | otherwise -> Left (Stage3ValidateState "amend target record is not the current decision head")
     _ -> Left (Stage3ValidateState "amend target ADR has no unambiguous current decision")
+
+selectCurrentAmendmentSource :: AdrId -> Maybe StateToken -> [ParsedManagedDocument] -> Either TransactionError (DecisionRecord, RecordId, [Domain])
+selectCurrentAmendmentSource adr expected documents = do
+  let reduction = reduceManagedGraph (map parsedManagedRecord documents)
+  reduced <- maybe (Left (Stage3ValidateState "amend target ADR is unknown")) Right (lookupReducedAdr adr reduction)
+  case expected of
+    Nothing -> Right ()
+    Just expectedToken
+      | expectedToken == reducedStateToken reduced -> Right ()
+      | otherwise ->
+          Left (Stage3ValidateState ("stale ADR state: expected " <> stateTokenText expectedToken <> ", current state is " <> stateTokenText (reducedStateToken reduced)))
+  case axisResolutionHeads (reducedDecisionAxis reduced) of
+    [head] -> selectAmendmentSource adr head documents
+    _ -> Left (Stage3ValidateState "amend target ADR has no unambiguous current decision")
+
+normalizeChangeSummary :: T.Text -> Either TransactionError T.Text
+normalizeChangeSummary summary
+  | T.null normalized = Left (Stage3ValidateState "amend change summary must be nonblank")
+  | otherwise = Right (normalized <> "\n")
+  where
+    normalized = T.strip summary
 
 sealAmendMember :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> RecordId -> ProvenanceInputs -> ManagedPaths -> ManagedRecord -> Either TransactionError GeneratedFile
 sealAmendMember opId revision branchName actor timestampMs priorHead inputs paths managed = do

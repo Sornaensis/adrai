@@ -13,13 +13,16 @@ module Adrai.CliRunner
     CliCommand (..),
     InitCommand (..),
     CreateCommand (..),
+    AmendCommand (..),
     ContentSource (..),
     CreateRequest (..),
+    AmendRequest (..),
     CliDispatchDependencies (..),
     dispatchWith,
     CliParser,
     parser,
     parseStructuredCreate,
+    parseStructuredAmend,
     parseActor,
     parseDigest,
     CliFailure (..),
@@ -27,6 +30,7 @@ module Adrai.CliRunner
     parseArguments,
     renderInitOutcome,
     renderCreateOutcome,
+    renderAmendOutcome,
     renderFailureOutcome,
     emitRenderedToHandles,
     run,
@@ -51,7 +55,7 @@ import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import Adrai.Provenance (sha256Digest)
 import Adrai.Repository (repositorySnapshot, repositorySnapshotManagedPaths)
 import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText)
-import Adrai.Service.Mutation (CreateResult (..), InitResult (..), createAdrCommand, initCommand)
+import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), InitResult (..), amendCurrentAdrCommand, createAdrCommand, initCommand)
 import Adrai.Service.PostCommitIndex
   ( IndexWarning (..),
     PostCommitIndexError (..),
@@ -62,12 +66,15 @@ import Adrai.Service.Transaction (TransactionError (..))
 import Adrai.Types
   ( Actor,
     ActorKind (..),
-    Digest,
-    AdrId,
-    RecordId,
-    adrIdText,
-    connectionIdText,
-    mkActor,
+     Digest,
+     AdrId,
+     RecordId,
+     StateToken,
+     ProvenanceInputs (..),
+     adrIdText,
+     connectionIdText,
+     mkActor,
+     mkAdrId,
     mkDigest,
     recordIdText,
     repoPathText,
@@ -170,6 +177,24 @@ data CreateCommand = CreateCommand
   }
   deriving (Eq, Show)
 
+data AmendCommand = AmendCommand
+  { amendAdrSpec :: Text
+  , amendTitle :: Maybe Text
+  , amendSummary :: Maybe Text
+  , amendChangeSummary :: Maybe Text
+  , amendExpectedState :: Maybe Text
+  , amendActorSpec :: Maybe Text
+  , amendModel :: Maybe Text
+  , amendInputDigest :: Maybe Text
+  , amendPromptDigest :: Maybe Text
+  , amendContextDigest :: Maybe Text
+  , amendPromptFile :: Maybe FilePath
+  , amendContextFile :: Maybe FilePath
+  , amendContentSources :: [ContentSource]
+  , amendJson :: Bool
+  }
+  deriving (Eq, Show)
+
 -- | Parsed CLI command, constructed from optparse-applicative.
 data CliCommand
   = CmdCompile
@@ -181,6 +206,7 @@ data CliCommand
   | CmdCompare CompareCommand
   | CmdInit InitCommand
   | CmdCreate CreateCommand
+  | CmdAmend AmendCommand
   deriving (Eq, Show)
 
 -- | Top-level CLI parser type alias.
@@ -198,7 +224,8 @@ parser =
      <> command "relevant" (info (CmdRelevant <$> relevantParser) (progDesc "find relevant ADRs"))
      <> command "compare" (info (CmdCompare <$> compareParser) (progDesc "compare revisions"))
      <> command "init" (info (CmdInit <$> initParser) (progDesc "initialize an ADRAI repository"))
-     <> command "create" (info (CmdCreate <$> createParser) (progDesc "create an ADR"))
+      <> command "create" (info (CmdCreate <$> createParser) (progDesc "create an ADR"))
+      <> command "amend" (info (CmdAmend <$> amendParser) (progDesc "amend an ADR"))
     )
 
 globalConfigParser :: Parser CliConfig
@@ -234,6 +261,27 @@ createParser =
   where
     optionalText name marker description =
       strOption (long name <> metavar marker <> help description)
+    maybeText name marker description = optional (optionalText name marker description)
+
+amendParser :: Parser AmendCommand
+amendParser =
+  AmendCommand
+    <$> strArgument (metavar "ADR" <> help "ADR identifier to amend")
+    <*> maybeText "title" "TEXT" "replacement decision title"
+    <*> maybeText "summary" "TEXT" "replacement decision summary"
+    <*> maybeText "change-summary" "TEXT" "nonblank amendment rationale"
+    <*> maybeText "expect" "STATE_TOKEN" "expected current ADR state token"
+    <*> maybeText "actor" "ACTOR" "actor as kind:identifier"
+    <*> maybeText "model" "MODEL" "actor model"
+    <*> maybeText "input-digest" "DIGEST" "SHA-256 input digest"
+    <*> maybeText "prompt-digest" "DIGEST" "SHA-256 prompt digest"
+    <*> maybeText "context-digest" "DIGEST" "SHA-256 context digest"
+    <*> optional (strOption (long "prompt-file" <> metavar "PATH" <> help "prompt source path"))
+    <*> optional (strOption (long "context-file" <> metavar "PATH" <> help "context source path"))
+    <*> contentSourcesParser
+    <*> switch (long "json" <> help "output JSON")
+  where
+    optionalText name marker description = strOption (long name <> metavar marker <> help description)
     maybeText name marker description = optional (optionalText name marker description)
 
 contentSourcesParser :: Parser [ContentSource]
@@ -375,6 +423,15 @@ dispatchWith dependencies (CliInvocation config (CmdCreate command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (createResult, indexResult) -> renderCreateSuccess command createResult (requestDomains request) indexResult
+dispatchWith dependencies (CliInvocation config (CmdAmend command)) = do
+  requestResult <- cliMaterializeAmend dependencies command
+  case requestResult of
+    Left problem -> renderFailure (CliUserFailure problem)
+    Right request -> do
+      result <- cliRunAmend dependencies config request
+      case result of
+        Left failure -> renderFailure failure
+        Right (amendResult, indexResult) -> renderAmendSuccess command amendResult indexResult
 dispatchWith _ (CliInvocation _ CmdCompile) = do
   putStrLn $ "[compile] compiling repository at " <> configRepo defaultCliConfig
   pure ExitSuccess
@@ -399,13 +456,15 @@ dispatchWith _ (CliInvocation _ (CmdCompare CompareCommand { compareBefore, comp
 
 data CliDispatchDependencies = CliDispatchDependencies
   { cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
+  , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
   , cliRunInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
   , cliRunCreate :: CliConfig -> CreateRequest -> IO (Either CliFailure (CreateResult, PostCommitIndexResult))
+  , cliRunAmend :: CliConfig -> AmendRequest -> IO (Either CliFailure (AmendResult, PostCommitIndexResult))
   }
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies materializeCreate runProductionInit runProductionCreate
+  CliDispatchDependencies materializeCreate materializeAmend runProductionInit runProductionCreate runProductionAmend
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
 runProductionInit config = do
@@ -449,6 +508,24 @@ runProductionCreate config request = do
                     Left problem -> pure (Left (transactionFailure problem))
                     Right createResult -> Right . (createResult,) <$> indexCommitted database repository (createCommitOid createResult)
 
+runProductionAmend :: CliConfig -> AmendRequest -> IO (Either CliFailure (AmendResult, PostCommitIndexResult))
+runProductionAmend config request = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      indexPath <- prepareIndexPath repository
+      case indexPath of
+        Left problem -> pure (Left (CliUserFailure problem))
+        Right database -> do
+          result <- amendCurrentAdrCommand repository (amendRequestActor request) (amendRequestAdr request)
+            (amendRequestExpectedState request) (amendRequestChangeSummary request)
+            (amendRequestTitle request) (amendRequestSummary request) (amendRequestBody request)
+            (ProvenanceInputs (amendRequestInputDigest request) (amendRequestPromptDigest request) (amendRequestContextDigest request))
+          case result of
+            Left problem -> pure (Left (transactionFailure problem))
+            Right amendResult -> Right . (amendResult,) <$> indexCommitted database repository (amendCommitOid amendResult)
+
 transactionFailure :: TransactionError -> CliFailure
 transactionFailure problem
   | transactionConflict problem = CliConflictFailure (Text.pack (show problem))
@@ -471,6 +548,20 @@ data CreateRequest = CreateRequest
   }
   deriving (Eq, Show)
 
+data AmendRequest = AmendRequest
+  { amendRequestAdr :: AdrId
+  , amendRequestExpectedState :: Maybe StateToken
+  , amendRequestChangeSummary :: Text
+  , amendRequestTitle :: Text
+  , amendRequestSummary :: Text
+  , amendRequestBody :: Text
+  , amendRequestActor :: Actor
+  , amendRequestInputDigest :: Maybe Digest
+  , amendRequestPromptDigest :: Maybe Digest
+  , amendRequestContextDigest :: Maybe Digest
+  }
+  deriving (Eq, Show)
+
 data StructuredCreate = StructuredCreate
   { structuredTitle :: Maybe Text
   , structuredSummary :: Maybe Text
@@ -482,6 +573,18 @@ data StructuredCreate = StructuredCreate
   , structuredInputDigest :: Maybe Text
   , structuredPromptDigest :: Maybe Text
   , structuredContextDigest :: Maybe Text
+  }
+
+data StructuredAmend = StructuredAmend
+  { structuredAmendTitle :: Maybe Text
+  , structuredAmendSummary :: Maybe Text
+  , structuredAmendBody :: Maybe Text
+  , structuredAmendChangeSummary :: Maybe Text
+  , structuredAmendActor :: Maybe Text
+  , structuredAmendModel :: Maybe Text
+  , structuredAmendInputDigest :: Maybe Text
+  , structuredAmendPromptDigest :: Maybe Text
+  , structuredAmendContextDigest :: Maybe Text
   }
 
 materializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
@@ -522,11 +625,59 @@ materializeCreate command = do
           , requestActor = actor
           , requestInputDigest = input
           , requestPromptDigest = prompt
-          , requestContextDigest = context
+           , requestContextDigest = context
+           }
+
+materializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
+materializeAmend command = do
+  contentResult <- readAmendContent command
+  case contentResult of
+    Left problem -> pure (Left problem)
+    Right (maybeStructured, body) -> do
+      environmentActor <- lookupEnv "ADRAI_ACTOR"
+      promptFromFile <- readDigestFile "prompt" (amendPromptFile command)
+      contextFromFile <- readDigestFile "context" (amendContextFile command)
+      pure $ do
+        promptFileDigest <- promptFromFile
+        contextFileDigest <- contextFromFile
+        let structured = fromMaybe emptyStructuredAmend maybeStructured
+            title = fromMaybe "" (amendTitle command <|> structuredAmendTitle structured)
+            summary = fromMaybe "" (amendSummary command <|> structuredAmendSummary structured)
+            changeSummary = amendChangeSummary command <|> structuredAmendChangeSummary structured
+            actorSpec = amendActorSpec command <|> structuredAmendActor structured <|> Text.pack <$> environmentActor
+            model = amendModel command <|> structuredAmendModel structured
+            inputDigest = amendInputDigest command <|> structuredAmendInputDigest structured
+            promptDigest = amendPromptDigest command <|> structuredAmendPromptDigest structured
+            contextDigest = amendContextDigest command <|> structuredAmendContextDigest structured
+        adr <- first (Text.pack . show) (mkAdrId (amendAdrSpec command))
+        expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (amendExpectedState command)
+        rationale <- maybe (Left "amend requires --change-summary or structured change_summary") Right changeSummary
+        if Text.null (Text.strip rationale)
+          then Left "amend change summary must be nonblank"
+          else Right ()
+        actorText <- maybe (Left "amend requires --actor, structured actor, or ADRAI_ACTOR") Right actorSpec
+        actor <- parseActor actorText model
+        input <- maybe (Right (Just (sha256Digest (TextEncoding.encodeUtf8 body)))) (fmap Just . parseDigest) inputDigest
+        prompt <- resolveDigest "prompt" promptDigest promptFileDigest
+        context <- resolveDigest "context" contextDigest contextFileDigest
+        Right AmendRequest
+          { amendRequestAdr = adr
+          , amendRequestExpectedState = expected
+          , amendRequestChangeSummary = rationale
+          , amendRequestTitle = title
+          , amendRequestSummary = summary
+          , amendRequestBody = body
+          , amendRequestActor = actor
+          , amendRequestInputDigest = input
+          , amendRequestPromptDigest = prompt
+          , amendRequestContextDigest = context
           }
 
 emptyStructured :: StructuredCreate
 emptyStructured = StructuredCreate Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+
+emptyStructuredAmend :: StructuredAmend
+emptyStructuredAmend = StructuredAmend Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
 readContent :: CreateCommand -> IO (Either Text (Maybe StructuredCreate, Text))
 readContent command =
@@ -548,6 +699,27 @@ readContent command =
             body <- maybe (Left "structured create input requires string field body") Right (structuredBody structured)
             Right (Just structured, body)
     _ -> pure (Left "create accepts exactly one content source")
+
+readAmendContent :: AmendCommand -> IO (Either Text (Maybe StructuredAmend, Text))
+readAmendContent command =
+  case amendContentSources command of
+    [] -> pure (Left "amend requires exactly one of --body, --body-file, --stdin, or --input-json")
+    [_first, _second, _third, _fourth] -> pure (Left "amend accepts exactly one content source")
+    source : [] ->
+      case source of
+        BodyText body -> pure (Right (Nothing, body))
+        BodyFile path -> readUtf8 path >>= pure . fmap (\body -> (Nothing, body))
+        BodyStdin -> do
+          body <- Text.pack <$> hGetContents stdin
+          pure (Right (Nothing, body))
+        InputJson path -> do
+          raw <- if path == "-" then Right . Text.pack <$> hGetContents stdin else readUtf8 path
+          pure $ do
+            input <- raw
+            structured <- parseStructuredAmend input
+            body <- maybe (Left "structured amend input requires string field body") Right (structuredAmendBody structured)
+            Right (Just structured, body)
+    _ -> pure (Left "amend accepts exactly one content source")
 
 readUtf8 :: FilePath -> IO (Either Text Text)
 readUtf8 path = do
@@ -589,24 +761,45 @@ parseStructuredCreate input = do
       unknown = filter (`notElem` allowed) (map Aeson.Key.toText (KeyMap.keys object))
   if null unknown
     then StructuredCreate
-      <$> optionalString "title" object
-      <*> optionalString "summary" object
-      <*> optionalString "body" object
+      <$> optionalStringFor "create" "title" object
+      <*> optionalStringFor "create" "summary" object
+      <*> optionalStringFor "create" "body" object
       <*> optionalStrings "domains" object
       <*> optionalStrings "applies_to" object
-      <*> optionalString "actor" object
-      <*> optionalString "model" object
-      <*> optionalString "input_digest" object
-      <*> optionalString "prompt_digest" object
-      <*> optionalString "context_digest" object
+      <*> optionalStringFor "create" "actor" object
+      <*> optionalStringFor "create" "model" object
+      <*> optionalStringFor "create" "input_digest" object
+      <*> optionalStringFor "create" "prompt_digest" object
+      <*> optionalStringFor "create" "context_digest" object
     else Left ("structured create input has unknown fields: " <> Text.intercalate ", " unknown)
 
-optionalString :: Text -> Aeson.Object -> Either Text (Maybe Text)
-optionalString name object =
+parseStructuredAmend :: Text -> Either Text StructuredAmend
+parseStructuredAmend input = do
+  value <- first (Text.pack . show) (Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 input))
+  object <- case value of
+    Aeson.Object fields -> Right fields
+    _ -> Left "structured amend input must be a JSON object"
+  let allowed = ["title", "summary", "body", "change_summary", "actor", "model", "input_digest", "prompt_digest", "context_digest"]
+      unknown = filter (`notElem` allowed) (map Aeson.Key.toText (KeyMap.keys object))
+  if null unknown
+    then StructuredAmend
+      <$> optionalStringFor "amend" "title" object
+      <*> optionalStringFor "amend" "summary" object
+      <*> optionalStringFor "amend" "body" object
+      <*> optionalStringFor "amend" "change_summary" object
+      <*> optionalStringFor "amend" "actor" object
+      <*> optionalStringFor "amend" "model" object
+      <*> optionalStringFor "amend" "input_digest" object
+      <*> optionalStringFor "amend" "prompt_digest" object
+      <*> optionalStringFor "amend" "context_digest" object
+    else Left ("structured amend input has unknown fields: " <> Text.intercalate ", " unknown)
+
+optionalStringFor :: Text -> Text -> Aeson.Object -> Either Text (Maybe Text)
+optionalStringFor commandName name object =
   case KeyMap.lookup (Aeson.Key.fromText name) object of
     Nothing -> Right Nothing
     Just (Aeson.String value) -> Right (Just value)
-    Just _ -> Left ("structured create field " <> name <> " must be a string")
+    Just _ -> Left ("structured " <> commandName <> " field " <> name <> " must be a string")
 
 optionalStrings :: Text -> Aeson.Object -> Either Text (Maybe [Text])
 optionalStrings name object =
@@ -682,6 +875,10 @@ renderCreateSuccess :: CreateCommand -> CreateResult -> [Domain] -> PostCommitIn
 renderCreateSuccess command result domains indexResult =
   emitRendered (renderCreateOutcome result domains indexResult (createJson command))
 
+renderAmendSuccess :: AmendCommand -> AmendResult -> PostCommitIndexResult -> IO ExitCode
+renderAmendSuccess command result indexResult =
+  emitRendered (renderAmendOutcome result indexResult (amendJson command))
+
 renderInitOutcome :: InitResult -> PostCommitIndexResult -> Bool -> CliRendered
 renderInitOutcome result indexResult jsonOutput =
   successOutcome jsonOutput (Text.pack (initOperationId result)) (initCommitOid result) [] indexResult
@@ -705,7 +902,25 @@ renderCreateOutcome result domains indexResult jsonOutput =
            , ("scope", JsonString (connectionIdText (createScopeId result)))
            , ("domain", JsonString (connectionIdText (createDomainId result)))
            , ("domains", JsonArray (map (JsonString . domainText) domains))
-           , ("status", JsonString (connectionIdText (createStatusId result)))
+            , ("status", JsonString (connectionIdText (createStatusId result)))
+            ]
+
+renderAmendOutcome :: AmendResult -> PostCommitIndexResult -> Bool -> CliRendered
+renderAmendOutcome result indexResult jsonOutput =
+  successOutcome jsonOutput (Text.pack (amendOperationId result)) (amendCommitOid result) identifiers indexResult jsonFields
+  where
+    identifiers =
+      [ "adr=" <> adrIdText (amendAdrId result)
+      , "record=" <> recordIdText (amendRecordId result)
+      , "amends=" <> recordIdText (amendAmends result)
+      , "connection=" <> connectionIdText (amendConnectionId result)
+      ]
+    jsonFields =
+      mutationJsonFields (amendOperationId result) (amendCommitOid result) (amendCreatedPaths result) (amendIndexUpdated result) indexResult
+        <> [ ("adr", JsonString (adrIdText (amendAdrId result)))
+           , ("record", JsonString (recordIdText (amendRecordId result)))
+           , ("amends", JsonString (recordIdText (amendAmends result)))
+           , ("connection", JsonString (connectionIdText (amendConnectionId result)))
            ]
 
 successOutcome jsonOutput operation commit identifiers indexResult jsonFields
@@ -739,6 +954,12 @@ plainText operation commit identifiers indexResult =
         , adr <> "  " <> record <> "  " <> scope <> "  " <> domain <> "  " <> status
         , indexLine
         ]
+    [adr, record, amends, connection] ->
+      Text.unlines
+        [ "Committed " <> operation <> " as " <> gitOidText commit
+        , adr <> "  " <> record <> "  " <> amends <> "  " <> connection
+        , indexLine
+        ]
     _ -> Text.unlines ["Committed " <> operation <> " as " <> gitOidText commit, indexLine]
   where
     indexLine
@@ -757,6 +978,7 @@ transactionConflict :: TransactionError -> Bool
 transactionConflict problem =
   case problem of
     Stage3ValidateState message -> "expected head mismatch" `Text.isInfixOf` message
+      || "stale ADR state:" `Text.isInfixOf` message
     _ -> False
 
 renderFailure :: CliFailure -> IO ExitCode

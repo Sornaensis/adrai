@@ -34,13 +34,16 @@ import Adrai.CliRunner
     CliInvocation (..),
     ContentSource (..),
     CreateRequest (..),
+    AmendRequest (..),
     CliDispatchDependencies (..),
     CreateCommand (..),
+    AmendCommand (..),
     InitCommand (..),
     defaultCliConfig,
     parseActor,
     parseDigest,
     parseStructuredCreate,
+    parseStructuredAmend,
     CliFailure (..),
     CliRendered (..),
     parseArguments,
@@ -48,13 +51,14 @@ import Adrai.CliRunner
     dispatchWith,
     emitRenderedToHandles,
     renderCreateOutcome,
+    renderAmendOutcome,
     renderFailureOutcome,
     renderInitOutcome,
   )
 import Adrai.Git (GitOid (..))
 import Adrai.Domain (canonicalDomains)
 import Adrai.Scope (mkScopePattern)
-import Adrai.Service.Mutation (CreateResult (..), InitResult (..))
+import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), InitResult (..))
 import Adrai.Service.PostCommitIndex (IndexWarning (..), PostCommitIndexError (..), PostCommitIndexResult (..))
 import Adrai.Types (ActorKind (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
 import Adrai.Format.Json (JsonValue (..))
@@ -734,6 +738,27 @@ mutationCliContractTests =
         assertParserFailure ["create-adr"]
         assertParserFailure ["create", "--title-rev", "unsupported", "--body", "body"]
         assertParserFailure ["create", "--body", "first", "--body-file", "second.md"]
+    , testCase "amend is canonical and parses only frozen options" $ do
+        let expected = AmendCommand
+              { amendAdrSpec = "A0123456789ABCDEFGHJKMNPQRS"
+              , amendTitle = Just "Replacement"
+              , amendSummary = Nothing
+              , amendChangeSummary = Just "Clarify the decision"
+              , amendExpectedState = Just "S0123456789ABCDEFGHJKMN"
+              , amendActorSpec = Just "human:architect"
+              , amendModel = Nothing
+              , amendInputDigest = Nothing
+              , amendPromptDigest = Nothing
+              , amendContextDigest = Nothing
+              , amendPromptFile = Nothing
+              , amendContextFile = Nothing
+              , amendContentSources = [BodyText "Updated body"]
+              , amendJson = True
+              }
+        parseCli ["amend", "A0123456789ABCDEFGHJKMNPQRS", "--title", "Replacement", "--change-summary", "Clarify the decision", "--expect", "S0123456789ABCDEFGHJKMN", "--actor", "human:architect", "--body", "Updated body", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdAmend expected))
+        assertParserFailure ["amend-adr", "A0123456789ABCDEFGHJKMNPQRS"]
+        assertParserFailure ["amend", "A0123456789ABCDEFGHJKMNPQRS", "--domain", "platform", "--body", "x"]
+        assertParserFailure ["amend", "A0123456789ABCDEFGHJKMNPQRS", "--body", "first", "--body-file", "second.md"]
     , testCase "parser failures map to exit 2" $
         case parseArguments ["create-adr"] of
           Left rendered -> renderedExitCode rendered @?= ExitFailure 2
@@ -742,6 +767,11 @@ mutationCliContractTests =
         assertBool "unknown field accepted" (isLeft (parseStructuredCreate "{\"body\":\"x\",\"unknown\":true}"))
         assertBool "wrong domains type accepted" (isLeft (parseStructuredCreate "{\"body\":\"x\",\"domains\":\"platform\"}"))
         assertBool "wrong actor type accepted" (isLeft (parseStructuredCreate "{\"body\":\"x\",\"actor\":[]}"))
+    , testCase "structured amend is strict and requires its body/change summary at materialization" $ do
+        assertBool "unknown amend field accepted" (isLeft (parseStructuredAmend "{\"body\":\"x\",\"change_summary\":\"why\",\"unknown\":true}"))
+        case parseStructuredAmend "{\"body\":\"x\",\"change_summary\":[]}" of
+          Left message -> message @?= "structured amend field change_summary must be a string"
+          Right _ -> assertFailure "wrong amend change summary accepted"
     , testCase "actor, scope/domain, and digest validation stay typed" $ do
         assertBool "invalid actor accepted" (isLeft (parseActor "machine:agent" Nothing))
         assertBool "short digest accepted" (isLeft (parseDigest "sha256:abcd"))
@@ -792,6 +822,16 @@ mutationCliContractTests =
             rendered = renderCreateOutcome createResult [] warnings True
         assertBool "warning count is not an integer" ("\"index_warnings\": 2" `T.isInfixOf` renderedStdout rendered)
         assertBool "warning detail leaked into public mutation JSON" (not ("\"code\"" `T.isInfixOf` renderedStdout rendered))
+    , testCase "amend success projects the committed source record and connection" $ do
+        let rendered = renderAmendOutcome amendResult indexedResult True
+        renderedExitCode rendered @?= ExitSuccess
+        renderedStderr rendered @?= ""
+        renderedStdout rendered @?=
+          "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"amends\": \"R1123456789ABCDEFGHJKMNPQRS\",\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"connection\": \"C3123456789ABCDEFGHJKMNPQRS\",\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"operation\": \"operation-43\",\n  \"record\": \"R0123456789ABCDEFGHJKMNPQRS\"\n}\n"
+    , testCase "amend plain output keeps canonical identifiers and index failure durable" $ do
+        let rendered = renderAmendOutcome amendResult indexFailureResult False
+        renderedExitCode rendered @?= ExitSuccess
+        renderedStdout rendered @?= "Committed operation-43 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  record=R0123456789ABCDEFGHJKMNPQRS  amends=R1123456789ABCDEFGHJKMNPQRS  connection=C3123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
     , testCase "user and conflict outcomes have exact exit classes and stderr" $ do
         let user = renderFailureOutcome (CliUserFailure "invalid input")
             conflict = renderFailureOutcome (CliConflictFailure "stale head")
@@ -810,11 +850,13 @@ mutationCliContractTests =
               { cliMaterializeCreate = \received -> do
                   received @?= command
                   pure (Right request)
+              , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliRunInit = \_ -> error "init service must not be selected"
               , cliRunCreate = \repo received -> do
                   writeIORef selectedRepo (Just (configRepo repo))
                   writeIORef selectedRequest (Just received)
                   pure (Right (createResult, indexFailureResult))
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
               }
         exitCode <- dispatchWith dependencies invocation
         repo <- readIORef selectedRepo
@@ -826,10 +868,12 @@ mutationCliContractTests =
         selectedRepo <- newIORef Nothing
         let dependencies = CliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliRunInit = \repo -> do
                   writeIORef selectedRepo (Just (configRepo repo))
                   pure (Right (initResult, indexedResult))
               , cliRunCreate = \_ _ -> error "create service must not be selected"
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
               }
             invocation = CliInvocation (defaultCliConfig {configRepo = "init-repo"}) (CmdInit (InitCommand True))
         exitCode <- dispatchWith dependencies invocation
@@ -839,24 +883,65 @@ mutationCliContractTests =
         let rendered = renderInitOutcome initResult indexedResult True
         renderedStderr rendered @?= ""
         renderedExitCode rendered @?= ExitSuccess
+    , testCase "dispatch seam selects amend service with parsed repo and materialized request" $ do
+        selectedRepo <- newIORef Nothing
+        selectedRequest <- newIORef Nothing
+        let command = AmendCommand "A0123456789ABCDEFGHJKMNPQRS" (Just "Replacement") Nothing (Just "Reason") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing [BodyText "body"] True
+            invocation = CliInvocation (defaultCliConfig {configRepo = "amend-repo"}) (CmdAmend command)
+            amendRequest = AmendRequest
+              (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")) Nothing "Reason" "Replacement" "" "body"
+              (requireRight (parseActor "human:cli" Nothing)) Nothing Nothing Nothing
+            dependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliMaterializeAmend = \received -> do
+                  received @?= command
+                  pure (Right amendRequest)
+              , cliRunInit = \_ -> error "init service must not be selected"
+              , cliRunCreate = \_ _ -> error "create service must not be selected"
+              , cliRunAmend = \repo received -> do
+                  writeIORef selectedRepo (Just (configRepo repo))
+                  writeIORef selectedRequest (Just received)
+                  pure (Right (amendResult, indexFailureResult))
+              }
+        exitCode <- dispatchWith dependencies invocation
+        exitCode @?= ExitSuccess
+        readIORef selectedRepo >>= (@?= Just "amend-repo")
+        readIORef selectedRequest >>= (@?= Just amendRequest)
     , testCase "dispatch seam maps precommit user failure to exit 2 without mutation" $ do
         mutationCalled <- newIORef False
         let dependencies = CliDispatchDependencies
               { cliMaterializeCreate = \_ -> pure (Left "unreadable body")
+              , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliRunInit = \_ -> error "init service must not be selected"
               , cliRunCreate = \_ _ -> writeIORef mutationCalled True >> error "mutation must not run"
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
               }
             invocation = CliInvocation defaultCliConfig (CmdCreate createCommand)
         exitCode <- dispatchWith dependencies invocation
         called <- readIORef mutationCalled
         exitCode @?= ExitFailure 2
         called @?= False
+    , testCase "amend structured-field validation renders exact stderr and exit 2" $ do
+        let command = AmendCommand "A0123456789ABCDEFGHJKMNPQRS" Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing [InputJson "input.json"] False
+            dependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliMaterializeAmend = \_ -> pure (Left "structured amend field change_summary must be a string")
+              , cliRunInit = \_ -> error "init service must not be selected"
+              , cliRunCreate = \_ _ -> error "create service must not be selected"
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              }
+            rendered = renderFailureOutcome (CliUserFailure "structured amend field change_summary must be a string")
+        dispatchWith dependencies (CliInvocation defaultCliConfig (CmdAmend command)) >>= (@?= ExitFailure 2)
+        renderedStdout rendered @?= ""
+        renderedStderr rendered @?= "adrai: structured amend field change_summary must be a string\n"
     , testCase "dispatch seam preserves service user and conflict exit classes" $ do
         let invocation = CliInvocation defaultCliConfig (CmdInit (InitCommand False))
             userDependencies = CliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliRunInit = \_ -> pure (Left (CliUserFailure "service rejected input"))
               , cliRunCreate = \_ _ -> error "create service must not be selected"
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
               }
             conflictDependencies = userDependencies
               { cliRunInit = \_ -> pure (Left (CliConflictFailure "stale CAS")) }
@@ -890,6 +975,14 @@ mutationCliContractTests =
         (requireRight (mkConnectionId "C1123456789ABCDEFGHJKMNPQRS"))
         (requireRight (mkConnectionId "C2123456789ABCDEFGHJKMNPQRS"))
         oid [path] True
+    amendResult =
+      AmendResult
+        "operation-43"
+        (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkRecordId "R0123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkRecordId "R1123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkConnectionId "C3123456789ABCDEFGHJKMNPQRS"))
+        oid path [path] True
     indexedResult = PostCommitIndexResult True (Just "fixture.sqlite") (Just oid) [] Nothing
     indexFailureResult = PostCommitIndexResult False Nothing Nothing [] (Just (PostCommitIndexOpenFailure "readonly"))
     request =

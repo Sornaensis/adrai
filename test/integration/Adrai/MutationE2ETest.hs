@@ -24,6 +24,7 @@ import Adrai.Domain (mkDomain)
 import Adrai.Format.Config (defaultConfigText)
 import Adrai.Format.Document
   ( AppliesToPayload (..),
+    AmendsPayload (..),
     ConnectionPayload (..),
     ConnectionRecord (..),
     DecisionRecord (..),
@@ -985,7 +986,147 @@ testP602ARealExecutable =
     [ testCase "launcher scrubs hostile mixed-case Git environment controls" p602aHostileEnvironmentScrubbed,
       testCase "init bootstraps an unborn repository without touching a staged binary" p602aInitUnborn,
       testCase "create commits sealed documents without touching a staged binary" p602aCreate
-    ]
+     ]
+
+testP602BRealExecutable :: TestTree
+testP602BRealExecutable =
+  testGroup "P6-02B real executable amend"
+    [ testCase "amend commits two sealed documents without touching staged content" p602bAmend ]
+
+p602bAmend :: IO ()
+p602bAmend =
+  withSystemTempDirectory "adrai p6-02b amend" $ \temporary -> do
+    let repo = temporary </> "amend"
+        database = repo </> ".adrai" </> "index.sqlite"
+        stagedName = "unrelated-amend.bin"
+        stagedBytes = BS.pack [1, 0, 255, 2]
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "seed\n"
+    git repo ["add", "--", "seed.txt"]
+    git repo ["commit", "-m", "seed"]
+    _ <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    createStdout <- assertExitSuccess "create" =<< adraiRequiredRaw repo ["create", "--title", "Original", "--summary", "Original summary", "--body", "Original body\n", "--domain", "compiler", "--applies-to", "src/**", "--actor", "human:e2e", "--json"]
+    createResult <- decodeCanonicalJson "create" createStdout
+    adr <- requireJsonField "create" createResult "adr" :: IO Text
+    prior <- requireJsonField "create" createResult "record" :: IO Text
+    createPaths <- requireJsonField "create" createResult "created" :: IO [Text]
+    createCommit <- headCommit repo
+    priorDocuments <- mapM (parseCommittedAndWorktreeDocument repo createCommit) createPaths
+    priorIdentifier <-
+      case [decisionRecord decision | ParsedManagedDocument _ (ManagedDecision decision) _ _ _ <- priorDocuments, recordIdText (decisionRecord decision) == prior] of
+        [identifier] -> pure identifier
+        _ -> assertFailure "create result must identify exactly one parsed prior decision" >> fail "unreachable"
+    BS.writeFile (repo </> stagedName) stagedBytes
+    git repo ["add", "--", stagedName]
+    indexBefore <- gitStdout repo ["ls-files", "-s", "--", stagedName]
+    BS.writeFile (repo </> "seed.txt") "staged seed\n"
+    git repo ["add", "--", "seed.txt"]
+    seedIndexBefore <- gitStdout repo ["ls-files", "-s", "--", "seed.txt"]
+    BS.writeFile (repo </> "seed.txt") "dirty seed\n"
+    seedWorktreeBefore <- BS.readFile (repo </> "seed.txt")
+    amendStdout <- assertExitSuccess "amend" =<< adraiRequiredRaw repo ["amend", unpack adr, "--title", "Replacement", "--change-summary", "Why this changed", "--body", "Replacement body\n", "--actor", "human:e2e", "--json"]
+    amendResult <- decodeCanonicalJson "amend" amendStdout
+    operation <- requireJsonField "amend" amendResult "operation" :: IO Text
+    record <- requireJsonField "amend" amendResult "record" :: IO Text
+    amends <- requireJsonField "amend" amendResult "amends" :: IO Text
+    connection <- requireJsonField "amend" amendResult "connection" :: IO Text
+    commit <- requireJsonField "amend" amendResult "commit" :: IO Text
+    created <- requireJsonField "amend" amendResult "created" :: IO [Text]
+    currentHead <- headCommit repo
+    commit @?= currentHead
+    amends @?= prior
+    created @?= ["architecture/adrai/decisions/" <> T.take 4 record <> "/" <> record <> "--replacement.decision.md", "architecture/adrai/connections/" <> T.take 4 connection <> "/" <> connection <> "--amends.connection.md"]
+    amendStdout @?= LBS.fromStrict (encodeUtf8 (amendJson operation adr record prior connection currentHead created (T.pack database)))
+    gitText repo ["show", "-s", "--format=%P", T.unpack currentHead] >>= (@?= createCommit)
+    changed <- fmap (sort . T.lines) (gitText repo ["diff-tree", "--no-commit-id", "--name-only", "-r", T.unpack currentHead])
+    changed @?= sort created
+    documents <- mapM (parseCommittedAndWorktreeDocument repo currentHead) created
+    length documents @?= 2
+    let capsules = map parsedManagedCapsule documents
+        expectedActor = either (error . show) id (mkActor HumanActor "e2e" Nothing)
+        expectedInputs = ProvenanceInputs (Just (sha256Digest (encodeUtf8 "Replacement body\n"))) Nothing Nothing
+    mapM_ (assertSharedCapsule operation createCommit expectedActor expectedInputs) capsules
+    let timestamps = map provenanceTimestampMs capsules
+    assertBool "amend documents must share one positive timestamp" (length timestamps == 2 && head timestamps > 0 && all (== head timestamps) timestamps)
+    case [(decision, capsule) | ParsedManagedDocument _ (ManagedDecision decision) capsule _ _ <- documents] of
+      [(decision, capsule)] -> do
+        adrIdText (decisionAdr decision) @?= adr
+        recordIdText (decisionRecord decision) @?= record
+        decisionTitle decision @?= "Replacement"
+        decisionSummary decision @?= "Original summary"
+        decisionBody decision @?= "Replacement body\n"
+        decisionDomains decision @?= [either (error . show) id (mkDomain "compiler")]
+        provenanceObjectId capsule @?= ProvenanceRecord (decisionRecord decision)
+        eventKindText (provenanceEventKind capsule) @?= "decision.amend"
+        provenanceParents capsule @?= [ProvenanceRecord priorIdentifier]
+      _ -> assertFailure "amend must create exactly one decision document"
+    case [(connectionRecord, payload, capsule) | ParsedManagedDocument _ (ManagedConnection connectionRecord) capsule _ _ <- documents, AmendsConnection payload <- [connectionPayload connectionRecord]] of
+      [(connectionRecord, payload, capsule)] -> do
+        connectionIdText (connectionRecordId connectionRecord) @?= connection
+        connectionRationale connectionRecord @?= "Why this changed\n"
+        adrIdText (amendsSubjectAdr payload) @?= adr
+        recordIdText (amendsFromRecord payload) @?= record
+        map recordIdText (amendsToRecords payload) @?= [prior]
+        provenanceObjectId capsule @?= ProvenanceConnection (connectionRecordId connectionRecord)
+        eventKindText (provenanceEventKind capsule) @?= "connection.amends"
+        provenanceParents capsule @?= [ProvenanceRecord priorIdentifier]
+      _ -> assertFailure "amend must create exactly one amends connection document"
+    assertIndexResolvedOid database currentHead
+    assertStagedBinaryPreserved repo stagedName stagedBytes indexBefore
+    staged <- gitStdout repo ["diff", "--cached", "--name-only"]
+    staged @?= LBS.fromStrict (encodeUtf8 ("seed.txt\n" <> T.pack stagedName <> "\n"))
+    gitStdout repo ["ls-files", "-s", "--", "seed.txt"] >>= (@?= seedIndexBefore)
+    BS.readFile (repo </> "seed.txt") >>= (@?= seedWorktreeBefore)
+    noOpBaseline <- captureMutationFailureBaseline repo database
+    (noOpExit, noOpStdout, noOpStderr) <- adraiRequiredRaw repo ["amend", unpack adr, "--title", "Replacement", "--summary", "Original summary", "--change-summary", "No change", "--body", "Replacement body\n", "--actor", "human:e2e", "--json"]
+    noOpExit @?= ExitFailure 2
+    noOpStdout @?= ""
+    assertBool "no-op amend must report a user error" ("adrai: Stage3ValidateState \"amend would not change the current decision\"\n" `LBS.isPrefixOf` noOpStderr)
+    assertMutationFailurePreserved repo database noOpBaseline
+    staleBaseline <- captureMutationFailureBaseline repo database
+    (staleExit, staleStdout, staleStderr) <- adraiRequiredRaw repo ["amend", unpack adr, "--title", "Stale", "--change-summary", "Stale request", "--body", "Stale body\n", "--expect", "S0000000000000000000000", "--actor", "human:e2e", "--json"]
+    staleExit @?= ExitFailure 3
+    staleStdout @?= ""
+    assertBool "stale amend must use the conflict error class" ("adrai: conflict: Stage3ValidateState \"stale ADR state:" `LBS.isPrefixOf` staleStderr)
+    assertMutationFailurePreserved repo database staleBaseline
+
+data MutationFailureBaseline = MutationFailureBaseline
+  { failureHead :: Text
+  , failureTree :: LBS.ByteString
+  , failureIndex :: LBS.ByteString
+  , failureManagedPaths :: [Text]
+  , failureManagedWorktree :: [(Text, BS.ByteString)]
+  , failureStatus :: LBS.ByteString
+  }
+
+captureMutationFailureBaseline :: FilePath -> FilePath -> IO MutationFailureBaseline
+captureMutationFailureBaseline repo _database = do
+  currentHead <- headCommit repo
+  completeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+  completeIndex <- gitStdout repo ["ls-files", "--stage"]
+  let managedPaths = filter isManagedPath (T.lines (decodeUtf8 (LBS.toStrict completeTree)))
+  worktree <- mapM (\path -> do
+    bytes <- BS.readFile (repo </> unpack path)
+    pure (path, bytes)) managedPaths
+  status <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all"]
+  pure (MutationFailureBaseline currentHead completeTree completeIndex managedPaths worktree status)
+  where
+    isManagedPath path =
+      "architecture/adrai/decisions/" `T.isPrefixOf` path
+        || "architecture/adrai/connections/" `T.isPrefixOf` path
+
+assertMutationFailurePreserved :: FilePath -> FilePath -> MutationFailureBaseline -> IO ()
+assertMutationFailurePreserved repo database baseline = do
+  headCommit repo >>= (@?= failureHead baseline)
+  assertIndexResolvedOid database (failureHead baseline)
+  gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= failureTree baseline)
+  gitStdout repo ["ls-files", "--stage"] >>= (@?= failureIndex baseline)
+  current <- captureMutationFailureBaseline repo database
+  failureManagedPaths current @?= failureManagedPaths baseline
+  failureManagedWorktree current @?= failureManagedWorktree baseline
+  failureStatus current @?= failureStatus baseline
 
 p602aHostileEnvironmentScrubbed :: IO ()
 p602aHostileEnvironmentScrubbed = do
@@ -1187,6 +1328,26 @@ createJson operation adr record scope domain status commit created database =
         ]
     )
 
+amendJson :: Text -> Text -> Text -> Text -> Text -> Text -> [Text] -> Text -> Text
+amendJson operation adr record amends connection commit created database =
+  renderCanonicalJson
+    ( JsonObject
+        [ ("adr", JsonString adr)
+        , ("amends", JsonString amends)
+        , ("commit", JsonString commit)
+        , ("committed", JsonBool True)
+        , ("connection", JsonString connection)
+        , ("created", JsonArray (map JsonString created))
+        , ("database", JsonString database)
+        , ("index_revision", JsonString commit)
+        , ("index_updated", JsonBool True)
+        , ("index_warnings", JsonNumber 0)
+        , ("indexed", JsonBool True)
+        , ("operation", JsonString operation)
+        , ("record", JsonString record)
+        ]
+    )
+
 assertCanonicalIdentifier :: String -> Char -> Text -> IO ()
 assertCanonicalIdentifier label prefix identifier = do
   assertBool (label <> " identifier has its expected prefix") (T.isPrefixOf (T.singleton prefix) identifier)
@@ -1312,6 +1473,7 @@ tests =
   testGroup
     "Mutation E2E across hostile environments (P5-05)"
     [ testP602ARealExecutable,
+      testP602BRealExecutable,
       testUnbornRepository,
       testUnrelatedStagedEntry,
       testDetachedHead,
