@@ -48,6 +48,7 @@ module Adrai.CliRunner
     renderObsoleteOutcome,
     renderReactivateOutcome,
     renderShowOutcome,
+    renderCompareOutcome,
     renderFailureOutcome,
     emitRenderedToHandles,
     run,
@@ -73,7 +74,16 @@ import Adrai.Provenance (sha256Digest)
 import Adrai.Repository (repositorySnapshot, repositorySnapshotManagedPaths)
 import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
-import Adrai.Service.Query (ShowRequest (..), ShowResult (..), runShow, showFailureIsConflict, showFailureText)
+import Adrai.Service.Query
+  ( CompareRequest (..),
+    ShowRequest (..),
+    ShowResult (..),
+    compareFailureText,
+    runCompare,
+    runShow,
+    showFailureIsConflict,
+    showFailureText,
+  )
 import Adrai.Service.PostCommitIndex
   ( IndexWarning (..),
     PostCommitIndexError (..),
@@ -97,7 +107,15 @@ import Adrai.Types
     recordIdText,
     repoPathText,
   )
-import Adrai.Query (collapsedProjectionJson, explodedProjectionJson, renderCollapsedProjection, renderExplodedProjection)
+import Adrai.Query
+  ( CompareProjection,
+    collapsedProjectionJson,
+    compareProjectionJson,
+    explodedProjectionJson,
+    renderCollapsedProjection,
+    renderCompareProjection,
+    renderExplodedProjection,
+  )
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -540,20 +558,8 @@ relevantParser =
 compareParser :: Parser CompareCommand
 compareParser =
   CompareCommand
-    <$> strOption
-      ( long "from"
-       <> short 'f'
-       <> metavar "REVISION"
-       <> help "revision to compare from"
-      )
-    <*> ( strOption
-            ( long "to"
-             <> short 't'
-             <> metavar "REVISION"
-             <> help "revision to compare to (default HEAD)"
-            )
-          <|> pure "HEAD"
-        )
+    <$> strArgument (metavar "FROM" <> help "revision to compare from")
+    <*> (strArgument (metavar "TO" <> help "revision to compare to (default HEAD)") <|> pure "HEAD")
     <*> switch (long "include-unchanged" <> help "include unchanged items")
     <*> switch (long "json" <> help "output JSON")
 
@@ -670,12 +676,15 @@ dispatchWith _ (CliInvocation _ (CmdSearch SearchCommand { searchQuery })) = do
 dispatchWith _ (CliInvocation _ CmdRelevant {}) = do
   putStrLn "[relevant] finding relevant ADRs"
   pure ExitSuccess
-dispatchWith _ (CliInvocation _ (CmdCompare CompareCommand { compareBefore, compareAfter })) = do
-  putStrLn $ "[compare] from: " <> Text.unpack compareBefore <> ", to: " <> Text.unpack compareAfter
-  pure ExitSuccess
+dispatchWith dependencies (CliInvocation config (CmdCompare command)) = do
+  result <- cliRunCompare dependencies config command
+  case result of
+    Left failure -> renderFailure failure
+    Right projection -> emitRendered (renderCompareOutcome command projection)
 
 data CliDispatchDependencies = CliDispatchDependencies
   { cliRunShow :: ~(CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult))
+  , cliRunCompare :: ~(CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection))
   , cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
   , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
   , cliMaterializeObsolete :: ~(ObsoleteCommand -> IO (Either Text ObsoleteCliRequest))
@@ -693,7 +702,7 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies runProductionShow materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies runProductionShow runProductionCompare materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
 
 runProductionShow :: CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult)
 runProductionShow config command = do
@@ -712,6 +721,23 @@ runProductionShow config command = do
         Left failure
           | showFailureIsConflict failure -> Left (CliConflictFailure (showFailureText failure))
           | otherwise -> Left (CliUserFailure (showFailureText failure))
+        Right projection -> Right projection
+
+runProductionCompare :: CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection)
+runProductionCompare config command = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      result <-
+        runCompare repository
+          CompareRequest
+            { compareRequestFrom = compareBefore command,
+              compareRequestTo = compareAfter command,
+              compareRequestIncludeUnchanged = compareUnchanged command
+            }
+      pure $ case result of
+        Left failure -> Left (CliUserFailure (compareFailureText failure))
         Right projection -> Right projection
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
@@ -1371,6 +1397,17 @@ renderShowOutcome command result =
     value = case result of
       ShowCollapsed projection -> collapsedProjectionJson projection
       ShowExploded projection -> explodedProjectionJson projection
+
+renderCompareOutcome :: CompareCommand -> CompareProjection -> CliRendered
+renderCompareOutcome command projection =
+  CliRendered
+    output
+    ""
+    ExitSuccess
+  where
+    output
+      | compareJson command = renderCanonicalJson (compareProjectionJson projection)
+      | otherwise = TextEncoding.decodeUtf8 (renderCompareProjection projection)
 
 renderInitSuccess :: InitResult -> PostCommitIndexResult -> Bool -> IO ExitCode
 renderInitSuccess result indexResult jsonOutput = emitRendered (renderInitOutcome result indexResult jsonOutput)

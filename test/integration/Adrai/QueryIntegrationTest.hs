@@ -9,8 +9,8 @@ module Adrai.QueryIntegrationTest (tests) where
 
 import Adrai.Git (discoverRepository, systemGit)
 import Adrai.Integration.CLI hiding (parseCompareResults, parseHistory, parseSearchResults)
-import Adrai.Query (renderCollapsedProjection)
-import Adrai.Service.Query (ShowRequest (..), ShowResult (..), runShow)
+import Adrai.Query (renderCollapsedProjection, renderCompareProjection)
+import Adrai.Service.Query (CompareRequest (..), ShowRequest (..), ShowResult (..), runCompare, runShow)
 import Adrai.Types (ViewMode (..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException)
@@ -233,6 +233,7 @@ tests =
       testP602FRealExecutableShow,
       testP602FRealExecutableConflict,
       testP602FRealExecutableIntegrityFailure,
+      testP602GRealExecutableCompare,
       testShowCollapsedEvolution,
       testCompareBranchOnly,
       testCompareReverseShowsRemoved,
@@ -889,6 +890,164 @@ testP602FRealExecutableIntegrityFailure =
       gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
       gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
       gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
+
+testP602GRealExecutableCompare :: TestTree
+testP602GRealExecutableCompare =
+  testCase "P6-02G real executable compare is directional, revision-local, canonical, and read-only" $
+    withSystemTempDirectory "adrai p6-02g compare ü" $ \tmpDir -> do
+      repo <- createTestRepo tmpDir
+      _ <- p602fJsonOrThrow repo ["init", "--json"]
+      initialRevision <- headCommit repo
+      created <- p602fJsonOrThrow repo
+        [ "create"
+        , "--title", "Compare Unicode ü decision"
+        , "--summary", "Initial compare state"
+        , "--body", "## Decision\nCompare immutable snapshots.\n"
+        , "--domain", "platform"
+        , "--applies-to", "src/**"
+        , "--actor", "llm:planner"
+        , "--model", "compare-model"
+        , "--json"
+        ]
+      adr <- case extractAdrId created of
+        Just value -> pure value
+        Nothing -> assertFailure "compare create omitted ADR" >> fail "unreachable"
+      createdRevision <- headCommit repo
+      _ <- p602fJsonOrThrow repo
+        [ "amend", T.unpack adr
+        , "--title", "Compare Unicode ü decision v2"
+        , "--summary", "Changed compare state"
+        , "--change-summary", "Prove directional compare"
+        , "--body", "## Decision\nCompare immutable snapshots exactly.\n"
+        , "--actor", "llm:planner"
+        , "--model", "compare-model"
+        , "--json"
+        ]
+      amendedRevision <- headCommit repo
+
+      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+      beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+      let managedPaths =
+            filter ("architecture/adrai/" `isPrefixOf`)
+              (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
+      beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
+      BS.writeFile (repo </> "compare staged.bin") "\NUL\SOHcompare staged bytes\255"
+      _ <- gitStdout repo ["add", "--", "compare staged.bin"]
+      BS.writeFile (repo </> "README.md") "# Test\ncompare caller dirty bytes\n"
+      BS.writeFile (repo </> "compare untracked ü.txt") "keep this untracked file"
+      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+      beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
+      beforeWorktree <- gitStdout repo ["diff", "--binary"]
+
+      added <- p602fJsonOrThrow repo ["compare", T.unpack initialRevision, T.unpack createdRevision, "--json"]
+      assertCompareEnvelope added adr initialRevision createdRevision initialRevision createdRevision (1, 0, 0, 0) ["added"]
+
+      changed <- p602fJsonOrThrow repo ["compare", T.unpack createdRevision, "--json"]
+      assertCompareEnvelope changed adr createdRevision amendedRevision createdRevision "HEAD" (0, 0, 1, 0) ["changed"]
+
+      unchangedHidden <- p602fJsonOrThrow repo ["compare", T.unpack amendedRevision, T.unpack amendedRevision, "--json"]
+      assertCompareEnvelope unchangedHidden adr amendedRevision amendedRevision amendedRevision amendedRevision (0, 0, 0, 1) []
+      unchangedShown <- p602fJsonOrThrow repo ["compare", T.unpack amendedRevision, T.unpack amendedRevision, "--include-unchanged", "--json"]
+      assertCompareEnvelope unchangedShown adr amendedRevision amendedRevision amendedRevision amendedRevision (0, 0, 0, 1) ["unchanged"]
+
+      removed <- p602fJsonOrThrow repo ["compare", T.unpack createdRevision, T.unpack initialRevision, "--json"]
+      assertCompareEnvelope removed adr createdRevision initialRevision createdRevision initialRevision (0, 1, 0, 0) ["removed"]
+
+      repository <- do
+        discovered <- discoverRepository systemGit repo
+        case discovered of
+          Left problem -> assertFailure ("discover compare fixture: " <> show problem) >> fail "unreachable"
+          Right value -> pure value
+      expectedText <- do
+        outcome <- runCompare repository (CompareRequest createdRevision "HEAD" False)
+        case outcome of
+          Right projection -> pure (LBS.fromStrict (renderCompareProjection projection))
+          Left problem -> assertFailure ("programmatic compare failed: " <> show problem) >> fail "unreachable"
+      (textExit, textOut, textErr) <- p602fRaw repo ["compare", T.unpack createdRevision]
+      textExit @?= ExitSuccess
+      textErr @?= ""
+      textOut @?= expectedText
+
+      (invalidExit, invalidOut, invalidErr) <- p602fRaw repo ["compare", "refs/heads/does-not-exist", "--json"]
+      invalidExit @?= ExitFailure 2
+      invalidOut @?= ""
+      assertBool "invalid compare revision is a user error" ("adrai: " `LBS.isPrefixOf` invalidErr)
+
+      afterHead <- headCommit repo
+      afterRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+      afterTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+      afterStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      afterIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+      afterCached <- gitStdout repo ["diff", "--cached", "--binary"]
+      afterWorktree <- gitStdout repo ["diff", "--binary"]
+      afterManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
+      afterHead @?= amendedRevision
+      afterRef @?= beforeRef
+      afterTree @?= beforeTree
+      afterStatus @?= beforeStatus
+      afterIndex @?= beforeIndex
+      afterCached @?= beforeCached
+      afterWorktree @?= beforeWorktree
+      afterManaged @?= beforeManaged
+  where
+    assertCompareEnvelope value expectedAdr expectedFrom expectedTo requestedFrom requestedTo expectedCounts expectedKinds =
+      case _Object value of
+        Nothing -> assertFailure "compare output is not an object"
+        Just object -> do
+          sortOn id (map AesonKey.toText (KM.keys object))
+            @?= sortOn id ["cache", "counts", "entries", "from", "from_requested", "to", "to_requested", "view"]
+          (object .: "view" :: Maybe Text) @?= Just "compare"
+          (object .: "from" :: Maybe Text) @?= Just expectedFrom
+          (object .: "to" :: Maybe Text) @?= Just expectedTo
+          (object .: "from_requested" :: Maybe Text) @?= Just requestedFrom
+          (object .: "to_requested" :: Maybe Text) @?= Just requestedTo
+          counts <- case KM.lookup "counts" object >>= _Object of
+            Just result -> pure result
+            Nothing -> assertFailure "compare output omitted counts" >> fail "unreachable"
+          let (added, removed, changed, unchanged) = expectedCounts
+          (counts .: "added" :: Maybe Int) @?= Just added
+          (counts .: "removed" :: Maybe Int) @?= Just removed
+          (counts .: "changed" :: Maybe Int) @?= Just changed
+          (counts .: "unchanged" :: Maybe Int) @?= Just unchanged
+          entries <- case object .: "entries" of
+            Just result -> pure (result :: [Data.Aeson.Value])
+            Nothing -> assertFailure "compare output omitted entries" >> fail "unreachable"
+          mapMaybe compareEntryKind entries @?= expectedKinds
+          case entries of
+            [] -> pure ()
+            [entry] -> case _Object entry of
+              Nothing -> assertFailure "compare entry is not an object"
+              Just entryObject -> do
+                sortOn id (map AesonKey.toText (KM.keys entryObject))
+                  @?= sortOn id ["adr", "after", "before", "changes", "kind", "title"]
+                (entryObject .: "adr" :: Maybe Text) @?= Just expectedAdr
+                changes <- case entryObject .: "changes" of
+                  Just result -> pure (result :: [Data.Aeson.Value])
+                  Nothing -> assertFailure "compare entry omitted changes" >> fail "unreachable"
+                case expectedKinds of
+                  ["added"] -> do
+                    KM.lookup "before" entryObject @?= Just Data.Aeson.Null
+                    assertBool "added entry includes its after snapshot" (maybe False (/= Data.Aeson.Null) (KM.lookup "after" entryObject))
+                    changes @?= []
+                  ["removed"] -> do
+                    assertBool "removed entry includes its before snapshot" (maybe False (/= Data.Aeson.Null) (KM.lookup "before" entryObject))
+                    KM.lookup "after" entryObject @?= Just Data.Aeson.Null
+                    changes @?= []
+                  ["unchanged"] -> do
+                    assertBool "unchanged entry includes its before snapshot" (maybe False (/= Data.Aeson.Null) (KM.lookup "before" entryObject))
+                    assertBool "unchanged entry includes its after snapshot" (maybe False (/= Data.Aeson.Null) (KM.lookup "after" entryObject))
+                    changes @?= []
+                  ["changed"] -> do
+                    let fields =
+                          [ field
+                          | change <- changes
+                          , Just changeObject <- [_Object change]
+                          , Just field <- [changeObject .: "field" :: Maybe Text]
+                          ]
+                    fields @?= ["record", "title", "summary", "body", "record_heads"]
+                  _ -> assertFailure "unexpected compare entry expectation"
+            _ -> assertFailure "compare fixture expected at most one entry"
 
 testShowCollapsedEvolution :: TestTree
 testShowCollapsedEvolution =

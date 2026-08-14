@@ -71,6 +71,7 @@ import Adrai.CliRunner
      renderObsoleteOutcome,
      renderReactivateOutcome,
      renderShowOutcome,
+     renderCompareOutcome,
     renderFailureOutcome,
     renderInitOutcome,
   )
@@ -89,7 +90,17 @@ import Adrai.Retrieval (SearchMaterialization(..))
 import Adrai.Sqlite (ColdDatabaseStats (..))
 import Adrai.Graph (GraphReduction (..))
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
-import Adrai.Query (ExplodedProjection (..), ReferenceLookupError (..), ResolutionState (..), explodedProjectionJson, renderExplodedProjection)
+import Adrai.Query
+  ( CompareCounts (CompareCounts),
+    CompareProjection (..),
+    ExplodedProjection (..),
+    ReferenceLookupError (..),
+    ResolutionState (..),
+    compareProjectionJson,
+    explodedProjectionJson,
+    renderCompareProjection,
+    renderExplodedProjection,
+  )
 import Adrai.Service.Query (ShowFailure (..), ShowResult (..), showFailureIsConflict)
 import Adrai.Types (RepoPath (..))
 import qualified Data.Aeson as Aeson
@@ -692,6 +703,24 @@ schemaContractTests =
         renderedStderr jsonRendered @?= ""
         renderedStdout jsonRendered @?= renderCanonicalJson (explodedProjectionJson projection)
         renderedStdout textRendered @?= Text.Encoding.decodeUtf8 (renderExplodedProjection projection),
+      testCase "compare render outcome is exact canonical JSON or the established text renderer" $ do
+        let projection =
+              CompareProjection
+                (RevisionIdentity "base" "1111111111111111111111111111111111111111")
+                (RevisionIdentity "HEAD" "2222222222222222222222222222222222222222")
+                (CompareCounts 1 2 3 4)
+                []
+                []
+            jsonCommand = CompareCommand "base" "HEAD" False True
+            textCommand = jsonCommand {compareJson = False}
+            jsonRendered = renderCompareOutcome jsonCommand projection
+            textRendered = renderCompareOutcome textCommand projection
+        renderedExitCode jsonRendered @?= ExitSuccess
+        renderedStderr jsonRendered @?= ""
+        renderedStdout jsonRendered @?= renderCanonicalJson (compareProjectionJson projection)
+        renderedExitCode textRendered @?= ExitSuccess
+        renderedStderr textRendered @?= ""
+        renderedStdout textRendered @?= Text.Encoding.decodeUtf8 (renderCompareProjection projection),
       testCase "all JSON output types have sorted keys (deterministic serialization)" $ do
         -- Verify compileResultJson keys are sorted
         let compileResultJsonKeys = objectKeys (compileResultJson (mkCompileResult))
@@ -805,6 +834,47 @@ mutationCliContractTests =
           (CliInvocation defaultCliConfig (CmdShow (ShowCommand "A0123456789ABCDEFGHJKMNPQRS" CollapsedView "HEAD" False True)))
           >>= (@?= ExitFailure 2)
         readIORef serviceCalled >>= (@?= False)
+    , testCase "compare accepts only positional revisions and dispatches the full typed request" $ do
+        let explicit = CompareCommand "release~1" "release" True True
+            defaulted = CompareCommand "release~1" "HEAD" False False
+        parseCli ["compare", "release~1", "release", "--include-unchanged", "--json"]
+          @?= Right (CliInvocation defaultCliConfig (CmdCompare explicit))
+        parseCli ["compare", "release~1"]
+          @?= Right (CliInvocation defaultCliConfig (CmdCompare defaulted))
+        assertParserFailure ["compare", "--from", "release~1"]
+        assertParserFailure ["compare", "-f", "release~1"]
+        assertParserFailure ["compare", "release~1", "--to", "release"]
+        assertParserFailure ["compare", "release~1", "-t", "release"]
+        selectedRepo <- newIORef Nothing
+        selectedCommand <- newIORef Nothing
+        let projection =
+              CompareProjection
+                (RevisionIdentity "release~1" "1111111111111111111111111111111111111111")
+                (RevisionIdentity "release" "2222222222222222222222222222222222222222")
+                (CompareCounts 0 0 0 0)
+                []
+                []
+            dependencies =
+              CliDispatchDependencies
+                { cliRunShow = \_ _ -> error "show service must not be selected",
+                  cliRunCompare = \config received -> do
+                    writeIORef selectedRepo (Just (configRepo config))
+                    writeIORef selectedCommand (Just received)
+                    pure (Right projection),
+                  cliMaterializeCreate = \_ -> error "create materialization must not be selected",
+                  cliMaterializeAmend = \_ -> error "amend materialization must not be selected",
+                  cliMaterializeScope = \_ -> error "scope materialization must not be selected",
+                  cliMaterializeDomain = \_ -> error "domain materialization must not be selected",
+                  cliRunInit = \_ -> error "init service must not be selected",
+                  cliRunCreate = \_ _ -> error "create service must not be selected",
+                  cliRunAmend = \_ _ -> error "amend service must not be selected",
+                  cliRunScope = \_ _ -> error "scope service must not be selected",
+                  cliRunDomain = \_ _ -> error "domain service must not be selected"
+                }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "compare-repo"}) (CmdCompare explicit))
+          >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "compare-repo")
+        readIORef selectedCommand >>= (@?= Just explicit)
     , testCase "global repo selects create and repeatable fields" $ do
         let expected =
               CreateCommand
