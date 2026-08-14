@@ -1380,13 +1380,19 @@ assertDomainUpdate directory update parents mode added removed effective refinem
         domainsEffective payload @?= effective
         domainsRefinements payload @?= refinements
         connectionRationale connection @?= rationale
+        domainChangeAdded update @?= domainsAdded payload
+        domainChangeRemoved update @?= domainsRemoved payload
+        domainChangeRefinements update @?= domainsRefinements payload
       _ -> assertFailure "expected domain payload"
     _ -> assertFailure "expected domain connection"
   domainChangeParents update @?= parents
   domainChangeAdrId update @?= domainsSubjectAdrFrom document
   operationIdText (provenanceOperationId (parsedManagedCapsule document)) @?= Text.pack (domainChangeOperationId update)
   domainChangeMode update @?= mode
+  domainChangeAdded update @?= added
+  domainChangeRemoved update @?= removed
   domainChangeEffective update @?= effective
+  domainChangeRefinements update @?= refinements
   domainChangeCreatedPaths update @?= [domainChangeNewPath update]
   assertBool "domain transaction refreshed index" (domainChangeIndexUpdated update)
   let capsule = parsedManagedCapsule document

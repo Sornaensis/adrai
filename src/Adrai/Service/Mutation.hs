@@ -1038,7 +1038,10 @@ data DomainChangeResult
         domainChangeConnectionId :: ConnectionId,
         domainChangeParents :: [ConnectionId],
         domainChangeMode :: T.Text,
+        domainChangeAdded :: [Domain],
+        domainChangeRemoved :: [Domain],
         domainChangeEffective :: [Domain],
+        domainChangeRefinements :: [DomainRefinement],
         domainChangeCommitOid  :: GitOid,
         domainChangeNewPath    :: RepoPath,
         domainChangeCreatedPaths :: [RepoPath],
@@ -1104,7 +1107,8 @@ changeDomainCommand
                         Right TransactionResult {..} -> case transactionCreatedPaths of
                           [newPath] -> pure (Right DomainChangeResult
                             { domainChangeOperationId = transactionOperationId, domainChangeAdrId = adrId, domainChangeConnectionId = connId
-                            , domainChangeParents = parents, domainChangeMode = mode, domainChangeEffective = effective
+                            , domainChangeParents = parents, domainChangeMode = mode, domainChangeAdded = added, domainChangeRemoved = removed
+                            , domainChangeEffective = effective, domainChangeRefinements = refinements
                             , domainChangeCommitOid = transactionCommitOid, domainChangeNewPath = newPath, domainChangeCreatedPaths = transactionCreatedPaths
                             , domainChangeIndexUpdated = transactionIndexUpdated })
                           _ -> pure (Left (Stage8UpdateRef "domain transaction did not report exactly one created path"))
