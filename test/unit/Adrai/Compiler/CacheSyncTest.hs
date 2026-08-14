@@ -39,7 +39,7 @@ tests =
               :: IO [Only Text]
             cols <- query_ conn "PRAGMA table_info(operation_commit)" :: IO [(Int,Text,Text,Int,Maybe Text,Int)]
             close conn
-            tables @?= [Only "meta", Only "operation_commit", Only "line_landing", Only "provenance_issue"]
+            tables @?= [Only "line_landing", Only "meta", Only "operation_commit", Only "provenance_issue"]
             let colNames = [col | (_, col, _, _, _, _) <- cols]
             "op_id" `elem` colNames @?= True
       , testCase "syncs operation_commit rows filtered by operation IDs" $
