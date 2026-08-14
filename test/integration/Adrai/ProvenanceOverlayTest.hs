@@ -177,7 +177,7 @@ import Database.SQLite.Simple
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
+import Test.Tasty.HUnit ((@?=), assertBool, assertEqual, assertFailure, testCase)
 
 -- | Convert a Digest to Text for use in test data.
 -- The exact representation is not critical; it just needs to be stable Text.
@@ -357,6 +357,46 @@ ensureSchema dbPath = do
   execute conn "INSERT INTO meta VALUES('schema', ?)" [SQLText overlaySchemaVersion]
   close conn
 
+-- | Seed only the durable rows read by 'candidateCommits'.  The ADR/object
+-- identity intentionally differs from the capsule-authoritative operation ID.
+candidateBindingFixture :: FilePath -> IO (Text, Text, GitOid, GitOid, GitOid, GitOid)
+candidateBindingFixture dbPath = do
+  ensureSchema dbPath
+  conn <- open dbPath
+  let operation = "O00000000000000000000000881"
+      adrId = "A00000000000000000000000881"
+      path = "architecture/adrai/decisions/ü candidate space.md"
+      pathCommit = GitOid (Text.replicate 40 "a")
+      excludedPathCommit = GitOid (Text.replicate 40 "b")
+      trailerCommit = GitOid (Text.replicate 40 "c")
+      excludedTrailerCommit = GitOid (Text.replicate 40 "d")
+      insertObservation oid message =
+        execute conn "INSERT INTO commit_observation VALUES(?,?,?,?,?,?)"
+          [ SQLText (gitOidText oid), SQLText "[]", SQLInteger 1, SQLInteger 1
+          , SQLText "candidate fixture", SQLText message
+          ]
+  execute conn "INSERT INTO registered_operation VALUES(?,?,?,?)"
+    [SQLText operation, SQLText adrId, SQLText (gitOidText pathCommit), SQLText "candidate-fixture"]
+  execute conn "INSERT INTO registered_object VALUES(?,?,?,?)"
+    [SQLText operation, SQLText adrId, SQLText path, SQLText "fixture-blob"]
+  insertObservation pathCommit "path candidate"
+  insertObservation excludedPathCommit "excluded path candidate"
+  insertObservation trailerCommit ("ADRAI-Op: " <> operation)
+  insertObservation excludedTrailerCommit ("ADRAI-Op: " <> operation)
+  execute conn "INSERT INTO managed_path_addition VALUES(?,?)" [SQLText path, SQLText (gitOidText pathCommit)]
+  execute conn "INSERT INTO managed_path_addition VALUES(?,?)" [SQLText path, SQLText (gitOidText excludedPathCommit)]
+  close conn
+  pure (operation, adrId, pathCommit, excludedPathCommit, trailerCommit, excludedTrailerCommit)
+
+candidateBindingResult :: FilePath -> [GitOid] -> IO (Map Text (Set.Set GitOid))
+candidateBindingResult dbPath commits = do
+  conn <- open dbPath
+  result <- candidateCommits conn commits ["O00000000000000000000000881"]
+  close conn
+  case result of
+    Left err -> assertFailure ("candidateCommits: " <> show err)
+    Right candidates -> pure candidates
+
 -- | Register operation groups and then run the full classification pipeline.
 classifyOperations
   :: Repository
@@ -524,6 +564,37 @@ tests =
       testCase "added_paths_real_git_uses_exact_add_semantics_for_rename_copy_and_deletion" addedPathsChangeShapesGitTest,
 
       testCase "added_paths_real_git_unions_merge_parent_records" addedPathsMergeGitTest,
+
+      testCase "candidate_bindings_are_scoped_and_operation_authoritative" $
+        (withSystemTempDirectory "adrai overlay candidate bindings ünicode" $ \temp -> do
+          let dbPath = temp </> "semantic.sqlite"
+              operation = "O00000000000000000000000881"
+          (fixtureOperation, adrId, pathCommit, excludedPathCommit, trailerCommit, excludedTrailerCommit) <-
+            candidateBindingFixture dbPath
+          assertEqual "fixture operation is the canonical key" operation fixtureOperation
+
+          emptyCandidates <- candidateBindingResult dbPath []
+          Map.lookup operation emptyCandidates @?= Just Set.empty
+
+          singletonCandidates <- candidateBindingResult dbPath [pathCommit]
+          Map.lookup operation singletonCandidates @?= Just (Set.singleton pathCommit)
+
+          multiCandidates <- candidateBindingResult dbPath [trailerCommit, pathCommit]
+          Map.lookup operation multiCandidates @?= Just (Set.fromList [pathCommit, trailerCommit])
+
+          reorderedDuplicates <- candidateBindingResult dbPath [pathCommit, trailerCommit, pathCommit]
+          reorderedDuplicates @?= multiCandidates
+
+          let adversarial = GitOid "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' OR 1=1 --"
+          adversarialCandidates <- candidateBindingResult dbPath [pathCommit, adversarial]
+          Map.lookup operation adversarialCandidates @?= Just (Set.singleton pathCommit)
+          assertBool "no candidate outside the supplied OID set survives path discovery"
+            (excludedPathCommit `Set.notMember` Map.findWithDefault Set.empty operation multiCandidates)
+          assertBool "no candidate outside the supplied OID set survives trailer discovery"
+            (excludedTrailerCommit `Set.notMember` Map.findWithDefault Set.empty operation multiCandidates)
+          assertBool "the ADR/object ID is never used as a candidate-map key"
+            (Map.notMember adrId multiCandidates)
+        ),
 
       testCase "store_new_commits_discovers_unicode_managed_path_candidate" $
         (withSystemTempDirectory "adrai overlay unicode candidate path" $ \temp -> do

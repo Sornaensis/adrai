@@ -299,12 +299,7 @@ storeNewCommits repo conn commits = do
     Left e  -> pure (Left e)
 
 basename :: Text -> Text
-basename p =
-  case Text.reverse p of
-    "" -> ""
-    r -> case Text.break (== '/') r of
-           (_, "") -> r
-           (_, rs) -> Text.drop 1 rs
+basename = Text.reverse . fst . Text.break (== '/') . Text.reverse
 
 managedSuffixes :: [Text]
 managedSuffixes = [".decision.md", ".connection.md"]
@@ -389,14 +384,17 @@ candidateCommits conn newCommits newOpIds = do
           then pure (Right candidates)
           else do
             let placeholders = Text.intercalate "," (replicate (length newCommits) "?")
-            pathCommits <- query_ conn
+                candidateParams = map (SQLText . gitOidText) newCommits
+            pathCommits <- query conn
               (asQuery ("SELECT path,commit_oid FROM managed_path_addition "
                <> "WHERE commit_oid IN (" <> placeholders <> ")"))
+              candidateParams
               :: IO [(Text, Text)]
 
-            msgCommits <- query_ conn
+            msgCommits <- query conn
               (asQuery ("SELECT commit_oid,message FROM commit_observation "
                <> "WHERE commit_oid IN (" <> placeholders <> ")"))
+              candidateParams
               :: IO [(Text, Text)]
 
             let pathCandidates = foldl (\m (path, commitOid) ->
