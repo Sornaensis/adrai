@@ -19,6 +19,7 @@ import Adrai.Git
   ( GitError (..),
     GitOid (..),
     Repository (..),
+    gitOidText,
     systemGit,
   )
 import Adrai.GitTestSupport
@@ -92,6 +93,7 @@ import Adrai.Provenance.Discovery
     observationRoots,
     revListDelta,
     addedPathsForCommits,
+    decodeAddedPathsOutput,
     commitLogSnapshotForOids,
   )
 import Adrai.Repository
@@ -393,17 +395,174 @@ classifyOperations repo dbPath parsedDocs newOps = do
 -- Test suite
 -- =====================================================================
 
+addedPathsProtocolTest :: IO ()
+addedPathsProtocolTest = do
+  let first = GitOid (Text.replicate 40 "a")
+      second = GitOid (Text.replicate 40 "b")
+      expected = Set.fromList [first, second]
+      record oid paths =
+        BS.concat
+          ( "\x1e" : TextEncoding.encodeUtf8 (gitOidText oid) : "\0\n" :
+            concatMap (\path -> ["A\0", TextEncoding.encodeUtf8 path, "\0"]) paths
+          )
+      statusRecord oid status path =
+        "\x1e" <> TextEncoding.encodeUtf8 (gitOidText oid) <> "\0\n" <> status <> "\0" <> path <> "\0"
+      leadingRecordSeparator = Text.cons '\x1e' "leading-record-separator.txt"
+      valid = record first ["directory/ü path.txt"] <> record second [] <> record first ["second.txt", leadingRecordSeparator]
+      expectedPaths =
+        Map.fromList
+          [ (first, Set.fromList ["directory/ü path.txt", "second.txt", leadingRecordSeparator]),
+            (second, Set.empty)
+          ]
+      expectInvalidOutput label result =
+        case result of
+          Left (GitInvalidOutput "added paths" _) -> pure ()
+          other -> assertFailure (label <> ": expected typed invalid output, got " <> show other)
+  decodeAddedPathsOutput expected valid @?= Right expectedPaths
+  expectInvalidOutput "invalid OID header"
+    (decodeAddedPathsOutput expected ("\x1enot-an-oid\0\n" :: ByteString))
+  expectInvalidOutput "missing header terminator"
+    (decodeAddedPathsOutput expected ("\x1e" <> TextEncoding.encodeUtf8 (gitOidText first)))
+  expectInvalidOutput "path before record header"
+    (decodeAddedPathsOutput expected ("path-before-header\0" :: ByteString))
+  expectInvalidOutput "unknown record OID"
+    (decodeAddedPathsOutput (Set.singleton first) (record second []))
+  expectInvalidOutput "non-added status"
+    (decodeAddedPathsOutput (Set.singleton first) (statusRecord first "D" "deleted.txt"))
+  expectInvalidOutput "missing path after added status"
+    (decodeAddedPathsOutput (Set.singleton first) ("\x1e" <> TextEncoding.encodeUtf8 (gitOidText first) <> "\0\nA\0"))
+  expectInvalidOutput "unterminated path"
+    (decodeAddedPathsOutput (Set.singleton first) ("\x1e" <> TextEncoding.encodeUtf8 (gitOidText first) <> "\0\nA\0unterminated"))
+  case decodeAddedPathsOutput (Set.singleton first)
+    ("\x1e" <> TextEncoding.encodeUtf8 (gitOidText first) <> "\0\nA\0" <> BS.pack [0xff, 0]) of
+    Left (GitInvalidUtf8Path _) -> pure ()
+    other -> assertFailure ("invalid UTF-8 path: expected GitInvalidUtf8Path, got " <> show other)
+
+addedPathsRealGitTest :: IO ()
+addedPathsRealGitTest =
+  withSystemTempDirectory "adrai added paths real git" $ \temp -> do
+    let repoDir = temp </> "repo"
+        rootPath = "root ü path.txt"
+        ordinaryPath = "ordinary path.txt"
+    initTestRepository repoDir
+    rootText <- commitFile repoDir (Text.unpack rootPath) "root"
+    ordinaryText <- commitFile repoDir (Text.unpack ordinaryPath) "ordinary"
+    modifiedText <- commitFile repoDir (Text.unpack rootPath) "modified"
+    resolved <- resolveTestRepo repoDir "HEAD"
+    let root = requireGitOid rootText
+        ordinary = requireGitOid ordinaryText
+        modified = requireGitOid modifiedText
+        expected =
+          Map.fromList
+            [ (root, Set.singleton rootPath),
+              (ordinary, Set.singleton ordinaryPath),
+              (modified, Set.empty)
+            ]
+    discovered <- addedPathsForCommits (resolvedRepository resolved) [modified, root, ordinary, root]
+    discovered @?= Right expected
+    reordered <- addedPathsForCommits (resolvedRepository resolved) [ordinary, root, ordinary]
+    reordered @?= Right (Map.fromList [(root, Set.singleton rootPath), (ordinary, Set.singleton ordinaryPath)])
+
+addedPathsChangeShapesGitTest :: IO ()
+addedPathsChangeShapesGitTest =
+  withSystemTempDirectory "adrai added paths change shapes" $ \temp -> do
+    let repoDir = temp </> "repo"
+        sourcePath = "rename source.txt"
+        renamedPath = "renamed target.txt"
+        copiedPath = "copied target.txt"
+    initTestRepository repoDir
+    _ <- commitFile repoDir "seed.txt" "seed"
+    _ <- commitFile repoDir sourcePath "same content"
+    _ <- gitSuccess repoDir ["mv", sourcePath, renamedPath] BS.empty
+    _ <- gitSuccess repoDir ["commit", "-m", "rename fixture"] BS.empty
+    renamedText <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+    copiedText <- commitFile repoDir copiedPath "same content"
+    _ <- gitSuccess repoDir ["rm", "--", copiedPath] BS.empty
+    _ <- gitSuccess repoDir ["commit", "-m", "deletion fixture"] BS.empty
+    deletedText <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+    resolved <- resolveTestRepo repoDir "HEAD"
+    let renamed = requireGitOid renamedText
+        copied = requireGitOid copiedText
+        deleted = requireGitOid deletedText
+    discovered <- addedPathsForCommits (resolvedRepository resolved) [deleted, copied, renamed]
+    discovered @?=
+      Right
+        ( Map.fromList
+            [ (renamed, Set.singleton (Text.pack renamedPath)),
+              (copied, Set.singleton (Text.pack copiedPath)),
+              (deleted, Set.empty)
+            ]
+        )
+
+addedPathsMergeGitTest :: IO ()
+addedPathsMergeGitTest =
+  withSystemTempDirectory "adrai added paths merge" $ \temp -> do
+    let repoDir = temp </> "repo"
+        featurePath = "feature addition.txt"
+        mainPath = "main addition.txt"
+    initTestRepository repoDir
+    _ <- commitFile repoDir "seed.txt" "seed"
+    _ <- gitSuccess repoDir ["branch", "feature"] BS.empty
+    _ <- gitSuccess repoDir ["checkout", "feature"] BS.empty
+    _ <- commitFile repoDir (Text.unpack featurePath) "feature"
+    _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
+    _ <- commitFile repoDir (Text.unpack mainPath) "main"
+    _ <- gitSuccess repoDir ["merge", "--no-ff", "feature"] BS.empty
+    resolved <- resolveTestRepo repoDir "HEAD"
+    let merge = resolvedCommitOid resolved
+    added <- addedPathsForCommits (resolvedRepository resolved) [merge, merge]
+    added @?= Right (Map.singleton merge (Set.fromList [featurePath, mainPath]))
+
 tests :: TestTree
 tests =
   testGroup
     "Provenance overlay topology"
-    [ -- 1. A single commit on main with an ADRAI op is classified as original.
+    [ testCase "added_paths_protocol_is_nul_framed_and_strict" addedPathsProtocolTest,
+
+      testCase "added_paths_real_git_is_root_nonroot_multi_and_isolated" addedPathsRealGitTest,
+
+      testCase "added_paths_real_git_uses_exact_add_semantics_for_rename_copy_and_deletion" addedPathsChangeShapesGitTest,
+
+      testCase "added_paths_real_git_unions_merge_parent_records" addedPathsMergeGitTest,
+
+      testCase "store_new_commits_discovers_unicode_managed_path_candidate" $
+        (withSystemTempDirectory "adrai overlay unicode candidate path" $ \temp -> do
+          let repoDir = temp </> "repo"
+              dbPath = temp </> "semantic.sqlite"
+              path :: Text
+              path = "architecture/adrai/decisions/ü candidate space.decision.md"
+          initTestRepository repoDir
+          _ <- commitFile repoDir "seed.txt" "seed"
+          _ <- commitFile repoDir (Text.unpack path) "managed candidate"
+          resolved <- resolveTestRepo repoDir "HEAD"
+          added <- addedPathsForCommits (resolvedRepository resolved) [resolvedCommitOid resolved]
+          case added of
+            Left err -> assertFailure ("addedPathsForCommits: " <> show err)
+            Right paths ->
+              Map.lookup (resolvedCommitOid resolved) paths @?= Just (Set.singleton path)
+          ensureSchema dbPath
+          conn <- open dbPath
+          stored <- storeNewCommits (resolvedRepository resolved) conn [resolvedCommitOid resolved]
+          case stored of
+            Left err -> assertFailure ("storeNewCommits: " <> show err)
+            Right _ -> pure ()
+          additions <-
+            query conn
+              "SELECT managed_path, commit_oid FROM managed_path_addition ORDER BY managed_path, commit_oid"
+              ()
+              :: IO [(Text, Text)]
+          additions @?= [(path, gitOidText (resolvedCommitOid resolved))]
+          close conn
+        ),
+
+      -- 1. A single commit on main with an ADRAI op is classified as original.
       testCase "immediate_commit_is_original" $
         (withSystemTempDirectory "adrai overlay immediate original" $ \temp -> do
           let repoDir = temp </> "repo"
               dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
           initTestRepository repoDir
+          _ <- commitFile repoDir "seed.txt" "seed"
           basisOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           -- Create a decision file
@@ -415,6 +574,8 @@ tests =
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000001--first.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000001--first.decision.md"] BS.empty
 
           let basis = requireGitOid basisOid
           resolved <- resolveTestRepo repoDir "HEAD"
@@ -445,7 +606,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000001"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000001--first.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
           let groups = Map.singleton "O00000000000000000000000001" [doc]
@@ -556,6 +717,8 @@ tests =
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000003--feature.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000003--feature.decision.md"] BS.empty
 
           -- Diverge main
           _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
@@ -593,7 +756,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000003"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000003--feature.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
@@ -843,6 +1006,8 @@ tests =
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000007--squash.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000007--squash.decision.md"] BS.empty
 
           _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
           _ <- commitFile repoDir "main-change.txt" "main change"
@@ -879,7 +1044,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000007"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000007--squash.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 

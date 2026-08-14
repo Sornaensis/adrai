@@ -32,6 +32,7 @@ module Adrai.Provenance.Discovery
 
     -- | Managed path additions
     addedPathsForCommits,
+    decodeAddedPathsOutput,
     managedPathAdditions,
     managedSuffixes,
 
@@ -44,7 +45,8 @@ module Adrai.Provenance.Discovery
 where
 
 import Adrai.Git
-  ( GitError (GitCommandFailed),
+  ( GitError (GitCommandFailed, GitInvalidOutput, GitInvalidUtf8Path),
+    GitProtocolError (GitMalformedObjectHeader, GitMalformedPathOutput),
     GitOid,
     GitObjectType (GitCommitObject),
     GitObjectInfo (..),
@@ -442,7 +444,7 @@ addedPathsForCommits repository oids = do
   if null unique
     then pure (Right Map.empty)
     else do
-      let payload = Text.intercalate "\n" (map gitOidText unique)
+      let payload = Text.intercalate "\n" (map gitOidText unique) <> "\n"
       result <-
         runRepository
           repository
@@ -454,47 +456,98 @@ addedPathsForCommits repository oids = do
             "-r",
             "--no-renames",
             "--diff-filter=A",
-            "--name-only",
-            "--format=%x1e%H"
+            "--name-status",
+            "-z",
+            "--pretty=tformat:%x1e%H"
           ]
           (TextEncoding.encodeUtf8 payload)
       pure $ do
         processResult <- result
         if processExitCode processResult /= ExitSuccess
           then Left (commandFailure "added paths" processResult)
-          else pure (decodeAddedPathsOutput (processStdout processResult))
+          else decodeAddedPathsOutput (Set.fromList unique) (processStdout processResult)
 
--- | Decode diff-tree output: commit OID followed by added paths per record.
-decodeAddedPathsOutput :: ByteString -> Map GitOid (Set Text)
-decodeAddedPathsOutput raw
-  | BS.null raw = Map.empty
-  | otherwise =
-      let text = TextEncoding.decodeUtf8 raw
-          records = Text.splitOn "\x1e" text
-          result = go Map.empty records
-       in result
+-- | Decode the byte protocol emitted by @git diff-tree -z
+-- --pretty=tformat:%x1e%H --name-status@.
+--
+-- Each record starts with an ASCII record separator, a canonical commit OID,
+-- a NUL byte, and diff-tree's required pretty-print newline.  It is followed
+-- by zero or more @A NUL path NUL@ pairs.  The state machine recognises a
+-- following record separator only when it is expecting another status token,
+-- never while it is consuming a path; an arbitrary path byte string may
+-- therefore begin with a record separator.  The parser deliberately validates
+-- every record against the exact supplied OID set:
+-- observations can neither leak repository history nor silently lose a
+-- malformed record.
+decodeAddedPathsOutput
+  :: Set GitOid
+  -> ByteString
+  -> Either GitError (Map GitOid (Set Text))
+decodeAddedPathsOutput expected raw
+  | Set.null expected =
+      if BS.null raw
+        then Right Map.empty
+        else Left (malformedFraming raw)
+  | BS.null raw = Right initial
+  | otherwise = records initial raw
   where
-    go :: Map GitOid (Set Text) -> [Text] -> Map GitOid (Set Text)
-    go acc [] = acc
-    go acc (record:rest) =
-      case Text.stripStart record of
-        "" -> go acc rest
-        rec
-          | Text.null rec -> go acc rest
+    initial = Map.fromSet (const Set.empty) expected
+
+    records acc bytes
+      | BS.null bytes = Right acc
+      | BS.head bytes /= recordSeparator = Left (malformedFraming bytes)
+      | otherwise = do
+          (oid, afterHeader) <- header (BS.tail bytes)
+          if oid `Set.member` expected
+            then statusOrRecord oid acc afterHeader
+            else Left (malformedHeader (TextEncoding.encodeUtf8 (gitOidText oid)))
+
+    header bytes =
+      case BS.break (== 0) bytes of
+        (_, terminator) | BS.null terminator -> Left (malformedHeader bytes)
+        (rawOid, terminator)
+          | BS.null rawOid -> Left (malformedHeader bytes)
+          | BS.any (> 127) rawOid -> Left (malformedHeader rawOid)
           | otherwise ->
-              let lines' = Text.lines rec
-                  filteredLines = [Text.strip l | l <- lines', not (Text.null (Text.strip l))]
-                  acc' = case filteredLines of
-                           [] -> acc
-                           (commitHash:paths) ->
-                             case mkGitOid commitHash of
-                               Right oid ->
-                                 Map.insertWith Set.union
-                                   oid
-                                   (Set.fromList paths)
-                                   acc
-                               Left _ -> acc
-              in go acc' rest
+              case mkGitOid (Text.pack (BS8.unpack rawOid)) of
+                Left _ -> Left (malformedHeader rawOid)
+                Right oid ->
+                  case BS.uncons (BS.tail terminator) of
+                    Just (10, afterHeader) -> Right (oid, afterHeader)
+                    _ -> Left (malformedFraming bytes)
+
+    statusOrRecord oid acc bytes
+      | BS.null bytes = records acc bytes
+      | BS.head bytes == recordSeparator = records acc bytes
+      | otherwise =
+          case BS.break (== 0) bytes of
+            (_, terminator) | BS.null terminator -> Left (malformedFraming bytes)
+            (status, terminator)
+              | status /= "A" -> Left (malformedStatus status)
+              | otherwise -> path oid acc (BS.tail terminator)
+
+    path oid acc bytes =
+      case BS.break (== 0) bytes of
+        (_, terminator) | BS.null terminator -> Left (malformedFraming bytes)
+        (rawPath, terminator)
+          | BS.null rawPath -> Left (malformedFraming bytes)
+          | otherwise ->
+              case TextEncoding.decodeUtf8' rawPath of
+                Left _ -> Left (GitInvalidUtf8Path (BS.take diagnosticLimit rawPath))
+                Right decodedPath ->
+                  let acc' = Map.insertWith Set.union oid (Set.singleton decodedPath) acc
+                   in statusOrRecord oid acc' (BS.tail terminator)
+
+    recordSeparator = 0x1e
+
+malformedHeader :: ByteString -> GitError
+malformedHeader = GitInvalidOutput "added paths" . GitMalformedObjectHeader . BS.take diagnosticLimit
+
+malformedFraming :: ByteString -> GitError
+malformedFraming = GitInvalidOutput "added paths" . GitMalformedPathOutput . BS.take diagnosticLimit
+
+malformedStatus :: ByteString -> GitError
+malformedStatus = GitInvalidOutput "added paths" . GitMalformedPathOutput . BS.take diagnosticLimit
 
 -- | Filter path additions to only paths whose basename ends with one of the
 -- managed suffixes.
