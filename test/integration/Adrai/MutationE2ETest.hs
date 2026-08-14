@@ -32,7 +32,7 @@ import Adrai.Format.Document
     ManagedRecord (..),
     ParsedManagedDocument (..),
     StatusPayload (..),
-    StatusState (StatusActive),
+    StatusState (StatusActive, StatusObsolete),
     parseManagedDocument,
     sealManagedDocument,
   )
@@ -69,6 +69,7 @@ import Adrai.Types
      mkActor,
      mkAdrId,
      mkConnectionId,
+     mkRecordId,
     mkRepoPath,
     operationIdText,
     recordIdText,
@@ -1018,6 +1019,265 @@ testP602DRealExecutable =
   testGroup "P6-02D real executable domain"
     [ testCase "domain delta, refinement, reviewed replacement, clear, and re-add preserve repository state" p602dDomain ]
 
+testP602ERealExecutable :: TestTree
+testP602ERealExecutable =
+  testGroup "P6-02E real executable obsolete/reactivate"
+    [ testCase "obsolete replacement and reactivate append exact status artifacts" p602eStatus
+    , testCase "two-head obsolete and reactivate require explicit status resolution" p602eStatusConflicts
+    ]
+
+p602eStatusConflicts :: IO ()
+p602eStatusConflicts =
+  withSystemTempDirectory "adrai p6-02e status conflicts" $ \temporary -> do
+    let repo = temporary </> "status-conflicts"
+        database = repo </> ".adrai" </> "index.sqlite"
+        run command adr arguments = do
+          successBaseline <- captureMutationFailureBaseline repo database
+          stdout <- assertExitSuccess command =<< adraiRequiredRaw repo ([command, unpack adr] <> arguments <> ["--actor", "human:e2e", "--json"])
+          result <- decodeCanonicalJson command stdout
+          connection <- requireJsonField command result "connection" :: IO Text
+          resolved <- requireJsonField command result "resolved_status_conflict" :: IO Bool
+          created <- requireJsonField command result "created" :: IO [Text]
+          commit <- requireJsonField command result "commit" :: IO Text
+          headCommit repo >>= (@?= commit)
+          created @?= ["architecture/adrai/connections/" <> T.take 4 connection <> "/" <> connection <> "--status.connection.md"]
+          assertStatusSuccessPreserved repo database successBaseline (head created) commit
+          pure (connection, resolved, head created)
+        create title = do
+          stdout <- assertExitSuccess "create" =<< adraiRequiredRaw repo ["create", "--title", title, "--summary", title, "--body", title <> "\n", "--domain", "compiler", "--actor", "human:e2e", "--json"]
+          result <- decodeCanonicalJson "create" stdout
+          adr <- requireJsonField "create" result "adr" :: IO Text
+          record <- requireJsonField "create" result "record" :: IO Text
+          status <- requireJsonField "create" result "status" :: IO Text
+          pure (adr, record, status)
+        statusParents path = do
+          headOid <- headCommit repo
+          document <- parseCommittedAndWorktreeDocument repo headOid path
+          case document of
+            ParsedManagedDocument _ (ManagedConnection connection) capsule _ _ -> case connectionPayload connection of
+              StatusConnection payload -> pure (map connectionIdText (statusParentConnections payload), provenanceParents capsule, map recordIdText (statusRecordHeads payload), payload, connection, capsule)
+              _ -> assertFailure "expected status connection" >> fail "unreachable"
+            _ -> assertFailure "expected status document" >> fail "unreachable"
+        assertRejected expectedExit expectedStderr command adr arguments = do
+          baseline <- captureMutationFailureBaseline repo database
+          (exitCode, stdout, stderr) <- adraiRequiredRaw repo ([command, unpack adr] <> arguments <> ["--actor", "human:e2e", "--json"])
+          exitCode @?= ExitFailure expectedExit
+          stdout @?= ""
+          stderr @?= expectedStderr
+          assertMutationFailurePreserved repo database baseline
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "seed\n"
+    git repo ["add", "--", "seed.txt"]
+    git repo ["commit", "-m", "seed"]
+    _ <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    (target, targetRecord, _) <- create "Conflict target"
+    (replacement, _, _) <- create "Conflict replacement"
+    -- Two independently appended obsolete heads merge cleanly at Git level but
+    -- remain a status-axis conflict until the public resolve flag is supplied.
+    git repo ["switch", "-c", "obsolete-other"]
+    (otherObsolete, _, _) <- run "obsolete" target ["--reason", "other", "--replacement", unpack replacement]
+    git repo ["switch", "main"]
+    (mainObsolete, _, _) <- run "obsolete" target ["--reason", "main", "--replacement", unpack replacement]
+    git repo ["merge", "--no-ff", "obsolete-other", "-m", "merge obsolete status heads"]
+    BS.writeFile (repo </> "unrelated-status-conflict.bin") (BS.pack [1, 0, 255])
+    git repo ["add", "--", "unrelated-status-conflict.bin"]
+    BS.writeFile (repo </> "seed.txt") "dirty status conflict\n"
+    assertRejected 3 "adrai: conflict: Stage3ValidateState \"status target ADR is conflicted\"\n" "obsolete" target ["--reason", "ambiguous"]
+    (obsoleteMerged, obsoleteResolved, obsoletePath) <- run "obsolete" target ["--reason", "resolve obsolete", "--replacement", unpack replacement, "--resolve"]
+    obsoleteResolved @?= True
+    (obsoleteParents, obsoleteCapsuleParents, obsoleteRecords, obsoletePayload, obsoleteConnection, obsoleteCapsule) <- statusParents obsoletePath
+    obsoleteParents @?= sort [otherObsolete, mainObsolete]
+    obsoleteRecords @?= [targetRecord]
+    obsoleteCapsuleParents @?=
+      map (ProvenanceConnection . either (error . show) id . mkConnectionId) (sort [otherObsolete, mainObsolete])
+        <> [ProvenanceRecord (either (error . show) id (mkRecordId targetRecord))]
+    statusState obsoletePayload @?= StatusObsolete
+    statusReplacementAdr obsoletePayload @?= Just (either (error . show) id (mkAdrId replacement))
+    connectionRationale obsoleteConnection @?= "resolve obsolete\n"
+    provenanceObjectId obsoleteCapsule @?= ProvenanceConnection (connectionRecordId obsoleteConnection)
+    provenanceUpstreamHint obsoleteCapsule @?= Nothing
+    provenanceLineAnchors obsoleteCapsule @?= []
+    provenanceTimestampMs obsoleteCapsule `seq` assertBool "resolved obsolete timestamp is positive" (provenanceTimestampMs obsoleteCapsule > 0)
+    -- Preserve the caller state only around fixture topology construction; both
+    -- public rejection and resolution execute after the exact state returns.
+    git repo ["stash", "push", "--include-untracked", "-m", "p602e reactivate topology"]
+    git repo ["switch", "-c", "reactivate-other"]
+    (otherReactivate, _, _) <- run "reactivate" target ["--reason", "other reactivate"]
+    git repo ["switch", "main"]
+    (mainReactivate, _, _) <- run "reactivate" target ["--reason", "main reactivate"]
+    git repo ["merge", "--no-ff", "reactivate-other", "-m", "merge reactivate status heads"]
+    git repo ["stash", "pop", "--index"]
+    assertRejected 3 "adrai: conflict: Stage3ValidateState \"status target ADR is conflicted\"\n" "reactivate" target ["--reason", "ambiguous reactivate"]
+    (_, reactivateResolved, reactivatePath) <- run "reactivate" target ["--reason", "resolve reactivate", "--resolve"]
+    reactivateResolved @?= True
+    (reactivateParents, reactivateCapsuleParents, reactivateRecords, reactivatePayload, reactivateConnection, reactivateCapsule) <- statusParents reactivatePath
+    reactivateParents @?= sort [otherReactivate, mainReactivate]
+    reactivateRecords @?= [targetRecord]
+    reactivateCapsuleParents @?=
+      map (ProvenanceConnection . either (error . show) id . mkConnectionId) (sort [otherReactivate, mainReactivate])
+        <> [ProvenanceRecord (either (error . show) id (mkRecordId targetRecord))]
+    statusState reactivatePayload @?= StatusActive
+    statusReplacementAdr reactivatePayload @?= Nothing
+    connectionRationale reactivateConnection @?= "resolve reactivate\n"
+    provenanceObjectId reactivateCapsule @?= ProvenanceConnection (connectionRecordId reactivateConnection)
+    provenanceUpstreamHint reactivateCapsule @?= Nothing
+    provenanceLineAnchors reactivateCapsule @?= []
+    provenanceTimestampMs reactivateCapsule `seq` assertBool "resolved reactivate timestamp is positive" (provenanceTimestampMs reactivateCapsule > 0)
+    -- The no-op status command and every replacement validation rejection leave
+    -- the complete Git/index/worktree/SQLite snapshot unchanged.
+    assertRejected 3 "adrai: conflict: Stage3ValidateState \"reactivate target ADR is already active\"\n" "reactivate" target ["--reason", "already active"]
+    assertRejected 2 "adrai: Stage3ValidateState \"obsolete replacement ADR must not name the target ADR\"\n" "obsolete" target ["--reason", "self", "--replacement", unpack target]
+    assertRejected 2 "adrai: Stage3ValidateState \"obsolete replacement ADR is unknown\"\n" "obsolete" target ["--reason", "unknown", "--replacement", "A1123456789ABCDEFGHJKMNPQRS"]
+    (inactiveReplacement, _, _) <- create "Inactive replacement"
+    _ <- run "obsolete" inactiveReplacement ["--reason", "make replacement inactive"]
+    assertRejected 3 "adrai: conflict: Stage3ValidateState \"obsolete replacement ADR is not unambiguously active\"\n" "obsolete" target ["--reason", "inactive replacement", "--replacement", unpack inactiveReplacement]
+    -- A replacement with multiple status heads is separately rejected even
+    -- though the target itself remains active and unambiguous.
+    (conflictedReplacement, _, _) <- create "Conflicted replacement"
+    git repo ["stash", "push", "--include-untracked", "-m", "p602e replacement conflict topology"]
+    git repo ["switch", "-c", "replacement-other"]
+    _ <- run "obsolete" conflictedReplacement ["--reason", "other replacement status"]
+    git repo ["switch", "main"]
+    _ <- run "obsolete" conflictedReplacement ["--reason", "main replacement status"]
+    git repo ["merge", "--no-ff", "replacement-other", "-m", "merge replacement status heads"]
+    git repo ["stash", "pop", "--index"]
+    assertRejected 3 "adrai: conflict: Stage3ValidateState \"obsolete replacement ADR is conflicted\"\n" "obsolete" target ["--reason", "conflicted replacement", "--replacement", unpack conflictedReplacement]
+    -- A scope-axis conflict is not eligible for status resolution.  The
+    -- command must reject before producing a status document, preserving the
+    -- full caller snapshot just like the status-axis conflict case above.
+    git repo ["stash", "push", "--include-untracked", "-m", "p602e non-status topology"]
+    git repo ["switch", "-c", "scope-other"]
+    _ <- assertExitSuccess "scope other" =<< adraiRequiredRaw repo ["scope", unpack target, "--add", "docs/**", "--reason", "other scope", "--actor", "human:e2e", "--json"]
+    git repo ["switch", "main"]
+    _ <- assertExitSuccess "scope main" =<< adraiRequiredRaw repo ["scope", unpack target, "--add", "src/**", "--reason", "main scope", "--actor", "human:e2e", "--json"]
+    git repo ["merge", "--no-ff", "scope-other", "-m", "merge scope conflict"]
+    git repo ["stash", "pop", "--index"]
+    assertRejected 3 "adrai: conflict: Stage3ValidateState \"status resolve requires a conflicted status axis\"\n" "obsolete" target ["--reason", "invalid non-status resolution", "--resolve"]
+
+p602eStatus :: IO ()
+p602eStatus =
+  withSystemTempDirectory "adrai p6-02e status" $ \temporary -> do
+    let repo = temporary </> "status"
+        database = repo </> ".adrai" </> "index.sqlite"
+        stagedName = "unrelated-status.bin"
+        stagedBytes = BS.pack [5, 0, 255, 9]
+        actorArgs = ["--actor", "human:e2e", "--json"]
+        runStatus command adr arguments expectedState expectedReplacement expectedParents expectedRecords = do
+          successBaseline <- captureMutationFailureBaseline repo database
+          before <- headCommit repo
+          branch <- currentBranch repo
+          prior <- committedManagedBytes before
+          stdout <- assertExitSuccess command =<< adraiRequiredRaw repo ([command, unpack adr] <> arguments <> actorArgs)
+          result <- decodeCanonicalJson command stdout
+          current <- headCommit repo
+          operation <- requireJsonField command result "operation" :: IO Text
+          connection <- requireJsonField command result "connection" :: IO Text
+          renderedAdr <- requireJsonField command result "adr" :: IO Text
+          obsolete <- requireJsonField command result "obsolete" :: IO Bool
+          resolved <- requireJsonField command result "resolved_status_conflict" :: IO Bool
+          commit <- requireJsonField command result "commit" :: IO Text
+          created <- requireJsonField command result "created" :: IO [Text]
+          renderedAdr @?= adr
+          obsolete @?= expectedState
+          resolved @?= False
+          commit @?= current
+          gitText repo ["show", "-s", "--format=%P", unpack current] >>= (@?= before)
+          length created @?= 1
+          created @?= ["architecture/adrai/connections/" <> T.take 4 connection <> "/" <> connection <> "--status.connection.md"]
+          fmap (sort . T.lines) (gitText repo ["diff-tree", "--no-commit-id", "--name-only", "-r", unpack current]) >>= (@?= created)
+          mapM_ (\(path, bytes) -> gitStdout repo ["show", unpack current <> ":" <> unpack path] >>= (@?= bytes)) prior
+          document <- parseCommittedAndWorktreeDocument repo current (head created)
+          case document of
+            parsed@(ParsedManagedDocument _ (ManagedConnection connectionRecord) capsule _ _) ->
+              case connectionPayload connectionRecord of
+                StatusConnection payload -> do
+                  connectionIdText (connectionRecordId connectionRecord) @?= connection
+                  adrIdText (statusSubjectAdr payload) @?= adr
+                  statusState payload @?= if expectedState then StatusObsolete else StatusActive
+                  statusReplacementAdr payload @?= expectedReplacement
+                  statusParentConnections payload @?= expectedParents
+                  statusRecordHeads payload @?= expectedRecords
+                  connectionRationale connectionRecord @?= normalizedReason arguments
+                  provenanceObjectId capsule @?= ProvenanceConnection (connectionRecordId connectionRecord)
+                  eventKindText (provenanceEventKind capsule) @?= "decision." <> T.pack command
+                  provenanceTimestampMs capsule `seq` assertBool "status timestamp must be positive" (provenanceTimestampMs capsule > 0)
+                  gitOidText (provenanceBasis capsule) @?= before
+                  provenanceParents capsule @?= map ProvenanceConnection expectedParents <> map ProvenanceRecord expectedRecords
+                  provenanceBranchHint capsule @?= Just branch
+                  provenanceUpstreamHint capsule @?= Nothing
+                  provenanceLineAnchors capsule @?= []
+                  provenanceActor capsule @?= either (error . show) id (mkActor HumanActor "e2e" Nothing)
+                  provenanceInputs capsule @?= ProvenanceInputs Nothing Nothing Nothing
+                  operationIdText (provenanceOperationId capsule) @?= operation
+                  provenanceToolVersion capsule @?= "adrai/1.0.0"
+                  provenanceSemanticDigest capsule @?= semanticDigest (parsedManagedSemantic parsed)
+                  gitStdout repo ["diff", "--cached", "--name-only", "--", unpack (head created)] >>= (@?= "")
+                  headBytes <- gitStdout repo ["show", unpack current <> ":" <> unpack (head created)]
+                  worktreeBytes <- BS.readFile (repo </> unpack (head created))
+                  worktreeBytes @?= LBS.toStrict headBytes
+                _ -> assertFailure "status command must create a status connection" >> fail "unreachable"
+            _ -> assertFailure "status command must create exactly one connection document" >> fail "unreachable"
+          assertIndexResolvedOid database current
+          assertStatusSuccessPreserved repo database successBaseline (head created) current
+          pure (current, connection)
+        committedManagedBytes revision = do
+          paths <- fmap (filter isManaged . T.lines) (gitText repo ["ls-tree", "-r", "--name-only", unpack revision])
+          mapM (\path -> (path,) <$> gitStdout repo ["show", unpack revision <> ":" <> unpack path]) paths
+        isManaged path = "architecture/adrai/decisions/" `T.isPrefixOf` path || "architecture/adrai/connections/" `T.isPrefixOf` path
+        normalizedReason arguments =
+          case dropWhile (/= "--reason") arguments of
+            (_ : reason : _) -> T.pack reason <> "\n"
+            _ -> error "status test requires a reason"
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "seed\n"
+    git repo ["add", "--", "seed.txt"]
+    git repo ["commit", "-m", "seed"]
+    _ <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    targetJson <- assertExitSuccess "create target" =<< adraiRequiredRaw repo ["create", "--title", "Target", "--summary", "status target", "--body", "target\n", "--domain", "compiler", "--actor", "human:e2e", "--json"]
+    replacementJson <- assertExitSuccess "create replacement" =<< adraiRequiredRaw repo ["create", "--title", "Replacement", "--summary", "status replacement", "--body", "replacement\n", "--domain", "compiler", "--actor", "human:e2e", "--json"]
+    targetResult <- decodeCanonicalJson "target" targetJson
+    target <- requireJsonField "target" targetResult "adr" :: IO Text
+    targetRecord <- requireJsonField "target" targetResult "record" :: IO Text
+    initialStatus <- requireJsonField "target" targetResult "status" :: IO Text
+    replacementResult <- decodeCanonicalJson "replacement" replacementJson
+    replacement <- requireJsonField "replacement" replacementResult "adr" :: IO Text
+    BS.writeFile (repo </> stagedName) stagedBytes
+    git repo ["add", "--", stagedName]
+    indexBefore <- gitStdout repo ["ls-files", "-s", "--", stagedName]
+    BS.writeFile (repo </> "seed.txt") "staged seed\n"
+    git repo ["add", "--", "seed.txt"]
+    seedIndexBefore <- gitStdout repo ["ls-files", "-s", "--", "seed.txt"]
+    BS.writeFile (repo </> "seed.txt") "dirty seed\n"
+    seedWorktreeBefore <- BS.readFile (repo </> "seed.txt")
+    (_, obsoleteStatus) <- runStatus "obsolete" target ["--reason", "Superseded", "--replacement", unpack replacement] True (Just (either (error . show) id (mkAdrId replacement))) [either (error . show) id (mkConnectionId initialStatus)] [either (error . show) id (mkRecordId targetRecord)]
+    assertStagedBinaryPreserved repo stagedName stagedBytes indexBefore
+    gitStdout repo ["ls-files", "-s", "--", "seed.txt"] >>= (@?= seedIndexBefore)
+    BS.readFile (repo </> "seed.txt") >>= (@?= seedWorktreeBefore)
+    alreadyObsoleteBaseline <- captureMutationFailureBaseline repo database
+    (alreadyObsoleteExit, alreadyObsoleteStdout, alreadyObsoleteStderr) <- adraiRequiredRaw repo ["obsolete", unpack target, "--reason", "still obsolete", "--actor", "human:e2e", "--json"]
+    alreadyObsoleteExit @?= ExitFailure 3
+    alreadyObsoleteStdout @?= ""
+    alreadyObsoleteStderr @?= "adrai: conflict: Stage3ValidateState \"obsolete target ADR is already obsolete\"\n"
+    assertMutationFailurePreserved repo database alreadyObsoleteBaseline
+    _ <- runStatus "reactivate" target ["--reason", "Needed again"] False Nothing [either (error . show) id (mkConnectionId obsoleteStatus)] [either (error . show) id (mkRecordId targetRecord)]
+    assertStagedBinaryPreserved repo stagedName stagedBytes indexBefore
+    staleBaseline <- captureMutationFailureBaseline repo database
+    staleHead <- headCommit repo
+    stalePaths <- fmap (filter isManaged . T.lines) (gitText repo ["ls-tree", "-r", "--name-only", unpack staleHead])
+    staleDocuments <- mapM (parseCommittedAndWorktreeDocument repo staleHead) stalePaths
+    currentToken <- case lookupReducedAdr (either (error . show) id (mkAdrId target)) (reduceManagedGraph (map parsedManagedRecord staleDocuments)) of
+      Nothing -> assertFailure "status target must reduce before stale rejection" >> fail "unreachable"
+      Just reduced -> pure (stateTokenText (reducedStateToken reduced))
+    (staleExit, staleStdout, staleStderr) <- adraiRequiredRaw repo ["obsolete", unpack target, "--reason", "stale", "--expect", "S0000000000000000000000", "--actor", "human:e2e", "--json"]
+    staleExit @?= ExitFailure 3
+    staleStdout @?= ""
+    staleStderr @?= LBS.fromStrict (encodeUtf8 ("adrai: conflict: Stage3ValidateState \"stale ADR state: expected S0000000000000000000000, current state is " <> currentToken <> "\"\n"))
+    assertMutationFailurePreserved repo database staleBaseline
+
 p602dDomain :: IO ()
 p602dDomain =
   withSystemTempDirectory "adrai p6-02d domain" $ \temporary -> do
@@ -1560,6 +1820,29 @@ assertMutationFailurePreserved repo database baseline = do
   failureStatus current @?= failureStatus baseline
   failureOwnedDirectories current @?= failureOwnedDirectories baseline
 
+-- | A successful append may advance HEAD, add exactly one clean managed path,
+-- and replace the disposable SQLite projection.  Every caller-owned index,
+-- staged/dirty/untracked byte and every prior managed document must remain
+-- byte-identical.
+assertStatusSuccessPreserved :: FilePath -> FilePath -> MutationFailureBaseline -> Text -> Text -> IO ()
+assertStatusSuccessPreserved repo database baseline generated expectedHead = do
+  current <- captureMutationFailureBaseline repo database
+  failureHead current @?= expectedHead
+  failureSymbolicRef current @?= failureSymbolicRef baseline
+  let oldTree = T.lines (decodeUtf8 (LBS.toStrict (failureTree baseline)))
+      newTree = T.lines (decodeUtf8 (LBS.toStrict (failureTree current)))
+      oldIndex = filter (not . T.isSuffixOf ("\t" <> generated)) (T.lines (decodeUtf8 (LBS.toStrict (failureIndex baseline))))
+      newIndex = filter (not . T.isSuffixOf ("\t" <> generated)) (T.lines (decodeUtf8 (LBS.toStrict (failureIndex current))))
+      oldManaged = filter ((/= generated) . fst) (failureManagedWorktree baseline)
+      newManaged = filter ((/= generated) . fst) (failureManagedWorktree current)
+  sort newTree @?= sort (generated : oldTree)
+  newIndex @?= oldIndex
+  failureCachedBytes current @?= failureCachedBytes baseline
+  failureWorktreeBytes current @?= failureWorktreeBytes baseline
+  oldManaged @?= newManaged
+  failureStatus current @?= failureStatus baseline
+  indexResolvedOid database >>= (@?= [Only expectedHead])
+
 p602aHostileEnvironmentScrubbed :: IO ()
 p602aHostileEnvironmentScrubbed = do
   let inherited =
@@ -1908,6 +2191,7 @@ tests =
       testP602BRealExecutable,
       testP602CRealExecutable,
       testP602DRealExecutable,
+      testP602ERealExecutable,
       testUnbornRepository,
       testUnrelatedStagedEntry,
       testDetachedHead,

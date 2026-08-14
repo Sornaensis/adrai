@@ -36,6 +36,10 @@ import Adrai.CliRunner
     ContentSource (..),
      CreateRequest (..),
      AmendRequest (..),
+     ObsoleteCliRequest (..),
+     ReactivateCliRequest (..),
+     ObsoleteCommand (..),
+     ReactivateCommand (..),
      ScopeRequest (..),
      DomainRequest (..),
     CliDispatchDependencies (..),
@@ -51,6 +55,8 @@ import Adrai.CliRunner
      parseStructuredAmend,
      materializeScope,
      materializeDomain,
+     materializeObsolete,
+     materializeReactivate,
     CliFailure (..),
     CliRendered (..),
     parseArguments,
@@ -61,15 +67,17 @@ import Adrai.CliRunner
      renderAmendOutcome,
      renderScopeOutcome,
      renderDomainOutcome,
+     renderObsoleteOutcome,
+     renderReactivateOutcome,
     renderFailureOutcome,
     renderInitOutcome,
   )
 import Adrai.Git (GitOid (..))
 import Adrai.Domain (canonicalDomains, mkDomain, parseDomainRefinement)
 import Adrai.Scope (mkScopePattern)
-import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
+import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
 import Adrai.Service.PostCommitIndex (IndexWarning (..), PostCommitIndexError (..), PostCommitIndexResult (..))
-import Adrai.Types (ActorKind (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
+import Adrai.Types (ActorKind (..), ProvenanceInputs (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
 import Adrai.Format.Json (JsonValue (..))
 import qualified Adrai.Format as Format
 import Adrai.Provenance (sha256Digest)
@@ -772,6 +780,40 @@ mutationCliContractTests =
         assertParserFailure ["amend-adr", "A0123456789ABCDEFGHJKMNPQRS"]
         assertParserFailure ["amend", "A0123456789ABCDEFGHJKMNPQRS", "--domain", "platform", "--body", "x"]
         assertParserFailure ["amend", "A0123456789ABCDEFGHJKMNPQRS", "--body", "first", "--body-file", "second.md"]
+    , testCase "obsolete and reactivate are canonical status commands with exact option boundaries" $ do
+        let obsolete = ObsoleteCommand "A0123456789ABCDEFGHJKMNPQRS" "Superseded" (Just "A1123456789ABCDEFGHJKMNPQRS") (Just "S0123456789ABCDEFGHJKMN") True (Just "human:architect") (Just "editor") Nothing Nothing Nothing Nothing Nothing True
+            reactivate = ReactivateCommand "A0123456789ABCDEFGHJKMNPQRS" "Needed again" (Just "S0123456789ABCDEFGHJKMN") True (Just "human:architect") Nothing Nothing Nothing Nothing Nothing Nothing True
+        parseCli ["obsolete", "A0123456789ABCDEFGHJKMNPQRS", "--reason", "Superseded", "--replacement", "A1123456789ABCDEFGHJKMNPQRS", "--expect", "S0123456789ABCDEFGHJKMN", "--resolve", "--actor", "human:architect", "--model", "editor", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdObsolete obsolete))
+        parseCli ["reactivate", "A0123456789ABCDEFGHJKMNPQRS", "--reason", "Needed again", "--expect", "S0123456789ABCDEFGHJKMN", "--resolve", "--actor", "human:architect", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdReactivate reactivate))
+        assertParserFailure ["obsolete-adr", "A0123456789ABCDEFGHJKMNPQRS"]
+        assertParserFailure ["reactivate-adr", "A0123456789ABCDEFGHJKMNPQRS"]
+        assertParserFailure ["reactivate", "A0123456789ABCDEFGHJKMNPQRS", "--reason", "x", "--replacement", "A1123456789ABCDEFGHJKMNPQRS"]
+        assertParserFailure ["obsolete", "A0123456789ABCDEFGHJKMNPQRS", "--reason", "x", "--body", "forbidden"]
+        assertParserFailure ["reactivate", "A0123456789ABCDEFGHJKMNPQRS", "--reason", "x", "--input-json", "forbidden.json"]
+    , testCase "status materialization validates target, reason, actor and typed state" $ do
+        let base = ObsoleteCommand "A0123456789ABCDEFGHJKMNPQRS" "  reason  " Nothing (Just "S0123456789ABCDEFGHJKMN") False (Just "human:architect") Nothing Nothing Nothing Nothing Nothing Nothing False
+            blank = base { obsoleteReasonSpec = "  " }
+            reactivate = ReactivateCommand "A0123456789ABCDEFGHJKMNPQRS" "reason" Nothing False (Just "human:architect") Nothing Nothing Nothing Nothing Nothing Nothing False
+        materializeObsolete base >>= (assertBool "obsolete materializes" . either (const False) (const True))
+        materializeObsolete blank >>= (assertBool "blank obsolete reason rejects" . either (const True) (const False))
+        materializeReactivate reactivate >>= (assertBool "reactivate materializes" . either (const False) (const True))
+    , testCase "status materialization preserves every typed intent and rejects malformed fields" $ do
+        let target = requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
+            replacement = requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS")
+            token = requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN")
+            actor = requireRight (parseActor "llm:reviewer" (Just "gpt-test"))
+            input = sha256Digest "input bytes"
+            prompt = sha256Digest "prompt bytes"
+            context = sha256Digest "context bytes"
+            obsolete = ObsoleteCommand "A0123456789ABCDEFGHJKMNPQRS" "  replace it  " (Just "A1123456789ABCDEFGHJKMNPQRS") (Just "S0123456789ABCDEFGHJKMN") True (Just "llm:reviewer") (Just "gpt-test") (Just (Format.renderDigest input)) (Just (Format.renderDigest prompt)) (Just (Format.renderDigest context)) Nothing Nothing True
+            reactivate = ReactivateCommand "A0123456789ABCDEFGHJKMNPQRS" "  restore it  " (Just "S0123456789ABCDEFGHJKMN") True (Just "llm:reviewer") (Just "gpt-test") (Just (Format.renderDigest input)) (Just (Format.renderDigest prompt)) (Just (Format.renderDigest context)) Nothing Nothing True
+        materializeObsolete obsolete >>= (@?= Right (ObsoleteCliRequest (ObsoleteRequest (Just token) "  replace it  " True (Just replacement)) actor (ProvenanceInputs (Just input) (Just prompt) (Just context))))
+        materializeReactivate reactivate >>= (@?= Right (ReactivateCliRequest (ReactivateRequest (Just token) "  restore it  " True) actor (ProvenanceInputs (Just input) (Just prompt) (Just context))))
+        materializeObsolete (obsolete { obsoleteAdrSpec = "bad" }) >>= (assertBool "invalid target rejects" . isLeft)
+        materializeObsolete (obsolete { obsoleteReplacementSpec = Just "bad" }) >>= (assertBool "invalid replacement rejects" . isLeft)
+        materializeObsolete (obsolete { obsoleteExpectedStateSpec = Just "bad" }) >>= (assertBool "invalid state token rejects" . isLeft)
+        materializeObsolete (obsolete { obsoleteActorSpec = Just "bad" }) >>= (assertBool "invalid actor rejects" . isLeft)
+        materializeObsolete (obsolete { obsoleteInputDigestSpec = Just "bad" }) >>= (assertBool "invalid input digest rejects" . isLeft)
     , testCase "scope is canonical and parses only frozen scope options" $ do
         let expected = ScopeCommand
               "A0123456789ABCDEFGHJKMNPQRS" ["src/**", "test/**"] ["legacy/**"] [] (Just "Broaden coverage")
@@ -957,6 +999,34 @@ mutationCliContractTests =
         renderedExitCode conflict @?= ExitFailure 3
         renderedStdout conflict @?= ""
         renderedStderr conflict @?= "adrai: conflict: stale head\n"
+    , testCase "status result renderers project only returned status facts" $ do
+        let obsoleteJson = renderedStdout (renderObsoleteOutcome obsoleteResult indexedResult True)
+            reactivateJson = renderedStdout (renderReactivateOutcome reactivateResult indexedResult True)
+        assertBool "obsolete contains replacement" ("\"replacement\": \"A1123456789ABCDEFGHJKMNPQRS\"" `T.isInfixOf` obsoleteJson)
+        assertBool "obsolete contains covered records" ("\"covered_records\"" `T.isInfixOf` obsoleteJson)
+        assertBool "obsolete reports state" ("\"obsolete\": true" `T.isInfixOf` obsoleteJson)
+        assertBool "reactivate reports active state" ("\"obsolete\": false" `T.isInfixOf` reactivateJson)
+        assertBool "reactivate never projects replacement" (not ("\"replacement\"" `T.isInfixOf` reactivateJson))
+        renderedStdout (renderObsoleteOutcome obsoleteResult indexFailureResult False) @?= "Committed operation-46 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  connection=C6123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
+    , testCase "obsolete and reactivate output bytes are canonical and indexing failure stays committed success" $ do
+        let obsoleteSuccess = renderObsoleteOutcome obsoleteResult indexedResult True
+            obsoleteFailure = renderObsoleteOutcome obsoleteResult indexFailureResult True
+            reactivateSuccess = renderReactivateOutcome reactivateResult indexedResult True
+            reactivateFailure = renderReactivateOutcome reactivateResult indexFailureResult True
+        renderedExitCode obsoleteSuccess @?= ExitSuccess
+        renderedStderr obsoleteSuccess @?= ""
+        renderedStdout obsoleteSuccess @?=
+          "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"connection\": \"C6123456789ABCDEFGHJKMNPQRS\",\n  \"covered_records\": [\n    \"R0123456789ABCDEFGHJKMNPQRS\"\n  ],\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"obsolete\": true,\n  \"operation\": \"operation-46\",\n  \"replacement\": \"A1123456789ABCDEFGHJKMNPQRS\",\n  \"resolved_status_conflict\": false\n}\n"
+        renderedExitCode obsoleteFailure @?= ExitSuccess
+        renderedStdout obsoleteFailure @?=
+          "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"connection\": \"C6123456789ABCDEFGHJKMNPQRS\",\n  \"covered_records\": [\n    \"R0123456789ABCDEFGHJKMNPQRS\"\n  ],\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"index_error\": \"PostCommitIndexOpenFailure \\\"readonly\\\"\",\n  \"index_updated\": true,\n  \"indexed\": false,\n  \"obsolete\": true,\n  \"operation\": \"operation-46\",\n  \"replacement\": \"A1123456789ABCDEFGHJKMNPQRS\",\n  \"resolved_status_conflict\": false\n}\n"
+        renderedExitCode reactivateSuccess @?= ExitSuccess
+        renderedStdout reactivateSuccess @?=
+          "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"connection\": \"C7123456789ABCDEFGHJKMNPQRS\",\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"obsolete\": false,\n  \"operation\": \"operation-47\",\n  \"resolved_status_conflict\": true\n}\n"
+        renderedExitCode reactivateFailure @?= ExitSuccess
+        renderedStdout reactivateFailure @?=
+          "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"connection\": \"C7123456789ABCDEFGHJKMNPQRS\",\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"index_error\": \"PostCommitIndexOpenFailure \\\"readonly\\\"\",\n  \"index_updated\": true,\n  \"indexed\": false,\n  \"obsolete\": false,\n  \"operation\": \"operation-47\",\n  \"resolved_status_conflict\": true\n}\n"
+        renderedStdout (renderReactivateOutcome reactivateResult indexFailureResult False) @?= "Committed operation-47 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  connection=C7123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
     , testCase "dispatch seam selects create service with parsed repo and materialized request" $ do
         selectedRepo <- newIORef Nothing
         selectedRequest <- newIORef Nothing
@@ -1035,6 +1105,64 @@ mutationCliContractTests =
         exitCode @?= ExitSuccess
         readIORef selectedRepo >>= (@?= Just "amend-repo")
         readIORef selectedRequest >>= (@?= Just amendRequest)
+    , testCase "dispatch seam preserves the full typed obsolete request and returned projection" $ do
+        selectedRepo <- newIORef Nothing
+        selectedAdr <- newIORef Nothing
+        selectedRequest <- newIORef Nothing
+        let command = ObsoleteCommand "A0123456789ABCDEFGHJKMNPQRS" "Retire it" (Just "A1123456789ABCDEFGHJKMNPQRS") (Just "S0123456789ABCDEFGHJKMN") True (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing True
+            requestStatus = ObsoleteCliRequest
+              (ObsoleteRequest (Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))) "Retire it" True (Just (requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS"))))
+              (requireRight (parseActor "human:cli" Nothing)) (ProvenanceInputs Nothing Nothing Nothing)
+            dependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+              , cliMaterializeObsolete = \received -> do received @?= command; pure (Right requestStatus)
+              , cliMaterializeReactivate = \_ -> error "reactivate materialization must not be selected"
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunInit = \_ -> error "init service must not be selected"
+              , cliRunCreate = \_ _ -> error "create service must not be selected"
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliRunObsolete = \repo adr received -> do
+                  writeIORef selectedRepo (Just (configRepo repo)); writeIORef selectedAdr (Just adr); writeIORef selectedRequest (Just received)
+                  pure (Right (obsoleteResult, indexedResult))
+              , cliRunReactivate = \_ _ _ -> error "reactivate service must not be selected"
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
+              }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "obsolete-repo"}) (CmdObsolete command)) >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "obsolete-repo")
+        readIORef selectedAdr >>= (@?= Just "A0123456789ABCDEFGHJKMNPQRS")
+        readIORef selectedRequest >>= (@?= Just requestStatus)
+    , testCase "dispatch seam preserves the full typed reactivate request and returned projection" $ do
+        selectedRepo <- newIORef Nothing
+        selectedAdr <- newIORef Nothing
+        selectedRequest <- newIORef Nothing
+        let command = ReactivateCommand "A0123456789ABCDEFGHJKMNPQRS" "Restore it" (Just "S0123456789ABCDEFGHJKMN") True (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing True
+            requestStatus = ReactivateCliRequest
+              (ReactivateRequest (Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))) "Restore it" True)
+              (requireRight (parseActor "human:cli" Nothing)) (ProvenanceInputs Nothing Nothing Nothing)
+            dependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+              , cliMaterializeObsolete = \_ -> error "obsolete materialization must not be selected"
+              , cliMaterializeReactivate = \received -> do received @?= command; pure (Right requestStatus)
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunInit = \_ -> error "init service must not be selected"
+              , cliRunCreate = \_ _ -> error "create service must not be selected"
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliRunObsolete = \_ _ _ -> error "obsolete service must not be selected"
+              , cliRunReactivate = \repo adr received -> do
+                  writeIORef selectedRepo (Just (configRepo repo)); writeIORef selectedAdr (Just adr); writeIORef selectedRequest (Just received)
+                  pure (Right (reactivateResult, indexedResult))
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
+              }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "reactivate-repo"}) (CmdReactivate command)) >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "reactivate-repo")
+        readIORef selectedAdr >>= (@?= Just "A0123456789ABCDEFGHJKMNPQRS")
+        readIORef selectedRequest >>= (@?= Just requestStatus)
     , testCase "dispatch seam maps precommit user failure to exit 2 without mutation" $ do
         mutationCalled <- newIORef False
         let dependencies = CliDispatchDependencies
@@ -1197,6 +1325,18 @@ mutationCliContractTests =
         [requireRight (mkDomain "platform.api")]
         [requireRight (parseDomainRefinement "platform=platform.api")]
         oid path [path] True
+    obsoleteResult =
+      ObsoleteResult "operation-46" (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkConnectionId "C6123456789ABCDEFGHJKMNPQRS"))
+        [requireRight (mkConnectionId "C5123456789ABCDEFGHJKMNPQRS")]
+        [requireRight (mkRecordId "R0123456789ABCDEFGHJKMNPQRS")]
+        (Just (requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS"))) False oid path [path] True
+    reactivateResult =
+      ReactivateResult "operation-47" (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkConnectionId "C7123456789ABCDEFGHJKMNPQRS"))
+        [requireRight (mkConnectionId "C6123456789ABCDEFGHJKMNPQRS")]
+        [requireRight (mkRecordId "R0123456789ABCDEFGHJKMNPQRS")]
+        True oid path [path] True
     indexedResult = PostCommitIndexResult True (Just "fixture.sqlite") (Just oid) [] Nothing
     indexFailureResult = PostCommitIndexResult False Nothing Nothing [] (Just (PostCommitIndexOpenFailure "readonly"))
     request =

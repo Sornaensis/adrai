@@ -14,11 +14,15 @@ module Adrai.CliRunner
     InitCommand (..),
     CreateCommand (..),
     AmendCommand (..),
+    ObsoleteCommand (..),
+    ReactivateCommand (..),
     ScopeCommand (..),
     DomainCommand (..),
     ContentSource (..),
     CreateRequest (..),
     AmendRequest (..),
+    ObsoleteCliRequest (..),
+    ReactivateCliRequest (..),
     ScopeRequest (..),
     DomainRequest (..),
     CliDispatchDependencies (..),
@@ -29,6 +33,8 @@ module Adrai.CliRunner
     parseStructuredAmend,
     materializeScope,
     materializeDomain,
+    materializeObsolete,
+    materializeReactivate,
     parseActor,
     parseDigest,
     CliFailure (..),
@@ -39,6 +45,8 @@ module Adrai.CliRunner
     renderAmendOutcome,
     renderScopeOutcome,
     renderDomainOutcome,
+    renderObsoleteOutcome,
+    renderReactivateOutcome,
     renderFailureOutcome,
     emitRenderedToHandles,
     run,
@@ -63,7 +71,7 @@ import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import Adrai.Provenance (sha256Digest)
 import Adrai.Repository (repositorySnapshot, repositorySnapshotManagedPaths)
 import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
-import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand)
+import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
 import Adrai.Service.PostCommitIndex
   ( IndexWarning (..),
     PostCommitIndexError (..),
@@ -203,6 +211,39 @@ data AmendCommand = AmendCommand
   }
   deriving (Eq, Show)
 
+data ObsoleteCommand = ObsoleteCommand
+  { obsoleteAdrSpec :: Text
+  , obsoleteReasonSpec :: Text
+  , obsoleteReplacementSpec :: Maybe Text
+  , obsoleteExpectedStateSpec :: Maybe Text
+  , obsoleteResolveSpec :: Bool
+  , obsoleteActorSpec :: Maybe Text
+  , obsoleteModelSpec :: Maybe Text
+  , obsoleteInputDigestSpec :: Maybe Text
+  , obsoletePromptDigestSpec :: Maybe Text
+  , obsoleteContextDigestSpec :: Maybe Text
+  , obsoletePromptFileSpec :: Maybe FilePath
+  , obsoleteContextFileSpec :: Maybe FilePath
+  , obsoleteJson :: Bool
+  }
+  deriving (Eq, Show)
+
+data ReactivateCommand = ReactivateCommand
+  { reactivateAdrSpec :: Text
+  , reactivateReasonSpec :: Text
+  , reactivateExpectedStateSpec :: Maybe Text
+  , reactivateResolveSpec :: Bool
+  , reactivateActorSpec :: Maybe Text
+  , reactivateModelSpec :: Maybe Text
+  , reactivateInputDigestSpec :: Maybe Text
+  , reactivatePromptDigestSpec :: Maybe Text
+  , reactivateContextDigestSpec :: Maybe Text
+  , reactivatePromptFileSpec :: Maybe FilePath
+  , reactivateContextFileSpec :: Maybe FilePath
+  , reactivateJson :: Bool
+  }
+  deriving (Eq, Show)
+
 data ScopeCommand = ScopeCommand
   { scopeAdrSpec :: Text
   , scopeAdds :: [Text]
@@ -253,6 +294,8 @@ data CliCommand
   | CmdInit InitCommand
   | CmdCreate CreateCommand
   | CmdAmend AmendCommand
+  | CmdObsolete ObsoleteCommand
+  | CmdReactivate ReactivateCommand
   | CmdScope ScopeCommand
   | CmdDomain DomainCommand
   deriving (Eq, Show)
@@ -274,6 +317,8 @@ parser =
      <> command "init" (info (CmdInit <$> initParser) (progDesc "initialize an ADRAI repository"))
       <> command "create" (info (CmdCreate <$> createParser) (progDesc "create an ADR"))
        <> command "amend" (info (CmdAmend <$> amendParser) (progDesc "amend an ADR"))
+       <> command "obsolete" (info (CmdObsolete <$> obsoleteParser) (progDesc "mark an ADR obsolete"))
+       <> command "reactivate" (info (CmdReactivate <$> reactivateParser) (progDesc "reactivate an ADR"))
        <> command "scope" (info (CmdScope <$> scopeParser) (progDesc "change an ADR scope"))
        <> command "domain" (info (CmdDomain <$> domainParser) (progDesc "change an ADR domain"))
     )
@@ -333,6 +378,39 @@ amendParser =
   where
     optionalText name marker description = strOption (long name <> metavar marker <> help description)
     maybeText name marker description = optional (optionalText name marker description)
+
+obsoleteParser :: Parser ObsoleteCommand
+obsoleteParser =
+  ObsoleteCommand
+    <$> strArgument (metavar "ADR" <> help "ADR identifier to obsolete")
+    <*> strOption (long "reason" <> metavar "TEXT" <> help "nonblank obsolete rationale")
+    <*> optional (strOption (long "replacement" <> metavar "ADR" <> help "active replacement ADR"))
+    <*> optional (strOption (long "expect" <> metavar "STATE_TOKEN" <> help "expected current ADR state token"))
+    <*> switch (long "resolve" <> help "resolve a status-only conflict")
+    <*> optional (strOption (long "actor" <> metavar "ACTOR" <> help "actor as kind:identifier"))
+    <*> optional (strOption (long "model" <> metavar "MODEL" <> help "actor model"))
+    <*> optional (strOption (long "input-digest" <> metavar "DIGEST" <> help "SHA-256 input digest"))
+    <*> optional (strOption (long "prompt-digest" <> metavar "DIGEST" <> help "SHA-256 prompt digest"))
+    <*> optional (strOption (long "context-digest" <> metavar "DIGEST" <> help "SHA-256 context digest"))
+    <*> optional (strOption (long "prompt-file" <> metavar "PATH" <> help "prompt source path"))
+    <*> optional (strOption (long "context-file" <> metavar "PATH" <> help "context source path"))
+    <*> switch (long "json" <> help "output JSON")
+
+reactivateParser :: Parser ReactivateCommand
+reactivateParser =
+  ReactivateCommand
+    <$> strArgument (metavar "ADR" <> help "ADR identifier to reactivate")
+    <*> strOption (long "reason" <> metavar "TEXT" <> help "nonblank reactivate rationale")
+    <*> optional (strOption (long "expect" <> metavar "STATE_TOKEN" <> help "expected current ADR state token"))
+    <*> switch (long "resolve" <> help "resolve a status-only conflict")
+    <*> optional (strOption (long "actor" <> metavar "ACTOR" <> help "actor as kind:identifier"))
+    <*> optional (strOption (long "model" <> metavar "MODEL" <> help "actor model"))
+    <*> optional (strOption (long "input-digest" <> metavar "DIGEST" <> help "SHA-256 input digest"))
+    <*> optional (strOption (long "prompt-digest" <> metavar "DIGEST" <> help "SHA-256 prompt digest"))
+    <*> optional (strOption (long "context-digest" <> metavar "DIGEST" <> help "SHA-256 context digest"))
+    <*> optional (strOption (long "prompt-file" <> metavar "PATH" <> help "prompt source path"))
+    <*> optional (strOption (long "context-file" <> metavar "PATH" <> help "context source path"))
+    <*> switch (long "json" <> help "output JSON")
 
 scopeParser :: Parser ScopeCommand
 scopeParser =
@@ -526,6 +604,24 @@ dispatchWith dependencies (CliInvocation config (CmdAmend command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (amendResult, indexResult) -> renderAmendSuccess command amendResult indexResult
+dispatchWith dependencies (CliInvocation config (CmdObsolete command)) = do
+  requestResult <- cliMaterializeObsolete dependencies command
+  case requestResult of
+    Left problem -> renderFailure (CliUserFailure problem)
+    Right request -> do
+      result <- cliRunObsolete dependencies config (obsoleteAdrSpec command) request
+      case result of
+        Left failure -> renderFailure failure
+        Right (obsoleteResult, indexResult) -> renderObsoleteSuccess command obsoleteResult indexResult
+dispatchWith dependencies (CliInvocation config (CmdReactivate command)) = do
+  requestResult <- cliMaterializeReactivate dependencies command
+  case requestResult of
+    Left problem -> renderFailure (CliUserFailure problem)
+    Right request -> do
+      result <- cliRunReactivate dependencies config (reactivateAdrSpec command) request
+      case result of
+        Left failure -> renderFailure failure
+        Right (reactivateResult, indexResult) -> renderReactivateSuccess command reactivateResult indexResult
 dispatchWith dependencies (CliInvocation config (CmdScope command)) = do
   requestResult <- cliMaterializeScope dependencies command
   case requestResult of
@@ -569,18 +665,22 @@ dispatchWith _ (CliInvocation _ (CmdCompare CompareCommand { compareBefore, comp
 data CliDispatchDependencies = CliDispatchDependencies
   { cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
   , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
+  , cliMaterializeObsolete :: ~(ObsoleteCommand -> IO (Either Text ObsoleteCliRequest))
+  , cliMaterializeReactivate :: ~(ReactivateCommand -> IO (Either Text ReactivateCliRequest))
   , cliMaterializeScope :: ScopeCommand -> IO (Either Text ScopeRequest)
   , cliMaterializeDomain :: DomainCommand -> IO (Either Text DomainRequest)
   , cliRunInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
   , cliRunCreate :: CliConfig -> CreateRequest -> IO (Either CliFailure (CreateResult, PostCommitIndexResult))
   , cliRunAmend :: CliConfig -> AmendRequest -> IO (Either CliFailure (AmendResult, PostCommitIndexResult))
+  , cliRunObsolete :: ~(CliConfig -> Text -> ObsoleteCliRequest -> IO (Either CliFailure (ObsoleteResult, PostCommitIndexResult)))
+  , cliRunReactivate :: ~(CliConfig -> Text -> ReactivateCliRequest -> IO (Either CliFailure (ReactivateResult, PostCommitIndexResult)))
   , cliRunScope :: CliConfig -> ScopeRequest -> IO (Either CliFailure (ScopeChangeResult, PostCommitIndexResult))
   , cliRunDomain :: CliConfig -> DomainRequest -> IO (Either CliFailure (DomainChangeResult, PostCommitIndexResult))
   }
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies materializeCreate materializeAmend materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionScope runProductionDomain
+  CliDispatchDependencies materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
 runProductionInit config = do
@@ -641,6 +741,48 @@ runProductionAmend config request = do
           case result of
             Left problem -> pure (Left (transactionFailure problem))
             Right amendResult -> Right . (amendResult,) <$> indexCommitted database repository (amendCommitOid amendResult)
+
+runProductionObsolete :: CliConfig -> Text -> ObsoleteCliRequest -> IO (Either CliFailure (ObsoleteResult, PostCommitIndexResult))
+runProductionObsolete config adrText request = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      indexPath <- prepareIndexPath repository
+      case indexPath of
+        Left problem -> pure (Left (CliUserFailure problem))
+        Right database -> do
+          snapshotResult <- repositorySnapshot repository (RevisionSpec "HEAD")
+          case snapshotResult of
+            Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+            Right snapshot -> case mkAdrId adrText of
+              Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+              Right adr -> do
+                result <- obsoleteCommand repository (repositorySnapshotManagedPaths snapshot) (obsoleteRequestActor request) adr (obsoleteIntent request) (obsoleteRequestInputs request)
+                case result of
+                  Left problem -> pure (Left (transactionFailure problem))
+                  Right obsoleteResult -> Right . (obsoleteResult,) <$> indexCommitted database repository (obsoleteCommitOid obsoleteResult)
+
+runProductionReactivate :: CliConfig -> Text -> ReactivateCliRequest -> IO (Either CliFailure (ReactivateResult, PostCommitIndexResult))
+runProductionReactivate config adrText request = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      indexPath <- prepareIndexPath repository
+      case indexPath of
+        Left problem -> pure (Left (CliUserFailure problem))
+        Right database -> do
+          snapshotResult <- repositorySnapshot repository (RevisionSpec "HEAD")
+          case snapshotResult of
+            Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+            Right snapshot -> case mkAdrId adrText of
+              Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+              Right adr -> do
+                result <- reactivateCommand repository (repositorySnapshotManagedPaths snapshot) (reactivateRequestActor request) adr (reactivateIntent request) (reactivateRequestInputs request)
+                case result of
+                  Left problem -> pure (Left (transactionFailure problem))
+                  Right reactivateResult -> Right . (reactivateResult,) <$> indexCommitted database repository (reactivateCommitOid reactivateResult)
 
 runProductionScope :: CliConfig -> ScopeRequest -> IO (Either CliFailure (ScopeChangeResult, PostCommitIndexResult))
 runProductionScope config request = do
@@ -743,6 +885,22 @@ data DomainRequest = DomainRequest
   , domainRequestInputDigest :: Maybe Digest
   , domainRequestPromptDigest :: Maybe Digest
   , domainRequestContextDigest :: Maybe Digest
+  }
+  deriving (Eq, Show)
+
+-- | CLI provenance accompanies the typed status intent without asking the
+-- service to derive facts from the repository a second time.
+data ObsoleteCliRequest = ObsoleteCliRequest
+  { obsoleteIntent :: ObsoleteRequest
+  , obsoleteRequestActor :: Actor
+  , obsoleteRequestInputs :: ProvenanceInputs
+  }
+  deriving (Eq, Show)
+
+data ReactivateCliRequest = ReactivateCliRequest
+  { reactivateIntent :: ReactivateRequest
+  , reactivateRequestActor :: Actor
+  , reactivateRequestInputs :: ProvenanceInputs
   }
   deriving (Eq, Show)
 
@@ -928,6 +1086,45 @@ selectDomainRequest command =
   where
     parseDomain = first domainErrorText . mkDomain
     parseRefinement = first domainErrorText . parseDomainRefinement
+
+materializeObsolete :: ObsoleteCommand -> IO (Either Text ObsoleteCliRequest)
+materializeObsolete command = do
+  environmentActor <- lookupEnv "ADRAI_ACTOR"
+  promptFromFile <- readDigestFile "prompt" (obsoletePromptFileSpec command)
+  contextFromFile <- readDigestFile "context" (obsoleteContextFileSpec command)
+  pure $ do
+    promptFileDigest <- promptFromFile
+    contextFileDigest <- contextFromFile
+    _ <- first (Text.pack . show) (mkAdrId (obsoleteAdrSpec command))
+    replacement <- traverse (first (Text.pack . show) . mkAdrId) (obsoleteReplacementSpec command)
+    expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (obsoleteExpectedStateSpec command)
+    let reason = obsoleteReasonSpec command
+    if Text.null (Text.strip reason) then Left "obsolete reason must be nonblank" else Right ()
+    actorText <- maybe (Left "obsolete requires --actor or ADRAI_ACTOR") Right (obsoleteActorSpec command <|> Text.pack <$> environmentActor)
+    actor <- parseActor actorText (obsoleteModelSpec command)
+    input <- traverse parseDigest (obsoleteInputDigestSpec command)
+    prompt <- resolveDigest "prompt" (obsoletePromptDigestSpec command) promptFileDigest
+    context <- resolveDigest "context" (obsoleteContextDigestSpec command) contextFileDigest
+    pure (ObsoleteCliRequest (ObsoleteRequest expected reason (obsoleteResolveSpec command) replacement) actor (ProvenanceInputs input prompt context))
+
+materializeReactivate :: ReactivateCommand -> IO (Either Text ReactivateCliRequest)
+materializeReactivate command = do
+  environmentActor <- lookupEnv "ADRAI_ACTOR"
+  promptFromFile <- readDigestFile "prompt" (reactivatePromptFileSpec command)
+  contextFromFile <- readDigestFile "context" (reactivateContextFileSpec command)
+  pure $ do
+    promptFileDigest <- promptFromFile
+    contextFileDigest <- contextFromFile
+    _ <- first (Text.pack . show) (mkAdrId (reactivateAdrSpec command))
+    expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (reactivateExpectedStateSpec command)
+    let reason = reactivateReasonSpec command
+    if Text.null (Text.strip reason) then Left "reactivate reason must be nonblank" else Right ()
+    actorText <- maybe (Left "reactivate requires --actor or ADRAI_ACTOR") Right (reactivateActorSpec command <|> Text.pack <$> environmentActor)
+    actor <- parseActor actorText (reactivateModelSpec command)
+    input <- traverse parseDigest (reactivateInputDigestSpec command)
+    prompt <- resolveDigest "prompt" (reactivatePromptDigestSpec command) promptFileDigest
+    context <- resolveDigest "context" (reactivateContextDigestSpec command) contextFileDigest
+    pure (ReactivateCliRequest (ReactivateRequest expected reason (reactivateResolveSpec command)) actor (ProvenanceInputs input prompt context))
 
 emptyStructured :: StructuredCreate
 emptyStructured = StructuredCreate Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
@@ -1143,6 +1340,14 @@ renderDomainSuccess :: DomainCommand -> DomainChangeResult -> PostCommitIndexRes
 renderDomainSuccess command result indexResult =
   emitRendered (renderDomainOutcome result indexResult (domainJson command))
 
+renderObsoleteSuccess :: ObsoleteCommand -> ObsoleteResult -> PostCommitIndexResult -> IO ExitCode
+renderObsoleteSuccess command result indexResult =
+  emitRendered (renderObsoleteOutcome result indexResult (obsoleteJson command))
+
+renderReactivateSuccess :: ReactivateCommand -> ReactivateResult -> PostCommitIndexResult -> IO ExitCode
+renderReactivateSuccess command result indexResult =
+  emitRendered (renderReactivateOutcome result indexResult (reactivateJson command))
+
 renderInitOutcome :: InitResult -> PostCommitIndexResult -> Bool -> CliRendered
 renderInitOutcome result indexResult jsonOutput =
   successOutcome jsonOutput (Text.pack (initOperationId result)) (initCommitOid result) [] indexResult
@@ -1224,6 +1429,34 @@ renderDomainOutcome result indexResult jsonOutput =
            , ("refinements", JsonArray (map (JsonString . domainRefinementText) (domainChangeRefinements result)))
            ]
 
+renderObsoleteOutcome :: ObsoleteResult -> PostCommitIndexResult -> Bool -> CliRendered
+renderObsoleteOutcome result indexResult jsonOutput =
+  successOutcome jsonOutput (Text.pack (obsoleteOperationId result)) (obsoleteCommitOid result) identifiers indexResult jsonFields
+  where
+    identifiers = ["adr=" <> adrIdText (obsoleteAdrId result), "connection=" <> connectionIdText (obsoleteConnectionId result)]
+    jsonFields =
+      mutationJsonFields (obsoleteOperationId result) (obsoleteCommitOid result) (obsoleteCreatedPaths result) (obsoleteIndexUpdated result) indexResult
+        <> [ ("adr", JsonString (adrIdText (obsoleteAdrId result)))
+           , ("connection", JsonString (connectionIdText (obsoleteConnectionId result)))
+           , ("obsolete", JsonBool True)
+           , ("resolved_status_conflict", JsonBool (obsoleteResolvedConflict result))
+           , ("covered_records", JsonArray (map (JsonString . recordIdText) (obsoleteRecordHeads result)))
+           , ("replacement", maybe JsonNull (JsonString . adrIdText) (obsoleteReplacementAdr result))
+           ]
+
+renderReactivateOutcome :: ReactivateResult -> PostCommitIndexResult -> Bool -> CliRendered
+renderReactivateOutcome result indexResult jsonOutput =
+  successOutcome jsonOutput (Text.pack (reactivateOperationId result)) (reactivateCommitOid result) identifiers indexResult jsonFields
+  where
+    identifiers = ["adr=" <> adrIdText (reactivateAdrId result), "connection=" <> connectionIdText (reactivateConnectionId result)]
+    jsonFields =
+      mutationJsonFields (reactivateOperationId result) (reactivateCommitOid result) (reactivateCreatedPaths result) (reactivateIndexUpdated result) indexResult
+        <> [ ("adr", JsonString (adrIdText (reactivateAdrId result)))
+           , ("connection", JsonString (connectionIdText (reactivateConnectionId result)))
+           , ("obsolete", JsonBool False)
+           , ("resolved_status_conflict", JsonBool (reactivateResolvedConflict result))
+           ]
+
 successOutcome jsonOutput operation commit identifiers indexResult jsonFields
   | jsonOutput = CliRendered (renderCanonicalJson (JsonObject jsonFields)) "" ExitSuccess
   | otherwise = CliRendered (plainText operation commit identifiers indexResult) "" ExitSuccess
@@ -1267,6 +1500,12 @@ plainText operation commit identifiers indexResult =
         , adr <> "  " <> scope
         , indexLine
         ]
+    [adr, connection] ->
+      Text.unlines
+        [ "Committed " <> operation <> " as " <> gitOidText commit
+        , adr <> "  " <> connection
+        , indexLine
+        ]
     _ -> Text.unlines ["Committed " <> operation <> " as " <> gitOidText commit, indexLine]
   where
     indexLine
@@ -1292,6 +1531,15 @@ transactionConflict problem =
       || "domain target ADR is conflicted" `Text.isInfixOf` message
       || "domain target ADR has no unambiguous current domain" `Text.isInfixOf` message
       || "domain target ADR is not active" `Text.isInfixOf` message
+      || "obsolete target ADR is already obsolete" `Text.isInfixOf` message
+      || "reactivate target ADR is already active" `Text.isInfixOf` message
+      || "status target ADR is conflicted" `Text.isInfixOf` message
+      || "status target ADR has no unambiguous current status" `Text.isInfixOf` message
+      || "status target ADR is not active" `Text.isInfixOf` message
+      || "status target ADR is not obsolete" `Text.isInfixOf` message
+      || "status resolve requires a conflicted status axis" `Text.isInfixOf` message
+      || "obsolete replacement ADR is conflicted" `Text.isInfixOf` message
+      || "obsolete replacement ADR is not unambiguously active" `Text.isInfixOf` message
     _ -> False
 
 renderFailure :: CliFailure -> IO ExitCode
