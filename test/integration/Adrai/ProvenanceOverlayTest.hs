@@ -187,6 +187,7 @@ import qualified Data.ByteString.Lazy as Lazy
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Set as Set
 import Data.Text (Text, pack, replicate, unpack)
 import qualified Data.Text as Text
@@ -265,6 +266,51 @@ createAdraiFile objRef semantic opId blobOid = do
         Left err -> error ("mkProvenanceCapsule: " <> show err)
         Right c -> c
   pure (sealSemantic semantic capsule)
+
+authorityCapsule :: Text -> AdrId -> GitOid -> Text -> ProvenanceCapsule
+authorityCapsule operation adr basis semantic =
+  case mkProvenanceCapsule
+    ProvenanceCapsuleInput
+      { capsuleInputOperationId = requireOperationId operation,
+        capsuleInputObjectId = ProvenanceAdr adr,
+        capsuleInputEventKind = case mkEventKind "decision" of
+          Left problem -> error (show problem)
+          Right value -> value,
+        capsuleInputActor = case mkActor HumanActor "ensure-authority-test" Nothing of
+          Left problem -> error (show problem)
+          Right value -> value,
+        capsuleInputTimestampMs = 1700000000000,
+        capsuleInputBasis = basis,
+        capsuleInputParents = [],
+        capsuleInputBranchHint = Nothing,
+        capsuleInputUpstreamHint = Nothing,
+        capsuleInputLineAnchors = [],
+        capsuleInputSemanticDigest = semanticDigest semantic,
+        capsuleInputToolVersion = "adrai/1.0.0",
+        capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
+      } of
+    Left problem -> error (show problem)
+    Right value -> value
+
+runEnsureForConfig
+  :: Repository
+  -> FilePath
+  -> Config
+  -> [ParsedManagedDocument]
+  -> [Text]
+  -> GitOid
+  -> IO (Either SomeException ProvenanceUpdate)
+runEnsureForConfig repository currentDb config documents operations target =
+  bracket (open (provenanceDatabasePath currentDb)) close $ \connection ->
+    ensureProvenance repository connection currentDb
+      (map logicalLineId (configLogicalLines config))
+      (repoPathText (managedDecisionPath (configManagedPaths config)))
+      (repoPathText (managedConnectionPath (configManagedPaths config)))
+      (configLogicalLines config)
+      (Just documents)
+      operations
+      Nothing
+      target
 
 -- | Query the @operation_commit@ table for a specific operation ID.
 --
@@ -717,6 +763,167 @@ tests =
               :: IO [(Text, Text)]
           additions @?= [(path, gitOidText (resolvedCommitOid resolved))]
           close conn
+        ),
+
+      testCase "ensure classifies a later target for every registered operation" $
+        (withSystemTempDirectory "adrai ensure existing operation target" $ \temp -> do
+          let repoDir = temp </> "repo"
+              currentDb = temp </> "index.sqlite"
+              overlayPath = provenanceDatabasePath currentDb
+              operationA = "O00000000000000000000000891"
+              operationB = "O00000000000000000000000892"
+              adrA = requireAdrId "A00000000000000000000000891"
+              adrB = requireAdrId "A00000000000000000000000892"
+              pathA = "architecture/adrai/decisions/existing-a.decision.md"
+              pathB = "architecture/adrai/decisions/new-b.decision.md"
+              semanticA = "# Existing operation A\n"
+              semanticB = "# New operation B\n"
+          initTestRepository repoDir
+          basisText <- commitFile repoDir "seed.txt" "seed\n"
+          _ <- gitSuccess repoDir ["branch", "feature"] BS.empty
+          let basis = requireGitOid basisText
+              capsuleA = authorityCapsule operationA adrA basis semanticA
+              bytesA = TextEncoding.encodeUtf8 (sealSemantic semanticA capsuleA)
+          originalText <- commitFile repoDir pathA bytesA
+          originalBlobText <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD:" <> pathA] BS.empty
+          original <- resolveTestRepo repoDir originalText
+          let documentA = ParsedManagedDocument
+                { parsedDocumentObjectRef = adrIdText adrA,
+                  parsedManagedPath = requireRepoPath (Text.pack pathA),
+                  parsedManagedCapsule = capsuleA,
+                  parsedBlobOid = Just (requireGitOid originalBlobText),
+                  parsedSemanticHash = digestToText (semanticDigest semanticA)
+                }
+          ensureSchema overlayPath
+          first <- runEnsureForConfig (resolvedRepository original) currentDb mkTestConfig [documentA] [operationA] (resolvedCommitOid original)
+          case first of
+            Left problem -> assertFailure ("first ensure: " <> show problem)
+            Right _ -> pure ()
+
+          _ <- gitSuccess repoDir ["switch", "feature"] BS.empty
+          let capsuleB = authorityCapsule operationB adrB basis semanticB
+              bytesB = TextEncoding.encodeUtf8 (sealSemantic semanticB capsuleB)
+          _ <- commitFiles repoDir [(pathA, bytesA), (pathB, bytesB)]
+          target <- resolveTestRepo repoDir "HEAD"
+          targetBlobB <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD:" <> pathB] BS.empty
+          let documentB = ParsedManagedDocument
+                { parsedDocumentObjectRef = adrIdText adrB,
+                  parsedManagedPath = requireRepoPath (Text.pack pathB),
+                  parsedManagedCapsule = capsuleB,
+                  parsedBlobOid = Just (requireGitOid targetBlobB),
+                  parsedSemanticHash = digestToText (semanticDigest semanticB)
+                }
+          second <- runEnsureForConfig (resolvedRepository target) currentDb mkTestConfig [documentB] [operationB] (resolvedCommitOid target)
+          case second of
+            Left problem -> assertFailure ("second ensure: " <> show problem)
+            Right _ -> pure ()
+          placementsA <- queryPlacements overlayPath operationA
+          assertBool "later target is classified for the already registered operation"
+            (any ((== gitOidText (resolvedCommitOid target)) . fst) placementsA)
+          repairConnection <- open overlayPath
+          observedTarget <- query repairConnection
+            "SELECT 1 FROM observed_commit WHERE commit_oid=?"
+            [SQLText (gitOidText (resolvedCommitOid target))]
+            :: IO [Only Int]
+          observedTarget @?= [Only 1]
+          execute repairConnection
+            "DELETE FROM operation_commit WHERE op_id=? AND commit_oid=?"
+            [SQLText operationA, SQLText (gitOidText (resolvedCommitOid target))]
+          close repairConnection
+          missingPlacement <- queryPlacements overlayPath operationA
+          assertBool "fixture removes only the already-observed target placement"
+            (all ((/= gitOidText (resolvedCommitOid target)) . fst) missingPlacement)
+          repaired <- runEnsureForConfig
+            (resolvedRepository target)
+            currentDb
+            mkTestConfig
+            [documentA]
+            [operationA]
+            (resolvedCommitOid target)
+          case repaired of
+            Left problem -> assertFailure ("target repair ensure: " <> show problem)
+            Right update -> changed update @?= True
+          repairedPlacements <- queryPlacements overlayPath operationA
+          assertBool "fast-path eligibility requires and repairs exact target evidence"
+            (any ((== gitOidText (resolvedCommitOid target)) . fst) repairedPlacements)
+        ),
+
+      testCase "ensure fast path requires the exact requested configuration" $
+        (withSystemTempDirectory "adrai ensure exact config" $ \temp -> do
+          let repoDir = temp </> "repo"
+              currentDb = temp </> "index.sqlite"
+              overlayPath = provenanceDatabasePath currentDb
+              operation = "O00000000000000000000000893"
+              adr = requireAdrId "A00000000000000000000000893"
+              path = "architecture/adrai/decisions/config-evolution.decision.md"
+              semantic = "# Configuration evolution\n"
+          initTestRepository repoDir
+          basisText <- commitFile repoDir "seed.txt" "seed\n"
+          let basis = requireGitOid basisText
+              capsule = authorityCapsule operation adr basis semantic
+          targetText <- commitFile repoDir path (TextEncoding.encodeUtf8 (sealSemantic semantic capsule))
+          blobText <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD:" <> path] BS.empty
+          target <- resolveTestRepo repoDir targetText
+          let document = ParsedManagedDocument
+                { parsedDocumentObjectRef = adrIdText adr,
+                  parsedManagedPath = requireRepoPath (Text.pack path),
+                  parsedManagedCapsule = capsule,
+                  parsedBlobOid = Just (requireGitOid blobText),
+                  parsedSemanticHash = digestToText (semanticDigest semantic)
+                }
+              configB = case mkManagedPaths
+                  (requireRepoPath "architecture/adrai/decisions")
+                  (requireRepoPath "architecture/adrai/connections") of
+                Left problem -> error (show problem)
+                Right paths -> case mkConfig ConfigSchemaV1 paths [LogicalLine "release" [GitRef "refs/heads/main"]] of
+                  Left problem -> error (show problem)
+                  Right value -> value
+          ensureSchema overlayPath
+          first <- runEnsureForConfig (resolvedRepository target) currentDb mkTestConfig [document] [operation] (resolvedCommitOid target)
+          case first of
+            Left problem -> assertFailure ("config A ensure: " <> show problem)
+            Right _ -> pure ()
+          second <- runEnsureForConfig (resolvedRepository target) currentDb configB [document] [operation] (resolvedCommitOid target)
+          case second of
+            Left problem -> assertFailure ("config B ensure: " <> show problem)
+            Right _ -> pure ()
+          connection <- open overlayPath
+          configs <- query_ connection "SELECT config_key,config_json FROM line_config ORDER BY config_key" :: IO [(Text, Text)]
+          let configBKey = configKey "architecture/adrai/decisions" "architecture/adrai/connections" ["release"]
+              configBJson = TextEncoding.decodeUtf8 (Lazy.toStrict (Aeson.encode
+                (Aeson.Object (KeyMap.fromList
+                  [ (Key.fromText "connections", Aeson.String "architecture/adrai/connections"),
+                    (Key.fromText "decisions", Aeson.String "architecture/adrai/decisions"),
+                    (Key.fromText "logical_lines", Aeson.Array (Vector.fromList [Aeson.String "release"]))
+                  ]))))
+          refsB <- query connection "SELECT ref_name FROM line_ref_state WHERE config_key=? ORDER BY ref_name"
+            [SQLText configBKey]
+            :: IO [Only Text]
+          landingsB <- query connection
+            "SELECT line_id,ref_name,commit_oid,complete FROM line_landing WHERE config_key=? AND op_id=? ORDER BY line_id,ref_name,commit_oid"
+            [SQLText configBKey, SQLText operation]
+            :: IO [(Text, Text, Text, Int)]
+          close connection
+          length configs @?= 2
+          lookup configBKey configs @?= Just configBJson
+          refsB @?= [Only "refs/heads/main"]
+          landingsB @?= [("release", "refs/heads/main", gitOidText (resolvedCommitOid target), 1)]
+          loaderCalled <- newIORef False
+          third <- bracket (open overlayPath) close $ \thirdConnection ->
+            ensureProvenance (resolvedRepository target) thirdConnection currentDb
+              ["release"]
+              "architecture/adrai/decisions"
+              "architecture/adrai/connections"
+              (configLogicalLines configB)
+              Nothing
+              [operation]
+              (Just (writeIORef loaderCalled True >> pure Map.empty))
+              (resolvedCommitOid target)
+          case third of
+            Left problem -> assertFailure ("config B reuse: " <> show problem)
+            Right update -> changed update @?= False
+          maintenanceEntered <- readIORef loaderCalled
+          assertBool "exact config B reuse takes the fast path before the groups loader" (not maintenanceEntered)
         ),
 
       -- 1. A single commit on main with an ADRAI op is classified as original.

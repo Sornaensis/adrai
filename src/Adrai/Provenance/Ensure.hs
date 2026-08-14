@@ -186,14 +186,18 @@ import System.Directory (makeAbsolute)
 -- connections path, and logical lines.
 configKey :: Text -> Text -> [Text] -> Text
 configKey decisionsPath connectionsPath logicalLines =
-  let payload = Aeson.Object (KeyMap.fromList
-        [ (Key.fromText "connections", Aeson.String connectionsPath),
-          (Key.fromText "decisions", Aeson.String decisionsPath),
-          (Key.fromText "logical_lines", Aeson.Array (Vector.fromList (map Aeson.String logicalLines)))
-        ])
-      json = Lazy.toStrict (Aeson.encode payload)
+  let json = TextEncoding.encodeUtf8 (configJsonText decisionsPath connectionsPath logicalLines)
       digest = sha256Digest json
   in digestToHex digest
+
+configJsonText :: Text -> Text -> [Text] -> Text
+configJsonText decisionsPath connectionsPath logicalLines =
+  TextEncoding.decodeUtf8 (Lazy.toStrict (Aeson.encode
+    (Aeson.Object (KeyMap.fromList
+      [ (Key.fromText "connections", Aeson.String connectionsPath),
+        (Key.fromText "decisions", Aeson.String decisionsPath),
+        (Key.fromText "logical_lines", Aeson.Array (Vector.fromList (map Aeson.String logicalLines)))
+      ]))))
 
 -- ============================================================
 -- Shallow history detection
@@ -232,13 +236,7 @@ refreshLineLandings repo conn decisionsPath connectionsPath logicalLines newOps 
     -- Compute config key and JSON
     let lineIds = [llId | LogicalLine llId _ <- logicalLines]
         configKey' = configKey decisionsPath connectionsPath lineIds
-        configJson = Lazy.toStrict (Aeson.encode
-          (Aeson.Object (KeyMap.fromList
-            [ (Key.fromText "connections", Aeson.String connectionsPath),
-              (Key.fromText "decisions", Aeson.String decisionsPath),
-              (Key.fromText "logical_lines", Aeson.Array (Vector.fromList (map Aeson.String lineIds)))
-            ]))) :: ByteString
-        configText = TextEncoding.decodeUtf8 configJson
+        configText = configJsonText decisionsPath connectionsPath lineIds
 
     -- Load previous config JSON for this key
     storedRows <- query conn "SELECT config_json FROM line_config WHERE config_key=?" [SQLText configKey'] :: IO [Only Text]
@@ -513,16 +511,34 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
           [Only f] -> f == fingerprintVal
           _ -> False
 
-    configExistsRows <- query_ conn "SELECT count(*) FROM line_config" :: IO [Only Integer]
-    let configExists = case configExistsRows of
-          [Only c] -> c > 0
-          _ -> False
+    let requestedLineIds = map logicalLineId logicalLines
+        requestedConfigKey = configKey decisionsPath connectionsPath requestedLineIds
+        requestedConfigText = configJsonText decisionsPath connectionsPath requestedLineIds
+    configRows <- query conn
+      "SELECT config_json FROM line_config WHERE config_key=?"
+      [SQLText requestedConfigKey]
+      :: IO [Only Text]
+    let configReady = configRows == [Only requestedConfigText]
 
-    -- Fast path check: fingerprint matches, all ops registered, config exists.
-    -- When all conditions hold, the overlay is already fully up to date.
+    targetPlacementChecks <- traverse
+      (\operationId -> do
+        rows <- query conn
+          "SELECT 1 FROM operation_commit WHERE op_id=? AND commit_oid=? LIMIT 1"
+          [SQLText operationId, SQLText (gitOidText targetRevision)]
+          :: IO [Only Int]
+        pure (not (null rows)))
+      operationIds
+    let targetReady = and targetPlacementChecks
+
+    -- Fast path check: fingerprint matches, all ops are registered, this
+    -- exact requested configuration exists, and every requested operation has
+    -- already been classified at the caller-resolved target.  The target
+    -- condition prevents a globally observed commit from hiding incomplete
+    -- operation-specific evidence.
     let fastPath = fingerprintMatches
                     && Set.fromList operationIds `Set.isSubsetOf` registeredSet
-                    && configExists
+                    && configReady
+                    && targetReady
 
     if fastPath
       then do
@@ -579,11 +595,12 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
         let requiredOps = Set.fromList operationIds
         _ <- loadMissing requiredOps
 
-        -- Build the new op list from registration result
-        let newOpList :: [Text]
-            newOpList = case newOpsResult of
-              Right ops -> ops
-              Left _  -> []
+        -- Classification completeness is operation-specific.  Every observed
+        -- commit must be considered against every registered operation, not
+        -- only operations first registered during this maintenance pass.
+        registeredNow <- query_ conn "SELECT op_id FROM registered_operation ORDER BY op_id"
+          :: IO [Only Text]
+        let classificationOps = map fromOnly registeredNow
 
         -- Store commit observations + managed path additions
         when (not (null newCommits)) $ do
@@ -593,13 +610,30 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
             Left e  -> recordIssue conn "error" "STORE_NEW_COMMITS_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
 
         -- Find candidate commits per operation
-        candidatesResult <- candidateCommits conn newCommits newOpList
+        candidatesResult <- candidateCommits conn newCommits classificationOps
 
         -- Classify candidates
         case (candidatesResult, newOpsResult) of
-          (Right candidates, Right newOps) ->
-            void (processCandidates repo conn candidates newOps)
+          (Right candidates, Right _) ->
+            void (processCandidates repo conn candidates classificationOps)
           _ -> pure ()
+
+        -- Complete the caller-resolved target even when it was globally
+        -- observed by an earlier call for a different operation.  These
+        -- inserts are idempotent and keep the exact-target protocol inside the
+        -- Ensure authority rather than duplicating it in read consumers.
+        targetStoreResult <- storeNewCommits repo conn [targetRevision]
+        case targetStoreResult of
+          Left e -> recordIssue conn "error" "STORE_TARGET_COMMIT_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
+          Right _ -> do
+            targetCandidatesResult <- candidateCommits conn [targetRevision] classificationOps
+            case targetCandidatesResult of
+              Left e -> recordIssue conn "error" "TARGET_CANDIDATES_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
+              Right targetCandidates -> do
+                targetProcessResult <- processCandidates repo conn targetCandidates classificationOps
+                case targetProcessResult of
+                  Left e -> recordIssue conn "error" "TARGET_CLASSIFICATION_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
+                  Right () -> pure ()
 
         -- Prune unavailable placements
         prunedResult <- pruneUnavailablePlacements repo conn
@@ -666,7 +700,7 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
           , generation = generation
           , commitsScanned = length newCommits
           , observedCommitCount = observedCount
-          , changed = lineChanged || not (null newCommits) || newOpsCount > 0
+          , changed = lineChanged || not (null newCommits) || newOpsCount > 0 || not targetReady
           , newOperations = newOpsCount
           })
 
