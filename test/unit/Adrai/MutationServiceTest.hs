@@ -3,7 +3,7 @@
 
 module Adrai.MutationServiceTest (tests) where
 
-import Adrai.Domain (mkDomain)
+import Adrai.Domain (Domain, DomainRefinement, mkDomain, mkDomainRefinement)
 import Adrai.Format.Document
   ( AppliesToPayload (..),
     AmendsPayload (..),
@@ -39,6 +39,7 @@ import Adrai.GitTestSupport
 import Adrai.Fixture.CompilerRepository (healthyCompilerFiles)
 import Adrai.Graph
   ( AxisResolution (..),
+    GraphAxis (DomainAxis),
     ReducedAdr (..),
     lookupReducedAdr,
     reduceManagedGraph,
@@ -57,6 +58,7 @@ import Adrai.Provenance
     provenanceEventKind,
     provenanceObjectId,
     provenanceOperationId,
+    provenanceSemanticDigest,
     provenanceParents,
     provenanceInputs,
     provenanceTimestampMs,
@@ -69,8 +71,11 @@ import Adrai.Service.Mutation
     AmendResult (..),
     ScopeChangeRequest (..),
     ScopeChangeResult (..),
+    DomainChangeRequest (..),
+    DomainChangeResult (..),
     InitResult (..),
     amendAdmCommand,
+    changeDomainCommand,
     changeScopeCommand,
     createAdrCommand,
     initCommand,
@@ -104,7 +109,10 @@ import Adrai.Types
     mkOperationId,
     mkRepoPath,
     mkRecordId,
-    mkStateToken,
+    adrIdText,
+     connectionIdText,
+     gitRefText,
+     mkStateToken,
     operationIdText,
     repoPathText,
     stateTokenText,
@@ -113,11 +121,11 @@ import qualified Data.ByteString as BS
 import qualified Data.Text as Text
 import Data.Either (isLeft)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort, zip5, zip7)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, zip5, zip7)
 import qualified Data.Set as Set
 import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, throwIO, try)
 import Database.SQLite.Simple (Only (..), close, open, query_)
-import System.Directory (createDirectoryIfMissing, doesFileExist, listDirectory, removeFile, renameFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>), takeFileName)
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempDirectory)
@@ -165,7 +173,37 @@ tests =
         , testCase "scope rejects detached HEAD before generating files" scopeDetachedHeadRejected
         , testCase "scope transaction failure after generation preserves every caller-owned state" scopeTransactionFailurePreservesEverything
         ]
+    , testGroup
+        "P6-02D domain mutation service"
+        [ testCase "domain updates expand contract mixed refine replace and clear truthfully" domainUpdatesAreTruthful
+        , testCase "domain rejects invalid requests without changing committed state" domainRejectionsPreserveRepository
+        , testCase "domain reviewed set reconciles a domain-only two-head conflict" domainReviewedMergeReconcilesConflict
+        , testCase "domain reviewed merge commits an exact two-head union without changing other axes" domainReviewedMergeExactUnionPreservesOtherAxes
+        , testCase "domain rejects a real scope-axis conflict without state change" domainRejectsNonDomainConflict
+        , testCase "domain rejects a committed ADR with no current domain head" domainMissingCurrentHeadRejected
+        , testCase "domain stale unknown detached and inactive authority failures preserve state" domainAuthorityFailuresPreserveRepository
+        , testCase "domain induced post-generation transaction failure preserves every observable state" domainTransactionFailurePreservesEverything
+        ]
     ]
+
+-- | Every observable state that an append-only mutation must leave untouched
+-- when it rejects or rolls back.  Keeping the raw index and the complete
+-- managed worktree inventory alongside the semantic Git observations catches
+-- both accidental caller-index writes and leaked generated paths.
+data FailureSnapshot = FailureSnapshot
+  { failureHeadRef :: Text.Text,
+    failureHeadOid :: Text.Text,
+    failureHeadTree :: Text.Text,
+    failureTreeEntries :: Text.Text,
+    failureRawIndex :: BS.ByteString,
+    failureIndexEntries :: BS.ByteString,
+    failureStatus :: [Text.Text],
+    failureManagedPaths :: [(Text.Text, Maybe BS.ByteString, Maybe BS.ByteString)],
+    failureManagedInventory :: [(Text.Text, Maybe BS.ByteString)],
+    failureCallerFiles :: [(FilePath, Maybe BS.ByteString)],
+    failureDisposableIndexes :: [(FilePath, BS.ByteString)]
+  }
+  deriving (Eq, Show)
 
 initCommitsBootstrapFiles :: IO ()
 initCommitsBootstrapFiles =
@@ -1112,17 +1150,364 @@ scopeTransactionFailurePreservesEverything =
       other -> assertFailure ("expected induced post-generation commit-tree failure, got " <> show other)
     scopeFailureSnapshot directory [stagedPath, dirtyPath, cachePath] >>= (@?= before)
 
-scopeFailureSnapshot :: FilePath -> [FilePath] -> IO ((Text.Text, Text.Text, BS.ByteString, BS.ByteString, BS.ByteString, [Text.Text]), [(Text.Text, BS.ByteString)], [(FilePath, Maybe BS.ByteString)])
+domainUpdatesAreTruthful :: IO ()
+domainUpdatesAreTruthful =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    platform <- assertRight (mkDomain "platform")
+    product <- assertRight (mkDomain "product")
+    productApi <- assertRight (mkDomain "product.api")
+    productWeb <- assertRight (mkDomain "product.web")
+    productApi <- assertRight (mkDomain "product.api")
+    compiler <- assertRight (mkDomain "compiler")
+    expanded <- assertRight =<< runDomain repository (createAdrId created) Nothing "Add platform\r\n" (DomainDelta [platform] [])
+    assertDomainUpdate directory expanded [createDomainId created] "expand" [platform] [] [compiler, platform] [] "Add platform\n"
+    contracted <- assertRight =<< runDomain repository (createAdrId created) Nothing "Remove platform" (DomainDelta [] [platform])
+    assertDomainUpdate directory contracted [domainChangeConnectionId expanded] "contract" [] [platform] [compiler] [] "Remove platform\n"
+    mixed <- assertRight =<< runDomain repository (createAdrId created) Nothing "Replace compiler" (DomainDelta [product] [compiler])
+    assertDomainUpdate directory mixed [domainChangeConnectionId contracted] "mixed" [product] [compiler] [product] [] "Replace compiler\n"
+    refinement <- assertRight (mkDomainRefinement product productApi)
+    refined <- assertRight =<< runDomain repository (createAdrId created) Nothing "Refine product" (DomainRefine [refinement])
+    assertDomainUpdate directory refined [domainChangeConnectionId mixed] "refine" [productApi] [product] [productApi] [refinement] "Refine product\n"
+    replaced <- assertRight =<< runDomain repository (createAdrId created) Nothing "Review" (DomainReviewedSet [compiler])
+    assertDomainUpdate directory replaced [domainChangeConnectionId refined] "replace" [compiler] [productApi] [compiler] [] "Review\n"
+    cleared <- assertRight =<< runDomain repository (createAdrId created) Nothing "Clear" (DomainReviewedSet [])
+    assertDomainUpdate directory cleared [domainChangeConnectionId replaced] "replace" [] [compiler] [] [] "Clear\n"
+    readded <- assertRight =<< runDomain repository (createAdrId created) Nothing "Readd" (DomainDelta [product] [])
+    assertDomainUpdate directory readded [domainChangeConnectionId cleared] "expand" [product] [] [product] [] "Readd\n"
+    reduced <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
+    axisResolutionHeads (reducedDomainAxis reduced) @?= [domainChangeConnectionId readded]
+    axisResolutionEffective (reducedDomainAxis reduced) @?= [product]
+
+domainRejectionsPreserveRepository :: IO ()
+domainRejectionsPreserveRepository =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    platform <- assertRight (mkDomain "platform")
+    compiler <- assertRight (mkDomain "compiler")
+    product <- assertRight (mkDomain "product")
+    productApi <- assertRight (mkDomain "product.api")
+    productWeb <- assertRight (mkDomain "product.web")
+    prepareScopeObservableFiles directory
+    let cachePath = directory </> "domain-rejections.sqlite"
+    BS.writeFile cachePath "durable rejection cache\NULbytes"
+    before <- scopeFailureSnapshot directory [cachePath]
+    let reject expected action = do
+          result <- action
+          result @?= Left (Stage3ValidateState expected)
+          scopeFailureSnapshot directory [cachePath] >>= (@?= before)
+    reject "domain reason must be nonblank" (runDomain repository (createAdrId created) Nothing " \r\n " (DomainDelta [platform] []))
+    reject "domain change would be empty" (runDomain repository (createAdrId created) Nothing "Reason" (DomainDelta [] []))
+    reject "domain additions contain duplicates" (runDomain repository (createAdrId created) Nothing "Reason" (DomainDelta [platform, platform] []))
+    reject "domain additions already exist in the current domain" (runDomain repository (createAdrId created) Nothing "Reason" (DomainDelta [compiler] []))
+    reject "domain removals contain duplicates" (runDomain repository (createAdrId created) Nothing "Reason" (DomainDelta [] [compiler, compiler]))
+    reject "domain additions and removals overlap" (runDomain repository (createAdrId created) Nothing "Reason" (DomainDelta [compiler] [compiler]))
+    reject "domain removals are absent from the current domain" (runDomain repository (createAdrId created) Nothing "Reason" (DomainDelta [] [platform]))
+    reject "reviewed domain set contains duplicates" (runDomain repository (createAdrId created) Nothing "Reason" (DomainReviewedSet [compiler, compiler]))
+    reject "domain set: DomainAntichainViolation (Domain \"product\") (Domain \"product.api\")" (runDomain repository (createAdrId created) Nothing "Reason" (DomainReviewedSet [product, productApi]))
+    reject "reviewed domain set would not change the current domain" (runDomain repository (createAdrId created) Nothing "Reason" (DomainReviewedSet [compiler]))
+    refinement <- assertRight (mkDomainRefinement product productApi)
+    reject "domain refinement mappings must not be empty" (runDomain repository (createAdrId created) Nothing "Reason" (DomainRefine []))
+    reject "domain refinement mappings contain duplicates" (runDomain repository (createAdrId created) Nothing "Reason" (DomainRefine [refinement, refinement]))
+    refinementWeb <- assertRight (mkDomainRefinement product productWeb)
+    reject "domain refinement sources contain duplicates" (runDomain repository (createAdrId created) Nothing "Reason" (DomainRefine [refinement, refinementWeb]))
+    reject "domain refinement source is not active" (runDomain repository (createAdrId created) Nothing "Reason" (DomainRefine [refinement]))
+
+domainReviewedMergeReconcilesConflict :: IO ()
+domainReviewedMergeReconcilesConflict =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    product <- assertRight (mkDomain "product")
+    productApi <- assertRight (mkDomain "product.api")
+    compiler <- assertRight (mkDomain "compiler")
+    left <- assertRight =<< runDomain repository (createAdrId created) Nothing "Left" (DomainDelta [product] [])
+    _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+    right <- assertRight =<< runDomain repository (createAdrId created) Nothing "Right" (DomainDelta [productApi] [])
+    _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (domainChangeCommitOid left))] BS.empty
+    prepareScopeObservableFiles directory
+    before <- scopeFailureSnapshot directory []
+    rejection <- runDomain repository (createAdrId created) Nothing "Unsafe" (DomainDelta [compiler] [])
+    rejection @?= Left (Stage3ValidateState "domain target ADR is conflicted")
+    scopeFailureSnapshot directory [] >>= (@?= before)
+    -- Resolving two heads is material even when semantic delta is empty.
+    merged <- assertRight =<< runDomain repository (createAdrId created) Nothing "Merge" (DomainReviewedSet [compiler, productApi])
+    assertDomainUpdate directory merged (sort [domainChangeConnectionId left, domainChangeConnectionId right]) "merge" [] [product] [compiler, productApi] [] "Merge\n"
+    reduced <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
+    reducedConflictAxes reduced @?= []
+    axisResolutionHeads (reducedDomainAxis reduced) @?= [domainChangeConnectionId merged]
+
+domainReviewedMergeExactUnionPreservesOtherAxes :: IO ()
+domainReviewedMergeExactUnionPreservesOtherAxes =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    product <- assertRight (mkDomain "product")
+    platform <- assertRight (mkDomain "platform")
+    compiler <- assertRight (mkDomain "compiler")
+    left <- assertRight =<< runDomain repository (createAdrId created) Nothing "Left" (DomainDelta [product] [])
+    _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+    right <- assertRight =<< runDomain repository (createAdrId created) Nothing "Right" (DomainDelta [platform] [])
+    _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (domainChangeCommitOid left))] BS.empty
+    prepareScopeObservableFiles directory
+    beforeSnapshot <- scopeFailureSnapshot directory []
+    before <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
+    let parents = sort [domainChangeConnectionId left, domainChangeConnectionId right]
+        exactUnion = sort [compiler, platform, product]
+        nonDomainProjection reduced =
+          ( reducedDecisionAxis reduced
+          , reducedScopeAxis reduced
+          , reducedStatusAxis reduced
+          , reducedDecisionHistory reduced
+          , reducedAmendmentHistory reduced
+          , reducedScopeHistory reduced
+          , reducedStatusHistory reduced
+          )
+    axisResolutionHeads (reducedDomainAxis before) @?= parents
+    axisResolutionEffective (reducedDomainAxis before) @?= exactUnion
+    reducedConflictAxes before @?= [DomainAxis]
+    merged <- assertRight =<< runDomain repository (createAdrId created) Nothing "Exact union merge" (DomainReviewedSet exactUnion)
+    assertDomainUpdate directory merged parents "merge" [] [] exactUnion [] "Exact union merge\n"
+    afterSnapshot <- scopeFailureSnapshot directory []
+    failureCallerFiles afterSnapshot @?= failureCallerFiles beforeSnapshot
+    failureDisposableIndexes afterSnapshot @?= failureDisposableIndexes beforeSnapshot
+    after <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
+    nonDomainProjection after @?= nonDomainProjection before
+    reducedConflictAxes after @?= []
+    axisResolutionHeads (reducedDomainAxis after) @?= [domainChangeConnectionId merged]
+    axisResolutionEffective (reducedDomainAxis after) @?= exactUnion
+
+domainRejectsNonDomainConflict :: IO ()
+domainRejectsNonDomainConflict =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    leftScope <- assertRight (mkScopePattern "left/**")
+    rightScope <- assertRight (mkScopePattern "right/**")
+    platform <- assertRight (mkDomain "platform")
+    left <- assertRight =<< runScope repository (createAdrId created) Nothing [leftScope] []
+    _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+    _ <- assertRight =<< runScope repository (createAdrId created) Nothing [rightScope] []
+    _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (scopeChangeCommitOid left))] BS.empty
+    prepareScopeObservableFiles directory
+    before <- scopeFailureSnapshot directory []
+    result <- runDomain repository (createAdrId created) Nothing "Unsafe" (DomainReviewedSet [platform])
+    result @?= Left (Stage3ValidateState "domain target ADR is conflicted")
+    scopeFailureSnapshot directory [] >>= (@?= before)
+
+domainMissingCurrentHeadRejected :: IO ()
+domainMissingCurrentHeadRejected =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    documents <- committedManagedDocuments directory
+    path <- case [canonicalManagedPath (configManagedPaths defaultConfig) (parsedManagedRecord document) | document <- documents, ManagedConnection connection <- [parsedManagedRecord document], connectionRecordId connection == createDomainId created] of
+      [Right value] -> pure value
+      other -> assertFailure ("expected exactly one canonical current domain path, got " <> show other) >> fail "unreachable"
+    _ <- gitSuccess directory ["rm", "--", Text.unpack (repoPathText path)] BS.empty
+    _ <- gitSuccess directory ["commit", "-m", "remove domain head"] BS.empty
+    platform <- assertRight (mkDomain "platform")
+    prepareScopeObservableFiles directory
+    before <- scopeFailureSnapshot directory []
+    result <- runDomain repository (createAdrId created) Nothing "Unsafe" (DomainDelta [platform] [])
+    result @?= Left (Stage3ValidateState "domain target ADR has no current domain")
+    scopeFailureSnapshot directory [] >>= (@?= before)
+
+domainAuthorityFailuresPreserveRepository :: IO ()
+domainAuthorityFailuresPreserveRepository =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    platform <- assertRight (mkDomain "platform")
+    prepareScopeObservableFiles directory
+    let cachePath = directory </> "domain-index.sqlite"
+    BS.writeFile cachePath "domain cache\NULbytes"
+    before <- scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath]
+    stale <- assertRight (mkStateToken "S0000000000000000000000")
+    staleResult <- runDomain repository (createAdrId created) (Just stale) "Reason" (DomainDelta [platform] [])
+    current <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
+    staleResult @?= Left (Stage3ValidateState ("stale ADR state: expected " <> stateTokenText stale <> ", current state is " <> stateTokenText (reducedStateToken current)))
+    scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath] >>= (@?= before)
+    unknown <- assertRight (mkAdrId "A00000000000000000000000002")
+    unknownResult <- runDomain repository unknown Nothing "Reason" (DomainDelta [platform] [])
+    unknownResult @?= Left (Stage3ValidateState "domain target ADR is unknown")
+    scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath] >>= (@?= before)
+    _ <- gitSuccess directory ["checkout", "--detach"] BS.empty
+    detachedBefore <- scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath]
+    detached <- runDomain repository (createAdrId created) Nothing "Reason" (DomainDelta [platform] [])
+    detached @?= Left (Stage3ValidateState "HEAD is detached; attach a branch first")
+    scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath] >>= (@?= detachedBefore)
+    _ <- gitSuccess directory ["checkout", "main"] BS.empty
+    commitInactiveStatus directory created
+    inactiveBefore <- scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath]
+    inactive <- runDomain repository (createAdrId created) Nothing "Reason" (DomainDelta [platform] [])
+    inactive @?= Left (Stage3ValidateState "domain target ADR is not active")
+    scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath] >>= (@?= inactiveBefore)
+
+domainTransactionFailurePreservesEverything :: IO ()
+domainTransactionFailurePreservesEverything =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    platform <- assertRight (mkDomain "platform")
+    prepareScopeObservableFiles directory
+    let cachePath = directory </> "domain-transaction.sqlite"
+    BS.writeFile cachePath "durable domain cache\NUL"
+    _ <- gitSuccess directory ["config", "user.name", ""] BS.empty
+    _ <- gitSuccess directory ["config", "user.email", ""] BS.empty
+    before <- scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath]
+    result <- runDomain repository (createAdrId created) Nothing "Commit must fail" (DomainDelta [platform] [])
+    case result of
+      Left (Stage7CommitTree _) -> pure ()
+      other -> assertFailure ("expected induced Stage7CommitTree failure, got " <> show other)
+    scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath] >>= (@?= before)
+
+runDomain :: Repository -> AdrId -> Maybe StateToken -> Text.Text -> DomainChangeRequest -> IO (Either TransactionError DomainChangeResult)
+runDomain repository adr expected reason request = do
+  actor <- createActor
+  inputs <- scopeInputs
+  changeDomainCommand repository (configManagedPaths defaultConfig) actor adr expected reason request inputs
+
+domainDocumentAt :: FilePath -> DomainChangeResult -> IO ParsedManagedDocument
+domainDocumentAt directory update = do
+  bytes <- gitSuccess directory ["show", Text.unpack (gitOidText (domainChangeCommitOid update) <> ":" <> repoPathText (domainChangeNewPath update))] BS.empty
+  assertRight (parseManagedDocument (domainChangeNewPath update) bytes)
+
+assertDomainUpdate :: FilePath -> DomainChangeResult -> [ConnectionId] -> Text.Text -> [Domain] -> [Domain] -> [Domain] -> [DomainRefinement] -> Text.Text -> IO ()
+assertDomainUpdate directory update parents mode added removed effective refinements rationale = do
+  document <- domainDocumentAt directory update
+  case parsedManagedRecord document of
+    ManagedConnection connection -> case connectionPayload connection of
+      DomainsConnection payload -> do
+        domainsParentConnections payload @?= parents
+        domainsChange payload @?= mode
+        domainsAdded payload @?= added
+        domainsRemoved payload @?= removed
+        domainsEffective payload @?= effective
+        domainsRefinements payload @?= refinements
+        connectionRationale connection @?= rationale
+      _ -> assertFailure "expected domain payload"
+    _ -> assertFailure "expected domain connection"
+  domainChangeParents update @?= parents
+  domainChangeAdrId update @?= domainsSubjectAdrFrom document
+  operationIdText (provenanceOperationId (parsedManagedCapsule document)) @?= Text.pack (domainChangeOperationId update)
+  domainChangeMode update @?= mode
+  domainChangeEffective update @?= effective
+  domainChangeCreatedPaths update @?= [domainChangeNewPath update]
+  assertBool "domain transaction refreshed index" (domainChangeIndexUpdated update)
+  let capsule = parsedManagedCapsule document
+  actor <- createActor
+  inputs <- scopeInputs
+  provenanceObjectId capsule @?= ProvenanceConnection (domainChangeConnectionId update)
+  provenanceParents capsule @?= map ProvenanceConnection parents
+  eventKindText (provenanceEventKind capsule) @?= "domain." <> mode
+  provenanceBranchHint capsule @?= Just "main"
+  provenanceActor capsule @?= actor
+  provenanceInputs capsule @?= inputs
+  provenanceToolVersion capsule @?= "adrai/1.0.0"
+  assertBool "domain timestamp is positive" (provenanceTimestampMs capsule > 0)
+  canonicalManagedPath (configManagedPaths defaultConfig) (parsedManagedRecord document) @?= Right (domainChangeNewPath update)
+  semantic <- case parsedManagedRecord document of
+    ManagedConnection connection -> assertRight (renderConnectionSemantic connection)
+    _ -> assertFailure "expected domain connection" >> fail "unreachable"
+  provenanceSemanticDigest capsule @?= semanticDigest semantic
+  headNow <- gitText directory ["rev-parse", "HEAD"]
+  headNow @?= gitOidText (domainChangeCommitOid update)
+  parentText <- gitText directory ["show", "-s", "--format=%P", Text.unpack (gitOidText (domainChangeCommitOid update))]
+  parentText @?= gitOidText (provenanceBasis capsule)
+  subject <- gitText directory ["show", "-s", "--format=%s", Text.unpack (gitOidText (domainChangeCommitOid update))]
+  subject @?= "adrai: domain " <> adrIdText (domainChangeAdrId update)
+  body <- gitText directory ["show", "-s", "--format=%B", Text.unpack (gitOidText (domainChangeCommitOid update))]
+  assertBool "domain commit contains exact ADR trailer" (("ADR: " <> adrIdText (domainChangeAdrId update)) `Text.isInfixOf` body)
+  assertBool "domain commit contains exact Objects trailer" (("Objects: " <> connectionIdText (domainChangeConnectionId update)) `Text.isInfixOf` body)
+  where
+    domainsSubjectAdrFrom parsed = case parsedManagedRecord parsed of
+      ManagedConnection connection -> case connectionPayload connection of
+        DomainsConnection payload -> domainsSubjectAdr payload
+        _ -> error "expected domains"
+      _ -> error "expected connection"
+
+scopeFailureSnapshot :: FilePath -> [FilePath] -> IO FailureSnapshot
 scopeFailureSnapshot directory cacheAndCallerPaths = do
-  repositoryState <- repositoryObservableState directory
-  managed <- managedCommittedBytes directory
-  files <- mapM snapshotFile cacheAndCallerPaths
-  pure (repositoryState, managed, files)
+  repository <- assertRight =<< discoverRepository systemGit directory
+  headState <- assertRight =<< repositoryHeadState repository
+  let refNow = case headState of
+        GitHeadAttached reference -> "attached:" <> gitRefText reference
+        GitHeadDetached -> "detached"
+  headNow <- gitText directory ["rev-parse", "HEAD"]
+  treeNow <- gitText directory ["rev-parse", "HEAD^{tree}"]
+  treeEntries <- gitText directory ["ls-tree", "-r", "HEAD"]
+  rawIndex <- BS.readFile (directory </> ".git" </> "index")
+  indexEntries <- gitSuccess directory ["ls-files", "-s"] BS.empty
+  status <- fmap Text.lines (gitText directory ["status", "--porcelain=v1", "--untracked-files=all"])
+  committed <- managedCommittedBytes directory
+  inventory <- managedDirectoryInventory directory
+  let worktree = [(path, bytes) | (path, Just bytes) <- inventory]
+      allManagedPaths = sort (nub (map fst committed <> map fst worktree))
+      managed = [(path, lookup path committed, lookup path worktree) | path <- allManagedPaths]
+  rootEntries <- listDirectory directory
+  let cachePaths = map (directory </>) (filter (isSuffixOf ".sqlite") rootEntries)
+  callerFiles <- mapM snapshotFile (sort (nub (defaultCallerFiles directory <> cacheAndCallerPaths <> cachePaths)))
+  disposableIndexes <- disposableIndexInventory directory
+  pure FailureSnapshot
+    { failureHeadRef = refNow
+    , failureHeadOid = headNow
+    , failureHeadTree = treeNow
+    , failureTreeEntries = treeEntries
+    , failureRawIndex = rawIndex
+    , failureIndexEntries = indexEntries
+    , failureStatus = status
+    , failureManagedPaths = managed
+    , failureManagedInventory = inventory
+    , failureCallerFiles = callerFiles
+    , failureDisposableIndexes = disposableIndexes
+    }
   where
     snapshotFile path = do
       exists <- doesFileExist path
       bytes <- if exists then Just <$> BS.readFile path else pure Nothing
       pure (path, bytes)
+
+defaultCallerFiles :: FilePath -> [FilePath]
+defaultCallerFiles directory =
+  [ directory </> "scope-unrelated-staged.txt"
+  , directory </> "scope-unrelated-dirty.txt"
+  , directory </> "scope-unrelated-untracked.txt"
+  ]
+
+-- | Inventory both directories and files so a failed operation cannot hide a
+-- new managed path merely by leaving it untracked.  File entries carry their
+-- exact worktree bytes; directory entries are suffixed with @/@.
+managedDirectoryInventory :: FilePath -> IO [(Text.Text, Maybe BS.ByteString)]
+managedDirectoryInventory directory = do
+  let root = directory </> "architecture" </> "adrai"
+  exists <- doesDirectoryExist root
+  if exists then (("architecture/adrai/", Nothing) :) <$> walk root "architecture/adrai" else pure []
+  where
+    walk native relative = do
+      children <- sort <$> listDirectory native
+      fmap concat $ mapM (visit native relative) children
+    visit native relative child = do
+      let childNative = native </> child
+          childRelative = relative <> "/" <> child
+      directoryChild <- doesDirectoryExist childNative
+      if directoryChild
+        then ((Text.pack (childRelative <> "/"), Nothing) :) <$> walk childNative childRelative
+        else do
+          fileChild <- doesFileExist childNative
+          if fileChild
+            then do
+              bytes <- BS.readFile childNative
+              pure [(Text.pack childRelative, Just bytes)]
+            else pure [(Text.pack childRelative, Nothing)]
+
+-- | A Stage 7 rollback must not leak the transaction engine's disposable
+-- temporary index.  Inventorying matching files records both absence and, if
+-- present, exact bytes.
+disposableIndexInventory :: FilePath -> IO [(FilePath, BS.ByteString)]
+disposableIndexInventory directory = do
+  let gitDirectory = directory </> ".git"
+  names <- sort <$> listDirectory gitDirectory
+  let candidates = [gitDirectory </> name | name <- names, "adrai-index-" `isPrefixOf` name]
+  fmap concat $ mapM snapshot candidates
+  where
+    snapshot path = do
+      exists <- doesFileExist path
+      if exists then (\bytes -> [(path, bytes)]) <$> BS.readFile path else pure []
 
 prepareScopeObservableFiles :: FilePath -> IO ()
 prepareScopeObservableFiles directory = do
@@ -1130,6 +1515,7 @@ prepareScopeObservableFiles directory = do
   BS.writeFile (directory </> "scope-unrelated-staged.txt") "staged observable bytes\NUL"
   _ <- gitSuccess directory ["add", "scope-unrelated-staged.txt"] BS.empty
   BS.writeFile (directory </> "scope-unrelated-dirty.txt") "dirty observable bytes\NUL"
+  BS.writeFile (directory </> "scope-unrelated-untracked.txt") "untracked observable bytes\NUL"
 
 runScope :: Repository -> AdrId -> Maybe StateToken -> [ScopePattern] -> [ScopePattern] -> IO (Either TransactionError ScopeChangeResult)
 runScope repository adr expected added removed = do
@@ -1209,15 +1595,8 @@ currentReducedAdr adr documents =
     Just reduced -> pure reduced
     Nothing -> assertFailure "expected reduced ADR" >> fail "unreachable"
 
-repositoryObservableState :: FilePath -> IO (Text.Text, Text.Text, BS.ByteString, BS.ByteString, BS.ByteString, [Text.Text])
-repositoryObservableState directory = do
-  headNow <- gitText directory ["rev-parse", "HEAD"]
-  treeNow <- gitText directory ["ls-tree", "-r", "HEAD"]
-  indexNow <- gitSuccess directory ["ls-files", "-s"] BS.empty
-  staged <- BS.readFile (directory </> "scope-unrelated-staged.txt")
-  dirty <- BS.readFile (directory </> "scope-unrelated-dirty.txt")
-  status <- fmap Text.lines (gitText directory ["status", "--porcelain=v1", "--untracked-files=all"])
-  pure (headNow, treeNow, indexNow, staged, dirty, status)
+repositoryObservableState :: FilePath -> IO FailureSnapshot
+repositoryObservableState directory = scopeFailureSnapshot directory []
 
 managedCommittedBytes :: FilePath -> IO [(Text.Text, BS.ByteString)]
 managedCommittedBytes directory = do

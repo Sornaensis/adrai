@@ -32,6 +32,7 @@ module Adrai.Service.Mutation
     ScopeChangeRequest (..),
     ScopeChangeResult (..),
     changeScopeCommand,
+    DomainChangeRequest (..),
     DomainChangeResult (..),
     changeDomainCommand,
     ObsoleteResult (..),
@@ -136,6 +137,10 @@ import Adrai.Domain
   ( Domain,
     canonicalDomains,
     domainText,
+    DomainRefinement,
+    domainRefinementParent,
+    domainRefinementChild,
+    domainIsWithin,
   )
 import Adrai.Scope
   ( ScopePattern,
@@ -158,7 +163,7 @@ import Adrai.Repository
   )
 import Adrai.Graph
   ( AxisResolution (..),
-    GraphAxis (ScopeAxis),
+    GraphAxis (ScopeAxis, DomainAxis),
     GraphReduction (..),
     ReducedAdr (..),
     ReducedStatus (..),
@@ -1031,9 +1036,23 @@ data DomainChangeResult
       { domainChangeOperationId :: String,
         domainChangeAdrId      :: AdrId,
         domainChangeConnectionId :: ConnectionId,
+        domainChangeParents :: [ConnectionId],
+        domainChangeMode :: T.Text,
+        domainChangeEffective :: [Domain],
         domainChangeCommitOid  :: GitOid,
-        domainChangeNewPath    :: RepoPath
+        domainChangeNewPath    :: RepoPath,
+        domainChangeCreatedPaths :: [RepoPath],
+        domainChangeIndexUpdated :: Bool
       }
+  deriving (Eq, Show)
+
+-- | Domain updates have deliberately non-overlapping request forms.  In
+-- particular, callers cannot accidentally attach refinement mappings to a
+-- regular delta or a reviewed reconciliation.
+data DomainChangeRequest
+  = DomainDelta [Domain] [Domain]
+  | DomainRefine [DomainRefinement]
+  | DomainReviewedSet [Domain]
   deriving (Eq, Show)
 
 -- | Change the domain assignment for an ADR.
@@ -1047,8 +1066,9 @@ changeDomainCommand ::
   ManagedPaths ->
   Actor ->
   AdrId ->
-  [Domain] -> -- added
-  [Domain] -> -- removed
+  Maybe StateToken ->
+  T.Text ->
+  DomainChangeRequest ->
   ProvenanceInputs ->
   IO (Either TransactionError DomainChangeResult)
 changeDomainCommand
@@ -1056,95 +1076,157 @@ changeDomainCommand
   managedPaths
   actor
   adrId
-  added
-  removed
-  inputs = do
-    oldHeadResult <- resolveRevision repository (RevisionSpec "HEAD")
-    case oldHeadResult of
-      Left err ->
-        pure (Left (Stage3ValidateState ("resolve HEAD: " <> T.pack (show err))))
-      Right oldHead -> do
-        timestampMs <- currentTimestampMs
-        entropy <- randomEntropy
-        let opIdResult = sortableOperationId timestampMs entropy
-            connIdResult = sortableConnectionId timestampMs entropy
-        case (opIdResult, connIdResult) of
-          (Right opId, Right connId) -> do
-            let effective = added <> removed
-                connRecord =
-                  ConnectionRecord
-                    { connectionRecordId = connId,
-                      connectionPayload = DomainsConnection (DomainsPayload
-                        { domainsSubjectAdr = adrId
-                        , domainsParentConnections = []
-                        , domainsChange = "domain update"
-                        , domainsAdded = added
-                        , domainsRemoved = removed
-                        , domainsEffective = effective
-                        , domainsRefinements = []
-                        }),
-                      connectionRationale = "Domain change operation"
-                    }
-            let semanticEither = renderConnectionSemantic connRecord
-            case semanticEither of
-              Left docErr ->
-                pure (Left (Stage5ValidateGenerated ("domain render: " <> T.pack (show docErr))))
-              Right semantic -> do
-                let digest = semanticDigest semantic
-                    eventIdResult = mkEventKind "domain.update"
-                case eventIdResult of
-                  Left provErr ->
-                    pure (Left (Stage5ValidateGenerated ("domain eventKind: " <> T.pack (show provErr))))
-                  Right eventKind -> do
-                    let parentId = ProvenanceConnection connId
-                        ts = 1000000000000
-                        capsuleInput =
-                          ProvenanceCapsuleInput
-                            { capsuleInputOperationId = opId,
-                              capsuleInputObjectId = ProvenanceConnection connId,
-                              capsuleInputEventKind = eventKind,
-                              capsuleInputActor = actor,
-                              capsuleInputTimestampMs = ts,
-                              capsuleInputBasis = oldHead,
-                              capsuleInputParents = [parentId],
-                              capsuleInputBranchHint = Nothing,
-                              capsuleInputUpstreamHint = Nothing,
-                              capsuleInputLineAnchors = [],
-                              capsuleInputSemanticDigest = digest,
-                              capsuleInputToolVersion = "adrai/0.1.0",
-                              capsuleInputDigests = inputs
-                            }
-                    let capsuleResult = mkProvenanceCapsule capsuleInput
-                    case capsuleResult of
-                      Left provErr ->
-                        pure (Left (Stage5ValidateGenerated ("domain capsule: " <> T.pack (show provErr))))
-                      Right capsule -> do
-                        let sealedEither = sealManagedDocument (ManagedConnection connRecord) capsule
-                        case sealedEither of
-                          Left docErr ->
-                            pure (Left (Stage5ValidateGenerated ("domain seal: " <> T.pack (show docErr))))
-                          Right sealedBytes -> do
-                            let generatedPath = canonicalManagedPath managedPaths (ManagedConnection connRecord)
-                            case generatedPath of
-                              Left err ->
-                                pure (Left (Stage4GenerateFiles ("domain path: " <> T.pack (show err))))
-                              Right genPath -> do
-                                let generated =
-                                      [ GeneratedFile genPath sealedBytes ]
-                                    config =
-                                      TransactionConfig
-                                        { configOperationId = T.unpack (operationIdText opId),
-                                          configSubject = "adrai: domain " <> adrIdText adrId,
-                                          configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))],
-                                          configExpectedHead = oldHead,
-                                          configGenerated = generated
-                                        }
-                                _ <- commitAppendOnlyOperation repository config
-                                pure (Right (DomainChangeResult
-                                  (T.unpack (operationIdText opId))
-                                  adrId connId oldHead genPath))
-          _ ->
-            pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+  expectedState reason request inputs =
+    case normalizeDomainReason reason of
+      Left err -> pure (Left err)
+      Right rationale -> requireAttachedHead repository >>= \case
+        Left err -> pure (Left err)
+        Right branchName -> repositorySnapshot repository (RevisionSpec "HEAD") >>= \case
+          Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
+          Right snapshot -> case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot >>= selectDomainUpdate adrId expectedState request of
+            Left err -> pure (Left err)
+            Right (parents, mode, added, removed, effective, refinements) -> do
+              timestampMs <- currentTimestamp
+              entropy <- randomEntropy
+              case (sortableOperationId (encodeTimestampMs timestampMs) entropy, sortableConnectionId (encodeTimestampMs timestampMs) entropy) of
+                (Right opId, Right connId) -> do
+                  let record = ConnectionRecord connId (DomainsConnection DomainsPayload
+                        { domainsSubjectAdr = adrId, domainsParentConnections = parents, domainsChange = mode
+                        , domainsAdded = added, domainsRemoved = removed, domainsEffective = effective, domainsRefinements = refinements }) rationale
+                      paths = repositorySnapshotManagedPaths snapshot
+                  case sealDomainUpdate opId (repositorySnapshotRevision snapshot) branchName actor timestampMs parents inputs paths record of
+                    Left err -> pure (Left err)
+                    Right generated -> commitAppendOnlyOperation repository TransactionConfig
+                      { configOperationId = T.unpack (operationIdText opId), configSubject = "adrai: domain " <> adrIdText adrId
+                      , configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))]
+                      , configExpectedHead = resolvedCommitOid (repositorySnapshotRevision snapshot), configGenerated = [generated] } >>= \case
+                        Left err -> pure (Left err)
+                        Right TransactionResult {..} -> case transactionCreatedPaths of
+                          [newPath] -> pure (Right DomainChangeResult
+                            { domainChangeOperationId = transactionOperationId, domainChangeAdrId = adrId, domainChangeConnectionId = connId
+                            , domainChangeParents = parents, domainChangeMode = mode, domainChangeEffective = effective
+                            , domainChangeCommitOid = transactionCommitOid, domainChangeNewPath = newPath, domainChangeCreatedPaths = transactionCreatedPaths
+                            , domainChangeIndexUpdated = transactionIndexUpdated })
+                          _ -> pure (Left (Stage8UpdateRef "domain transaction did not report exactly one created path"))
+                _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+
+normalizeDomainReason :: T.Text -> Either TransactionError T.Text
+normalizeDomainReason raw
+  | T.null normalized = Left (Stage3ValidateState "domain reason must be nonblank")
+  | otherwise = Right (normalized <> "\n")
+  where normalized = T.strip (normalizeLineEndings raw)
+
+selectDomainUpdate :: AdrId -> Maybe StateToken -> DomainChangeRequest -> [ParsedManagedDocument] -> Either TransactionError ([ConnectionId], T.Text, [Domain], [Domain], [Domain], [DomainRefinement])
+selectDomainUpdate adr expected request documents = do
+  let reduction = reduceManagedGraph (map parsedManagedRecord documents)
+  reduced <- maybe (Left (Stage3ValidateState "domain target ADR is unknown")) Right (lookupReducedAdr adr reduction)
+  case expected of
+    Nothing -> Right ()
+    Just token | token == reducedStateToken reduced -> Right ()
+               | otherwise -> Left (Stage3ValidateState ("stale ADR state: expected " <> stateTokenText token <> ", current state is " <> stateTokenText (reducedStateToken reduced)))
+  status <- maybe (Left (Stage3ValidateState "domain target ADR has no current status")) Right (axisResolutionEffective (reducedStatusAxis reduced))
+  if reducedStatusState status /= StatusActive then Left (Stage3ValidateState "domain target ADR is not active") else Right ()
+  let heads = axisResolutionHeads (reducedDomainAxis reduced)
+      noConflicts = null (reducedConflictAxes reduced)
+      domainConflictOnly = reducedConflictAxes reduced == [DomainAxis]
+      oneHead = case heads of [parent] -> Right parent; _ -> Left (Stage3ValidateState "domain target ADR has no unambiguous current domain")
+      current = axisResolutionEffective (reducedDomainAxis reduced)
+  if null heads
+    then Left (Stage3ValidateState "domain target ADR has no current domain")
+    else Right ()
+  case request of
+    DomainDelta added removed -> do
+      if noConflicts then Right () else Left (Stage3ValidateState "domain target ADR is conflicted")
+      parent <- oneHead
+      (mode, effective) <- canonicalDomainDelta current added removed
+      Right ([parent], mode, sort added, sort removed, effective, [])
+    DomainRefine refinements -> do
+      if noConflicts then Right () else Left (Stage3ValidateState "domain target ADR is conflicted")
+      parent <- oneHead
+      (added, removed, effective) <- canonicalDomainRefinement current refinements
+      Right ([parent], "refine", added, removed, effective, sort refinements)
+    DomainReviewedSet reviewed -> do
+      if noConflicts || domainConflictOnly then Right () else Left (Stage3ValidateState "domain target ADR is conflicted")
+      requested <- canonicalReviewedDomains reviewed
+      case heads of
+        [parent] -> do
+          (added, removed) <- exactDomainDifference True current requested
+          Right ([parent], "replace", added, removed, requested, [])
+        parents@(_ : _ : _) -> do
+          union <- effectiveDomainUnion parents (reducedDomainHistory reduced)
+          (added, removed) <- exactDomainDifference False union requested
+          Right (sort parents, "merge", added, removed, requested, [])
+        _ -> Left (Stage3ValidateState "domain target ADR has no current domain")
+
+canonicalReviewedDomains :: [Domain] -> Either TransactionError [Domain]
+canonicalReviewedDomains values
+  | Set.size setValues /= length values = Left (Stage3ValidateState "reviewed domain set contains duplicates")
+  | otherwise = validateDomainAntichain (Set.toAscList setValues)
+  where setValues = Set.fromList values
+
+validateDomainAntichain :: [Domain] -> Either TransactionError [Domain]
+validateDomainAntichain values = first (Stage3ValidateState . ("domain set: " <>) . T.pack . show) (canonicalDomains (map domainText values))
+
+canonicalDomainDelta :: [Domain] -> [Domain] -> [Domain] -> Either TransactionError (T.Text, [Domain])
+canonicalDomainDelta current added removed
+  | Set.size addedSet /= length added = Left (Stage3ValidateState "domain additions contain duplicates")
+  | Set.size removedSet /= length removed = Left (Stage3ValidateState "domain removals contain duplicates")
+  | not (Set.disjoint addedSet removedSet) = Left (Stage3ValidateState "domain additions and removals overlap")
+  | Set.null addedSet && Set.null removedSet = Left (Stage3ValidateState "domain change would be empty")
+  | not (Set.disjoint addedSet currentSet) = Left (Stage3ValidateState "domain additions already exist in the current domain")
+  | not (removedSet `Set.isSubsetOf` currentSet) = Left (Stage3ValidateState "domain removals are absent from the current domain")
+  | otherwise = do
+      effective <- validateDomainAntichain (Set.toAscList ((currentSet `Set.difference` removedSet) `Set.union` addedSet))
+      Right (if Set.null removedSet then "expand" else if Set.null addedSet then "contract" else "mixed", effective)
+  where currentSet = Set.fromList current; addedSet = Set.fromList added; removedSet = Set.fromList removed
+
+canonicalDomainRefinement :: [Domain] -> [DomainRefinement] -> Either TransactionError ([Domain], [Domain], [Domain])
+canonicalDomainRefinement current refinements
+  | null refinements = Left (Stage3ValidateState "domain refinement mappings must not be empty")
+  | Set.size (Set.fromList refinements) /= length refinements = Left (Stage3ValidateState "domain refinement mappings contain duplicates")
+  | Set.size parents /= length refinements = Left (Stage3ValidateState "domain refinement sources contain duplicates")
+  | not (parents `Set.isSubsetOf` currentSet) = Left (Stage3ValidateState "domain refinement source is not active")
+  | any (\r -> domainRefinementChild r == domainRefinementParent r || not (domainRefinementChild r `domainIsWithin` domainRefinementParent r)) refinements = Left (Stage3ValidateState "domain refinement child must be a strict descendant")
+  | otherwise = do
+      effective <- validateDomainAntichain (Set.toAscList ((currentSet `Set.difference` parents) `Set.union` children))
+      Right (Set.toAscList children, Set.toAscList parents, effective)
+  where
+    currentSet = Set.fromList current; parents = Set.fromList (map domainRefinementParent refinements); children = Set.fromList (map domainRefinementChild refinements)
+
+effectiveDomainUnion :: [ConnectionId] -> [ConnectionRecord] -> Either TransactionError [Domain]
+effectiveDomainUnion parents history = do
+  effective <- traverse lookupOne (sort parents)
+  -- A domain-axis conflict may legitimately contain an ancestor in one head
+  -- and its descendant in another.  Each committed head must itself be a
+  -- valid antichain; the temporary union is only the comparison baseline for
+  -- a reviewed merge and must not be rejected before the caller supplies the
+  -- final reviewed antichain.
+  traverse validateDomainAntichain effective
+  pure (Set.toAscList (Set.unions (map Set.fromList effective)))
+  where
+    lookupOne parent = case [domainsEffective payload | c <- history, connectionRecordId c == parent, DomainsConnection payload <- [connectionPayload c]] of
+      [values] -> Right values
+      _ -> Left (Stage3ValidateState "domain target ADR has an invalid current domain head")
+
+exactDomainDifference :: Bool -> [Domain] -> [Domain] -> Either TransactionError ([Domain], [Domain])
+exactDomainDifference rejectNoOp current requested
+  | rejectNoOp && currentSet == requestedSet = Left (Stage3ValidateState "reviewed domain set would not change the current domain")
+  | otherwise = Right (Set.toAscList (requestedSet `Set.difference` currentSet), Set.toAscList (currentSet `Set.difference` requestedSet))
+  where currentSet = Set.fromList current; requestedSet = Set.fromList requested
+
+sealDomainUpdate :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> [ConnectionId] -> ProvenanceInputs -> ManagedPaths -> ConnectionRecord -> Either TransactionError GeneratedFile
+sealDomainUpdate opId revision branchName actor timestampMs parents inputs paths connection = do
+  semantic <- first (Stage5ValidateGenerated . ("domain render: " <>) . T.pack . show) (renderConnectionSemantic connection)
+  eventKind <- first (Stage5ValidateGenerated . ("domain eventKind: " <>) . T.pack . show) (mkEventKind ("domain." <> domainsChange payload))
+  capsule <- first (Stage5ValidateGenerated . ("domain capsule: " <>) . T.pack . show) (mkProvenanceCapsule ProvenanceCapsuleInput
+    { capsuleInputOperationId = opId, capsuleInputObjectId = ProvenanceConnection (connectionRecordId connection), capsuleInputEventKind = eventKind
+    , capsuleInputActor = actor, capsuleInputTimestampMs = timestampMs, capsuleInputBasis = resolvedCommitOid revision
+    , capsuleInputParents = map ProvenanceConnection parents, capsuleInputBranchHint = Just branchName, capsuleInputUpstreamHint = Nothing, capsuleInputLineAnchors = []
+    , capsuleInputSemanticDigest = semanticDigest semantic, capsuleInputToolVersion = "adrai/1.0.0", capsuleInputDigests = inputs })
+  sealed <- first (Stage5ValidateGenerated . ("domain seal: " <>) . T.pack . show) (sealManagedDocument (ManagedConnection connection) capsule)
+  path <- first (Stage4GenerateFiles . ("domain path: " <>) . T.pack . show) (canonicalManagedPath paths (ManagedConnection connection))
+  pure (GeneratedFile path sealed)
+  where payload = case connectionPayload connection of DomainsConnection value -> value; _ -> error "domain connection required"
 
 -- ---------------------------------------------------------------------------
 -- Obsolete ADR
