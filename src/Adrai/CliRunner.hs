@@ -14,15 +14,18 @@ module Adrai.CliRunner
     InitCommand (..),
     CreateCommand (..),
     AmendCommand (..),
+    ScopeCommand (..),
     ContentSource (..),
     CreateRequest (..),
     AmendRequest (..),
+    ScopeRequest (..),
     CliDispatchDependencies (..),
     dispatchWith,
     CliParser,
     parser,
     parseStructuredCreate,
     parseStructuredAmend,
+    materializeScope,
     parseActor,
     parseDigest,
     CliFailure (..),
@@ -31,6 +34,7 @@ module Adrai.CliRunner
     renderInitOutcome,
     renderCreateOutcome,
     renderAmendOutcome,
+    renderScopeOutcome,
     renderFailureOutcome,
     emitRenderedToHandles,
     run,
@@ -54,8 +58,8 @@ import qualified Adrai.Format as Format
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import Adrai.Provenance (sha256Digest)
 import Adrai.Repository (repositorySnapshot, repositorySnapshotManagedPaths)
-import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText)
-import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), InitResult (..), amendCurrentAdrCommand, createAdrCommand, initCommand)
+import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
+import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), InitResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeScopeCommand, createAdrCommand, initCommand)
 import Adrai.Service.PostCommitIndex
   ( IndexWarning (..),
     PostCommitIndexError (..),
@@ -195,6 +199,24 @@ data AmendCommand = AmendCommand
   }
   deriving (Eq, Show)
 
+data ScopeCommand = ScopeCommand
+  { scopeAdrSpec :: Text
+  , scopeAdds :: [Text]
+  , scopeRemoves :: [Text]
+  , scopeSets :: [Text]
+  , scopeReason :: Maybe Text
+  , scopeExpectedState :: Maybe Text
+  , scopeActorSpec :: Maybe Text
+  , scopeModel :: Maybe Text
+  , scopeInputDigest :: Maybe Text
+  , scopePromptDigest :: Maybe Text
+  , scopeContextDigest :: Maybe Text
+  , scopePromptFile :: Maybe FilePath
+  , scopeContextFile :: Maybe FilePath
+  , scopeJson :: Bool
+  }
+  deriving (Eq, Show)
+
 -- | Parsed CLI command, constructed from optparse-applicative.
 data CliCommand
   = CmdCompile
@@ -207,6 +229,7 @@ data CliCommand
   | CmdInit InitCommand
   | CmdCreate CreateCommand
   | CmdAmend AmendCommand
+  | CmdScope ScopeCommand
   deriving (Eq, Show)
 
 -- | Top-level CLI parser type alias.
@@ -225,7 +248,8 @@ parser =
      <> command "compare" (info (CmdCompare <$> compareParser) (progDesc "compare revisions"))
      <> command "init" (info (CmdInit <$> initParser) (progDesc "initialize an ADRAI repository"))
       <> command "create" (info (CmdCreate <$> createParser) (progDesc "create an ADR"))
-      <> command "amend" (info (CmdAmend <$> amendParser) (progDesc "amend an ADR"))
+       <> command "amend" (info (CmdAmend <$> amendParser) (progDesc "amend an ADR"))
+       <> command "scope" (info (CmdScope <$> scopeParser) (progDesc "change an ADR scope"))
     )
 
 globalConfigParser :: Parser CliConfig
@@ -279,6 +303,27 @@ amendParser =
     <*> optional (strOption (long "prompt-file" <> metavar "PATH" <> help "prompt source path"))
     <*> optional (strOption (long "context-file" <> metavar "PATH" <> help "context source path"))
     <*> contentSourcesParser
+    <*> switch (long "json" <> help "output JSON")
+  where
+    optionalText name marker description = strOption (long name <> metavar marker <> help description)
+    maybeText name marker description = optional (optionalText name marker description)
+
+scopeParser :: Parser ScopeCommand
+scopeParser =
+  ScopeCommand
+    <$> strArgument (metavar "ADR" <> help "ADR identifier whose scope changes")
+    <*> many (optionalText "add" "PATTERN" "scope pattern to add (repeatable)")
+    <*> many (optionalText "remove" "PATTERN" "scope pattern to remove (repeatable)")
+    <*> many (optionalText "set" "PATTERN" "reviewed replacement scope pattern (repeatable)")
+    <*> maybeText "reason" "TEXT" "nonblank scope-change rationale"
+    <*> maybeText "expect" "STATE_TOKEN" "expected current ADR state token"
+    <*> maybeText "actor" "ACTOR" "actor as kind:identifier"
+    <*> maybeText "model" "MODEL" "actor model"
+    <*> maybeText "input-digest" "DIGEST" "SHA-256 input digest"
+    <*> maybeText "prompt-digest" "DIGEST" "SHA-256 prompt digest"
+    <*> maybeText "context-digest" "DIGEST" "SHA-256 context digest"
+    <*> optional (strOption (long "prompt-file" <> metavar "PATH" <> help "prompt source path"))
+    <*> optional (strOption (long "context-file" <> metavar "PATH" <> help "context source path"))
     <*> switch (long "json" <> help "output JSON")
   where
     optionalText name marker description = strOption (long name <> metavar marker <> help description)
@@ -432,6 +477,15 @@ dispatchWith dependencies (CliInvocation config (CmdAmend command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (amendResult, indexResult) -> renderAmendSuccess command amendResult indexResult
+dispatchWith dependencies (CliInvocation config (CmdScope command)) = do
+  requestResult <- cliMaterializeScope dependencies command
+  case requestResult of
+    Left problem -> renderFailure (CliUserFailure problem)
+    Right request -> do
+      result <- cliRunScope dependencies config request
+      case result of
+        Left failure -> renderFailure failure
+        Right (scopeResult, indexResult) -> renderScopeSuccess command scopeResult indexResult
 dispatchWith _ (CliInvocation _ CmdCompile) = do
   putStrLn $ "[compile] compiling repository at " <> configRepo defaultCliConfig
   pure ExitSuccess
@@ -457,14 +511,16 @@ dispatchWith _ (CliInvocation _ (CmdCompare CompareCommand { compareBefore, comp
 data CliDispatchDependencies = CliDispatchDependencies
   { cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
   , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
+  , cliMaterializeScope :: ScopeCommand -> IO (Either Text ScopeRequest)
   , cliRunInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
   , cliRunCreate :: CliConfig -> CreateRequest -> IO (Either CliFailure (CreateResult, PostCommitIndexResult))
   , cliRunAmend :: CliConfig -> AmendRequest -> IO (Either CliFailure (AmendResult, PostCommitIndexResult))
+  , cliRunScope :: CliConfig -> ScopeRequest -> IO (Either CliFailure (ScopeChangeResult, PostCommitIndexResult))
   }
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies materializeCreate materializeAmend runProductionInit runProductionCreate runProductionAmend
+  CliDispatchDependencies materializeCreate materializeAmend materializeScope runProductionInit runProductionCreate runProductionAmend runProductionScope
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
 runProductionInit config = do
@@ -526,6 +582,28 @@ runProductionAmend config request = do
             Left problem -> pure (Left (transactionFailure problem))
             Right amendResult -> Right . (amendResult,) <$> indexCommitted database repository (amendCommitOid amendResult)
 
+runProductionScope :: CliConfig -> ScopeRequest -> IO (Either CliFailure (ScopeChangeResult, PostCommitIndexResult))
+runProductionScope config request = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      indexPath <- prepareIndexPath repository
+      case indexPath of
+        Left problem -> pure (Left (CliUserFailure problem))
+        Right database -> do
+          snapshotResult <- repositorySnapshot repository (RevisionSpec "HEAD")
+          case snapshotResult of
+            Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+            Right snapshot -> do
+              result <- changeScopeCommand repository (repositorySnapshotManagedPaths snapshot)
+                (scopeRequestActor request) (scopeRequestAdr request) (scopeRequestExpectedState request)
+                (scopeRequestReason request) (scopeRequestChange request)
+                (ProvenanceInputs (scopeRequestInputDigest request) (scopeRequestPromptDigest request) (scopeRequestContextDigest request))
+              case result of
+                Left problem -> pure (Left (transactionFailure problem))
+                Right scopeResult -> Right . (scopeResult,) <$> indexCommitted database repository (scopeChangeCommitOid scopeResult)
+
 transactionFailure :: TransactionError -> CliFailure
 transactionFailure problem
   | transactionConflict problem = CliConflictFailure (Text.pack (show problem))
@@ -559,6 +637,18 @@ data AmendRequest = AmendRequest
   , amendRequestInputDigest :: Maybe Digest
   , amendRequestPromptDigest :: Maybe Digest
   , amendRequestContextDigest :: Maybe Digest
+  }
+  deriving (Eq, Show)
+
+data ScopeRequest = ScopeRequest
+  { scopeRequestAdr :: AdrId
+  , scopeRequestExpectedState :: Maybe StateToken
+  , scopeRequestReason :: Text
+  , scopeRequestChange :: ScopeChangeRequest
+  , scopeRequestActor :: Actor
+  , scopeRequestInputDigest :: Maybe Digest
+  , scopeRequestPromptDigest :: Maybe Digest
+  , scopeRequestContextDigest :: Maybe Digest
   }
   deriving (Eq, Show)
 
@@ -671,7 +761,43 @@ materializeAmend command = do
           , amendRequestInputDigest = input
           , amendRequestPromptDigest = prompt
           , amendRequestContextDigest = context
-          }
+           }
+
+materializeScope :: ScopeCommand -> IO (Either Text ScopeRequest)
+materializeScope command = do
+  environmentActor <- lookupEnv "ADRAI_ACTOR"
+  promptFromFile <- readDigestFile "prompt" (scopePromptFile command)
+  contextFromFile <- readDigestFile "context" (scopeContextFile command)
+  pure $ do
+    promptFileDigest <- promptFromFile
+    contextFileDigest <- contextFromFile
+    adr <- first (Text.pack . show) (mkAdrId (scopeAdrSpec command))
+    expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (scopeExpectedState command)
+    reason <- maybe (Left "scope requires --reason") Right (scopeReason command)
+    if Text.null (Text.strip reason)
+      then Left "scope reason must be nonblank"
+      else Right ()
+    change <- case (scopeSets command, scopeAdds command, scopeRemoves command) of
+      (sets@(_ : _), [], []) -> ScopeReviewedSet <$> traverse parsePattern sets
+      (_ : _, _, _) -> Left "scope --set cannot be combined with --add or --remove"
+      ([], adds, removes) -> ScopeDelta <$> traverse parsePattern adds <*> traverse parsePattern removes
+    actorText <- maybe (Left "scope requires --actor or ADRAI_ACTOR") Right (scopeActorSpec command <|> Text.pack <$> environmentActor)
+    actor <- parseActor actorText (scopeModel command)
+    input <- traverse parseDigest (scopeInputDigest command)
+    prompt <- resolveDigest "prompt" (scopePromptDigest command) promptFileDigest
+    context <- resolveDigest "context" (scopeContextDigest command) contextFileDigest
+    Right ScopeRequest
+      { scopeRequestAdr = adr
+      , scopeRequestExpectedState = expected
+      , scopeRequestReason = reason
+      , scopeRequestChange = change
+      , scopeRequestActor = actor
+      , scopeRequestInputDigest = input
+      , scopeRequestPromptDigest = prompt
+      , scopeRequestContextDigest = context
+      }
+  where
+    parsePattern = first scopePatternErrorText . mkScopePattern
 
 emptyStructured :: StructuredCreate
 emptyStructured = StructuredCreate Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
@@ -879,6 +1005,10 @@ renderAmendSuccess :: AmendCommand -> AmendResult -> PostCommitIndexResult -> IO
 renderAmendSuccess command result indexResult =
   emitRendered (renderAmendOutcome result indexResult (amendJson command))
 
+renderScopeSuccess :: ScopeCommand -> ScopeChangeResult -> PostCommitIndexResult -> IO ExitCode
+renderScopeSuccess command result indexResult =
+  emitRendered (renderScopeOutcome result indexResult (scopeJson command))
+
 renderInitOutcome :: InitResult -> PostCommitIndexResult -> Bool -> CliRendered
 renderInitOutcome result indexResult jsonOutput =
   successOutcome jsonOutput (Text.pack (initOperationId result)) (initCommitOid result) [] indexResult
@@ -923,6 +1053,23 @@ renderAmendOutcome result indexResult jsonOutput =
            , ("connection", JsonString (connectionIdText (amendConnectionId result)))
            ]
 
+renderScopeOutcome :: ScopeChangeResult -> PostCommitIndexResult -> Bool -> CliRendered
+renderScopeOutcome result indexResult jsonOutput =
+  successOutcome jsonOutput (Text.pack (scopeChangeOperationId result)) (scopeChangeCommitOid result) identifiers indexResult jsonFields
+  where
+    identifiers =
+      [ "adr=" <> adrIdText (scopeChangeAdrId result)
+      , "scope=" <> connectionIdText (scopeChangeConnectionId result)
+      ]
+    jsonFields =
+      mutationJsonFields (scopeChangeOperationId result) (scopeChangeCommitOid result) (scopeChangeCreatedPaths result) (scopeChangeIndexUpdated result) indexResult
+        <> [ ("adr", JsonString (adrIdText (scopeChangeAdrId result)))
+           , ("scope", JsonString (connectionIdText (scopeChangeConnectionId result)))
+           , ("scope_parents", JsonArray (map (JsonString . connectionIdText) (scopeChangeParents result)))
+           , ("mode", JsonString (scopeChangeMode result))
+           , ("applies_to", JsonArray (map (JsonString . scopePatternText) (scopeChangeEffective result)))
+           ]
+
 successOutcome jsonOutput operation commit identifiers indexResult jsonFields
   | jsonOutput = CliRendered (renderCanonicalJson (JsonObject jsonFields)) "" ExitSuccess
   | otherwise = CliRendered (plainText operation commit identifiers indexResult) "" ExitSuccess
@@ -960,6 +1107,12 @@ plainText operation commit identifiers indexResult =
         , adr <> "  " <> record <> "  " <> amends <> "  " <> connection
         , indexLine
         ]
+    [adr, scope] ->
+      Text.unlines
+        [ "Committed " <> operation <> " as " <> gitOidText commit
+        , adr <> "  " <> scope
+        , indexLine
+        ]
     _ -> Text.unlines ["Committed " <> operation <> " as " <> gitOidText commit, indexLine]
   where
     indexLine
@@ -979,6 +1132,9 @@ transactionConflict problem =
   case problem of
     Stage3ValidateState message -> "expected head mismatch" `Text.isInfixOf` message
       || "stale ADR state:" `Text.isInfixOf` message
+      || "scope target ADR is conflicted" `Text.isInfixOf` message
+      || "scope target ADR has no unambiguous current scope" `Text.isInfixOf` message
+      || "scope target ADR is not active" `Text.isInfixOf` message
     _ -> False
 
 renderFailure :: CliFailure -> IO ExitCode

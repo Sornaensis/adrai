@@ -38,6 +38,7 @@ import Adrai.Format.Document
   )
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import Adrai.Git (gitOidText)
+import Adrai.Graph (lookupReducedAdr, reduceManagedGraph, reducedStateToken)
 import Adrai.Provenance
   ( ProvenanceCapsule,
     ProvenanceObjectId (..),
@@ -50,11 +51,13 @@ import Adrai.Provenance
     provenanceLineAnchors,
     provenanceObjectId,
     provenanceOperationId,
-    provenanceParents,
+     provenanceParents,
+     provenanceSemanticDigest,
     sha256Digest,
     provenanceTimestampMs,
-    provenanceToolVersion,
-    provenanceUpstreamHint,
+     provenanceToolVersion,
+     provenanceUpstreamHint,
+     semanticDigest,
   )
 import Adrai.Scope (mkScopePattern)
 import Adrai.Types
@@ -62,12 +65,14 @@ import Adrai.Types
     ActorKind (HumanActor),
     ProvenanceInputs (..),
     adrIdText,
-    connectionIdText,
-    mkActor,
+     connectionIdText,
+     mkActor,
+     mkAdrId,
     mkRepoPath,
     operationIdText,
     recordIdText,
-    repoPathText,
+     repoPathText,
+     stateTokenText,
   )
 import Control.Exception (bracket)
 import Control.Monad (unless, void)
@@ -84,8 +89,9 @@ import qualified Data.ByteString.Lazy as LBS
 import Database.SQLite.Simple (Only (..), close, open, query_)
 import System.Directory
   ( createDirectoryIfMissing,
-    doesDirectoryExist,
-    doesFileExist,
+     doesDirectoryExist,
+     doesFileExist,
+     listDirectory,
     removeFile,
   )
 import System.FilePath ((</>), takeDirectory)
@@ -158,6 +164,11 @@ currentBranch repo =
   gitStdout repo ["branch", "--show-current"]
     >>= \b -> pure (strip (decodeUtf8 (LBS.toStrict b)))
 
+symbolicHeadRef :: FilePath -> IO Text
+symbolicHeadRef repo =
+  gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+    >>= \ref -> pure (strip (decodeUtf8 (LBS.toStrict ref)))
+
 -- | Check if a file exists.
 fileExists :: FilePath -> IO Bool
 fileExists p = doesFileExist p
@@ -217,9 +228,12 @@ foldedEnvironmentKey = T.toCaseFold . T.pack
 
 assertIndexResolvedOid :: FilePath -> Text -> IO ()
 assertIndexResolvedOid database expected =
+  indexResolvedOid database >>= (@?= [Only expected])
+
+indexResolvedOid :: FilePath -> IO [Only Text]
+indexResolvedOid database =
   bracket (open database) close $ \connection -> do
-    resolved <- query_ connection "SELECT value FROM meta WHERE key = 'resolved_oid'" :: IO [Only Text]
-    resolved @?= [Only expected]
+    query_ connection "SELECT value FROM meta WHERE key = 'resolved_oid'"
 
 configureDeterministicGit :: FilePath -> IO ()
 configureDeterministicGit repo = do
@@ -993,6 +1007,202 @@ testP602BRealExecutable =
   testGroup "P6-02B real executable amend"
     [ testCase "amend commits two sealed documents without touching staged content" p602bAmend ]
 
+testP602CRealExecutable :: TestTree
+testP602CRealExecutable =
+  testGroup "P6-02C real executable scope"
+    [ testCase "scope delta, reviewed replacement, and reviewed conflict merge preserve repository state" p602cScope ]
+
+p602cScope :: IO ()
+p602cScope =
+  withSystemTempDirectory "adrai p6-02c scope" $ \temporary -> do
+    let repo = temporary </> "scope"
+        database = repo </> ".adrai" </> "index.sqlite"
+        stagedName = "unrelated-scope.bin"
+        stagedBytes = BS.pack [9, 0, 255, 4]
+        actorArgs = ["--actor", "human:e2e", "--json"]
+        assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore = do
+          assertStagedBinaryPreserved repo stagedName stagedBytes indexBefore
+          gitStdout repo ["ls-files", "-s", "--", "seed.txt"] >>= (@?= seedIndexBefore)
+          BS.readFile (repo </> "seed.txt") >>= (@?= seedWorktreeBefore)
+        runScope adr arguments = do
+          before <- headCommit repo
+          branch <- currentBranch repo
+          priorManaged <- committedManagedBytes before
+          priorManagedWorktree <- mapM (\(path, _) -> do
+            bytes <- BS.readFile (repo </> T.unpack path)
+            pure (path, bytes)) priorManaged
+          stdout <- assertExitSuccess "scope" =<< adraiRequiredRaw repo (["scope", unpack adr] <> arguments <> actorArgs)
+          result <- decodeCanonicalJson "scope" stdout
+          current <- headCommit repo
+          operation <- requireJsonField "scope" result "operation" :: IO Text
+          resultAdr <- requireJsonField "scope" result "adr" :: IO Text
+          resultScope <- requireJsonField "scope" result "scope" :: IO Text
+          resultParents <- requireJsonField "scope" result "scope_parents" :: IO [Text]
+          resultMode <- requireJsonField "scope" result "mode" :: IO Text
+          resultEffective <- requireJsonField "scope" result "applies_to" :: IO [Text]
+          commit <- requireJsonField "scope" result "commit" :: IO Text
+          created <- requireJsonField "scope" result "created" :: IO [Text]
+          committed <- requireJsonField "scope" result "committed" :: IO Bool
+          indexUpdated <- requireJsonField "scope" result "index_updated" :: IO Bool
+          indexed <- requireJsonField "scope" result "indexed" :: IO Bool
+          renderedDatabase <- requireJsonField "scope" result "database" :: IO Text
+          indexRevision <- requireJsonField "scope" result "index_revision" :: IO Text
+          warningCount <- requireJsonField "scope" result "index_warnings" :: IO Integer
+          commit @?= current
+          resultAdr @?= adr
+          committed @?= True
+          indexUpdated @?= True
+          indexed @?= True
+          renderedDatabase @?= T.pack database
+          indexRevision @?= current
+          warningCount @?= 0
+          stdout @?= LBS.fromStrict (encodeUtf8 (renderCanonicalJson (JsonObject
+            [ ("adr", JsonString resultAdr), ("applies_to", JsonArray (map JsonString resultEffective))
+            , ("commit", JsonString current), ("committed", JsonBool True), ("created", JsonArray (map JsonString created))
+            , ("database", JsonString (T.pack database)), ("index_revision", JsonString current), ("index_updated", JsonBool True)
+            , ("index_warnings", JsonNumber 0), ("indexed", JsonBool True), ("mode", JsonString resultMode)
+            , ("operation", JsonString operation), ("scope", JsonString resultScope)
+            , ("scope_parents", JsonArray (map JsonString resultParents)) ])))
+          gitText repo ["show", "-s", "--format=%P", unpack current] >>= (@?= before)
+          length created @?= 1
+          changed <- fmap (sort . T.lines) (gitText repo ["diff-tree", "--no-commit-id", "--name-only", "-r", unpack current])
+          changed @?= created
+          mapM_ (\(path, bytes) -> gitStdout repo ["show", T.unpack current <> ":" <> T.unpack path] >>= (@?= bytes)) priorManaged
+          mapM_ (\(path, bytes) -> BS.readFile (repo </> T.unpack path) >>= (@?= bytes)) priorManagedWorktree
+          generatedHeadBytes <- gitStdout repo ["show", T.unpack current <> ":" <> T.unpack (head created)]
+          generatedWorktreeBytes <- BS.readFile (repo </> unpack (head created))
+          generatedWorktreeBytes @?= LBS.toStrict generatedHeadBytes
+          gitStdout repo ["diff", "--cached", "--name-only", "--", T.unpack (head created)] >>= (@?= "")
+          document <- parseCommittedAndWorktreeDocument repo current (head created)
+          case document of
+            parsed@(ParsedManagedDocument _ (ManagedConnection connection) capsule _ _) -> do
+              connectionIdText (connectionRecordId connection) @?= resultScope
+              created @?= ["architecture/adrai/connections/" <> T.take 4 resultScope <> "/" <> resultScope <> "--applies_to.connection.md"]
+              eventKindText (provenanceEventKind capsule) @?= "scope.update"
+              provenanceTimestampMs capsule `seq` assertBool "scope timestamp must be positive" (provenanceTimestampMs capsule > 0)
+              gitOidText (provenanceBasis capsule) @?= before
+              provenanceBranchHint capsule @?= Just branch
+              provenanceActor capsule @?= either (error . show) id (mkActor HumanActor "e2e" Nothing)
+              provenanceInputs capsule @?= ProvenanceInputs Nothing Nothing Nothing
+              provenanceObjectId capsule @?= ProvenanceConnection (connectionRecordId connection)
+              operationIdText (provenanceOperationId capsule) @?= operation
+              provenanceToolVersion capsule @?= "adrai/1.0.0"
+              provenanceSemanticDigest capsule @?= semanticDigest (parsedManagedSemantic parsed)
+              message <- commitMessageBytes repo current
+              message @?= encodeUtf8 ("adrai: scope " <> adr <> "\n\nADRAI-Op: " <> operation <> "\nADRAI-ADR: " <> adr <> "\nADRAI-Objects: " <> resultScope <> "\n")
+              case connectionPayload connection of
+                AppliesToConnection payload -> do
+                  resultParents @?= map connectionIdText (appliesToParentConnections payload)
+                  provenanceParents capsule @?= map ProvenanceConnection (appliesToParentConnections payload)
+                  connectionRationale connection @?= normalizedReason arguments
+                  pure (result, connection, payload)
+                _ -> assertFailure "scope must create an applies_to connection" >> fail "unreachable"
+            _ -> assertFailure "scope must create exactly one connection document" >> fail "unreachable"
+        committedManagedBytes revision = do
+          paths <- fmap (filter isManaged . T.lines) (gitText repo ["ls-tree", "-r", "--name-only", T.unpack revision])
+          mapM (\path -> do
+            bytes <- gitStdout repo ["show", T.unpack revision <> ":" <> T.unpack path]
+            pure (path, bytes)) paths
+        isManaged path = "architecture/adrai/decisions/" `T.isPrefixOf` path || "architecture/adrai/connections/" `T.isPrefixOf` path
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "seed\n"
+    git repo ["add", "--", "seed.txt"]
+    git repo ["commit", "-m", "seed"]
+    _ <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    createStdout <- assertExitSuccess "create" =<< adraiRequiredRaw repo ["create", "--title", "Scoped", "--summary", "scope e2e", "--body", "scope body\n", "--domain", "compiler", "--applies-to", "src/**", "--actor", "human:e2e", "--json"]
+    createResult <- decodeCanonicalJson "create" createStdout
+    adr <- requireJsonField "create" createResult "adr" :: IO Text
+    initialScope <- requireJsonField "create" createResult "scope" :: IO Text
+    BS.writeFile (repo </> stagedName) stagedBytes
+    git repo ["add", "--", stagedName]
+    indexBefore <- gitStdout repo ["ls-files", "-s", "--", stagedName]
+    BS.writeFile (repo </> "seed.txt") "staged seed\n"
+    git repo ["add", "--", "seed.txt"]
+    seedIndexBefore <- gitStdout repo ["ls-files", "-s", "--", "seed.txt"]
+    BS.writeFile (repo </> "seed.txt") "dirty seed\n"
+    seedWorktreeBefore <- BS.readFile (repo </> "seed.txt")
+    (expand, expandHead, expandPayload) <- runScope adr ["--add", "test/**", "--reason", "Expand test coverage"]
+    assertScopePublic expand "expand" ["src/**", "test/**"]
+    assertScopePayload adr expandHead expandPayload [initialScope] "expand" ["test/**"] [] ["src/**", "test/**"] "Expand test coverage"
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    (contract, contractHead, contractPayload) <- runScope adr ["--remove", "src/**", "--reason", "Contract source coverage"]
+    assertScopePublic contract "contract" ["test/**"]
+    assertScopePayload adr contractHead contractPayload [connectionIdText (connectionRecordId expandHead)] "contract" [] ["src/**"] ["test/**"] "Contract source coverage"
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    (mixed, mixedHead, mixedPayload) <- runScope adr ["--add", "lib/**", "--remove", "test/**", "--reason", "Move coverage"]
+    assertScopePublic mixed "mixed" ["lib/**"]
+    assertScopePayload adr mixedHead mixedPayload [connectionIdText (connectionRecordId contractHead)] "mixed" ["lib/**"] ["test/**"] ["lib/**"] "Move coverage"
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    (replace, replaceHead, replacePayload) <- runScope adr ["--set", "src/**", "--reason", "Reviewed replacement"]
+    assertScopePublic replace "replace" ["src/**"]
+    assertScopePayload adr replaceHead replacePayload [connectionIdText (connectionRecordId mixedHead)] "replace" ["src/**"] ["lib/**"] ["src/**"] "Reviewed replacement"
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    -- Git itself cannot create a merge commit while the intentionally preserved
+    -- unrelated index/worktree state is present.  Stash it only around the
+    -- fixture's branch topology construction, then restore the exact state
+    -- before invoking either public conflict path.
+    git repo ["stash", "push", "--include-untracked", "-m", "p602c scope topology fixture"]
+    git repo ["switch", "-c", "scope-other"]
+    (other, otherHead, _) <- runScope adr ["--add", "docs/**", "--reason", "Other branch"]
+    git repo ["switch", "main"]
+    (mainChange, mainHead, _) <- runScope adr ["--add", "test/**", "--reason", "Main branch"]
+    git repo ["merge", "--no-ff", "scope-other", "-m", "merge scope heads"]
+    git repo ["stash", "pop", "--index"]
+    conflictBaseline <- captureMutationFailureBaseline repo database
+    (conflictExit, conflictStdout, conflictStderr) <- adraiRequiredRaw repo ["scope", unpack adr, "--add", "ops/**", "--reason", "Ambiguous delta", "--actor", "human:e2e", "--json"]
+    conflictExit @?= ExitFailure 3
+    conflictStdout @?= ""
+    conflictStderr @?= "adrai: conflict: Stage3ValidateState \"scope target ADR is conflicted\"\n"
+    assertMutationFailurePreserved repo database conflictBaseline
+    (merged, mergedHead, mergedPayload) <- runScope adr ["--set", "src/**", "--reason", "Reviewed conflict resolution"]
+    assertScopePublic merged "merge" ["src/**"]
+    parents <- requireJsonField "scope" merged "scope_parents" :: IO [Text]
+    parents @?= sort [connectionIdText (connectionRecordId otherHead), connectionIdText (connectionRecordId mainHead)]
+    appliesToParentConnections mergedPayload @?= sort [connectionRecordId otherHead, connectionRecordId mainHead]
+    assertScopePayload adr mergedHead mergedPayload (sort [connectionIdText (connectionRecordId otherHead), connectionIdText (connectionRecordId mainHead)]) "merge" [] ["docs/**", "test/**"] ["src/**"] "Reviewed conflict resolution"
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    noOpBaseline <- captureMutationFailureBaseline repo database
+    (noOpExit, noOpStdout, noOpStderr) <- adraiRequiredRaw repo ["scope", unpack adr, "--set", "src/**", "--reason", "No change", "--actor", "human:e2e", "--json"]
+    noOpExit @?= ExitFailure 2
+    noOpStdout @?= ""
+    noOpStderr @?= "adrai: Stage3ValidateState \"reviewed scope set would not change the current scope\"\n"
+    assertMutationFailurePreserved repo database noOpBaseline
+    staleBaseline <- captureMutationFailureBaseline repo database
+    staleHead <- headCommit repo
+    stalePaths <- fmap (filter (\path -> "architecture/adrai/decisions/" `T.isPrefixOf` path || "architecture/adrai/connections/" `T.isPrefixOf` path) . T.lines) (gitText repo ["ls-tree", "-r", "--name-only", T.unpack staleHead])
+    staleDocuments <- mapM (parseCommittedAndWorktreeDocument repo staleHead) stalePaths
+    currentToken <-
+      case lookupReducedAdr (either (error . show) id (mkAdrId adr)) (reduceManagedGraph (map parsedManagedRecord staleDocuments)) of
+        Nothing -> assertFailure "scope target must reduce to an ADR before stale-token rejection" >> fail "unreachable"
+        Just reduced -> pure (stateTokenText (reducedStateToken reduced))
+    (staleExit, staleStdout, staleStderr) <- adraiRequiredRaw repo ["scope", unpack adr, "--add", "docs/**", "--reason", "Stale request", "--expect", "S0000000000000000000000", "--actor", "human:e2e", "--json"]
+    staleExit @?= ExitFailure 3
+    staleStdout @?= ""
+    staleStderr @?= LBS.fromStrict (encodeUtf8 ("adrai: conflict: Stage3ValidateState \"stale ADR state: expected S0000000000000000000000, current state is " <> currentToken <> "\"\n"))
+    assertMutationFailurePreserved repo database staleBaseline
+    assertIndexResolvedOid database =<< headCommit repo
+  where
+    pattern text = either (error . show) id (mkScopePattern text)
+    normalizedReason arguments =
+      case dropWhile (/= "--reason") arguments of
+        (_ : reason : _) -> T.strip (T.pack reason) <> "\n"
+        _ -> error "scope test requires a reason"
+    assertScopePublic result mode effective = do
+      renderedMode <- requireJsonField "scope" result "mode" :: IO Text
+      renderedEffective <- requireJsonField "scope" result "applies_to" :: IO [Text]
+      renderedMode @?= mode
+      renderedEffective @?= effective
+    assertScopePayload expectedAdr connection payload parents change added removed effective reason = do
+      adrIdText (appliesToSubjectAdr payload) @?= expectedAdr
+      map connectionIdText (appliesToParentConnections payload) @?= parents
+      appliesToChange payload @?= change
+      appliesToAdded payload @?= map pattern added
+      appliesToRemoved payload @?= map pattern removed
+      appliesToEffective payload @?= map pattern effective
+      connectionRationale connection @?= reason <> "\n"
+
 p602bAmend :: IO ()
 p602bAmend =
   withSystemTempDirectory "adrai p6-02b amend" $ \temporary -> do
@@ -1094,39 +1304,62 @@ p602bAmend =
 
 data MutationFailureBaseline = MutationFailureBaseline
   { failureHead :: Text
+  , failureSymbolicRef :: Text
+  , failureSymbolicRefOid :: Text
   , failureTree :: LBS.ByteString
   , failureIndex :: LBS.ByteString
+  , failureCachedBytes :: LBS.ByteString
+  , failureWorktreeBytes :: LBS.ByteString
   , failureManagedPaths :: [Text]
   , failureManagedWorktree :: [(Text, BS.ByteString)]
   , failureStatus :: LBS.ByteString
+  , failureIndexResolvedOid :: [Only Text]
+  , failureOwnedDirectories :: [(FilePath, [FilePath])]
   }
 
 captureMutationFailureBaseline :: FilePath -> FilePath -> IO MutationFailureBaseline
-captureMutationFailureBaseline repo _database = do
+captureMutationFailureBaseline repo database = do
   currentHead <- headCommit repo
+  currentRef <- symbolicHeadRef repo
+  currentRefOid <- strip <$> gitText repo ["rev-parse", T.unpack currentRef]
   completeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
   completeIndex <- gitStdout repo ["ls-files", "--stage"]
+  cachedBytes <- gitStdout repo ["diff", "--cached", "--binary"]
+  worktreeBytes <- gitStdout repo ["diff", "--binary"]
   let managedPaths = filter isManagedPath (T.lines (decodeUtf8 (LBS.toStrict completeTree)))
   worktree <- mapM (\path -> do
     bytes <- BS.readFile (repo </> unpack path)
     pure (path, bytes)) managedPaths
   status <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all"]
-  pure (MutationFailureBaseline currentHead completeTree completeIndex managedPaths worktree status)
+  resolvedOid <- indexResolvedOid database
+  ownedDirectories <- mapM captureOwned ["architecture/adrai/decisions", "architecture/adrai/connections", ".adrai"]
+  pure (MutationFailureBaseline currentHead currentRef currentRefOid completeTree completeIndex cachedBytes worktreeBytes managedPaths worktree status resolvedOid ownedDirectories)
   where
     isManagedPath path =
       "architecture/adrai/decisions/" `T.isPrefixOf` path
         || "architecture/adrai/connections/" `T.isPrefixOf` path
+    captureOwned relative = do
+      let path = repo </> relative
+      exists <- doesDirectoryExist path
+      entries <- if exists then sort <$> listDirectory path else pure []
+      pure (relative, entries)
 
 assertMutationFailurePreserved :: FilePath -> FilePath -> MutationFailureBaseline -> IO ()
 assertMutationFailurePreserved repo database baseline = do
   headCommit repo >>= (@?= failureHead baseline)
-  assertIndexResolvedOid database (failureHead baseline)
+  symbolicHeadRef repo >>= (@?= failureSymbolicRef baseline)
+  currentRef <- symbolicHeadRef repo
+  (strip <$> gitText repo ["rev-parse", T.unpack currentRef]) >>= (@?= failureSymbolicRefOid baseline)
+  indexResolvedOid database >>= (@?= failureIndexResolvedOid baseline)
   gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= failureTree baseline)
   gitStdout repo ["ls-files", "--stage"] >>= (@?= failureIndex baseline)
+  gitStdout repo ["diff", "--cached", "--binary"] >>= (@?= failureCachedBytes baseline)
+  gitStdout repo ["diff", "--binary"] >>= (@?= failureWorktreeBytes baseline)
   current <- captureMutationFailureBaseline repo database
   failureManagedPaths current @?= failureManagedPaths baseline
   failureManagedWorktree current @?= failureManagedWorktree baseline
   failureStatus current @?= failureStatus baseline
+  failureOwnedDirectories current @?= failureOwnedDirectories baseline
 
 p602aHostileEnvironmentScrubbed :: IO ()
 p602aHostileEnvironmentScrubbed = do
@@ -1474,6 +1707,7 @@ tests =
     "Mutation E2E across hostile environments (P5-05)"
     [ testP602ARealExecutable,
       testP602BRealExecutable,
+      testP602CRealExecutable,
       testUnbornRepository,
       testUnrelatedStagedEntry,
       testDetachedHead,

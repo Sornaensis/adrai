@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- | Unit tests for CLI + JSON contracts: compileResultJson,
 -- doctorOutputJson, toAesonValue, CLI type constructors, and
@@ -33,17 +34,20 @@ import Adrai.CliRunner
     CliCommand (..),
     CliInvocation (..),
     ContentSource (..),
-    CreateRequest (..),
-    AmendRequest (..),
+     CreateRequest (..),
+     AmendRequest (..),
+     ScopeRequest (..),
     CliDispatchDependencies (..),
     CreateCommand (..),
-    AmendCommand (..),
+     AmendCommand (..),
+     ScopeCommand (..),
     InitCommand (..),
     defaultCliConfig,
     parseActor,
     parseDigest,
     parseStructuredCreate,
-    parseStructuredAmend,
+     parseStructuredAmend,
+     materializeScope,
     CliFailure (..),
     CliRendered (..),
     parseArguments,
@@ -51,17 +55,20 @@ import Adrai.CliRunner
     dispatchWith,
     emitRenderedToHandles,
     renderCreateOutcome,
-    renderAmendOutcome,
+     renderAmendOutcome,
+     renderScopeOutcome,
     renderFailureOutcome,
     renderInitOutcome,
   )
 import Adrai.Git (GitOid (..))
 import Adrai.Domain (canonicalDomains)
 import Adrai.Scope (mkScopePattern)
-import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), InitResult (..))
+import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), InitResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
 import Adrai.Service.PostCommitIndex (IndexWarning (..), PostCommitIndexError (..), PostCommitIndexResult (..))
 import Adrai.Types (ActorKind (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
 import Adrai.Format.Json (JsonValue (..))
+import qualified Adrai.Format as Format
+import Adrai.Provenance (sha256Digest)
 import Adrai.Compiler (ColdCompilerResult (..))
 import Adrai.Retrieval (SearchMaterialization(..))
 
@@ -85,6 +92,8 @@ import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
 import System.Exit (ExitCode (..))
 import System.IO (IOMode (WriteMode), withBinaryFile)
+import System.Environment (lookupEnv, setEnv, unsetEnv)
+import Control.Exception (bracket)
 import System.IO.Temp (withSystemTempDirectory)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Foldable (for_)
@@ -759,6 +768,46 @@ mutationCliContractTests =
         assertParserFailure ["amend-adr", "A0123456789ABCDEFGHJKMNPQRS"]
         assertParserFailure ["amend", "A0123456789ABCDEFGHJKMNPQRS", "--domain", "platform", "--body", "x"]
         assertParserFailure ["amend", "A0123456789ABCDEFGHJKMNPQRS", "--body", "first", "--body-file", "second.md"]
+    , testCase "scope is canonical and parses only frozen scope options" $ do
+        let expected = ScopeCommand
+              "A0123456789ABCDEFGHJKMNPQRS" ["src/**", "test/**"] ["legacy/**"] [] (Just "Broaden coverage")
+              (Just "S0123456789ABCDEFGHJKMN") (Just "human:architect") (Just "editor") Nothing Nothing Nothing Nothing Nothing True
+        parseCli ["scope", "A0123456789ABCDEFGHJKMNPQRS", "--add", "src/**", "--add", "test/**", "--remove", "legacy/**", "--reason", "Broaden coverage", "--expect", "S0123456789ABCDEFGHJKMN", "--actor", "human:architect", "--model", "editor", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdScope expected))
+        assertParserFailure ["scope-adr", "A0123456789ABCDEFGHJKMNPQRS"]
+        assertParserFailure ["scope", "A0123456789ABCDEFGHJKMNPQRS", "--body", "forbidden"]
+        assertParserFailure ["scope", "A0123456789ABCDEFGHJKMNPQRS", "--input-json", "forbidden.json"]
+        assertParserFailure ["scope", "A0123456789ABCDEFGHJKMNPQRS", "--body-file", "forbidden.md"]
+        assertParserFailure ["scope", "A0123456789ABCDEFGHJKMNPQRS", "--stdin"]
+    , testCase "scope materialization preserves typed duplicate delta inputs and exact rejections" $ do
+        let duplicate = scopeCommand ["src/**", "src/**"] [] [] (Just "Reason") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing
+        materializeScope duplicate >>= \case
+          Right request -> do
+            scopeRequestAdr request @?= requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
+            scopeRequestChange request @?= ScopeDelta [requireRight (mkScopePattern "src/**"), requireRight (mkScopePattern "src/**")] []
+            scopeRequestActor request @?= requireRight (parseActor "human:cli" Nothing)
+          Left problem -> assertFailure (T.unpack problem)
+        materializeScope (scopeCommand [] [] [] Nothing Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing) >>= (@?= Left "scope requires --reason")
+        materializeScope (scopeCommand [] [] [] (Just "  ") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing) >>= (@?= Left "scope reason must be nonblank")
+        materializeScope (scopeCommand ["src/**"] [] ["test/**"] (Just "Reason") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing) >>= (@?= Left "scope --set cannot be combined with --add or --remove")
+        materializeScope (scopeCommand ["["] [] [] (Just "Reason") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing) >>= \case
+          Left problem -> assertBool "invalid scope failure lost its typed parser message" (not (T.null problem))
+          Right _ -> assertFailure "invalid scope pattern materialized"
+    , testCase "scope materialization types token and digests, falls back to actor environment, and hashes files" $
+        withSystemTempDirectory "adrai scope materialize" $ \temporary -> do
+          let promptPath = temporary <> "/prompt.txt"
+              contextPath = temporary <> "/context.txt"
+              command = scopeCommand ["src/**"] [] [] (Just "Reason") (Just "S0123456789ABCDEFGHJKMN") Nothing (Just "model") (Just ("sha256:" <> T.replicate 43 "A")) Nothing Nothing (Just promptPath) (Just contextPath)
+          BS.writeFile promptPath "prompt bytes"
+          BS.writeFile contextPath "context bytes"
+          withActorEnvironment "human:from-environment" $
+            materializeScope command >>= \case
+              Left problem -> assertFailure (T.unpack problem)
+              Right request -> do
+                scopeRequestExpectedState request @?= Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))
+                scopeRequestActor request @?= requireRight (parseActor "human:from-environment" (Just "model"))
+                scopeRequestInputDigest request @?= Just (requireRight (parseDigest ("sha256:" <> T.replicate 43 "A")))
+                scopeRequestPromptDigest request @?= Just (sha256Digest "prompt bytes")
+                scopeRequestContextDigest request @?= Just (sha256Digest "context bytes")
     , testCase "parser failures map to exit 2" $
         case parseArguments ["create-adr"] of
           Left rendered -> renderedExitCode rendered @?= ExitFailure 2
@@ -832,6 +881,10 @@ mutationCliContractTests =
         let rendered = renderAmendOutcome amendResult indexFailureResult False
         renderedExitCode rendered @?= ExitSuccess
         renderedStdout rendered @?= "Committed operation-43 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  record=R0123456789ABCDEFGHJKMNPQRS  amends=R1123456789ABCDEFGHJKMNPQRS  connection=C3123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
+    , testCase "scope output is exact and keeps disposable indexing durable" $ do
+        renderedStdout (renderScopeOutcome scopeResult indexedResult True) @?=
+          "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"applies_to\": [\n    \"src/**\",\n    \"test/**\"\n  ],\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"mode\": \"mixed\",\n  \"operation\": \"operation-44\",\n  \"scope\": \"C4123456789ABCDEFGHJKMNPQRS\",\n  \"scope_parents\": [\n    \"C3123456789ABCDEFGHJKMNPQRS\"\n  ]\n}\n"
+        renderedStdout (renderScopeOutcome scopeResult indexFailureResult False) @?= "Committed operation-44 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  scope=C4123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
     , testCase "user and conflict outcomes have exact exit classes and stderr" $ do
         let user = renderFailureOutcome (CliUserFailure "invalid input")
             conflict = renderFailureOutcome (CliConflictFailure "stale head")
@@ -857,6 +910,8 @@ mutationCliContractTests =
                   writeIORef selectedRequest (Just received)
                   pure (Right (createResult, indexFailureResult))
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
               }
         exitCode <- dispatchWith dependencies invocation
         repo <- readIORef selectedRepo
@@ -874,6 +929,8 @@ mutationCliContractTests =
                   pure (Right (initResult, indexedResult))
               , cliRunCreate = \_ _ -> error "create service must not be selected"
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
               }
             invocation = CliInvocation (defaultCliConfig {configRepo = "init-repo"}) (CmdInit (InitCommand True))
         exitCode <- dispatchWith dependencies invocation
@@ -902,6 +959,8 @@ mutationCliContractTests =
                   writeIORef selectedRepo (Just (configRepo repo))
                   writeIORef selectedRequest (Just received)
                   pure (Right (amendResult, indexFailureResult))
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
               }
         exitCode <- dispatchWith dependencies invocation
         exitCode @?= ExitSuccess
@@ -915,12 +974,40 @@ mutationCliContractTests =
               , cliRunInit = \_ -> error "init service must not be selected"
               , cliRunCreate = \_ _ -> writeIORef mutationCalled True >> error "mutation must not run"
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
               }
             invocation = CliInvocation defaultCliConfig (CmdCreate createCommand)
         exitCode <- dispatchWith dependencies invocation
         called <- readIORef mutationCalled
         exitCode @?= ExitFailure 2
         called @?= False
+    , testCase "dispatch seam selects scope service with parsed repo and materialized request" $ do
+        selectedRepo <- newIORef Nothing
+        selectedRequest <- newIORef Nothing
+        let command = ScopeCommand "A0123456789ABCDEFGHJKMNPQRS" ["test/**"] [] [] (Just "Expand tests") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing True
+            invocation = CliInvocation (defaultCliConfig {configRepo = "scope-repo"}) (CmdScope command)
+            scopeRequest = ScopeRequest
+              (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")) Nothing "Expand tests"
+              (ScopeDelta [requireRight (mkScopePattern "test/**")] [])
+              (requireRight (parseActor "human:cli" Nothing)) Nothing Nothing Nothing
+            dependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+              , cliMaterializeScope = \received -> do
+                  received @?= command
+                  pure (Right scopeRequest)
+              , cliRunInit = \_ -> error "init service must not be selected"
+              , cliRunCreate = \_ _ -> error "create service must not be selected"
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliRunScope = \repo received -> do
+                  writeIORef selectedRepo (Just (configRepo repo))
+                  writeIORef selectedRequest (Just received)
+                  pure (Right (scopeResult, indexFailureResult))
+              }
+        dispatchWith dependencies invocation >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "scope-repo")
+        readIORef selectedRequest >>= (@?= Just scopeRequest)
     , testCase "amend structured-field validation renders exact stderr and exit 2" $ do
         let command = AmendCommand "A0123456789ABCDEFGHJKMNPQRS" Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing [InputJson "input.json"] False
             dependencies = CliDispatchDependencies
@@ -929,6 +1016,8 @@ mutationCliContractTests =
               , cliRunInit = \_ -> error "init service must not be selected"
               , cliRunCreate = \_ _ -> error "create service must not be selected"
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
               }
             rendered = renderFailureOutcome (CliUserFailure "structured amend field change_summary must be a string")
         dispatchWith dependencies (CliInvocation defaultCliConfig (CmdAmend command)) >>= (@?= ExitFailure 2)
@@ -942,6 +1031,8 @@ mutationCliContractTests =
               , cliRunInit = \_ -> pure (Left (CliUserFailure "service rejected input"))
               , cliRunCreate = \_ _ -> error "create service must not be selected"
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
               }
             conflictDependencies = userDependencies
               { cliRunInit = \_ -> pure (Left (CliConflictFailure "stale CAS")) }
@@ -983,6 +1074,15 @@ mutationCliContractTests =
         (requireRight (mkRecordId "R1123456789ABCDEFGHJKMNPQRS"))
         (requireRight (mkConnectionId "C3123456789ABCDEFGHJKMNPQRS"))
         oid path [path] True
+    scopeResult =
+      ScopeChangeResult
+        "operation-44"
+        (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkConnectionId "C4123456789ABCDEFGHJKMNPQRS"))
+        [requireRight (mkConnectionId "C3123456789ABCDEFGHJKMNPQRS")]
+        "mixed"
+        [requireRight (mkScopePattern "src/**"), requireRight (mkScopePattern "test/**")]
+        oid path [path] True
     indexedResult = PostCommitIndexResult True (Just "fixture.sqlite") (Just oid) [] Nothing
     indexFailureResult = PostCommitIndexResult False Nothing Nothing [] (Just (PostCommitIndexOpenFailure "readonly"))
     request =
@@ -993,6 +1093,16 @@ mutationCliContractTests =
         (requireRight (parseActor "human:cli" Nothing))
         Nothing Nothing Nothing
     createCommand = CreateCommand Nothing Nothing [] [] Nothing Nothing Nothing Nothing Nothing Nothing Nothing [BodyText "body"] False
+    scopeCommand adds removes sets reason expected actor model input prompt context promptFile contextFile =
+      ScopeCommand
+        "A0123456789ABCDEFGHJKMNPQRS" adds removes sets reason expected actor model input prompt context promptFile contextFile False
+    withActorEnvironment actor action =
+      bracket (lookupEnv "ADRAI_ACTOR") restore $ \_ -> do
+        setEnv "ADRAI_ACTOR" actor
+        action
+      where
+        restore Nothing = unsetEnv "ADRAI_ACTOR"
+        restore (Just prior) = setEnv "ADRAI_ACTOR" prior
     requireRight result = case result of
       Right value -> value
       Left problem -> error (show problem)

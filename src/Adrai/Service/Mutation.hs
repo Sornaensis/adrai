@@ -797,6 +797,9 @@ data ScopeChangeResult
       { scopeChangeOperationId :: String,
         scopeChangeAdrId      :: AdrId,
         scopeChangeConnectionId :: ConnectionId,
+        scopeChangeParents :: [ConnectionId],
+        scopeChangeMode :: T.Text,
+        scopeChangeEffective :: [ScopePattern],
         scopeChangeCommitOid  :: GitOid,
         scopeChangeNewPath    :: RepoPath,
         scopeChangeCreatedPaths :: [RepoPath],
@@ -892,6 +895,9 @@ changeScopeCommand
                     { scopeChangeOperationId = transactionOperationId
                     , scopeChangeAdrId = adrId
                     , scopeChangeConnectionId = connId
+                    , scopeChangeParents = parents
+                    , scopeChangeMode = changeKind
+                    , scopeChangeEffective = effective
                     , scopeChangeCommitOid = transactionCommitOid
                     , scopeChangeNewPath = newPath
                     , scopeChangeCreatedPaths = transactionCreatedPaths
