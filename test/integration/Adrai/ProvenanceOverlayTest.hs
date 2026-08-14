@@ -548,7 +548,7 @@ tests =
             Right _ -> pure ()
           additions <-
             query conn
-              "SELECT managed_path, commit_oid FROM managed_path_addition ORDER BY managed_path, commit_oid"
+              "SELECT path, commit_oid FROM managed_path_addition ORDER BY path, commit_oid"
               ()
               :: IO [(Text, Text)]
           additions @?= [(path, gitOidText (resolvedCommitOid resolved))]
