@@ -85,6 +85,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.SQLite.Simple (Connection, open)
 import Adrai.Format.Json (JsonValue (..))
+import qualified Adrai.Query as Query
 
 -- | Helper for optional JSON fields: returns 'Aeson.Null' for 'Nothing',
 -- otherwise applies the projection function to the wrapped value.
@@ -104,44 +105,45 @@ toAesonValue (JsonDecimal d)      = Aeson.Number (realToFrac d)
 toAesonValue (JsonBool b)         = Aeson.Bool b
 toAesonValue JsonNull             = Aeson.Null
 
--- | Parse an 'AdrId' from text, raising a runtime error on failure.
-requireAdrId :: Text -> AdrId
-requireAdrId value =
-  case mkAdrId value of
-    Left v  -> error ("invalid AdrId: " <> show v)
-    Right a -> a
-
 -- | CLI argument representation for the @show@ command.
 data ShowCommand = ShowCommand
   { showAdrId       :: Text
   , showView        :: ViewMode         -- CollapsedView | ExplodedView
+  , showAt          :: Text             -- immutable revision selector
   , showJson        :: Bool             -- output JSON
   , showRaw         :: Bool             -- include raw_semantic
-  , showRich        :: Bool             -- rich detail
   }
   deriving (Eq, Show)
 
 -- | Dispatch a show command: either render to bytes or emit JSON.
 showCommandJson :: ReadSnapshot -> ShowCommand -> IO Aeson.Value
-showCommandJson snapshot cmd = case showView cmd of
-  CollapsedView ->
-    case projectCollapsed projMode snapshot adr of
-      Left err -> pure $ Aeson.object
-        [ "schema" .= Aeson.String "adrai/show-collapsed/v1"
-        , "error"  .= Aeson.String (Text.pack (show err))
-        ]
-      Right proj -> pure (toAesonValue (collapsedProjectionJson proj))
-  ExplodedView ->
-    case projectExploded opts snapshot adr of
-      Left err -> pure $ Aeson.object
-        [ "schema" .= Aeson.String "adrai/show-exploded/v1"
-        , "error"  .= Aeson.String (Text.pack (show err))
-        ]
-      Right proj -> pure (toAesonValue (explodedProjectionJson proj))
+showCommandJson snapshot cmd =
+  case Query.resolveAdrReference snapshot (showAdrId cmd) of
+    Left err -> pure $ Aeson.object
+      [ "schema" .= Aeson.String schema
+      , "error" .= Aeson.String (Query.referenceLookupErrorText err)
+      ]
+    Right adr -> case showView cmd of
+      CollapsedView ->
+        case projectCollapsed projMode snapshot adr of
+          Left err -> pure $ Aeson.object
+            [ "schema" .= Aeson.String schema
+            , "error"  .= Aeson.String (Text.pack (show err))
+            ]
+          Right proj -> pure (toAesonValue (collapsedProjectionJson proj))
+      ExplodedView ->
+        case projectExploded opts snapshot adr of
+          Left err -> pure $ Aeson.object
+            [ "schema" .= Aeson.String schema
+            , "error"  .= Aeson.String (Text.pack (show err))
+            ]
+          Right proj -> pure (toAesonValue (explodedProjectionJson proj))
   where
-    projMode = if showRich cmd then RichProjection else CompactProjection
+    projMode = CompactProjection
     opts     = ExplodedOptions { explodedIncludeRawSemantic = showRaw cmd }
-    adr      = requireAdrId (showAdrId cmd)
+    schema = case showView cmd of
+      CollapsedView -> "adrai/show-collapsed/v1"
+      ExplodedView -> "adrai/show-exploded/v1"
 
 -- | CLI argument representation for the @history@ command.
 data HistoryCommand = HistoryCommand

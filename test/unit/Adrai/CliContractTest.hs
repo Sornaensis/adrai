@@ -21,6 +21,7 @@ import Adrai.Cli
     doctorCacheAccessJson,
     doctorDatabaseBuildJson,
     ShowCommand (..),
+    showCommandJson,
     HistoryCommand (..),
     HistoryOrder (..),
     SearchCommand (..),
@@ -69,6 +70,7 @@ import Adrai.CliRunner
      renderDomainOutcome,
      renderObsoleteOutcome,
      renderReactivateOutcome,
+     renderShowOutcome,
     renderFailureOutcome,
     renderInitOutcome,
   )
@@ -78,7 +80,7 @@ import Adrai.Scope (mkScopePattern)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
 import Adrai.Service.PostCommitIndex (IndexWarning (..), PostCommitIndexError (..), PostCommitIndexResult (..))
 import Adrai.Types (ActorKind (..), ProvenanceInputs (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
-import Adrai.Format.Json (JsonValue (..))
+import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import qualified Adrai.Format as Format
 import Adrai.Provenance (sha256Digest)
 import Adrai.Compiler (ColdCompilerResult (..))
@@ -86,7 +88,9 @@ import Adrai.Retrieval (SearchMaterialization(..))
 
 import Adrai.Sqlite (ColdDatabaseStats (..))
 import Adrai.Graph (GraphReduction (..))
-import Adrai.History (ReadSnapshot (..))
+import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
+import Adrai.Query (ExplodedProjection (..), ReferenceLookupError (..), ResolutionState (..), explodedProjectionJson, renderExplodedProjection)
+import Adrai.Service.Query (ShowFailure (..), ShowResult (..), showFailureIsConflict)
 import Adrai.Types (RepoPath (..))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
@@ -98,6 +102,7 @@ import Data.Text (Text)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import qualified Data.Vector as Vector
+import qualified Data.Map.Strict as Map
 import Data.Vector ((!))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
@@ -557,17 +562,17 @@ cliTypeConstructorTests =
   testGroup "CLI type constructors"
     [ testCase "ShowCommand fields are preserved through construction" $ do
         let cmd = ShowCommand
-              { showAdrId = "A0123456789ABCDEFGHJKMNPQRS"
-              , showView = CollapsedView
-              , showJson = True
-              , showRaw = False
-              , showRich = True
-              }
+               { showAdrId = "A0123456789ABCDEFGHJKMNPQRS"
+               , showView = CollapsedView
+               , showAt = "refs/heads/release"
+               , showJson = True
+               , showRaw = False
+               }
         showAdrId cmd @?= "A0123456789ABCDEFGHJKMNPQRS"
         showView cmd @?= CollapsedView
+        showAt cmd @?= "refs/heads/release"
         showJson cmd @?= True
-        showRaw cmd @?= False
-        showRich cmd @?= True,
+        showRaw cmd @?= False,
       testCase "HistoryCommand with reverse flag swaps order" $ do
         let cmd = HistoryCommand
               { historyAdrId = Nothing
@@ -654,15 +659,39 @@ schemaContractTests =
         -- 'ok' should be among the sorted keys
         assertBool "'ok' must be a key in doctor output" ("ok" `elem` keys)
         keys @?= sort keys,
-      testCase "showCommandJson error output has schema key present" $ do
-        -- We test that when showCommandJson produces an error,
-        -- the schema field is present in the JSON.
-        -- Since showCommandJson returns IO, we verify the pure
-        -- JSON shape by checking the expected schema string is emitted.
-        -- The function returns Aeson.Object with "schema" key.
-        -- We verify the schema string is "adrai/show-collapsed/v1" or "adrai/show-exploded/v1"
-        -- by inspecting the literal construction in showCommandJson.
-        assertBool "schema contracts use adrai/show-collapsed/v1 and adrai/show-exploded/v1" True,
+      testCase "showCommandJson accepts record and connection references without ADR-only crashes" $ do
+        let snapshot = ReadSnapshot (RevisionIdentity "HEAD" "012345") [] (GraphReduction [] []) Map.empty
+            collapsed = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" CollapsedView "HEAD" True False
+            exploded = ShowCommand "C0123456789ABCDEFGHJKMNPQRS" ExplodedView "HEAD" True False
+        recordResult <- showCommandJson snapshot collapsed
+        connectionResult <- showCommandJson snapshot exploded
+        case recordResult of
+          Aeson.Object _ -> pure ()
+          _ -> assertFailure "record reference did not produce a total JSON error object"
+        case connectionResult of
+          Aeson.Object _ -> pure ()
+          _ -> assertFailure "connection reference did not produce a total JSON error object",
+      testCase "show exit classes keep ambiguous selectors user-side and semantic conflicts distinct" $ do
+        showFailureIsConflict (ShowReferenceFailure (LookupAmbiguous "A012345" [])) @?= False
+        showFailureIsConflict (ShowSemanticConflict ["conflicting decision heads"]) @?= True,
+      testCase "show render outcome is exact canonical JSON or the existing human renderer" $ do
+        let adr = either (error . show) id (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
+            token = either (error . show) id (Format.parseStateToken "S0123456789ABCDEFGHJKMN")
+            projection = ExplodedProjection
+              (RevisionIdentity "HEAD" "0123456789012345678901234567890123456789")
+              adr
+              (ResolutionState True False [])
+              token
+              []
+            jsonCommand = ShowCommand "A0123456789ABCDEFGHJKMNPQRS" ExplodedView "HEAD" True False
+            textCommand = jsonCommand {showJson = False}
+            result = ShowExploded projection
+            jsonRendered = renderShowOutcome jsonCommand result
+            textRendered = renderShowOutcome textCommand result
+        renderedExitCode jsonRendered @?= ExitSuccess
+        renderedStderr jsonRendered @?= ""
+        renderedStdout jsonRendered @?= renderCanonicalJson (explodedProjectionJson projection)
+        renderedStdout textRendered @?= Text.Encoding.decodeUtf8 (renderExplodedProjection projection),
       testCase "all JSON output types have sorted keys (deterministic serialization)" $ do
         -- Verify compileResultJson keys are sorted
         let compileResultJsonKeys = objectKeys (compileResultJson (mkCompileResult))
@@ -729,6 +758,53 @@ mutationCliContractTests =
   testGroup "init/create CLI contracts"
     [ testCase "global repo defaults before init" $ do
         parseCli ["init"] @?= Right (CliInvocation defaultCliConfig (CmdInit (InitCommand False)))
+    , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
+        let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True
+        parseCli ["show", "R0123456789ABCDEFGHJKMNPQRS", "--view", "exploded", "--at", "refs/heads/release", "--raw", "--json"]
+          @?= Right (CliInvocation defaultCliConfig (CmdShow expected))
+        parseCli ["show", "A0123456789ABCDEFGHJKMNPQRS"]
+          @?= Right (CliInvocation defaultCliConfig (CmdShow (ShowCommand "A0123456789ABCDEFGHJKMNPQRS" CollapsedView "HEAD" False False)))
+        assertParserFailure ["show", "A0123456789ABCDEFGHJKMNPQRS", "--collapsed"]
+        assertParserFailure ["show", "A0123456789ABCDEFGHJKMNPQRS", "--exploded"]
+        assertParserFailure ["show", "A0123456789ABCDEFGHJKMNPQRS", "--rich"]
+        assertParserFailure ["show", "A0123456789ABCDEFGHJKMNPQRS", "--view", "rich"]
+        assertParserFailure ["show", "A0123456789ABCDEFGHJKMNPQRS", "--body", "forbidden"]
+    , testCase "show dispatch preserves config and command and rejects raw collapsed before service" $ do
+        selectedRepo <- newIORef Nothing
+        selectedCommand <- newIORef Nothing
+        serviceCalled <- newIORef False
+        let projection = ExplodedProjection
+              (RevisionIdentity "refs/heads/release" "0123456789012345678901234567890123456789")
+              (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
+              (ResolutionState True False [])
+              (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))
+              []
+            command = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True False
+            dependencies = CliDispatchDependencies
+              { cliRunShow = \config received -> do
+                  writeIORef serviceCalled True
+                  writeIORef selectedRepo (Just (configRepo config))
+                  writeIORef selectedCommand (Just received)
+                  pure (Right (ShowExploded projection))
+              , cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunInit = \_ -> error "init service must not be selected"
+              , cliRunCreate = \_ _ -> error "create service must not be selected"
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
+              }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "show-repo"}) (CmdShow command)) >>= (@?= ExitSuccess)
+        readIORef serviceCalled >>= (@?= True)
+        readIORef selectedRepo >>= (@?= Just "show-repo")
+        readIORef selectedCommand >>= (@?= Just command)
+        writeIORef serviceCalled False
+        dispatchWith dependencies
+          (CliInvocation defaultCliConfig (CmdShow (ShowCommand "A0123456789ABCDEFGHJKMNPQRS" CollapsedView "HEAD" False True)))
+          >>= (@?= ExitFailure 2)
+        readIORef serviceCalled >>= (@?= False)
     , testCase "global repo selects create and repeatable fields" $ do
         let expected =
               CreateCommand

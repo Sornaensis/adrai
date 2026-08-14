@@ -47,6 +47,7 @@ module Adrai.CliRunner
     renderDomainOutcome,
     renderObsoleteOutcome,
     renderReactivateOutcome,
+    renderShowOutcome,
     renderFailureOutcome,
     emitRenderedToHandles,
     run,
@@ -72,6 +73,7 @@ import Adrai.Provenance (sha256Digest)
 import Adrai.Repository (repositorySnapshot, repositorySnapshotManagedPaths)
 import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
+import Adrai.Service.Query (ShowRequest (..), ShowResult (..), runShow, showFailureIsConflict, showFailureText)
 import Adrai.Service.PostCommitIndex
   ( IndexWarning (..),
     PostCommitIndexError (..),
@@ -95,6 +97,7 @@ import Adrai.Types
     recordIdText,
     repoPathText,
   )
+import Adrai.Query (collapsedProjectionJson, explodedProjectionJson, renderCollapsedProjection, renderExplodedProjection)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -130,6 +133,7 @@ import Options.Applicative
     auto,
     value,
     showDefault,
+    showDefaultWith,
     metavar,
     help,
     long,
@@ -470,12 +474,15 @@ showParser :: Parser ShowCommand
 showParser =
   ShowCommand
     <$> strArgument (metavar "ID" <> help "ADR identifier to show")
-    <*> ( flag' CollapsedView (long "collapsed" <> help "collapsed view (default)")
-        <|> flag' ExplodedView (long "exploded" <> help "exploded view")
-        )
+    <*> option (Opt.eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> value CollapsedView <> showDefaultWith (const "collapsed") <> help "show collapsed (default) or exploded view")
+    <*> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "immutable revision to query (default: HEAD)")
     <*> switch (long "json" <> help "output JSON")
     <*> switch (long "raw" <> help "include raw semantic data")
-    <*> switch (long "rich" <> help "rich collapsed view")
+  where
+    parseView value = case value of
+      "collapsed" -> Right CollapsedView
+      "exploded" -> Right ExplodedView
+      _ -> Left "--view must be collapsed or exploded"
 
 -- | History command parser.
 historyParser :: Parser HistoryCommand
@@ -646,9 +653,14 @@ dispatchWith _ (CliInvocation _ CmdCompile) = do
 dispatchWith _ (CliInvocation _ CmdDoctor) = do
   putStrLn "[doctor] diagnosing database"
   pure ExitSuccess
-dispatchWith _ (CliInvocation _ (CmdShow ShowCommand { showAdrId })) = do
-  putStrLn $ "[show] looking up ADR: " <> Text.unpack showAdrId
-  pure ExitSuccess
+dispatchWith dependencies (CliInvocation config (CmdShow command)) = do
+  if showRaw command && showView command /= ExplodedView
+    then renderFailure (CliUserFailure "--raw requires --view exploded")
+    else do
+      result <- cliRunShow dependencies config command
+      case result of
+        Left failure -> renderFailure failure
+        Right projection -> renderShowSuccess command projection
 dispatchWith _ (CliInvocation _ CmdHistory {}) = do
   putStrLn "[history] fetching history"
   pure ExitSuccess
@@ -663,7 +675,8 @@ dispatchWith _ (CliInvocation _ (CmdCompare CompareCommand { compareBefore, comp
   pure ExitSuccess
 
 data CliDispatchDependencies = CliDispatchDependencies
-  { cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
+  { cliRunShow :: ~(CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult))
+  , cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
   , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
   , cliMaterializeObsolete :: ~(ObsoleteCommand -> IO (Either Text ObsoleteCliRequest))
   , cliMaterializeReactivate :: ~(ReactivateCommand -> IO (Either Text ReactivateCliRequest))
@@ -680,7 +693,26 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies runProductionShow materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+
+runProductionShow :: CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult)
+runProductionShow config command = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      result <- runShow repository
+        ShowRequest
+          { showRequestReference = showAdrId command
+          , showRequestView = showView command
+          , showRequestRevision = showAt command
+          , showRequestRaw = showRaw command
+          }
+      pure $ case result of
+        Left failure
+          | showFailureIsConflict failure -> Left (CliConflictFailure (showFailureText failure))
+          | otherwise -> Left (CliUserFailure (showFailureText failure))
+        Right projection -> Right projection
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
 runProductionInit config = do
@@ -1320,6 +1352,25 @@ data CliRendered = CliRendered
   , renderedExitCode :: ExitCode
   }
   deriving (Eq, Show)
+
+renderShowSuccess :: ShowCommand -> ShowResult -> IO ExitCode
+renderShowSuccess command result = emitRendered (renderShowOutcome command result)
+
+renderShowOutcome :: ShowCommand -> ShowResult -> CliRendered
+renderShowOutcome command result =
+  CliRendered
+    output
+    ""
+    ExitSuccess
+  where
+    output
+      | showJson command = renderCanonicalJson value
+      | otherwise = case result of
+          ShowCollapsed projection -> TextEncoding.decodeUtf8 (renderCollapsedProjection projection)
+          ShowExploded projection -> TextEncoding.decodeUtf8 (renderExplodedProjection projection)
+    value = case result of
+      ShowCollapsed projection -> collapsedProjectionJson projection
+      ShowExploded projection -> explodedProjectionJson projection
 
 renderInitSuccess :: InitResult -> PostCommitIndexResult -> Bool -> IO ExitCode
 renderInitSuccess result indexResult jsonOutput = emitRendered (renderInitOutcome result indexResult jsonOutput)

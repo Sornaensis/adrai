@@ -7,7 +7,12 @@
 -- ``ADRAI_1_Source/tests/test_evolution_compare_ann.py``.
 module Adrai.QueryIntegrationTest (tests) where
 
+import Adrai.Git (discoverRepository, systemGit)
 import Adrai.Integration.CLI hiding (parseCompareResults, parseHistory, parseSearchResults)
+import Adrai.Query (renderCollapsedProjection)
+import Adrai.Service.Query (ShowRequest (..), ShowResult (..), runShow)
+import Adrai.Types (ViewMode (..))
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException)
 import qualified Control.Exception as Exception
 import Control.Monad (forM_, unless, void)
@@ -20,11 +25,14 @@ import Data.List (find, isPrefixOf, sortOn)
 import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Text (Text, strip)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8)
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import qualified Data.Vector as Vector
 import System.Directory (createDirectoryIfMissing)
+import System.Environment (getEnvironment, lookupEnv)
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Process.Typed (proc, readProcess, setEnv)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
@@ -171,6 +179,42 @@ extractTitle v = do
   o <- _Object v
   o .: "title"
 
+-- | P6-02F launches the explicitly selected executable under the same small
+-- Windows process environment used by mutation E2E.  It keeps Git discoverable
+-- while excluding inherited Git/config controls from the parent process.
+p602fRaw :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
+p602fRaw repoPath args = do
+  maybeExe <- lookupEnv "ADRAI_EXE"
+  exe <- case maybeExe of
+    Nothing -> assertFailure "P6-02F requires ADRAI_EXE to name the executable under test" >> fail "unreachable"
+    Just "" -> assertFailure "P6-02F requires ADRAI_EXE to be non-empty" >> fail "unreachable"
+    Just path -> pure path
+  inherited <- getEnvironment
+  readProcess (setEnv (p602fEnvironment inherited) (proc exe ("--repo" : repoPath : args)))
+
+p602fJsonOrThrow :: FilePath -> [String] -> IO Data.Aeson.Value
+p602fJsonOrThrow repoPath args = do
+  (exitCode, output, errors) <- p602fRaw repoPath args
+  case exitCode of
+    ExitSuccess -> case Data.Aeson.decode output of
+      Just value -> pure value
+      Nothing -> assertFailure "P6-02F executable emitted non-JSON success output" >> fail "unreachable"
+    ExitFailure code ->
+      assertFailure ("P6-02F executable failed with exit " <> show code <> ": " <> T.unpack (decodeUtf8 (LBS.toStrict errors))) >> fail "unreachable"
+
+p602fEnvironment :: [(String, String)] -> [(String, String)]
+p602fEnvironment inherited =
+  gitEnv
+    <> filter
+      ( \(key, _) ->
+          folded key `elem` required
+            && all ((/= folded key) . folded . fst) gitEnv
+      )
+      inherited
+  where
+    required = map folded ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"]
+    folded = T.toCaseFold . T.pack
+
 -- ---------------------------------------------------------------------------
 -- Test suite
 -- ---------------------------------------------------------------------------
@@ -186,6 +230,9 @@ tests =
       testHistoryEvolutionAxis,
       testHistorySemanticParentOrder,
       testHistoryLimitValidation,
+      testP602FRealExecutableShow,
+      testP602FRealExecutableConflict,
+      testP602FRealExecutableIntegrityFailure,
       testShowCollapsedEvolution,
       testCompareBranchOnly,
       testCompareReverseShowsRemoved,
@@ -531,6 +578,317 @@ testHistoryLimitValidation =
 -- =====================================================================
 -- Test 9: Collapsed view explains ADR evolution
 -- =====================================================================
+
+testP602FRealExecutableShow :: TestTree
+testP602FRealExecutableShow =
+  testCase "P6-02F real executable show is revision-local, canonical, and read-only" $
+    withSystemTempDirectory "adrai p6-02f show" $ \tmpDir -> do
+      repo <- createTestRepo tmpDir
+      _ <- p602fJsonOrThrow repo ["init", "--json"]
+      created <- p602fJsonOrThrow repo
+        [ "create"
+        , "--title", "Unicode snowman ☃ decision"
+        , "--summary", "A summary with spaces"
+        , "--body", "## Decision\nKeep the canonical show path.\n"
+        , "--domain", "platform"
+        , "--applies-to", "src/**"
+        , "--actor", "llm:planner"
+        , "--model", "demo-model"
+        , "--json"
+        ]
+      (adr, record, status) <-
+        case _Object created of
+          Just object ->
+            case (object .: "adr", object .: "record", object .: "status") of
+              (Just adrId, Just recordId, Just statusId) -> pure (adrId, recordId, statusId)
+              _ -> assertFailure "create result omitted ADR, record, or status identifier" >> fail "unreachable"
+          Nothing -> assertFailure "create result is not JSON object" >> fail "unreachable"
+      createdRevision <- headCommit repo
+      -- ADR prefixes contain a millisecond timestamp.  Cross a 10-character
+      -- bucket while remaining inside the coarser 8-character bucket so the
+      -- fixture proves both unique and ambiguous prefix outcomes.
+      threadDelay 50000
+      second <- p602fJsonOrThrow repo
+        [ "create"
+        , "--title", "Second decision for ambiguity"
+        , "--summary", "Shares a short identifier prefix"
+        , "--body", "## Decision\nKeep selector errors deterministic.\n"
+        , "--domain", "platform"
+        , "--applies-to", "test/**"
+        , "--actor", "llm:planner"
+        , "--model", "demo-model"
+        , "--json"
+        ]
+      secondAdr <-
+        case extractAdrId second of
+          Just value -> pure value
+          Nothing -> assertFailure "second create result omitted ADR identifier" >> fail "unreachable"
+      assertBool "fixture ADRs share the minimum accepted prefix" (T.take 8 secondAdr == T.take 8 adr)
+      threadDelay 50000
+      amended <- p602fJsonOrThrow repo
+        [ "amend", T.unpack adr
+        , "--title", "Unicode snowman ☃ decision v2"
+        , "--summary", "A summary with spaces"
+        , "--change-summary", "Verify revision-local show"
+        , "--body", "## Decision\nKeep the canonical show path.\n"
+        , "--actor", "llm:planner"
+        , "--model", "demo-model"
+        , "--json"
+        ]
+      amendConnection <-
+        case _Object amended >>= (.: "connection") of
+          Just value -> pure value
+          Nothing -> assertFailure "amend result omitted connection identifier" >> fail "unreachable"
+      repository <- do
+        discovered <- discoverRepository systemGit repo
+        case discovered of
+          Left problem -> assertFailure ("discover show fixture: " <> show problem) >> fail "unreachable"
+          Right value -> pure value
+      expectedText <- do
+        outcome <- runShow repository (ShowRequest adr CollapsedView "HEAD" False)
+        case outcome of
+          Right (ShowCollapsed projection) -> pure (LBS.fromStrict (renderCollapsedProjection projection))
+          other -> assertFailure ("programmatic collapsed show failed: " <> show other) >> fail "unreachable"
+
+      beforeHead <- headCommit repo
+      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+      beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+      let managedPaths =
+            filter ("architecture/adrai/" `isPrefixOf`)
+              (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
+      beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
+      BS.writeFile (repo </> "staged-show.bin") "\NUL\SOHstaged show bytes\255"
+      _ <- gitStdout repo ["add", "--", "staged-show.bin"]
+      BS.writeFile (repo </> "README.md") "# Test\ncaller dirty bytes\n"
+      BS.writeFile (repo </> "user-dirty.txt") "keep this worktree file"
+      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+      beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
+      beforeWorktree <- gitStdout repo ["diff", "--binary"]
+
+      (defaultExit, defaultOut, defaultErr) <- p602fRaw repo ["show", T.unpack adr]
+      defaultExit @?= ExitSuccess
+      defaultErr @?= ""
+      defaultOut @?= expectedText
+
+      (jsonExit, jsonOut, jsonErr) <- p602fRaw repo ["show", T.unpack record, "--json"]
+      jsonExit @?= ExitSuccess
+      jsonErr @?= ""
+      case Data.Aeson.decode jsonOut of
+        Just output -> case _Object output of
+          Just object -> do
+            (object .: "schema" :: Maybe Text) @?= Just "adrai/show-collapsed/v1"
+            (object .: "adr" :: Maybe Text) @?= Just adr
+            (object .: "as_of" :: Maybe Text) @?= Just beforeHead
+            provenance <- case KM.lookup "provenance" object >>= _Object of
+              Just value -> pure value
+              Nothing -> assertFailure "collapsed show omitted provenance" >> fail "unreachable"
+            createdProvenance <- case KM.lookup "created" provenance >>= _Object of
+              Just value -> pure value
+              Nothing -> assertFailure "collapsed show omitted created provenance" >> fail "unreachable"
+            originalCommits <- case createdProvenance .: "original_commits" of
+              Just value -> pure (value :: [Text])
+              Nothing -> assertFailure "created provenance omitted original commits" >> fail "unreachable"
+            assertBool "show exposes genuine placement evidence" (createdRevision `elem` originalCommits)
+            (object .: "title" :: Maybe Text) @?= Just "Unicode snowman ☃ decision v2"
+          Nothing -> assertFailure "collapsed show JSON is not an object"
+        Nothing -> assertFailure "collapsed show output is not JSON"
+
+      forM_ [T.toLower (T.take 10 adr), T.take 10 record, T.take 10 amendConnection] $ \reference -> do
+        (prefixExit, _, prefixErr) <- p602fRaw repo ["show", T.unpack reference, "--json"]
+        unless (prefixExit == ExitSuccess) $
+          assertFailure ("10-character show prefix failed for " <> T.unpack reference <> ": " <> show prefixErr)
+        prefixErr @?= ""
+
+      historicalWithoutRaw <- p602fJsonOrThrow repo ["show", T.unpack status, "--at", T.unpack createdRevision, "--view", "exploded", "--json"]
+      assertBool "exploded output omits raw semantic data by default"
+        (not ("\"raw_semantic\"" `BS.isInfixOf` LBS.toStrict (Data.Aeson.encode historicalWithoutRaw)))
+      historical <- p602fJsonOrThrow repo ["show", T.unpack status, "--at", T.unpack createdRevision, "--view", "exploded", "--raw", "--json"]
+      case _Object historical of
+        Just object -> do
+          (object .: "schema" :: Maybe Text) @?= Just "adrai/show-exploded/v1"
+          (object .: "as_of" :: Maybe Text) @?= Just createdRevision
+          operations <- case object .: "operations" of
+            Just value -> pure (value :: [Data.Aeson.Value])
+            Nothing -> assertFailure "historical exploded show omitted operations" >> fail "unreachable"
+          let historicalTitles =
+                [ title
+                | operation <- operations
+                , Just operationObject <- [_Object operation]
+                , Just items <- [operationObject .: "items" :: Maybe [Data.Aeson.Value]]
+                , item <- items
+                , Just itemObject <- [_Object item]
+                , Just title <- [itemObject .: "title" :: Maybe Text]
+                ]
+          assertBool "historical show retains the pre-amendment semantic title"
+            ("Unicode snowman ☃ decision" `elem` historicalTitles)
+          assertBool "historical show excludes the later amended title"
+            ("Unicode snowman ☃ decision v2" `notElem` historicalTitles)
+        Nothing -> assertFailure "exploded historical show JSON is not an object"
+      assertBool "--raw adds raw semantic item data"
+        ("\"raw_semantic\"" `BS.isInfixOf` LBS.toStrict (Data.Aeson.encode historical))
+
+      (rawExit, rawOut, rawErr) <- p602fRaw repo ["show", T.unpack adr, "--raw"]
+      rawExit @?= ExitFailure 2
+      rawOut @?= ""
+      rawErr @?= "adrai: --raw requires --view exploded\n"
+      (missingExit, missingOut, missingErr) <- p602fRaw repo ["show", "A00000000000000000000000000", "--json"]
+      missingExit @?= ExitFailure 2
+      missingOut @?= ""
+      missingErr @?= "adrai: ADRAI reference not found in this revision: A00000000000000000000000000\n"
+
+      (ambiguousExit, ambiguousOut, ambiguousErr) <- p602fRaw repo ["show", T.unpack (T.take 8 adr), "--json"]
+      ambiguousExit @?= ExitFailure 2
+      ambiguousOut @?= ""
+      let ambiguousIds = sortOn id [adr, secondAdr]
+          expectedAmbiguous =
+            "adrai: ambiguous ADRAI reference " <> T.take 8 adr <> ": "
+              <> T.intercalate ", " [identifier <> "->" <> identifier | identifier <- ambiguousIds]
+              <> "\n"
+      ambiguousErr @?= LBS.fromStrict (encodeUtf8 expectedAmbiguous)
+      (wrongKindExit, wrongKindOut, wrongKindErr) <- p602fRaw repo ["show", "O0000000", "--json"]
+      wrongKindExit @?= ExitFailure 2
+      wrongKindOut @?= ""
+      wrongKindErr @?= "adrai: unsupported ADRAI reference kind: O\n"
+      (shortExit, shortOut, shortErr) <- p602fRaw repo ["show", "A123456", "--json"]
+      shortExit @?= ExitFailure 2
+      shortOut @?= ""
+      shortErr @?= "adrai: malformed ADRAI reference A123456: IdPrefixWrongLength 7\n"
+      (revisionExit, revisionOut, revisionErr) <- p602fRaw repo ["show", T.unpack adr, "--at", "refs/heads/does-not-exist", "--json"]
+      revisionExit @?= ExitFailure 2
+      revisionOut @?= ""
+      assertBool "invalid revision is a user error" ("adrai: " `LBS.isPrefixOf` revisionErr)
+      (repositoryExit, repositoryOut, repositoryErr) <- p602fRaw (tmpDir </> "missing repository ü") ["show", T.unpack adr, "--json"]
+      repositoryExit @?= ExitFailure 2
+      repositoryOut @?= ""
+      assertBool "missing repository is a deterministic user error" ("adrai: " `LBS.isPrefixOf` repositoryErr)
+
+      afterHead <- headCommit repo
+      afterRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+      afterTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+      afterStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      afterIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+      afterCached <- gitStdout repo ["diff", "--cached", "--binary"]
+      afterWorktree <- gitStdout repo ["diff", "--binary"]
+      afterManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
+      afterHead @?= beforeHead
+      afterRef @?= beforeRef
+      afterTree @?= beforeTree
+      afterStatus @?= beforeStatus
+      afterIndex @?= beforeIndex
+      afterCached @?= beforeCached
+      afterWorktree @?= beforeWorktree
+      afterManaged @?= beforeManaged
+
+testP602FRealExecutableConflict :: TestTree
+testP602FRealExecutableConflict =
+  testCase "P6-02F real executable show maps semantic conflicts to exit 3 without mutation" $
+    withSystemTempDirectory "adrai p6-02f show conflict" $ \tmpDir -> do
+      repo <- createTestRepo tmpDir
+      _ <- p602fJsonOrThrow repo ["init", "--json"]
+      created <- p602fJsonOrThrow repo
+        [ "create"
+        , "--title", "Conflict base"
+        , "--summary", "Divergent records"
+        , "--body", "## Decision\nCreate two real decision heads.\n"
+        , "--domain", "platform"
+        , "--applies-to", "src/**"
+        , "--actor", "llm:planner"
+        , "--model", "demo-model"
+        , "--json"
+        ]
+      adr <-
+        case extractAdrId created of
+          Just value -> pure value
+          Nothing -> assertFailure "conflict create omitted ADR" >> fail "unreachable"
+      base <- headCommit repo
+      _ <- gitStdout repo ["switch", "-c", "show-left", T.unpack base]
+      _ <- p602fJsonOrThrow repo
+        [ "amend", T.unpack adr
+        , "--title", "Left decision"
+        , "--change-summary", "Left branch"
+        , "--body", "## Decision\nChoose the left alternative.\n"
+        , "--actor", "llm:planner"
+        , "--model", "demo-model"
+        , "--json"
+        ]
+      _ <- gitStdout repo ["switch", "-c", "show-right", T.unpack base]
+      _ <- p602fJsonOrThrow repo
+        [ "amend", T.unpack adr
+        , "--title", "Right decision"
+        , "--change-summary", "Right branch"
+        , "--body", "## Decision\nChoose the right alternative.\n"
+        , "--actor", "llm:planner"
+        , "--model", "demo-model"
+        , "--json"
+        ]
+      _ <- gitStdout repo ["switch", "main"]
+      _ <- gitStdout repo ["merge", "--no-ff", "-m", "merge divergent show fixture", "show-left", "show-right"]
+
+      beforeHead <- headCommit repo
+      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+      beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
+      beforeWorktree <- gitStdout repo ["diff", "--binary"]
+
+      (conflictExit, conflictOut, conflictErr) <- p602fRaw repo ["show", T.unpack adr, "--json"]
+      conflictExit @?= ExitFailure 3
+      conflictOut @?= ""
+      conflictErr @?= "adrai: conflict: ADR requires resolution: 2 decision heads\n"
+
+      headCommit repo >>= (@?= beforeHead)
+      gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
+      gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
+      gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
+      gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
+      gitStdout repo ["diff", "--cached", "--binary"] >>= (@?= beforeCached)
+      gitStdout repo ["diff", "--binary"] >>= (@?= beforeWorktree)
+
+testP602FRealExecutableIntegrityFailure :: TestTree
+testP602FRealExecutableIntegrityFailure =
+  testCase "P6-02F real executable show fails closed on repository integrity without mutation" $
+    withSystemTempDirectory "adrai p6-02f show integrity" $ \tmpDir -> do
+      repo <- createTestRepo tmpDir
+      _ <- p602fJsonOrThrow repo ["init", "--json"]
+      created <- p602fJsonOrThrow repo
+        [ "create"
+        , "--title", "Integrity base"
+        , "--summary", "Malformed managed source"
+        , "--body", "## Decision\nFail closed on invalid source.\n"
+        , "--domain", "platform"
+        , "--applies-to", "src/**"
+        , "--actor", "llm:planner"
+        , "--model", "demo-model"
+        , "--json"
+        ]
+      (adr, decisionPath) <-
+        case _Object created of
+          Just object ->
+            case (object .: "adr", object .: "created") of
+              (Just adrId, Just paths) ->
+                case find (T.isSuffixOf ".decision.md") (paths :: [Text]) of
+                  Just path -> pure (adrId, path)
+                  Nothing -> assertFailure "create result omitted decision path" >> fail "unreachable"
+              _ -> assertFailure "create result omitted ADR or paths" >> fail "unreachable"
+          Nothing -> assertFailure "integrity create result is not an object" >> fail "unreachable"
+      BS.writeFile (repo </> T.unpack decisionPath) "schema: deliberately-invalid\n"
+      _ <- gitStdout repo ["add", "--", T.unpack decisionPath]
+      _ <- gitStdout repo ["commit", "-m", "commit malformed managed source"]
+
+      beforeHead <- headCommit repo
+      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      (failureExit, failureOut, failureErr) <- p602fRaw repo ["show", T.unpack adr, "--json"]
+      failureExit @?= ExitFailure 2
+      failureOut @?= ""
+      assertBool "integrity failure is explicit" ("adrai: repository integrity failure: " `LBS.isPrefixOf` failureErr)
+      headCommit repo >>= (@?= beforeHead)
+      gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
+      gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
+      gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
 
 testShowCollapsedEvolution :: TestTree
 testShowCollapsedEvolution =
