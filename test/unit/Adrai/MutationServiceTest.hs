@@ -39,7 +39,7 @@ import Adrai.GitTestSupport
 import Adrai.Fixture.CompilerRepository (healthyCompilerFiles)
 import Adrai.Graph
   ( AxisResolution (..),
-    GraphAxis (DomainAxis),
+    GraphAxis (DomainAxis, ScopeAxis),
     ReducedAdr (..),
     lookupReducedAdr,
     reduceManagedGraph,
@@ -73,12 +73,18 @@ import Adrai.Service.Mutation
     ScopeChangeResult (..),
     DomainChangeRequest (..),
     DomainChangeResult (..),
+    ObsoleteRequest (..),
+    ObsoleteResult (..),
+    ReactivateRequest (..),
+    ReactivateResult (..),
     InitResult (..),
     amendAdmCommand,
     changeDomainCommand,
     changeScopeCommand,
     createAdrCommand,
     initCommand,
+    obsoleteCommand,
+    reactivateCommand,
   )
 import Adrai.Service.PostCommitIndex
   ( IndexWarning (..),
@@ -184,6 +190,14 @@ tests =
         , testCase "domain stale unknown detached and inactive authority failures preserve state" domainAuthorityFailuresPreserveRepository
         , testCase "domain induced post-generation transaction failure preserves every observable state" domainTransactionFailurePreservesEverything
         ]
+    , testGroup
+        "P6-02E status mutation service"
+        [ testCase "obsolete and reactivate use current heads, truthful provenance, and state tokens" statusTransitionsAreTruthful
+        , testCase "status rejections preserve the complete caller-visible repository state" statusRejectionsPreserveRepository
+        , testCase "status resolve merges every current status head and rejects unapproved conflicts" statusResolveMergesConflict
+        , testCase "status transaction failure preserves every observable state" statusTransactionFailurePreservesEverything
+        , testCase "status authority, replacement, and compatibility rejections preserve state" statusAuthorityMatrixPreservesRepository
+        ]
     ]
 
 -- | Every observable state that an append-only mutation must leave untouched
@@ -202,6 +216,21 @@ data FailureSnapshot = FailureSnapshot
     failureManagedInventory :: [(Text.Text, Maybe BS.ByteString)],
     failureCallerFiles :: [(FilePath, Maybe BS.ByteString)],
     failureDisposableIndexes :: [(FilePath, BS.ByteString)]
+  }
+  deriving (Eq, Show)
+
+data StatusUpdate = StatusUpdate
+  { statusUpdateOperationId :: String,
+    statusUpdateAdrId :: AdrId,
+    statusUpdateConnectionId :: ConnectionId,
+    statusUpdateParents :: [ConnectionId],
+    statusUpdateRecords :: [RecordId],
+    statusUpdateReplacement :: Maybe AdrId,
+    statusUpdateResolved :: Bool,
+    statusUpdateCommit :: GitOid,
+    statusUpdatePath :: RepoPath,
+    statusUpdatePaths :: [RepoPath],
+    statusUpdateIndexUpdated :: Bool
   }
   deriving (Eq, Show)
 
@@ -1356,6 +1385,275 @@ domainTransactionFailurePreservesEverything =
       other -> assertFailure ("expected induced Stage7CommitTree failure, got " <> show other)
     scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt", cachePath] >>= (@?= before)
 
+statusTransitionsAreTruthful :: IO ()
+statusTransitionsAreTruthful =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    before <- reducedAdrAt directory (createAdrId created)
+    obsolete <- assertRight =<< runObsolete repository (createAdrId created) (Just (reducedStateToken before)) "  Superseded by a reviewed decision\r\n" Nothing
+    assertStatusUpdate directory StatusObsolete "Superseded by a reviewed decision\n" [createStatusId created] [createRecordId created] Nothing False (fromObsolete obsolete)
+    afterObsolete <- reducedAdrAt directory (createAdrId created)
+    reactivated <- assertRight =<< runReactivate repository (createAdrId created) (Just (reducedStateToken afterObsolete)) "Restore decision" False
+    assertStatusUpdate directory StatusActive "Restore decision\n" [obsoleteConnectionId obsolete] [createRecordId created] Nothing False (fromReactivate reactivated)
+
+statusRejectionsPreserveRepository :: IO ()
+statusRejectionsPreserveRepository =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    let callerFiles = [directory </> "status-unrelated-staged.txt", directory </> "status-unrelated-dirty.txt"]
+    _ <- gitSuccess directory ["update-index", "--add", "--cacheinfo", "100644," <> replicate 40 '1' <> ",status-unrelated-staged.txt"] BS.empty
+    BS.writeFile (directory </> "status-unrelated-dirty.txt") "dirty\n"
+    assertStatusFailure directory callerFiles (Stage3ValidateState "obsolete reason must be nonblank") (runObsolete repository (createAdrId created) Nothing " \r\n " Nothing)
+    assertStatusFailure directory callerFiles (Stage3ValidateState "obsolete replacement ADR must not name the target ADR") (runObsolete repository (createAdrId created) Nothing "Reason" (Just (createAdrId created)))
+    unknown <- assertRight (mkAdrId "A00000000000000000000000002")
+    assertStatusFailure directory callerFiles (Stage3ValidateState "obsolete replacement ADR is unknown") (runObsolete repository (createAdrId created) Nothing "Reason" (Just unknown))
+    obsolete <- assertRight =<< runObsolete repository (createAdrId created) Nothing "Reason" Nothing
+    afterObsolete <- scopeFailureSnapshot directory callerFiles
+    assertStatusFailure directory callerFiles (Stage3ValidateState "obsolete target ADR is already obsolete") (runObsolete repository (createAdrId created) Nothing "Again" Nothing)
+    reactivated <- assertRight =<< runReactivate repository (createAdrId created) Nothing "Restore" False
+    afterReactivate <- scopeFailureSnapshot directory callerFiles
+    assertStatusFailure directory callerFiles (Stage3ValidateState "reactivate target ADR is already active") (runReactivate repository (createAdrId created) Nothing "Again" False)
+    -- The original rejected attempts made no observable changes before the
+    -- one intentional obsolete transition.
+    assertBool "intentional transition advanced HEAD" (failureHeadOid afterObsolete /= failureHeadOid afterReactivate)
+    obsoleteConnectionId obsolete @?= reactivateStatusParents reactivated !! 0
+
+statusResolveMergesConflict :: IO ()
+statusResolveMergesConflict =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    left <- commitStatusBranch directory created "C00000000000000000000000009" "O00000000000000000000000009" StatusObsolete
+    right <- commitStatusBranch directory created "C00000000000000000000000008" "O00000000000000000000000008" StatusActive
+    before <- reducedAdrAt directory (createAdrId created)
+    assertStatusFailure directory [] (Stage3ValidateState "status target ADR is conflicted") (runObsolete repository (createAdrId created) (Just (reducedStateToken before)) "No approval" Nothing)
+    actor <- createActor
+    inputs <- scopeInputs
+    merged <- assertRight =<< obsoleteCommand repository (configManagedPaths defaultConfig) actor (createAdrId created) (ObsoleteRequest (Just (reducedStateToken before)) "Reviewed resolution" True Nothing) inputs
+    obsoleteResolvedConflict merged @?= True
+    obsoleteStatusParents merged @?= sort [left, right]
+    document <- statusDocumentAt directory (obsoleteCommitOid merged) (obsoleteNewPath merged)
+    provenanceParents (parsedManagedCapsule document) @?= map ProvenanceConnection (sort [left, right]) <> [ProvenanceRecord (createRecordId created)]
+
+statusTransactionFailurePreservesEverything :: IO ()
+statusTransactionFailurePreservesEverything =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    prepareScopeObservableFiles directory
+    before <- scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt"]
+    _ <- gitSuccess directory ["config", "user.name", ""] BS.empty
+    _ <- gitSuccess directory ["config", "user.email", ""] BS.empty
+    result <- runObsolete repository (createAdrId created) Nothing "Commit must fail" Nothing
+    case result of
+      Left (Stage7CommitTree _) -> pure ()
+      other -> assertFailure ("expected induced Stage7CommitTree failure, got " <> show other)
+    scopeFailureSnapshot directory [directory </> "scope-unrelated-staged.txt", directory </> "scope-unrelated-dirty.txt"] >>= (@?= before)
+
+statusAuthorityMatrixPreservesRepository :: IO ()
+statusAuthorityMatrixPreservesRepository = do
+  replacementMatrix
+  inactiveReplacement
+  conflictedReplacement
+  authorityMatrix
+  missingHeadMatrix
+  conflictMatrix
+  compatibilityMatrix
+  where
+    replacementMatrix = withCreateRepository $ \directory repository _ -> do
+      created <- assertRight =<< runCreate repository
+      replacement <- assertRight =<< runCreateWithIds repository "A00000000000000000000000002" "R00000000000000000000000002"
+      positive <- assertRight =<< runObsolete repository (createAdrId created) Nothing "Replace with active ADR" (Just (createAdrId replacement))
+      assertStatusUpdate directory StatusObsolete "Replace with active ADR\n" [createStatusId created] [createRecordId created] (Just (createAdrId replacement)) False (fromObsolete positive)
+    inactiveReplacement = withCreateRepository $ \directory repository _ -> do
+      created <- assertRight =<< runCreate repository
+      replacement <- assertRight =<< runCreateWithIds repository "A00000000000000000000000002" "R00000000000000000000000002"
+      _ <- assertRight =<< runObsolete repository (createAdrId replacement) Nothing "Retire replacement" Nothing
+      assertStatusFailure directory [] (Stage3ValidateState "obsolete replacement ADR is not unambiguously active") (runObsolete repository (createAdrId created) Nothing "Reason" (Just (createAdrId replacement)))
+    conflictedReplacement = withCreateRepository $ \directory repository _ -> do
+      created <- assertRight =<< runCreate repository
+      replacement <- assertRight =<< runCreateWithIds repository "A00000000000000000000000002" "R00000000000000000000000002"
+      _ <- commitStatusBranch directory replacement "C00000000000000000000000009" "O00000000000000000000000009" StatusObsolete
+      _ <- commitStatusBranch directory replacement "C00000000000000000000000008" "O00000000000000000000000008" StatusActive
+      assertStatusFailure directory [] (Stage3ValidateState "obsolete replacement ADR is conflicted") (runObsolete repository (createAdrId created) Nothing "Reason" (Just (createAdrId replacement)))
+    authorityMatrix = withCreateRepository $ \directory repository _ -> do
+      created <- assertRight =<< runCreate repository
+      unknown <- assertRight (mkAdrId "A00000000000000000000000002")
+      assertStatusFailure directory [] (Stage3ValidateState "status target ADR is unknown") (runObsolete repository unknown Nothing "Reason" Nothing)
+      token <- reducedStateToken <$> reducedAdrAt directory (createAdrId created)
+      commitInactiveStatus directory created
+      current <- reducedStateToken <$> reducedAdrAt directory (createAdrId created)
+      assertStatusFailure directory [] (Stage3ValidateState ("stale ADR state: expected " <> stateTokenText token <> ", current state is " <> stateTokenText current)) (runObsolete repository (createAdrId created) (Just token) "Reason" Nothing)
+      _ <- gitSuccess directory ["checkout", "--detach"] BS.empty
+      assertStatusFailure directory [] (Stage3ValidateState "HEAD is detached; attach a branch first") (runObsolete repository (createAdrId created) Nothing "Reason" Nothing)
+    missingHeadMatrix = do
+      withCreateRepository $ \directory repository _ -> do
+        created <- assertRight =<< runCreate repository
+        path <- managedPathFor directory isStatusDocument
+        _ <- gitSuccess directory ["rm", "--", Text.unpack path] BS.empty
+        _ <- gitSuccess directory ["commit", "-m", "remove status head"] BS.empty
+        assertStatusFailure directory [] (Stage3ValidateState "status target ADR has no current status") (runObsolete repository (createAdrId created) Nothing "Reason" Nothing)
+      withCreateRepository $ \directory repository _ -> do
+        created <- assertRight =<< runCreate repository
+        path <- managedPathFor directory isDecisionDocument
+        _ <- gitSuccess directory ["rm", "--", Text.unpack path] BS.empty
+        _ <- gitSuccess directory ["commit", "-m", "remove decision head"] BS.empty
+        assertStatusFailure directory [] (Stage3ValidateState "status target ADR has no current status") (runObsolete repository (createAdrId created) Nothing "Reason" Nothing)
+    conflictMatrix = do
+      withCreateRepository $ \directory repository _ -> do
+        created <- assertRight =<< runCreate repository
+        left <- commitStatusBranch directory created "C00000000000000000000000009" "O00000000000000000000000009" StatusObsolete
+        right <- commitStatusBranch directory created "C00000000000000000000000008" "O00000000000000000000000008" StatusActive
+        reduced <- reducedAdrAt directory (createAdrId created)
+        merged <- assertRight =<< runReactivate repository (createAdrId created) (Just (reducedStateToken reduced)) "Reviewed reactivation" True
+        assertStatusUpdate directory StatusActive "Reviewed reactivation\n" (sort [left, right]) [createRecordId created] Nothing True (fromReactivate merged)
+      withCreateRepository $ \directory repository _ -> do
+        created <- assertRight =<< runCreate repository
+        leftPattern <- assertRight (mkScopePattern "conflict/**")
+        rightPattern <- assertRight (mkScopePattern "other/**")
+        _ <- gitSuccess directory ["checkout", "-b", "status-resolve-scope-left"] BS.empty
+        left <- assertRight =<< runScope repository (createAdrId created) Nothing [leftPattern] []
+        _ <- gitSuccess directory ["checkout", "main"] BS.empty
+        right <- assertRight =<< runScope repository (createAdrId created) Nothing [rightPattern] []
+        _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (scopeChangeCommitOid left))] BS.empty
+        conflicted <- reducedAdrAt directory (createAdrId created)
+        reducedConflictAxes conflicted @?= [ScopeAxis]
+        axisResolutionHeads (reducedScopeAxis conflicted) @?= sort [scopeChangeConnectionId left, scopeChangeConnectionId right]
+        assertStatusFailure directory [] (Stage3ValidateState "status resolve requires a conflicted status axis") (runReactivate repository (createAdrId created) Nothing "Unsafe" True)
+    compatibilityMatrix = withCreateRepository $ \directory repository _ -> do
+      created <- assertRight =<< runCreate repository
+      actor <- createActor
+      inputs <- scopeInputs
+      bogus <- assertRight (mkRecordId "R00000000000000000000000002")
+      obsolete <- assertRight =<< obsoleteCommand repository (configManagedPaths defaultConfig) actor (createAdrId created) bogus inputs
+      obsoleteRecordHeads obsolete @?= [createRecordId created]
+      assertStatusUpdate directory StatusObsolete "Explorer status update\n" [createStatusId created] [createRecordId created] Nothing False (fromObsolete obsolete)
+
+runObsolete :: Repository -> AdrId -> Maybe StateToken -> Text.Text -> Maybe AdrId -> IO (Either TransactionError ObsoleteResult)
+runObsolete repository adr expected reason replacement = do
+  actor <- createActor
+  inputs <- scopeInputs
+  obsoleteCommand repository (configManagedPaths defaultConfig) actor adr (ObsoleteRequest expected reason False replacement) inputs
+
+runReactivate :: Repository -> AdrId -> Maybe StateToken -> Text.Text -> Bool -> IO (Either TransactionError ReactivateResult)
+runReactivate repository adr expected reason resolve = do
+  actor <- createActor
+  inputs <- scopeInputs
+  reactivateCommand repository (configManagedPaths defaultConfig) actor adr (ReactivateRequest expected reason resolve) inputs
+
+reducedAdrAt :: FilePath -> AdrId -> IO ReducedAdr
+reducedAdrAt directory adr = do
+  committed <- managedCommittedBytes directory
+  documents <- mapM parseOne committed
+  case lookupReducedAdr adr (reduceManagedGraph (map parsedManagedRecord documents)) of
+    Nothing -> assertFailure "expected reduced ADR" >> fail "unreachable"
+    Just reduced -> pure reduced
+  where
+    parseOne (path, bytes) = do
+      repoPath <- assertRight (mkRepoPath path)
+      assertRight (parseManagedDocument repoPath bytes)
+
+managedPathFor :: FilePath -> (ParsedManagedDocument -> Bool) -> IO Text.Text
+managedPathFor directory predicate = do
+  committed <- managedCommittedBytes directory
+  candidates <- fmap concat $ mapM select committed
+  case candidates of
+    [path] -> pure path
+    other -> assertFailure ("expected exactly one managed path, got " <> show other) >> fail "unreachable"
+  where
+    select (path, bytes) = do
+      repoPath <- assertRight (mkRepoPath path)
+      document <- assertRight (parseManagedDocument repoPath bytes)
+      pure [path | predicate document]
+
+isStatusDocument :: ParsedManagedDocument -> Bool
+isStatusDocument document = case parsedManagedRecord document of
+  ManagedConnection connection -> case connectionPayload connection of StatusConnection _ -> True; _ -> False
+  _ -> False
+
+isDecisionDocument :: ParsedManagedDocument -> Bool
+isDecisionDocument document = case parsedManagedRecord document of ManagedDecision _ -> True; _ -> False
+
+statusDocumentAt :: FilePath -> GitOid -> RepoPath -> IO ParsedManagedDocument
+statusDocumentAt directory commit path = do
+  bytes <- gitSuccess directory ["show", Text.unpack (gitOidText commit <> ":" <> repoPathText path)] BS.empty
+  assertRight (parseManagedDocument path bytes)
+
+fromObsolete :: ObsoleteResult -> StatusUpdate
+fromObsolete result = StatusUpdate
+  { statusUpdateOperationId = obsoleteOperationId result, statusUpdateAdrId = obsoleteAdrId result
+  , statusUpdateConnectionId = obsoleteConnectionId result, statusUpdateParents = obsoleteStatusParents result
+  , statusUpdateRecords = obsoleteRecordHeads result, statusUpdateReplacement = obsoleteReplacementAdr result
+  , statusUpdateResolved = obsoleteResolvedConflict result, statusUpdateCommit = obsoleteCommitOid result
+  , statusUpdatePath = obsoleteNewPath result, statusUpdatePaths = obsoleteCreatedPaths result
+  , statusUpdateIndexUpdated = obsoleteIndexUpdated result }
+
+fromReactivate :: ReactivateResult -> StatusUpdate
+fromReactivate result = StatusUpdate
+  { statusUpdateOperationId = reactivateOperationId result, statusUpdateAdrId = reactivateAdrId result
+  , statusUpdateConnectionId = reactivateConnectionId result, statusUpdateParents = reactivateStatusParents result
+  , statusUpdateRecords = reactivateRecordHeads result, statusUpdateReplacement = Nothing
+  , statusUpdateResolved = reactivateResolvedConflict result, statusUpdateCommit = reactivateCommitOid result
+  , statusUpdatePath = reactivateNewPath result, statusUpdatePaths = reactivateCreatedPaths result
+  , statusUpdateIndexUpdated = reactivateIndexUpdated result }
+
+assertStatusFailure :: FilePath -> [FilePath] -> TransactionError -> IO (Either TransactionError value) -> IO ()
+assertStatusFailure directory callerFiles expected action = do
+  before <- scopeFailureSnapshot directory callerFiles
+  result <- action
+  case result of
+    Left actual -> actual @?= expected
+    Right _ -> assertFailure ("expected status failure " <> show expected)
+  scopeFailureSnapshot directory callerFiles >>= (@?= before)
+
+assertStatusUpdate :: FilePath -> StatusState -> Text.Text -> [ConnectionId] -> [RecordId] -> Maybe AdrId -> Bool -> StatusUpdate -> IO ()
+assertStatusUpdate directory expectedState rationale parents records replacement resolved update = do
+  document <- statusDocumentAt directory (statusUpdateCommit update) (statusUpdatePath update)
+  case parsedManagedRecord document of
+    ManagedConnection connection -> case connectionPayload connection of
+      StatusConnection payload -> do
+        statusSubjectAdr payload @?= statusUpdateAdrId update
+        statusParentConnections payload @?= parents
+        statusState payload @?= expectedState
+        statusRecordHeads payload @?= records
+        statusReplacementAdr payload @?= replacement
+        connectionRationale connection @?= rationale
+      _ -> assertFailure "expected status connection payload"
+    _ -> assertFailure "expected status connection"
+  statusUpdateParents update @?= parents
+  statusUpdateRecords update @?= records
+  statusUpdateReplacement update @?= replacement
+  statusUpdateResolved update @?= resolved
+  statusUpdatePaths update @?= [statusUpdatePath update]
+  assertBool "status transaction refreshed index" (statusUpdateIndexUpdated update)
+  let capsule = parsedManagedCapsule document
+      expectedEvent = if expectedState == StatusObsolete then "decision.obsolete" else "decision.reactivate"
+  actor <- createActor
+  inputs <- scopeInputs
+  provenanceObjectId capsule @?= ProvenanceConnection (statusUpdateConnectionId update)
+  operationIdText (provenanceOperationId capsule) @?= Text.pack (statusUpdateOperationId update)
+  provenanceParents capsule @?= map ProvenanceConnection parents <> map ProvenanceRecord records
+  provenanceBranchHint capsule @?= Just "main"
+  provenanceActor capsule @?= actor
+  provenanceInputs capsule @?= inputs
+  eventKindText (provenanceEventKind capsule) @?= expectedEvent
+  provenanceToolVersion capsule @?= "adrai/1.0.0"
+  assertBool "status timestamp is positive" (provenanceTimestampMs capsule > 0)
+  semantic <- case parsedManagedRecord document of
+    ManagedConnection connection -> assertRight (renderConnectionSemantic connection)
+    _ -> assertFailure "expected status connection" >> fail "unreachable"
+  provenanceSemanticDigest capsule @?= semanticDigest semantic
+  canonicalManagedPath (configManagedPaths defaultConfig) (parsedManagedRecord document) @?= Right (statusUpdatePath update)
+  worktree <- gitSuccess directory ["show", "HEAD:" <> Text.unpack (repoPathText (statusUpdatePath update))] BS.empty
+  committed <- gitSuccess directory ["show", Text.unpack (gitOidText (statusUpdateCommit update) <> ":" <> repoPathText (statusUpdatePath update))] BS.empty
+  worktree @?= committed
+  worktreeStatus <- managedWorktreeState directory
+  [] @?= worktreeStatus
+  gitText directory ["rev-parse", "HEAD"] >>= (@?= gitOidText (statusUpdateCommit update))
+  gitText directory ["show", "-s", "--format=%P", Text.unpack (gitOidText (statusUpdateCommit update))] >>= (@?= gitOidText (provenanceBasis capsule))
+  gitText directory ["show", "-s", "--format=%s", Text.unpack (gitOidText (statusUpdateCommit update))] >>= (@?= ("adrai: " <> if expectedState == StatusObsolete then "obsolete " else "reactivate ") <> adrIdText (statusUpdateAdrId update))
+  body <- gitText directory ["show", "-s", "--format=%B", Text.unpack (gitOidText (statusUpdateCommit update))]
+  assertBool "status commit contains exact ADR trailer" (("ADR: " <> adrIdText (statusUpdateAdrId update)) `Text.isInfixOf` body)
+  assertBool "status commit contains exact Objects trailer" (("Objects: " <> connectionIdText (statusUpdateConnectionId update)) `Text.isInfixOf` body)
+
 runDomain :: Repository -> AdrId -> Maybe StateToken -> Text.Text -> DomainChangeRequest -> IO (Either TransactionError DomainChangeResult)
 runDomain repository adr expected reason request = do
   actor <- createActor
@@ -1662,6 +1960,46 @@ commitInactiveStatus directory created = do
   _ <- commitFile directory (Text.unpack (repoPathText path)) bytes
   pure ()
 
+commitStatusBranch :: FilePath -> CreateResult -> Text.Text -> Text.Text -> StatusState -> IO ConnectionId
+commitStatusBranch directory created connectionText operationText state = do
+  actor <- createActor
+  connectionId <- assertRight (mkConnectionId connectionText)
+  operationId <- assertRight (mkOperationId operationText)
+  let statusRecord = ConnectionRecord
+        { connectionRecordId = connectionId
+        , connectionPayload = StatusConnection StatusPayload
+            { statusSubjectAdr = createAdrId created
+            , statusParentConnections = [createStatusId created]
+            , statusState = state
+            , statusRecordHeads = [createRecordId created]
+            , statusReplacementAdr = Nothing
+            }
+        , connectionRationale = "Test status branch.\n"
+        }
+      managed = ManagedConnection statusRecord
+  semantic <- assertRight (renderConnectionSemantic statusRecord)
+  eventKind <- assertRight (mkEventKind (if state == StatusObsolete then "decision.obsolete" else "decision.reactivate"))
+  basis <- GitOid <$> gitText directory ["rev-parse", "HEAD"]
+  capsule <- assertRight (mkProvenanceCapsule ProvenanceCapsuleInput
+    { capsuleInputOperationId = operationId
+    , capsuleInputObjectId = ProvenanceConnection connectionId
+    , capsuleInputEventKind = eventKind
+    , capsuleInputActor = actor
+    , capsuleInputTimestampMs = 1700000000000
+    , capsuleInputBasis = basis
+    , capsuleInputParents = [ProvenanceConnection (createStatusId created), ProvenanceRecord (createRecordId created)]
+    , capsuleInputBranchHint = Just "main"
+    , capsuleInputUpstreamHint = Nothing
+    , capsuleInputLineAnchors = []
+    , capsuleInputSemanticDigest = semanticDigest semantic
+    , capsuleInputToolVersion = "adrai/1.0.0"
+    , capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
+    })
+  bytes <- assertRight (sealManagedDocument managed capsule)
+  path <- assertRight (canonicalManagedPath (configManagedPaths defaultConfig) managed)
+  _ <- commitFile directory (Text.unpack (repoPathText path)) bytes
+  pure connectionId
+
 commitDomainExpansion :: FilePath -> CreateResult -> Text.Text -> Text.Text -> Text.Text -> IO Text.Text
 commitDomainExpansion directory created connectionText operationText domainTextValue = do
   actor <- createActor
@@ -1893,6 +2231,16 @@ runCreate repository = do
     Nothing
     Nothing
     Nothing
+
+runCreateWithIds :: Repository -> Text.Text -> Text.Text -> IO (Either TransactionError CreateResult)
+runCreateWithIds repository adrText recordText = do
+  actor <- createActor
+  adr <- assertRight (mkAdrId adrText)
+  record <- assertRight (mkRecordId recordText)
+  domain <- assertRight (mkDomain "compiler")
+  scope <- assertRight (mkScopePattern "src/**")
+  createAdrCommand repository (configManagedPaths defaultConfig) actor adr record
+    "Create replacement" "Create replacement ADR." "## Decision\nReplacement.\n" [domain] [scope] Nothing Nothing Nothing
 
 createActor :: IO Actor
 createActor = assertRight (mkActor HumanActor "mutation-service-test" Nothing)

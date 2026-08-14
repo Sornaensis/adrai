@@ -2,6 +2,7 @@
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 -- | Mutable operations on ADRAI repositories.
 --
@@ -35,8 +36,10 @@ module Adrai.Service.Mutation
     DomainChangeRequest (..),
     DomainChangeResult (..),
     changeDomainCommand,
+    ObsoleteRequest (..),
     ObsoleteResult (..),
     obsoleteCommand,
+    ReactivateRequest (..),
     ReactivateResult (..),
     reactivateCommand,
   )
@@ -163,7 +166,7 @@ import Adrai.Repository
   )
 import Adrai.Graph
   ( AxisResolution (..),
-    GraphAxis (ScopeAxis, DomainAxis),
+    GraphAxis (ScopeAxis, DomainAxis, StatusAxis),
     GraphReduction (..),
     ReducedAdr (..),
     ReducedStatus (..),
@@ -1237,13 +1240,27 @@ sealDomainUpdate opId revision branchName actor timestampMs parents inputs paths
 -- ---------------------------------------------------------------------------
 
 -- | Result of the 'obsoleteCommand' operation.
+data ObsoleteRequest = ObsoleteRequest
+  { obsoleteExpectedState :: Maybe StateToken,
+    obsoleteReason :: T.Text,
+    obsoleteResolve :: Bool,
+    obsoleteReplacement :: Maybe AdrId
+  }
+  deriving (Eq, Show)
+
 data ObsoleteResult
   = ObsoleteResult
       { obsoleteOperationId :: String,
         obsoleteAdrId       :: AdrId,
         obsoleteConnectionId :: ConnectionId,
+        obsoleteStatusParents :: [ConnectionId],
+        obsoleteRecordHeads :: [RecordId],
+        obsoleteReplacementAdr :: Maybe AdrId,
+        obsoleteResolvedConflict :: Bool,
         obsoleteCommitOid   :: GitOid,
-        obsoleteNewPath     :: RepoPath
+        obsoleteNewPath     :: RepoPath,
+        obsoleteCreatedPaths :: [RepoPath],
+        obsoleteIndexUpdated :: Bool
       }
   deriving (Eq, Show)
 
@@ -1254,11 +1271,12 @@ data ObsoleteResult
 --
 -- The new capsule carries eventKind @"decision.obsolete"@.
 obsoleteCommand ::
+  ObsoleteIntent intent =>
   Repository ->
   ManagedPaths ->
   Actor ->
   AdrId ->
-  RecordId ->
+  intent ->
   ProvenanceInputs ->
   IO (Either TransactionError ObsoleteResult)
 obsoleteCommand
@@ -1266,104 +1284,36 @@ obsoleteCommand
   managedPaths
   actor
   adrId
-  recordId
-  inputs = do
-    oldHeadResult <- resolveRevision repository (RevisionSpec "HEAD")
-    case oldHeadResult of
-      Left err ->
-        pure (Left (Stage3ValidateState ("resolve HEAD: " <> T.pack (show err))))
-      Right oldHead -> do
-        timestampMs <- currentTimestampMs
-        entropy <- randomEntropy
-        let opIdResult = sortableOperationId timestampMs entropy
-            connIdResult = sortableConnectionId timestampMs entropy
-        case (opIdResult, connIdResult) of
-          (Right opId, Right connId) -> do
-            let statusRecord =
-                  ConnectionRecord
-                    { connectionRecordId = connId,
-                      connectionPayload = StatusConnection (StatusPayload
-                        { statusSubjectAdr = adrId
-                        , statusParentConnections = []
-                        , statusState = StatusObsolete
-                        , statusRecordHeads = [recordId]
-                        , statusReplacementAdr = Nothing
-                        }),
-                      connectionRationale = "ADR marked obsolete"
-                    }
-            let semanticEither = renderConnectionSemantic statusRecord
-            case semanticEither of
-              Left docErr ->
-                pure (Left (Stage5ValidateGenerated ("obsolete render: " <> T.pack (show docErr))))
-              Right semantic -> do
-                let digest = semanticDigest semantic
-                    eventIdResult = mkEventKind "decision.obsolete"
-                case eventIdResult of
-                  Left provErr ->
-                    pure (Left (Stage5ValidateGenerated ("obsolete eventKind: " <> T.pack (show provErr))))
-                  Right eventKind -> do
-                    let parentId = ProvenanceConnection connId
-                        ts = 1000000000000
-                        capsuleInput =
-                          ProvenanceCapsuleInput
-                            { capsuleInputOperationId = opId,
-                              capsuleInputObjectId = ProvenanceConnection connId,
-                              capsuleInputEventKind = eventKind,
-                              capsuleInputActor = actor,
-                              capsuleInputTimestampMs = ts,
-                              capsuleInputBasis = oldHead,
-                              capsuleInputParents = [parentId],
-                              capsuleInputBranchHint = Nothing,
-                              capsuleInputUpstreamHint = Nothing,
-                              capsuleInputLineAnchors = [],
-                              capsuleInputSemanticDigest = digest,
-                              capsuleInputToolVersion = "adrai/0.1.0",
-                              capsuleInputDigests = inputs
-                            }
-                    let capsuleResult = mkProvenanceCapsule capsuleInput
-                    case capsuleResult of
-                      Left provErr ->
-                        pure (Left (Stage5ValidateGenerated ("obsolete capsule: " <> T.pack (show provErr))))
-                      Right capsule -> do
-                        let sealedEither = sealManagedDocument (ManagedConnection statusRecord) capsule
-                        case sealedEither of
-                          Left docErr ->
-                            pure (Left (Stage5ValidateGenerated ("obsolete seal: " <> T.pack (show docErr))))
-                          Right sealedBytes -> do
-                            let generatedPath = canonicalManagedPath managedPaths (ManagedConnection statusRecord)
-                            case generatedPath of
-                              Left err ->
-                                pure (Left (Stage4GenerateFiles ("obsolete path: " <> T.pack (show err))))
-                              Right genPath -> do
-                                let generated =
-                                      [ GeneratedFile genPath sealedBytes ]
-                                    config =
-                                      TransactionConfig
-                                        { configOperationId = T.unpack (operationIdText opId),
-                                          configSubject = "adrai: obsolete " <> adrIdText adrId,
-                                          configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))],
-                                          configExpectedHead = oldHead,
-                                          configGenerated = generated
-                                        }
-                                _ <- commitAppendOnlyOperation repository config
-                                pure (Right (ObsoleteResult
-                                  (T.unpack (operationIdText opId))
-                                  adrId connId oldHead genPath))
-          _ ->
-            pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+  intent
+  inputs =
+    case toObsoleteRequest intent >>= normalizeObsoleteRequest of
+      Left err -> pure (Left err)
+      Right request -> statusTransition repository managedPaths actor adrId request StatusObsolete inputs
 
 -- ---------------------------------------------------------------------------
 -- Reactivate ADR
 -- ---------------------------------------------------------------------------
 
 -- | Result of the 'reactivateCommand' operation.
+data ReactivateRequest = ReactivateRequest
+  { reactivateExpectedState :: Maybe StateToken,
+    reactivateReason :: T.Text,
+    reactivateResolve :: Bool
+  }
+  deriving (Eq, Show)
+
 data ReactivateResult
   = ReactivateResult
       { reactivateOperationId :: String,
         reactivateAdrId       :: AdrId,
         reactivateConnectionId :: ConnectionId,
+        reactivateStatusParents :: [ConnectionId],
+        reactivateRecordHeads :: [RecordId],
+        reactivateResolvedConflict :: Bool,
         reactivateCommitOid   :: GitOid,
-        reactivateNewPath     :: RepoPath
+        reactivateNewPath     :: RepoPath,
+        reactivateCreatedPaths :: [RepoPath],
+        reactivateIndexUpdated :: Bool
       }
   deriving (Eq, Show)
 
@@ -1374,11 +1324,12 @@ data ReactivateResult
 --
 -- The new capsule carries eventKind @"decision.reactivate"@.
 reactivateCommand ::
+  ReactivateIntent intent =>
   Repository ->
   ManagedPaths ->
   Actor ->
   AdrId ->
-  RecordId ->
+  intent ->
   ProvenanceInputs ->
   IO (Either TransactionError ReactivateResult)
 reactivateCommand
@@ -1386,88 +1337,199 @@ reactivateCommand
   managedPaths
   actor
   adrId
-  recordId
-  inputs = do
-    oldHeadResult <- resolveRevision repository (RevisionSpec "HEAD")
-    case oldHeadResult of
-      Left err ->
-        pure (Left (Stage3ValidateState ("resolve HEAD: " <> T.pack (show err))))
-      Right oldHead -> do
-        timestampMs <- currentTimestampMs
-        entropy <- randomEntropy
-        let opIdResult = sortableOperationId timestampMs entropy
-            connIdResult = sortableConnectionId timestampMs entropy
-        case (opIdResult, connIdResult) of
-          (Right opId, Right connId) -> do
-            let statusRecord =
-                  ConnectionRecord
-                    { connectionRecordId = connId,
-                      connectionPayload = StatusConnection (StatusPayload
+  intent
+  inputs =
+    case toReactivateRequest intent >>= normalizeReactivateRequest of
+      Left err -> pure (Left err)
+      Right request -> fmap (fmap toReactivateResult) (statusTransition repository managedPaths actor adrId (asObsoleteRequest request) StatusActive inputs)
+
+-- | The typed request is the public service input.  The 'RecordId' instances
+-- keep the terminal explorer compiling until its deliberately separate status
+-- UI migration; the value is never used as status or decision authority.
+class ObsoleteIntent intent where
+  toObsoleteRequest :: intent -> Either TransactionError ObsoleteRequest
+
+instance ObsoleteIntent ObsoleteRequest where
+  toObsoleteRequest = Right
+
+instance ObsoleteIntent RecordId where
+  toObsoleteRequest _ = Right (ObsoleteRequest Nothing "Explorer status update" False Nothing)
+
+class ReactivateIntent intent where
+  toReactivateRequest :: intent -> Either TransactionError ReactivateRequest
+
+instance ReactivateIntent ReactivateRequest where
+  toReactivateRequest = Right
+
+instance ReactivateIntent RecordId where
+  toReactivateRequest _ = Right (ReactivateRequest Nothing "Explorer status update" False)
+
+normalizeObsoleteRequest :: ObsoleteRequest -> Either TransactionError ObsoleteRequest
+normalizeObsoleteRequest request = do
+  rationale <- normalizeStatusReason "obsolete" (obsoleteReason request)
+  pure request { obsoleteReason = rationale }
+
+normalizeReactivateRequest :: ReactivateRequest -> Either TransactionError ReactivateRequest
+normalizeReactivateRequest request = do
+  rationale <- normalizeStatusReason "reactivate" (reactivateReason request)
+  pure request { reactivateReason = rationale }
+
+asObsoleteRequest :: ReactivateRequest -> ObsoleteRequest
+asObsoleteRequest request =
+  ObsoleteRequest
+    { obsoleteExpectedState = reactivateExpectedState request,
+      obsoleteReason = reactivateReason request,
+      obsoleteResolve = reactivateResolve request,
+      obsoleteReplacement = Nothing
+    }
+
+toReactivateResult :: ObsoleteResult -> ReactivateResult
+toReactivateResult result =
+  ReactivateResult
+    { reactivateOperationId = obsoleteOperationId result
+    , reactivateAdrId = obsoleteAdrId result
+    , reactivateConnectionId = obsoleteConnectionId result
+    , reactivateStatusParents = obsoleteStatusParents result
+    , reactivateRecordHeads = obsoleteRecordHeads result
+    , reactivateResolvedConflict = obsoleteResolvedConflict result
+    , reactivateCommitOid = obsoleteCommitOid result
+    , reactivateNewPath = obsoleteNewPath result
+    , reactivateCreatedPaths = obsoleteCreatedPaths result
+    , reactivateIndexUpdated = obsoleteIndexUpdated result
+    }
+
+normalizeStatusReason :: T.Text -> T.Text -> Either TransactionError T.Text
+normalizeStatusReason operation raw
+  | T.null normalized = Left (Stage3ValidateState (operation <> " reason must be nonblank"))
+  | otherwise = Right (normalized <> "\n")
+  where
+    normalized = T.strip (normalizeLineEndings raw)
+
+statusTransition :: Repository -> ManagedPaths -> Actor -> AdrId -> ObsoleteRequest -> StatusState -> ProvenanceInputs -> IO (Either TransactionError ObsoleteResult)
+statusTransition repository managedPaths actor adrId request desiredState inputs =
+  requireAttachedHead repository >>= \case
+    Left err -> pure (Left err)
+    Right branchName ->
+      repositorySnapshot repository (RevisionSpec "HEAD") >>= \case
+        Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
+        Right snapshot ->
+          case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot >>= selectStatusTransition adrId request desiredState of
+            Left err -> pure (Left err)
+            Right (parents, recordHeads, resolvedConflict) -> do
+              timestampMs <- currentTimestamp
+              entropy <- randomEntropy
+              case (sortableOperationId (encodeTimestampMs timestampMs) entropy, sortableConnectionId (encodeTimestampMs timestampMs) entropy) of
+                (Right opId, Right connId) -> do
+                  let record = ConnectionRecord connId (StatusConnection StatusPayload
                         { statusSubjectAdr = adrId
-                        , statusParentConnections = []
-                        , statusState = StatusActive
-                        , statusRecordHeads = [recordId]
-                        , statusReplacementAdr = Nothing
-                        }),
-                      connectionRationale = "ADR reactivated"
-                    }
-            let semanticEither = renderConnectionSemantic statusRecord
-            case semanticEither of
-              Left docErr ->
-                pure (Left (Stage5ValidateGenerated ("reactivate render: " <> T.pack (show docErr))))
-              Right semantic -> do
-                let digest = semanticDigest semantic
-                    eventIdResult = mkEventKind "decision.reactivate"
-                case eventIdResult of
-                  Left provErr ->
-                    pure (Left (Stage5ValidateGenerated ("reactivate eventKind: " <> T.pack (show provErr))))
-                  Right eventKind -> do
-                    let parentId = ProvenanceConnection connId
-                        ts = 1000000000000
-                        capsuleInput =
-                          ProvenanceCapsuleInput
-                            { capsuleInputOperationId = opId,
-                              capsuleInputObjectId = ProvenanceConnection connId,
-                              capsuleInputEventKind = eventKind,
-                              capsuleInputActor = actor,
-                              capsuleInputTimestampMs = ts,
-                              capsuleInputBasis = oldHead,
-                              capsuleInputParents = [parentId],
-                              capsuleInputBranchHint = Nothing,
-                              capsuleInputUpstreamHint = Nothing,
-                              capsuleInputLineAnchors = [],
-                              capsuleInputSemanticDigest = digest,
-                              capsuleInputToolVersion = "adrai/0.1.0",
-                              capsuleInputDigests = inputs
-                            }
-                    let capsuleResult = mkProvenanceCapsule capsuleInput
-                    case capsuleResult of
-                      Left provErr ->
-                        pure (Left (Stage5ValidateGenerated ("reactivate capsule: " <> T.pack (show provErr))))
-                      Right capsule -> do
-                        let sealedEither = sealManagedDocument (ManagedConnection statusRecord) capsule
-                        case sealedEither of
-                          Left docErr ->
-                            pure (Left (Stage5ValidateGenerated ("reactivate seal: " <> T.pack (show docErr))))
-                          Right sealedBytes -> do
-                            let generatedPath = canonicalManagedPath managedPaths (ManagedConnection statusRecord)
-                            case generatedPath of
-                              Left err ->
-                                pure (Left (Stage4GenerateFiles ("reactivate path: " <> T.pack (show err))))
-                              Right genPath -> do
-                                let generated =
-                                      [ GeneratedFile genPath sealedBytes ]
-                                    config =
-                                      TransactionConfig
-                                        { configOperationId = T.unpack (operationIdText opId),
-                                          configSubject = "adrai: reactivate " <> adrIdText adrId,
-                                          configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))],
-                                          configExpectedHead = oldHead,
-                                          configGenerated = generated
-                                        }
-                                _ <- commitAppendOnlyOperation repository config
-                                pure (Right (ReactivateResult
-                                  (T.unpack (operationIdText opId))
-                                  adrId connId oldHead genPath))
-          _ ->
-            pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+                        , statusParentConnections = parents
+                        , statusState = desiredState
+                        , statusRecordHeads = recordHeads
+                        , statusReplacementAdr = obsoleteReplacement request
+                        }) (obsoleteReason request)
+                      paths = repositorySnapshotManagedPaths snapshot
+                  case sealStatusTransition opId (repositorySnapshotRevision snapshot) branchName actor timestampMs parents recordHeads inputs paths record of
+                    Left err -> pure (Left err)
+                    Right generated ->
+                      commitAppendOnlyOperation repository TransactionConfig
+                        { configOperationId = T.unpack (operationIdText opId)
+                        , configSubject = "adrai: " <> statusOperationLabel desiredState <> " " <> adrIdText adrId
+                        , configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))]
+                        , configExpectedHead = resolvedCommitOid (repositorySnapshotRevision snapshot)
+                        , configGenerated = [generated]
+                        } >>= \case
+                          Left err -> pure (Left err)
+                          Right TransactionResult {..} -> case transactionCreatedPaths of
+                            [newPath] -> pure (Right ObsoleteResult
+                              { obsoleteOperationId = transactionOperationId
+                              , obsoleteAdrId = adrId
+                              , obsoleteConnectionId = connId
+                              , obsoleteStatusParents = parents
+                              , obsoleteRecordHeads = recordHeads
+                              , obsoleteReplacementAdr = obsoleteReplacement request
+                              , obsoleteResolvedConflict = resolvedConflict
+                              , obsoleteCommitOid = transactionCommitOid
+                              , obsoleteNewPath = newPath
+                              , obsoleteCreatedPaths = transactionCreatedPaths
+                              , obsoleteIndexUpdated = transactionIndexUpdated
+                              })
+                            _ -> pure (Left (Stage8UpdateRef "status transaction did not report exactly one created path"))
+                _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+
+selectStatusTransition :: AdrId -> ObsoleteRequest -> StatusState -> [ParsedManagedDocument] -> Either TransactionError ([ConnectionId], [RecordId], Bool)
+selectStatusTransition adr request desiredState documents = do
+  let reduction = reduceManagedGraph (map parsedManagedRecord documents)
+  reduced <- maybe (Left (Stage3ValidateState "status target ADR is unknown")) Right (lookupReducedAdr adr reduction)
+  case obsoleteExpectedState request of
+    Nothing -> Right ()
+    Just token
+      | token == reducedStateToken reduced -> Right ()
+      | otherwise -> Left (Stage3ValidateState ("stale ADR state: expected " <> stateTokenText token <> ", current state is " <> stateTokenText (reducedStateToken reduced)))
+  let parents = sort (axisResolutionHeads (reducedStatusAxis reduced))
+      recordHeads = sort (axisResolutionHeads (reducedDecisionAxis reduced))
+      conflicts = reducedConflictAxes reduced
+      statusOnlyConflict = conflicts == [StatusAxis]
+      noConflicts = null conflicts
+  if null parents then Left (Stage3ValidateState "status target ADR has no current status") else Right ()
+  if null recordHeads then Left (Stage3ValidateState "status target ADR has no current decision") else Right ()
+  if obsoleteResolve request
+    then if statusOnlyConflict && length parents > 1
+      then Right ()
+      else Left (Stage3ValidateState "status resolve requires a conflicted status axis")
+    else if noConflicts
+      then Right ()
+      else Left (Stage3ValidateState "status target ADR is conflicted")
+  if obsoleteResolve request
+    then Right ()
+    else do
+      current <- maybe (Left (Stage3ValidateState "status target ADR has no effective current status")) Right (axisResolutionEffective (reducedStatusAxis reduced))
+      case desiredState of
+        StatusObsolete | reducedStatusState current == StatusActive -> Right ()
+        StatusActive | reducedStatusState current == StatusObsolete -> Right ()
+        StatusObsolete -> Left (Stage3ValidateState "obsolete target ADR is already obsolete")
+        StatusActive -> Left (Stage3ValidateState "reactivate target ADR is already active")
+  case desiredState of
+    StatusObsolete -> validateReplacement reduction adr (obsoleteReplacement request)
+    StatusActive | obsoleteReplacement request /= Nothing -> Left (Stage3ValidateState "reactivate may not name a replacement ADR")
+    StatusActive -> Right ()
+  pure (parents, recordHeads, obsoleteResolve request)
+
+validateReplacement :: GraphReduction -> AdrId -> Maybe AdrId -> Either TransactionError ()
+validateReplacement _ _ Nothing = Right ()
+validateReplacement reduction target (Just replacement)
+  | replacement == target = Left (Stage3ValidateState "obsolete replacement ADR must not name the target ADR")
+  | otherwise = do
+      reduced <- maybe (Left (Stage3ValidateState "obsolete replacement ADR is unknown")) Right (lookupReducedAdr replacement reduction)
+      if null (reducedConflictAxes reduced) then Right () else Left (Stage3ValidateState "obsolete replacement ADR is conflicted")
+      case (axisResolutionHeads (reducedStatusAxis reduced), axisResolutionEffective (reducedStatusAxis reduced)) of
+        ([_], Just status) | reducedStatusState status == StatusActive -> Right ()
+        _ -> Left (Stage3ValidateState "obsolete replacement ADR is not unambiguously active")
+
+statusOperationLabel :: StatusState -> T.Text
+statusOperationLabel StatusObsolete = "obsolete"
+statusOperationLabel StatusActive = "reactivate"
+
+sealStatusTransition :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> [ConnectionId] -> [RecordId] -> ProvenanceInputs -> ManagedPaths -> ConnectionRecord -> Either TransactionError GeneratedFile
+sealStatusTransition opId revision branchName actor timestampMs statusParents recordHeads inputs paths connection = do
+  semantic <- first (Stage5ValidateGenerated . ("status render: " <>) . T.pack . show) (renderConnectionSemantic connection)
+  eventKind <- first (Stage5ValidateGenerated . ("status eventKind: " <>) . T.pack . show) (mkEventKind ("decision." <> statusOperationLabel (statusState payload)))
+  capsule <- first (Stage5ValidateGenerated . ("status capsule: " <>) . T.pack . show) (mkProvenanceCapsule ProvenanceCapsuleInput
+    { capsuleInputOperationId = opId
+    , capsuleInputObjectId = ProvenanceConnection (connectionRecordId connection)
+    , capsuleInputEventKind = eventKind
+    , capsuleInputActor = actor
+    , capsuleInputTimestampMs = timestampMs
+    , capsuleInputBasis = resolvedCommitOid revision
+    , capsuleInputParents = map ProvenanceConnection statusParents <> map ProvenanceRecord recordHeads
+    , capsuleInputBranchHint = Just branchName
+    , capsuleInputUpstreamHint = Nothing
+    , capsuleInputLineAnchors = []
+    , capsuleInputSemanticDigest = semanticDigest semantic
+    , capsuleInputToolVersion = "adrai/1.0.0"
+    , capsuleInputDigests = inputs
+    })
+  sealed <- first (Stage5ValidateGenerated . ("status seal: " <>) . T.pack . show) (sealManagedDocument (ManagedConnection connection) capsule)
+  path <- first (Stage4GenerateFiles . ("status path: " <>) . T.pack . show) (canonicalManagedPath paths (ManagedConnection connection))
+  pure (GeneratedFile path sealed)
+  where
+    payload = case connectionPayload connection of StatusConnection value -> value; _ -> error "status connection required"
