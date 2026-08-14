@@ -171,6 +171,7 @@ import Data.Word (Word8)
 import qualified Data.Map.Strict as Map
 import Data.List (intercalate, sort)
 import Data.Maybe (mapMaybe, fromMaybe)
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, decodeUtf8With, encodeUtf8)
 import Data.Text.Encoding.Error (lenientDecode)
@@ -794,7 +795,9 @@ data ScopeChangeResult
         scopeChangeAdrId      :: AdrId,
         scopeChangeConnectionId :: ConnectionId,
         scopeChangeCommitOid  :: GitOid,
-        scopeChangeNewPath    :: RepoPath
+        scopeChangeNewPath    :: RepoPath,
+        scopeChangeCreatedPaths :: [RepoPath],
+        scopeChangeIndexUpdated :: Bool
       }
   deriving (Eq, Show)
 
@@ -809,6 +812,7 @@ changeScopeCommand ::
   ManagedPaths ->
   Actor ->
   AdrId ->
+  Maybe StateToken ->
   [ScopePattern] -> -- added
   [ScopePattern] -> -- removed
   ProvenanceInputs ->
@@ -818,94 +822,122 @@ changeScopeCommand
   managedPaths
   actor
   adrId
+  expectedState
   added
   removed
-  inputs = do
-    oldHeadResult <- resolveRevision repository (RevisionSpec "HEAD")
-    case oldHeadResult of
-      Left err ->
-        pure (Left (Stage3ValidateState ("resolve HEAD: " <> T.pack (show err))))
-      Right oldHead -> do
-        timestampMs <- currentTimestampMs
-        entropy <- randomEntropy
-        let opIdResult = sortableOperationId timestampMs entropy
-            connIdResult = sortableConnectionId timestampMs entropy
-        case (opIdResult, connIdResult) of
-          (Right opId, Right connId) -> do
-            let effective = sort (added <> removed)
-                connRecord =
-                  ConnectionRecord
-                    { connectionRecordId = connId,
-                      connectionPayload = AppliesToConnection (AppliesToPayload
-                        { appliesToSubjectAdr = adrId
-                        , appliesToParentConnections = []
-                        , appliesToChange = "scope update"
-                        , appliesToAdded = added
-                        , appliesToRemoved = removed
-                        , appliesToEffective = effective
-                        }),
-                      connectionRationale = "Scope change operation"
+  inputs =
+    requireAttachedHead repository >>= \case
+      Left err -> pure (Left err)
+      Right branchName ->
+        repositorySnapshot repository (RevisionSpec "HEAD") >>= \case
+          Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
+          Right snapshot ->
+            case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot >>= selectCurrentScopeSource adrId expectedState of
+              Left err -> pure (Left err)
+              Right (priorHead, currentEffective) ->
+                case canonicalScopeDelta currentEffective added removed of
+                  Left err -> pure (Left err)
+                  Right (changeKind, effective) -> createScopeUpdate snapshot branchName priorHead changeKind effective
+  where
+    createScopeUpdate snapshot branchName priorHead changeKind effective = do
+      timestampMs <- currentTimestamp
+      let timestampBytes = encodeTimestampMs timestampMs
+      entropy <- randomEntropy
+      case (sortableOperationId timestampBytes entropy, sortableConnectionId timestampBytes entropy) of
+        (Right opId, Right connId) -> do
+          let connRecord = ConnectionRecord
+                { connectionRecordId = connId
+                , connectionPayload = AppliesToConnection AppliesToPayload
+                    { appliesToSubjectAdr = adrId
+                    , appliesToParentConnections = [priorHead]
+                    , appliesToChange = changeKind
+                    , appliesToAdded = sort added
+                    , appliesToRemoved = sort removed
+                    , appliesToEffective = effective
                     }
-            let semanticEither = renderConnectionSemantic connRecord
-            case semanticEither of
-              Left docErr ->
-                pure (Left (Stage5ValidateGenerated ("scope render: " <> T.pack (show docErr))))
-              Right semantic -> do
-                let digest = semanticDigest semantic
-                    eventIdResult = mkEventKind "scope.update"
-                case eventIdResult of
-                  Left provErr ->
-                    pure (Left (Stage5ValidateGenerated ("scope eventKind: " <> T.pack (show provErr))))
-                  Right eventKind -> do
-                    let parentId = ProvenanceConnection connId
-                        ts = 1000000000000
-                        capsuleInput =
-                          ProvenanceCapsuleInput
-                            { capsuleInputOperationId = opId,
-                              capsuleInputObjectId = ProvenanceConnection connId,
-                              capsuleInputEventKind = eventKind,
-                              capsuleInputActor = actor,
-                              capsuleInputTimestampMs = ts,
-                              capsuleInputBasis = oldHead,
-                              capsuleInputParents = [parentId],
-                              capsuleInputBranchHint = Nothing,
-                              capsuleInputUpstreamHint = Nothing,
-                              capsuleInputLineAnchors = [],
-                              capsuleInputSemanticDigest = digest,
-                              capsuleInputToolVersion = "adrai/0.1.0",
-                              capsuleInputDigests = inputs
-                            }
-                    let capsuleResult = mkProvenanceCapsule capsuleInput
-                    case capsuleResult of
-                      Left provErr ->
-                        pure (Left (Stage5ValidateGenerated ("scope capsule: " <> T.pack (show provErr))))
-                      Right capsule -> do
-                        let sealedEither = sealManagedDocument (ManagedConnection connRecord) capsule
-                        case sealedEither of
-                          Left docErr ->
-                            pure (Left (Stage5ValidateGenerated ("scope seal: " <> T.pack (show docErr))))
-                          Right sealedBytes -> do
-                            let generatedPath = canonicalManagedPath managedPaths (ManagedConnection connRecord)
-                            case generatedPath of
-                              Left err ->
-                                pure (Left (Stage4GenerateFiles ("scope path: " <> T.pack (show err))))
-                              Right genPath -> do
-                                let generated =
-                                      [ GeneratedFile genPath sealedBytes ]
-                                    config =
-                                      TransactionConfig
-                                        { configOperationId = T.unpack (operationIdText opId),
-                                          configSubject = "adrai: scope " <> adrIdText adrId,
-                                          configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))],
-                                          configExpectedHead = oldHead,
-                                          configGenerated = generated
-                                        }
-                                _ <- commitAppendOnlyOperation repository config
-                                pure (Right (ScopeChangeResult
-                                  (T.unpack (operationIdText opId))
-                                  adrId connId oldHead genPath))
-          _ ->
-            pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+                , connectionRationale = "Scope change operation\n"
+                }
+              paths = repositorySnapshotManagedPaths snapshot
+          case sealScopeUpdate opId (repositorySnapshotRevision snapshot) branchName actor timestampMs priorHead inputs paths connRecord of
+            Left err -> pure (Left err)
+            Right generated -> do
+              let config = TransactionConfig
+                    { configOperationId = T.unpack (operationIdText opId)
+                    , configSubject = "adrai: scope " <> adrIdText adrId
+                    , configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))]
+                    , configExpectedHead = resolvedCommitOid (repositorySnapshotRevision snapshot)
+                    , configGenerated = [generated]
+                    }
+              commitAppendOnlyOperation repository config >>= \case
+                Left transactionError -> pure (Left transactionError)
+                Right TransactionResult {..} -> case transactionCreatedPaths of
+                  [newPath] -> pure (Right ScopeChangeResult
+                    { scopeChangeOperationId = transactionOperationId
+                    , scopeChangeAdrId = adrId
+                    , scopeChangeConnectionId = connId
+                    , scopeChangeCommitOid = transactionCommitOid
+                    , scopeChangeNewPath = newPath
+                    , scopeChangeCreatedPaths = transactionCreatedPaths
+                    , scopeChangeIndexUpdated = transactionIndexUpdated
+                    })
+                  _ -> pure (Left (Stage8UpdateRef "scope transaction did not report exactly one created path"))
+        _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+
+selectCurrentScopeSource :: AdrId -> Maybe StateToken -> [ParsedManagedDocument] -> Either TransactionError (ConnectionId, [ScopePattern])
+selectCurrentScopeSource adr expected documents = do
+  let reduction = reduceManagedGraph (map parsedManagedRecord documents)
+  reduced <- maybe (Left (Stage3ValidateState "scope target ADR is unknown")) Right (lookupReducedAdr adr reduction)
+  case expected of
+    Nothing -> Right ()
+    Just expectedToken
+      | expectedToken == reducedStateToken reduced -> Right ()
+      | otherwise -> Left (Stage3ValidateState ("stale ADR state: expected " <> stateTokenText expectedToken <> ", current state is " <> stateTokenText (reducedStateToken reduced)))
+  if null (reducedConflictAxes reduced)
+    then Right ()
+    else Left (Stage3ValidateState "scope target ADR is conflicted")
+  status <- maybe (Left (Stage3ValidateState "scope target ADR has no current status")) Right (axisResolutionEffective (reducedStatusAxis reduced))
+  if reducedStatusState status == StatusActive
+    then Right ()
+    else Left (Stage3ValidateState "scope target ADR is not active")
+  case axisResolutionHeads (reducedScopeAxis reduced) of
+    [priorHead] -> Right (priorHead, axisResolutionEffective (reducedScopeAxis reduced))
+    _ -> Left (Stage3ValidateState "scope target ADR has no unambiguous current scope")
+
+canonicalScopeDelta :: [ScopePattern] -> [ScopePattern] -> [ScopePattern] -> Either TransactionError (T.Text, [ScopePattern])
+canonicalScopeDelta current added removed
+  | Set.size addedSet /= length added = Left (Stage3ValidateState "scope additions contain duplicates")
+  | Set.size removedSet /= length removed = Left (Stage3ValidateState "scope removals contain duplicates")
+  | not (Set.null (Set.intersection addedSet removedSet)) = Left (Stage3ValidateState "scope additions and removals overlap")
+  | Set.null addedSet && Set.null removedSet = Left (Stage3ValidateState "scope change would be empty")
+  | not (Set.null (Set.intersection addedSet currentSet)) = Left (Stage3ValidateState "scope additions already exist in the current scope")
+  | not (removedSet `Set.isSubsetOf` currentSet) = Left (Stage3ValidateState "scope removals are absent from the current scope")
+  | Set.null effectiveSet = Left (Stage3ValidateState "scope change would leave no effective scope")
+  | otherwise = Right (changeKind, Set.toAscList effectiveSet)
+  where
+    currentSet = Set.fromList current
+    addedSet = Set.fromList added
+    removedSet = Set.fromList removed
+    effectiveSet = (currentSet `Set.difference` removedSet) `Set.union` addedSet
+    changeKind
+      | Set.null removedSet = "expand"
+      | Set.null addedSet = "contract"
+      | otherwise = "mixed"
+
+sealScopeUpdate :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> ConnectionId -> ProvenanceInputs -> ManagedPaths -> ConnectionRecord -> Either TransactionError GeneratedFile
+sealScopeUpdate opId revision branchName actor timestampMs priorHead inputs paths connection = do
+  semantic <- first (Stage5ValidateGenerated . ("scope render: " <>) . T.pack . show) (renderConnectionSemantic connection)
+  eventKind <- first (Stage5ValidateGenerated . ("scope eventKind: " <>) . T.pack . show) (mkEventKind "scope.update")
+  capsule <- first (Stage5ValidateGenerated . ("scope capsule: " <>) . T.pack . show) $
+    mkProvenanceCapsule ProvenanceCapsuleInput
+      { capsuleInputOperationId = opId, capsuleInputObjectId = ProvenanceConnection (connectionRecordId connection)
+      , capsuleInputEventKind = eventKind, capsuleInputActor = actor, capsuleInputTimestampMs = timestampMs
+      , capsuleInputBasis = resolvedCommitOid revision, capsuleInputParents = [ProvenanceConnection priorHead]
+      , capsuleInputBranchHint = Just branchName, capsuleInputUpstreamHint = Nothing, capsuleInputLineAnchors = []
+      , capsuleInputSemanticDigest = semanticDigest semantic, capsuleInputToolVersion = "adrai/1.0.0", capsuleInputDigests = inputs
+      }
+  sealed <- first (Stage5ValidateGenerated . ("scope seal: " <>) . T.pack . show) (sealManagedDocument (ManagedConnection connection) capsule)
+  path <- first (Stage4GenerateFiles . ("scope path: " <>) . T.pack . show) (canonicalManagedPath paths (ManagedConnection connection))
+  pure (GeneratedFile path sealed)
 
 -- ---------------------------------------------------------------------------
 -- Change Domain

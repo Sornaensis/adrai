@@ -51,16 +51,19 @@ import Adrai.Provenance
     provenanceObjectId,
     provenanceOperationId,
     provenanceParents,
+    provenanceInputs,
     provenanceTimestampMs,
     provenanceToolVersion,
     semanticDigest,
   )
-import Adrai.Scope (mkScopePattern)
+import Adrai.Scope (ScopePattern, mkScopePattern)
 import Adrai.Service.Mutation
   ( CreateResult (..),
     AmendResult (..),
+    ScopeChangeResult (..),
     InitResult (..),
     amendAdmCommand,
+    changeScopeCommand,
     createAdrCommand,
     initCommand,
   )
@@ -79,7 +82,9 @@ import Adrai.Types
   ( ActorKind (HumanActor),
     Actor,
     AdrId,
+    ConnectionId,
     RecordId,
+    StateToken,
     ProvenanceInputs (..),
     RepoPath,
     configManagedPaths,
@@ -87,8 +92,10 @@ import Adrai.Types
     mkActor,
     mkAdrId,
     mkConnectionId,
+    mkDigest,
     mkOperationId,
     mkRecordId,
+    mkStateToken,
     operationIdText,
     repoPathText,
   )
@@ -96,7 +103,7 @@ import qualified Data.ByteString as BS
 import qualified Data.Text as Text
 import Data.Either (isLeft)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort, zip5, zip7)
 import qualified Data.Set as Set
 import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, throwIO, try)
 import Database.SQLite.Simple (Only (..), close, open, query_)
@@ -110,9 +117,10 @@ import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
 tests :: TestTree
 tests =
-  testGroup
-    "P6-02A mutation service results"
-    [ testCase "init commits bootstrap files and returns transaction result" initCommitsBootstrapFiles
+  testGroup "mutation service results"
+    [ testGroup
+        "P6-02A mutation service results"
+        [ testCase "init commits bootstrap files and returns transaction result" initCommitsBootstrapFiles
     , testCase "init transaction failure returns no success result" initFailureReturnsTransactionError
     , testCase "post-commit indexing replaces a same-path projection with the exact latest commit" postCommitIndexProjectsExactCommit
     , testCase "post-commit indexing projects actual compiler warnings in stable order" postCommitIndexProjectsCompilerWarnings
@@ -132,7 +140,17 @@ tests =
     , testCase "amend rejections do not create a commit" amendRejectionsDoNotCommit
     , testCase "successive amendments chain from the prior current head" successiveAmendmentsChainFromPriorHead
     , testCase "amend rejects inactive, conflicted, and misplaced committed sources" amendRejectsInvalidCommittedState
-    , testCase "amend transaction failure is retry-safe before generated files exist" amendFailurePropagatesTransactionError
+        , testCase "amend transaction failure is retry-safe before generated files exist" amendFailurePropagatesTransactionError
+        ]
+    , testGroup
+        "P6-02C scope mutation service"
+        [ testCase "scope updates expand, contract, and mix from the current scope head" scopeUpdatesAreTruthful
+        , testCase "scope rejections preserve the complete caller-visible repository state" scopeRejectionsPreserveRepository
+        , testCase "scope rejects inactive ADRs with the exact state error" rejectInactiveScope
+        , testCase "scope rejects conflicted heads with the exact state error" rejectConflictedScope
+        , testCase "scope rejects detached HEAD before generating files" scopeDetachedHeadRejected
+        , testCase "scope transaction failure after generation preserves every caller-owned state" scopeTransactionFailurePreservesEverything
+        ]
     ]
 
 initCommitsBootstrapFiles :: IO ()
@@ -786,6 +804,241 @@ amendRejectsInvalidCommittedState = do
       result <- runAmend repository (createAdrId created) (createRecordId created) "Misplaced" "" "body\n"
       assertBool "misplaced committed record must be rejected" (isLeft result)
       gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+
+scopeUpdatesAreTruthful :: IO ()
+scopeUpdatesAreTruthful =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    library <- assertRight (mkScopePattern "lib/**")
+    tests <- assertRight (mkScopePattern "test/**")
+    assets <- assertRight (mkScopePattern "assets/**")
+    docs <- assertRight (mkScopePattern "docs/**")
+    source <- assertRight (mkScopePattern "src/**")
+    inputs <- scopeInputs
+    beforeMs <- posixTimeMs
+    expanded <- assertRight =<< runScopeWithInputs repository (createAdrId created) Nothing [tests, library] [] inputs
+    contracted <- assertRight =<< runScopeWithInputs repository (createAdrId created) Nothing [] [tests, library] inputs
+    mixed <- assertRight =<< runScopeWithInputs repository (createAdrId created) Nothing [docs, assets] [source] inputs
+    afterMs <- posixTimeMs
+    let updates = [expanded, contracted, mixed]
+        expectedParents = [createScopeId created, scopeChangeConnectionId expanded, scopeChangeConnectionId contracted]
+        expectedChanges = ["expand", "contract", "mixed"]
+        expectedAdded = [[library, tests], [], [assets, docs]]
+        expectedRemoved = [[], [library, tests], [source]]
+        expectedEffective = [[library, source, tests], [source], [assets, docs]]
+    mapM_ (\update -> do
+      gitText directory ["rev-parse", "HEAD"] >>= \headNow ->
+        if update == mixed then headNow @?= gitOidText (scopeChangeCommitOid update) else pure ()
+      scopeChangeCreatedPaths update @?= [scopeChangeNewPath update]
+      assertBool "scope transaction reports index refresh" (scopeChangeIndexUpdated update)
+      bytes <- gitSuccess directory ["show", Text.unpack (gitOidText (scopeChangeCommitOid update) <> ":" <> repoPathText (scopeChangeNewPath update))] BS.empty
+      parsed <- assertRight (parseManagedDocument (scopeChangeNewPath update) bytes)
+      case (parsedManagedRecord parsed, connectionPayloadFrom parsed) of
+        (ManagedConnection connection, Just payload) -> do
+          connectionRecordId connection @?= scopeChangeConnectionId update
+          appliesToSubjectAdr payload @?= createAdrId created
+          provenanceObjectId (parsedManagedCapsule parsed) @?= ProvenanceConnection (scopeChangeConnectionId update)
+          provenanceBasis (parsedManagedCapsule parsed) @?= previousCommit update updates created
+          provenanceActor (parsedManagedCapsule parsed) @?= createActorPure
+          provenanceBranchHint (parsedManagedCapsule parsed) @?= Just "main"
+          provenanceToolVersion (parsedManagedCapsule parsed) @?= "adrai/1.0.0"
+          provenanceInputs (parsedManagedCapsule parsed) @?= inputs
+          canonicalManagedPath (configManagedPaths defaultConfig) (parsedManagedRecord parsed) @?= Right (scopeChangeNewPath update)
+        other -> assertFailure ("expected one scope connection, got " <> show other)
+      ) updates
+    documents <- mapM (scopeDocumentAt directory) updates
+    sequence_ [assertScopeDocument update parent change added removed effective document | (update, parent, change, added, removed, effective, document) <- zip7 updates expectedParents expectedChanges expectedAdded expectedRemoved expectedEffective documents]
+    assertBool "scope timestamps are real positive operation timestamps" (all (\document -> let timestamp = provenanceTimestampMs (parsedManagedCapsule document) in timestamp >= beforeMs && timestamp <= afterMs) documents)
+    mapM_ (\(update, document) -> do
+      scopeChangeAdrId update @?= createAdrId created
+      operationIdText (provenanceOperationId (parsedManagedCapsule document)) @?= Text.pack (scopeChangeOperationId update)
+      ) (zip updates documents)
+    finalManaged <- managedCommittedBytes directory
+    sort (map fst finalManaged) @?= sort (map repoPathText (createCreatedPaths created) <> map (repoPathText . scopeChangeNewPath) updates)
+  where
+    createActorPure = case mkActor HumanActor "mutation-service-test" Nothing of Right actor -> actor; Left err -> error (show err)
+    previousCommit update allUpdates created =
+      case lookup update (zip allUpdates (createCommitOid created : map scopeChangeCommitOid allUpdates)) of
+        Just basis -> basis
+        Nothing -> createCommitOid created
+
+scopeRejectionsPreserveRepository :: IO ()
+scopeRejectionsPreserveRepository =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    extra <- assertRight (mkScopePattern "test/**")
+    stale <- assertRight (mkStateToken "S0000000000000000000000")
+    let stagedPath = directory </> "scope-unrelated-staged.txt"
+        dirtyPath = directory </> "scope-unrelated-dirty.txt"
+    _ <- commitFile directory "scope-unrelated-dirty.txt" "committed\n"
+    BS.writeFile stagedPath "staged\NULbytes"
+    _ <- gitSuccess directory ["add", "scope-unrelated-staged.txt"] BS.empty
+    BS.writeFile dirtyPath "dirty\NULbytes"
+    before <- repositoryObservableState directory
+    let reject label expected action = do
+          result <- action
+          result @?= Left (Stage3ValidateState expected)
+          repositoryObservableState directory >>= (@?= before)
+    reject "empty delta" "scope change would be empty" (runScope repository (createAdrId created) Nothing [] [])
+    reject "duplicate additions" "scope additions contain duplicates" (runScope repository (createAdrId created) Nothing [extra, extra] [])
+    reject "duplicate removals" "scope removals contain duplicates" (runScope repository (createAdrId created) Nothing [] [assertRightScope "src/**", assertRightScope "src/**"])
+    reject "overlapping/canonicalized no-op delta" "scope additions and removals overlap" (runScope repository (createAdrId created) Nothing [extra] [extra])
+    reject "already-effective addition" "scope additions already exist in the current scope" (runScope repository (createAdrId created) Nothing [assertRightScope "src/**"] [])
+    reject "absent removal" "scope removals are absent from the current scope" (runScope repository (createAdrId created) Nothing [] [extra])
+    staleResult <- runScope repository (createAdrId created) (Just stale) [extra] []
+    assertBool "stale token reports a state-token rejection" $ case staleResult of
+      Left (Stage3ValidateState message) -> "stale ADR state: expected " `Text.isPrefixOf` message
+      _ -> False
+    repositoryObservableState directory >>= (@?= before)
+    unknown <- assertRight (mkAdrId "A00000000000000000000000002")
+    let unknownExpected = "scope target ADR is unknown"
+    reject "unknown ADR" unknownExpected (runScope repository unknown Nothing [extra] [])
+  where
+    assertRightScope value = case mkScopePattern value of Right scope -> scope; Left err -> error (show err)
+
+rejectInactiveScope :: IO ()
+rejectInactiveScope =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    extra <- assertRight (mkScopePattern "test/**")
+    commitInactiveStatus directory created
+    prepareScopeObservableFiles directory
+    before <- repositoryObservableState directory
+    result <- runScope repository (createAdrId created) Nothing [extra] []
+    result @?= Left (Stage3ValidateState "scope target ADR is not active")
+    repositoryObservableState directory >>= (@?= before)
+
+rejectConflictedScope :: IO ()
+rejectConflictedScope =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    leftPattern <- assertRight (mkScopePattern "left/**")
+    rightPattern <- assertRight (mkScopePattern "right/**")
+    followup <- assertRight (mkScopePattern "later/**")
+    left <- assertRight =<< runScope repository (createAdrId created) Nothing [leftPattern] []
+    _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+    _ <- assertRight =<< runScope repository (createAdrId created) Nothing [rightPattern] []
+    _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (scopeChangeCommitOid left))] BS.empty
+    prepareScopeObservableFiles directory
+    before <- repositoryObservableState directory
+    result <- runScope repository (createAdrId created) Nothing [followup] []
+    result @?= Left (Stage3ValidateState "scope target ADR is conflicted")
+    repositoryObservableState directory >>= (@?= before)
+
+scopeDetachedHeadRejected :: IO ()
+scopeDetachedHeadRejected =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    extra <- assertRight (mkScopePattern "test/**")
+    _ <- gitSuccess directory ["checkout", "--detach"] BS.empty
+    result <- runScope repository (createAdrId created) Nothing [extra] []
+    result @?= Left (Stage3ValidateState "HEAD is detached; attach a branch first")
+    -- Detaching changes only HEAD metadata; the managed tree/index/worktree is still intact.
+    gitText directory ["diff", "--cached", "--name-only"] >>= (@?= "")
+    managedWorktreeState directory >>= (@?= [])
+
+scopeTransactionFailurePreservesEverything :: IO ()
+scopeTransactionFailurePreservesEverything =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    extra <- assertRight (mkScopePattern "test/**")
+    let stagedPath = directory </> "scope-unrelated-staged.txt"
+        dirtyPath = directory </> "scope-unrelated-dirty.txt"
+        cachePath = directory </> "scope-index.sqlite"
+    prepareScopeObservableFiles directory
+    BS.writeFile cachePath "SQLite cache bytes must survive exactly\NUL"
+    -- The empty local identity makes git commit-tree fail only after the
+    -- generated managed file has been validated and written.  Transaction
+    -- rollback must therefore restore every observable caller-owned state.
+    _ <- gitSuccess directory ["config", "user.name", ""] BS.empty
+    _ <- gitSuccess directory ["config", "user.email", ""] BS.empty
+    before <- scopeFailureSnapshot directory [stagedPath, dirtyPath, cachePath]
+    result <- runScope repository (createAdrId created) Nothing [extra] []
+    case result of
+      Left (Stage7CommitTree _) -> pure ()
+      other -> assertFailure ("expected induced post-generation commit-tree failure, got " <> show other)
+    scopeFailureSnapshot directory [stagedPath, dirtyPath, cachePath] >>= (@?= before)
+
+scopeFailureSnapshot :: FilePath -> [FilePath] -> IO ((Text.Text, Text.Text, BS.ByteString, BS.ByteString, BS.ByteString, [Text.Text]), [(Text.Text, BS.ByteString)], [(FilePath, Maybe BS.ByteString)])
+scopeFailureSnapshot directory cacheAndCallerPaths = do
+  repositoryState <- repositoryObservableState directory
+  managed <- managedCommittedBytes directory
+  files <- mapM snapshotFile cacheAndCallerPaths
+  pure (repositoryState, managed, files)
+  where
+    snapshotFile path = do
+      exists <- doesFileExist path
+      bytes <- if exists then Just <$> BS.readFile path else pure Nothing
+      pure (path, bytes)
+
+prepareScopeObservableFiles :: FilePath -> IO ()
+prepareScopeObservableFiles directory = do
+  _ <- commitFile directory "scope-unrelated-dirty.txt" "committed scope observable bytes\n"
+  BS.writeFile (directory </> "scope-unrelated-staged.txt") "staged observable bytes\NUL"
+  _ <- gitSuccess directory ["add", "scope-unrelated-staged.txt"] BS.empty
+  BS.writeFile (directory </> "scope-unrelated-dirty.txt") "dirty observable bytes\NUL"
+
+runScope :: Repository -> AdrId -> Maybe StateToken -> [ScopePattern] -> [ScopePattern] -> IO (Either TransactionError ScopeChangeResult)
+runScope repository adr expected added removed = do
+  inputs <- scopeInputs
+  runScopeWithInputs repository adr expected added removed inputs
+
+runScopeWithInputs :: Repository -> AdrId -> Maybe StateToken -> [ScopePattern] -> [ScopePattern] -> ProvenanceInputs -> IO (Either TransactionError ScopeChangeResult)
+runScopeWithInputs repository adr expected added removed inputs = do
+  actor <- createActor
+  changeScopeCommand repository (configManagedPaths defaultConfig) actor adr expected added removed inputs
+
+scopeInputs :: IO ProvenanceInputs
+scopeInputs = do
+  input <- assertRight (mkDigest (BS.replicate 32 1))
+  prompt <- assertRight (mkDigest (BS.replicate 32 2))
+  context <- assertRight (mkDigest (BS.replicate 32 3))
+  pure (ProvenanceInputs (Just input) (Just prompt) (Just context))
+
+scopeDocumentAt :: FilePath -> ScopeChangeResult -> IO ParsedManagedDocument
+scopeDocumentAt directory update = do
+  bytes <- gitSuccess directory ["show", Text.unpack (gitOidText (scopeChangeCommitOid update) <> ":" <> repoPathText (scopeChangeNewPath update))] BS.empty
+  assertRight (parseManagedDocument (scopeChangeNewPath update) bytes)
+
+connectionPayloadFrom :: ParsedManagedDocument -> Maybe AppliesToPayload
+connectionPayloadFrom document =
+  case parsedManagedRecord document of
+    ManagedConnection connection -> case connectionPayload connection of
+      AppliesToConnection payload -> Just payload
+      _ -> Nothing
+    _ -> Nothing
+
+assertScopeDocument :: ScopeChangeResult -> ConnectionId -> Text.Text -> [ScopePattern] -> [ScopePattern] -> [ScopePattern] -> ParsedManagedDocument -> IO ()
+assertScopeDocument update parent change added removed effective document = do
+  case connectionPayloadFrom document of
+    Just payload -> do
+      appliesToParentConnections payload @?= [parent]
+      appliesToChange payload @?= change
+      appliesToAdded payload @?= added
+      appliesToRemoved payload @?= removed
+      appliesToEffective payload @?= effective
+    Nothing -> assertFailure "expected parsed scope payload"
+  let capsule = parsedManagedCapsule document
+  provenanceParents capsule @?= [ProvenanceConnection parent]
+  eventKindText (provenanceEventKind capsule) @?= "scope.update"
+  provenanceObjectId capsule @?= ProvenanceConnection (scopeChangeConnectionId update)
+
+repositoryObservableState :: FilePath -> IO (Text.Text, Text.Text, BS.ByteString, BS.ByteString, BS.ByteString, [Text.Text])
+repositoryObservableState directory = do
+  headNow <- gitText directory ["rev-parse", "HEAD"]
+  treeNow <- gitText directory ["ls-tree", "-r", "HEAD"]
+  indexNow <- gitSuccess directory ["ls-files", "-s"] BS.empty
+  staged <- BS.readFile (directory </> "scope-unrelated-staged.txt")
+  dirty <- BS.readFile (directory </> "scope-unrelated-dirty.txt")
+  status <- fmap Text.lines (gitText directory ["status", "--porcelain=v1", "--untracked-files=all"])
+  pure (headNow, treeNow, indexNow, staged, dirty, status)
+
+managedCommittedBytes :: FilePath -> IO [(Text.Text, BS.ByteString)]
+managedCommittedBytes directory = do
+  paths <- fmap Text.lines (gitText directory ["ls-tree", "-r", "--name-only", "HEAD", "--", "architecture/adrai"])
+  mapM (\path -> do
+    bytes <- gitSuccess directory ["show", Text.unpack ("HEAD:" <> path)] BS.empty
+    pure (path, bytes)) paths
 
 managedWorktreeState :: FilePath -> IO [Text.Text]
 managedWorktreeState directory =
