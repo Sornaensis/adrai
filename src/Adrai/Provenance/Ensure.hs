@@ -34,6 +34,10 @@ module Adrai.Provenance.Ensure
 
     -- | Overlay rows query
     overlayRowsForOperations,
+
+    -- | Read immutable target-relative provenance evidence
+    readProvenanceEvidenceAt,
+    readProvenanceEvidenceAtWith,
   )
 where
 
@@ -45,8 +49,10 @@ import Adrai.Git
     GitProcessResult (..),
     Repository (..),
     batchObjectInfo,
+    gitCommitNodeOid,
     gitOidText,
     isShallowRepository,
+    reachableCommitGraphAt,
     runRepository,
   )
 import Adrai.Provenance
@@ -54,6 +60,7 @@ import Adrai.Provenance
     OverlayFingerprint (..),
     mkGitOid,
     mkOverlayFingerprint,
+    provenanceOperationId,
     sha256Digest,
   )
 import Adrai.Provenance.Classification
@@ -77,6 +84,18 @@ import Adrai.Provenance.Overlay
     OperationClassification (..),
     OperationCommit (..),
     ProvenanceIssue (..),
+    RegisteredOperationRow (..),
+    RegisteredObjectRow (..),
+    OperationCommitRow (..),
+    LineConfigRow (..),
+    LineRefStateRow (..),
+    LineLandingRow (..),
+    RefObservationRow (..),
+    ObservationRootRow (..),
+    ProvenanceIssueRow (..),
+    ProvenanceOperationEvidence (..),
+    ProvenanceEvidence (..),
+    ProvenanceEvidenceError (..),
     createOverlaySchema,
     overlayValid,
     provenanceDatabasePath,
@@ -105,15 +124,25 @@ import Adrai.Types
     mkGitRef,
     repoPathText,
     gitRefText,
+    operationIdText,
   )
-import Control.Exception (Exception, SomeException (SomeException), toException, try)
+import Control.Exception
+  ( SomeAsyncException,
+    Exception,
+    SomeException (SomeException),
+    bracket,
+    fromException,
+    throwIO,
+    toException,
+    try,
+  )
 import Control.Monad (forM_, when, void)
 import Data.Maybe (isJust)
 import Data.Aeson (Value (..))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
-import Data.Bits ((.&.), (.|.), shiftL, shiftR)
+import Data.Bits ((.&.), shiftL, shiftR)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
@@ -138,11 +167,13 @@ import Database.SQLite.Simple
     query,
     query_,
     close,
+    withTransaction,
   )
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath (takeDirectory, (</>))
 import Data.Word (Word8)
 import Data.Int (Int64)
+import System.Directory (makeAbsolute)
 
 -- ============================================================
 -- Configuration key computation
@@ -418,7 +449,7 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
     -- Read prior query roots from existing observation_root table
     priorRootOids' <- do
       rootRows <- query_ conn
-        "SELECT commit_oid FROM observation_root WHERE kind='query'"
+        "SELECT commit_oid FROM observation_root WHERE root_kind='query'"
         :: IO [Only Text]
       pure [case mkGitOid oid of Left _ -> error "invalid GitOid in observation_root"; Right oid -> oid
            | Only oid <- rootRows]
@@ -644,11 +675,210 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
 -- | Group parsed managed documents by operation ID.
 groupParsedDocs :: [ParsedManagedDocument] -> Map Text [ParsedManagedDocument]
 groupParsedDocs docs = Map.fromListWith (++)
-  [ (parsedDocumentObjectRef doc, [doc]) | doc <- docs ]
+  [ (operationIdText (provenanceOperationId (parsedManagedCapsule doc)), [doc])
+    | doc <- docs
+  ]
 
 -- ============================================================
 -- Overlay rows query
 -- ============================================================
+
+-- | Read the cache as evidence for an immutable, caller-resolved commit.
+--
+-- Cache maintenance deliberately observes current refs and reflogs.  This
+-- reader does neither: the only graph authority is @target@, and all commit,
+-- landing, ref, and root rows are selected only when their OID belongs to
+-- that graph.  In particular, it is safe to keep a shared cache while callers
+-- render an older revision.
+readProvenanceEvidenceAt
+  :: Repository
+  -> FilePath
+  -> GitOid
+  -> [Text]
+  -> Text
+  -> IO (Either ProvenanceEvidenceError ProvenanceEvidence)
+readProvenanceEvidenceAt repository overlayPath target requestedOperations requestedConfig
+  = readProvenanceEvidenceAtWith repository overlayPath target requestedOperations requestedConfig (pure ())
+
+-- | Testable form of 'readProvenanceEvidenceAt'.  The hook runs after the
+-- read transaction has established its snapshot with a schema query, but
+-- before any evidence-table query.  Production callers use
+-- 'readProvenanceEvidenceAt'; the hook makes cancellation and release
+-- behavior observable without changing the production authority.
+readProvenanceEvidenceAtWith
+  :: Repository
+  -> FilePath
+  -> GitOid
+  -> [Text]
+  -> Text
+  -> IO ()
+  -> IO (Either ProvenanceEvidenceError ProvenanceEvidence)
+readProvenanceEvidenceAtWith repository overlayPath target requestedOperations requestedConfig afterOpen
+  | null requestedOperations =
+      pure (Right (ProvenanceEvidence target Nothing [] [] [] []))
+  | otherwise = do
+      graphResult <- reachableCommitGraphAt repository target
+      case graphResult of
+        Left gitError -> pure (Left (ProvenanceEvidenceGitError gitError))
+        Right graph -> do
+          let reachable = Set.fromList
+                (gitOidText target : [gitOidText (gitCommitNodeOid node) | node <- graph])
+          databaseResult <- captureSynchronous $
+            bracket (openReadOnly overlayPath) close $ \connection ->
+              withTransaction connection $ do
+                -- Establish the read snapshot before invoking the narrow
+                -- test hook.  The transaction then keeps every evidence
+                -- table coherent even when overlay maintenance commits
+                -- concurrently.
+                void (query_ connection "SELECT 1 FROM sqlite_schema LIMIT 1" :: IO [Only Int])
+                afterOpen
+                readEvidenceRows connection reachable
+          pure $ case databaseResult of
+            Left databaseError -> Left databaseError
+            Right evidence -> evidence
+  where
+    readEvidenceRows connection reachable = do
+      let placeholders = Text.intercalate "," (replicate (length requestedOperations) "?")
+          operationParams = map SQLText requestedOperations
+          requested = Set.fromList requestedOperations
+          operationQuery selectColumns orderBy = asQuery (selectColumns <> " WHERE op_id IN (" <> placeholders <> ")" <> orderBy)
+
+      registrationRaw <- query connection
+        (operationQuery "SELECT op_id,adr_id,basis_oid,signature FROM registered_operation" " ORDER BY op_id,adr_id,basis_oid,signature")
+        operationParams :: IO [(Text, Maybe Text, Text, Text)]
+      objectRaw <- query connection
+        (operationQuery "SELECT op_id,object_id,path,blob_oid FROM registered_object" " ORDER BY op_id,object_id,path,blob_oid")
+        operationParams :: IO [(Text, Text, Text, Text)]
+      placementRaw <- query connection
+        (operationQuery "SELECT op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json FROM operation_commit" " ORDER BY op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json")
+        operationParams :: IO [(Text, Text, Text, Integer, Integer, Text, Text)]
+      landingRaw <- query connection
+        (asQuery ("SELECT op_id,line_id,ref_name,commit_oid,complete FROM line_landing WHERE config_key=? AND op_id IN (" <> placeholders <> ") ORDER BY op_id,line_id,ref_name,commit_oid,complete"))
+        (SQLText requestedConfig : operationParams) :: IO [(Text, Text, Text, Text, Integer)]
+      issueRaw <- query connection
+        (operationQuery "SELECT op_id,severity,code,adr_id,object_id,path,message FROM provenance_issue" " ORDER BY op_id,severity,code,adr_id,object_id,path,message")
+        operationParams :: IO [(Maybe Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)]
+      configRaw <- query connection
+        "SELECT config_key,config_json FROM line_config WHERE config_key=? ORDER BY config_key,config_json"
+        [SQLText requestedConfig] :: IO [(Text, Text)]
+      lineRefRaw <- query connection
+        "SELECT config_key,ref_name,tip_oid FROM line_ref_state WHERE config_key=? ORDER BY config_key,ref_name,tip_oid"
+        [SQLText requestedConfig] :: IO [(Text, Text, Text)]
+      refRaw <- query_ connection
+        "SELECT ref_name,tip_oid,object_type FROM ref_observation ORDER BY ref_name,tip_oid,object_type"
+        :: IO [(Text, Text, Text)]
+      rootRaw <- query_ connection
+        "SELECT root_kind,root_name,commit_oid FROM observation_root ORDER BY root_kind,root_name,commit_oid"
+        :: IO [(Text, Text, Text)]
+
+      pure $ do
+        config <- case configRaw of
+          [(configKey', configJson)] -> Right (LineConfigRow configKey' configJson)
+          [] -> Left (ProvenanceEvidenceMissingConfig requestedConfig)
+          _ -> Left (ProvenanceEvidenceDatabaseError "duplicate line_config rows")
+        registrations <- traverse registrationRow registrationRaw
+        objects <- traverse objectRow objectRaw
+        allPlacements <- traverse placementRow placementRaw
+        allLandings <- traverse landingRow landingRaw
+        allLineRefs <- traverse lineRefRow lineRefRaw
+        allRefs <- traverse refRow refRaw
+        allRoots <- traverse rootRow rootRaw
+        let placements = filter ((`Set.member` reachable) . gitOidText . operationCommitRowCommitOid) allPlacements
+            landings = filter ((`Set.member` reachable) . gitOidText . lineLandingRowCommitOid) allLandings
+            lineRefs = filter ((`Set.member` reachable) . gitOidText . lineRefStateRowTipOid) allLineRefs
+            refs = filter ((`Set.member` reachable) . gitOidText . refObservationRowTipOid) allRefs
+            roots = filter ((`Set.member` reachable) . gitOidText . observationRootRowCommitOid) allRoots
+        let issues =
+              [ ProvenanceIssueRow severity code adrId objectId path message opId
+                | (opId, severity, code, adrId, objectId, path, message) <- issueRaw
+              ]
+        operations <- traverse
+          (operationEvidence registrations objects placements landings issues)
+          requestedOperations
+        -- This guard documents that caller ownership is exact even if a
+        -- malformed database managed to manufacture an extra row.
+        if all ((`Set.member` requested) . registeredOperationRowOpId . provenanceEvidenceRegistration) operations
+          then Right (ProvenanceEvidence target (Just config) operations lineRefs refs roots)
+          else Left (ProvenanceEvidenceDatabaseError "unrequested operation evidence")
+
+    operationEvidence registrations objects placements landings issues opId = do
+      registration <- case filter ((== opId) . registeredOperationRowOpId) registrations of
+        [] -> Left (ProvenanceEvidenceMissingRegistration opId)
+        [row] -> Right row
+        _ -> Left (ProvenanceEvidenceDuplicateRegistration opId)
+      let members = filter ((== opId) . registeredObjectRowOpId) objects
+      if null members
+        then Left (ProvenanceEvidenceMissingObjects opId)
+        else if null (filter ((== opId) . operationCommitRowOpId) placements)
+          then Left (ProvenanceEvidenceMissingTargetPlacement opId)
+          else Right
+          (ProvenanceOperationEvidence
+            registration
+            members
+            (filter ((== opId) . operationCommitRowOpId) placements)
+            (filter ((== opId) . lineLandingRowOpId) landings)
+            (filter ((== Just opId) . provenanceIssueRowOpId) issues))
+
+    registrationRow (opId, adrId, basisOid, signature) =
+      RegisteredOperationRow opId adrId <$> rowOid "registered_operation.basis_oid" basisOid <*> pure signature
+    objectRow (opId, objectId, path, blobOid) =
+      RegisteredObjectRow opId objectId path <$> rowOid "registered_object.blob_oid" blobOid
+    placementRow (opId, commitOid, classification, authored, committed, subject, parents) =
+      OperationCommitRow opId <$> rowOid "operation_commit.commit_oid" commitOid <*> pure classification <*> pure authored <*> pure committed <*> pure subject <*> pure parents
+    landingRow (opId, lineId, refName, commitOid, complete) =
+      LineLandingRow requestedConfig opId lineId refName <$> rowOid "line_landing.commit_oid" commitOid <*> pure complete
+    lineRefRow (configKey', refName, tipOid) =
+      LineRefStateRow configKey' refName <$> rowOid "line_ref_state.tip_oid" tipOid
+    refRow (refName, tipOid, objectType) =
+      RefObservationRow refName <$> rowOid "ref_observation.tip_oid" tipOid <*> pure objectType
+    rootRow (rootKind, rootName, commitOid) =
+      ObservationRootRow rootKind rootName <$> rowOid "observation_root.commit_oid" commitOid
+    rowOid field raw = case mkGitOid raw of
+      Left _ -> Left (ProvenanceEvidenceInvalidOid field raw)
+      Right oid -> Right oid
+
+-- | Open SQLite through its URI read-only mode.  Unlike 'open' on a plain
+-- filename this cannot create a missing database or journal sidecars.  The
+-- The read-only URI is deliberately /not/ immutable: an immutable handle can
+-- ignore a concurrent WAL and therefore observe a physically inconsistent
+-- cache.  A normal read-only transaction gives a coherent snapshot without
+-- creating the database or any journal sidecar.
+openReadOnly :: FilePath -> IO Connection
+openReadOnly path = makeAbsolute path >>= open . sqliteReadOnlyUri
+
+sqliteReadOnlyUri :: FilePath -> String
+sqliteReadOnlyUri path = prefix <> concatMap escapeByte (BS.unpack utf8Path) <> "?mode=ro"
+  where
+    normalized = map replaceBackslash path
+    utf8Path = TextEncoding.encodeUtf8 (Text.pack normalized)
+    prefix = case normalized of
+      '/' : _ -> "file://"
+      _ -> "file:///"
+    replaceBackslash '\\' = '/'
+    replaceBackslash character = character
+    escapeByte byte
+      | asciiSafe byte = [toEnum (fromIntegral byte)]
+      | otherwise = ['%', hexDigit (byte `shiftR` 4), hexDigit (byte .&. 0x0f)]
+    asciiSafe byte =
+      (byte >= 0x41 && byte <= 0x5a)
+        || (byte >= 0x61 && byte <= 0x7a)
+        || (byte >= 0x30 && byte <= 0x39)
+        || byte `elem` [0x2d, 0x2e, 0x2f, 0x3a, 0x5f, 0x7e]
+    hexDigit nibble
+      | nibble < 10 = toEnum (fromEnum '0' + fromIntegral nibble)
+      | otherwise = toEnum (fromEnum 'A' + fromIntegral nibble - 10)
+
+-- | Catch only synchronous failures.  'bracket' masks acquisition/release, and
+-- asynchronous cancellation is rethrown rather than made observable as a
+-- normal cache failure.
+captureSynchronous :: IO a -> IO (Either ProvenanceEvidenceError a)
+captureSynchronous action = do
+  result <- try @SomeException action
+  case result of
+    Right value -> pure (Right value)
+    Left exception -> case fromException exception of
+      Just async -> throwIO (async :: SomeAsyncException)
+      Nothing -> pure (Left (ProvenanceEvidenceDatabaseError (Text.pack (show exception))))
 
 -- | Query the overlay for operation placements, line landings, and issues.
 --
@@ -665,54 +895,42 @@ overlayRowsForOperations
   :: FilePath
   -> [Text]    -- ^ Operation IDs
   -> Text      -- ^ Config key
-  -> IO (Either SomeException ([(Text,Text,Text,Int,Int,Text,Text)],
-                           [(Text,Text,Text,Text,Int)],
+  -> IO (Either SomeException ([(Text,Text,Text,Integer,Integer,Text,Text)],
+                           [(Text,Text,Text,Text,Integer)],
                            [(Text,Text,Maybe Text,Maybe Text,Maybe Text,Text)]))
 overlayRowsForOperations overlayPath opIds configKey' = do
   result <- try @SomeException $ do
     if null opIds
       then pure ([], [], [])
-      else do
-        conn <- open overlayPath
+      else bracket (openReadOnly overlayPath) close $ \conn -> do
         let placeholders = Text.intercalate "," (replicate (length opIds) "?")
             params = map SQLText opIds
 
         -- Operation placements
         placements <- query conn
           (asQuery ("SELECT op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json "
-           <> "FROM operation_commit WHERE op_id IN (" <> placeholders <> ")"))
+           <> "FROM operation_commit WHERE op_id IN (" <> placeholders <> ") ORDER BY op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json"))
           params :: IO [(Text, Text, Text, Integer, Integer, Text, Text)]
 
         -- Line landings
         landings <- query conn
           (asQuery ("SELECT op_id,line_id,ref_name,commit_oid,complete "
-           <> "FROM line_landing WHERE config_key=? AND op_id IN (" <> placeholders <> ")"))
+           <> "FROM line_landing WHERE config_key=? AND op_id IN (" <> placeholders <> ") ORDER BY op_id,line_id,ref_name,commit_oid,complete"))
           (SQLText configKey' : params) :: IO [(Text, Text, Text, Text, Integer)]
 
         -- Issues
         issues <- query conn
           (asQuery ("SELECT severity,code,adr_id,object_id,path,message "
-           <> "FROM provenance_issue WHERE op_id IN (" <> placeholders <> ")"))
+           <> "FROM provenance_issue WHERE op_id IN (" <> placeholders <> ") ORDER BY severity,code,adr_id,object_id,path,message"))
           params :: IO [(Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)]
 
-        close conn
+        pure (placements, landings, issues)
 
-        let placements' =
-              [ (opId, commitOid, classification, fromInteger authored, fromInteger committed, subject, parents)
-              | (opId, commitOid, classification, authored, committed, subject, parents) <- placements
-              ]
-            landings' =
-              [ (opId, lineId, refName, commitOid, fromInteger complete)
-              | (opId, lineId, refName, commitOid, complete) <- landings
-              ]
-            issues' =
-              [ (severity, code, adrId, objectId, path, message)
-              | (severity, code, adrId, objectId, path, message) <- issues
-              ]
-
-        pure (placements', landings', issues')
-
-  pure result
+  case result of
+    Left exception -> case fromException exception of
+      Just async -> throwIO (async :: SomeAsyncException)
+      Nothing -> pure (Left exception)
+    Right rows -> pure (Right rows)
 
 -- ============================================================
 -- Utility helpers

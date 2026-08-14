@@ -68,6 +68,20 @@ module Adrai.Provenance.Overlay
     managedPathAdditionPath,
     managedPathAdditionCommitOid,
 
+    -- * Immutable target-relative evidence rows
+    RegisteredOperationRow (..),
+    RegisteredObjectRow (..),
+    OperationCommitRow (..),
+    LineConfigRow (..),
+    LineRefStateRow (..),
+    LineLandingRow (..),
+    RefObservationRow (..),
+    ObservationRootRow (..),
+    ProvenanceIssueRow (..),
+    ProvenanceOperationEvidence (..),
+    ProvenanceEvidence (..),
+    ProvenanceEvidenceError (..),
+
     -- * Schema helpers
     overlaySchemaDdl,
     overlaySchemaIndexes,
@@ -211,6 +225,121 @@ data ManagedPathAddition = ManagedPathAddition
   { managedPathAdditionPath      :: Text,
     managedPathAdditionCommitOid :: GitOid
   }
+  deriving (Eq, Show)
+
+-- | A raw, lossless registration row.  This deliberately remains separate
+-- from the classification helper's map-shaped registration data: callers that
+-- validate corruption must be able to see every database fact before choosing
+-- a policy for it.
+data RegisteredOperationRow = RegisteredOperationRow
+  { registeredOperationRowOpId :: Text,
+    registeredOperationRowAdrId :: Maybe Text,
+    registeredOperationRowBasisOid :: GitOid,
+    registeredOperationRowSignature :: Text
+  }
+  deriving (Eq, Show)
+
+data RegisteredObjectRow = RegisteredObjectRow
+  { registeredObjectRowOpId :: Text,
+    registeredObjectRowObjectId :: Text,
+    registeredObjectRowPath :: Text,
+    registeredObjectRowBlobOid :: GitOid
+  }
+  deriving (Eq, Show)
+
+-- | A placement row with the SQLite seconds values retained as 'Integer'.
+data OperationCommitRow = OperationCommitRow
+  { operationCommitRowOpId :: Text,
+    operationCommitRowCommitOid :: GitOid,
+    operationCommitRowClassification :: Text,
+    operationCommitRowAuthoredSeconds :: Integer,
+    operationCommitRowCommittedSeconds :: Integer,
+    operationCommitRowSubject :: Text,
+    operationCommitRowParentsJson :: Text
+  }
+  deriving (Eq, Show)
+
+data LineConfigRow = LineConfigRow
+  { lineConfigRowKey :: Text,
+    lineConfigRowJson :: Text
+  }
+  deriving (Eq, Show)
+
+data LineRefStateRow = LineRefStateRow
+  { lineRefStateRowConfigKey :: Text,
+    lineRefStateRowRefName :: Text,
+    lineRefStateRowTipOid :: GitOid
+  }
+  deriving (Eq, Show)
+
+data LineLandingRow = LineLandingRow
+  { lineLandingRowConfigKey :: Text,
+    lineLandingRowOpId :: Text,
+    lineLandingRowLineId :: Text,
+    lineLandingRowRefName :: Text,
+    lineLandingRowCommitOid :: GitOid,
+    lineLandingRowComplete :: Integer
+  }
+  deriving (Eq, Show)
+
+data RefObservationRow = RefObservationRow
+  { refObservationRowName :: Text,
+    refObservationRowTipOid :: GitOid,
+    refObservationRowObjectType :: Text
+  }
+  deriving (Eq, Show)
+
+data ObservationRootRow = ObservationRootRow
+  { observationRootRowKind :: Text,
+    observationRootRowName :: Text,
+    observationRootRowCommitOid :: GitOid
+  }
+  deriving (Eq, Show)
+
+data ProvenanceIssueRow = ProvenanceIssueRow
+  { provenanceIssueRowSeverity :: Text,
+    provenanceIssueRowCode :: Text,
+    provenanceIssueRowAdrId :: Maybe Text,
+    provenanceIssueRowObjectId :: Maybe Text,
+    provenanceIssueRowPath :: Maybe Text,
+    provenanceIssueRowMessage :: Text,
+    provenanceIssueRowOpId :: Maybe Text
+  }
+  deriving (Eq, Show)
+
+-- | All facts belonging to one requested operation.  Lists are intentional:
+-- no database evidence is silently sorted, deduplicated, or map-collapsed.
+data ProvenanceOperationEvidence = ProvenanceOperationEvidence
+  { provenanceEvidenceRegistration :: RegisteredOperationRow,
+    provenanceEvidenceObjects :: [RegisteredObjectRow],
+    provenanceEvidenceCommits :: [OperationCommitRow],
+    provenanceEvidenceLandings :: [LineLandingRow],
+    provenanceEvidenceIssues :: [ProvenanceIssueRow]
+  }
+  deriving (Eq, Show)
+
+-- | Read-only evidence selected against an immutable caller-supplied target.
+data ProvenanceEvidence = ProvenanceEvidence
+  { provenanceEvidenceTargetOid :: GitOid,
+    provenanceEvidenceConfig :: Maybe LineConfigRow,
+    provenanceEvidenceOperations :: [ProvenanceOperationEvidence],
+    provenanceEvidenceLineRefs :: [LineRefStateRow],
+    provenanceEvidenceRefs :: [RefObservationRow],
+    provenanceEvidenceRoots :: [ObservationRootRow]
+  }
+  deriving (Eq, Show)
+
+-- | Stable failures from target-relative evidence reading.  Git and SQLite
+-- details are rendered only after asynchronous exceptions have been rethrown.
+data ProvenanceEvidenceError
+  = ProvenanceEvidenceGitError GitError
+  | ProvenanceEvidenceDatabaseError Text
+  | ProvenanceEvidenceInvalidOid Text Text
+  | ProvenanceEvidenceMissingRegistration Text
+  | ProvenanceEvidenceMissingObjects Text
+  | ProvenanceEvidenceMissingTargetPlacement Text
+  | ProvenanceEvidenceMissingConfig Text
+  | ProvenanceEvidenceDuplicateRegistration Text
   deriving (Eq, Show)
 
 -- | Canonical overlay schema DDL as a list of @(table_name, create_statement)@.

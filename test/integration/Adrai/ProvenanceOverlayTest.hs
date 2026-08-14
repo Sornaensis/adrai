@@ -75,6 +75,18 @@ import Adrai.Provenance.Overlay
     RefObservation (..),
     ObservationRoot (..),
     ManagedPathAddition (..),
+    ProvenanceEvidence (..),
+    ProvenanceOperationEvidence (..),
+    RegisteredOperationRow (..),
+    RegisteredObjectRow (..),
+    OperationCommitRow (..),
+    LineConfigRow (..),
+    LineRefStateRow (..),
+    LineLandingRow (..),
+    RefObservationRow (..),
+    ObservationRootRow (..),
+    ProvenanceIssueRow (..),
+    ProvenanceEvidenceError (..),
     createOverlaySchema,
     overlaySchemaDdl,
     overlaySchemaVersion,
@@ -85,6 +97,8 @@ import Adrai.Provenance.Ensure
   ( configKey,
     ensureProvenance,
     overlayRowsForOperations,
+    readProvenanceEvidenceAt,
+    readProvenanceEvidenceAtWith,
     ProvenanceUpdate (..),
   )
 import Adrai.Provenance.Discovery
@@ -148,14 +162,27 @@ import Adrai.Types
     repoPathText,
     stateTokenText,
   )
-import Control.Exception (SomeException, try)
-import Control.Monad (forM_, when)
+import Control.Exception
+  ( AsyncException (ThreadKilled),
+    Exception (..),
+    SomeException,
+    asyncExceptionFromException,
+    asyncExceptionToException,
+    bracket,
+    fromException,
+    throwIO,
+    try,
+  )
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Monad (filterM, forM_, void, when)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as Lazy
+import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import qualified Data.Set as Set
@@ -173,11 +200,20 @@ import Database.SQLite.Simple
     open,
     query,
     query_,
+    withTransaction,
   )
-import System.FilePath ((</>))
+import System.Directory (doesFileExist, withCurrentDirectory)
+import System.FilePath (isRelative, takeFileName, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, assertEqual, assertFailure, testCase)
+
+data TestAsyncCancellation = TestAsyncCancellation
+  deriving (Eq, Show)
+
+instance Exception TestAsyncCancellation where
+  toException = asyncExceptionToException
+  fromException = asyncExceptionFromException
 
 -- | Convert a Digest to Text for use in test data.
 -- The exact representation is not critical; it just needs to be stable Text.
@@ -245,6 +281,14 @@ queryIssueCodes :: FilePath -> IO [Text]
 queryIssueCodes dbPath = do
   conn <- open dbPath
   rows <- query_ conn "SELECT code FROM provenance_issue ORDER BY code" :: IO [Only Text]
+  close conn
+  pure (map fromOnly rows)
+
+-- | Query shallow-history completeness flags from landing records.
+queryLandingCompleteness :: FilePath -> IO [Int]
+queryLandingCompleteness dbPath = do
+  conn <- open dbPath
+  rows <- query_ conn "SELECT complete FROM line_landing ORDER BY config_key,op_id,line_id,ref_name,commit_oid" :: IO [Only Int]
   close conn
   pure (map fromOnly rows)
 
@@ -650,7 +694,6 @@ tests =
 
           let basis = requireGitOid basisOid
           resolved <- resolveTestRepo repoDir "HEAD"
-          -- Register the operation
           ensureSchema overlayPath
           let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
                 { capsuleInputOperationId = requireOperationId "O00000000000000000000000001"
@@ -680,12 +723,8 @@ tests =
                 , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
-          let groups = Map.singleton "O00000000000000000000000001" [doc]
-          conn <- open overlayPath
-          _ <- registerOperationGroups conn groups
-          close conn
-
-          -- Run ensure_provenance
+          -- A new operation is deliberately not pre-registered: classification
+          -- must see it in the same first ensure pass that records the commit.
           (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000001"] basis
           case ensureResult of
             Left e -> assertFailure ("ensureProvenance: " <> show e)
@@ -694,7 +733,7 @@ tests =
               assertBool "should have a placement" (not (null placements))
               let classified = map snd placements
               assertBool "classification should be 'original'" ("original" `elem` classified)
-              assertBool "commit_oid matches HEAD" (any (\(oid, _) -> oid == basisOid) placements)
+              assertBool "commit_oid matches HEAD" (any (\(oid, _) -> oid == gitOidText (resolvedCommitOid resolved)) placements)
         ),
 
       -- 2. Feature branch op, fast-forward merge preserves "original" classification.
@@ -719,6 +758,8 @@ tests =
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000002--feature.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000002--feature.decision.md"] BS.empty
 
           -- FF merge back to main
           _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
@@ -753,7 +794,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000002"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000002--feature.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
@@ -863,6 +904,8 @@ tests =
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000004--trailer.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000004--trailer.decision.md"] BS.empty
 
           _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
           _ <- commitFile repoDir "main-change.txt" "main change"
@@ -898,7 +941,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000004"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000004--trailer.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
@@ -933,11 +976,15 @@ tests =
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000005--cherry.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          _ <- gitSuccess repoDir ["commit", "--amend", "-m", "Feature operation\n\nADRAI-Op: O00000000000000000000000005"] BS.empty
+          featureCommitOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000005--cherry.decision.md"] BS.empty
 
           _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
           _ <- commitFile repoDir "main-change.txt" "main change"
           -- Cherry-pick the feature commit
-          _ <- gitSuccess repoDir ["cherry-pick", Text.unpack featureOid] BS.empty
+          _ <- gitSuccess repoDir ["cherry-pick", Text.unpack featureCommitOid] BS.empty
           mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           resolved <- resolveTestRepo repoDir "HEAD"
@@ -968,7 +1015,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000005"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000005--cherry.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
@@ -1003,6 +1050,9 @@ tests =
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000006--rebase.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          _ <- gitSuccess repoDir ["commit", "--amend", "-m", "Feature operation\n\nADRAI-Op: O00000000000000000000000006"] BS.empty
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000006--rebase.decision.md"] BS.empty
 
           -- Create a commit on main
           _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
@@ -1042,7 +1092,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000006"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000006--rebase.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
@@ -1150,6 +1200,8 @@ tests =
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000008--gc.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000008--gc.decision.md"] BS.empty
 
           _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
           _ <- commitFile repoDir "main-change.txt" "main change"
@@ -1188,7 +1240,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000008"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000008--gc.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
@@ -1223,6 +1275,8 @@ tests =
           _ <- commitFiles repoDir
             [ ("architecture/adrai/decisions/000/00000000000000000000000009--rename.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000009--rename.decision.md"] BS.empty
 
           -- Rename the branch
           _ <- gitSuccess repoDir ["branch", "-m", "feature", "develop"] BS.empty
@@ -1259,7 +1313,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000009"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000009--rename.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
@@ -1297,6 +1351,8 @@ tests =
                TextEncoding.encodeUtf8 decisionContent)]
 
           originalOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+          decisionBlobOid <- outputText <$> gitSuccess repoDir
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000010--redundant.decision.md"] BS.empty
 
           -- Second commit adds nothing new but has ADRAI-Op trailer
           _ <- gitSuccess repoDir ["commit", "--allow-empty", "-m", "Redundant trailer\n\nADRAI-Op: O00000000000000000000000010"] BS.empty
@@ -1332,7 +1388,7 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000010"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000010--redundant.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
@@ -1493,6 +1549,7 @@ tests =
         (withSystemTempDirectory "adrai overlay shallow history" $ \temp -> do
           let source = temp </> "source"
               shallow = temp </> "shallow"
+              dbPath = shallow </> "provenance.sqlite"
           initTestRepository source
           _ <- commitFile source "seed.txt" "seed"
           _ <- gitSuccess source ["branch", "feature"] BS.empty
@@ -1508,17 +1565,19 @@ tests =
           _ <- commitFiles source
             [ ("architecture/adrai/decisions/000/00000000000000000000000013--shallow.decision.md",
                TextEncoding.encodeUtf8 decisionContent)]
+          decisionBlobOid <- outputText <$> gitSuccess source
+            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000013--shallow.decision.md"] BS.empty
 
           _ <- gitSuccess source ["checkout", "main"] BS.empty
           _ <- commitFile source "main.txt" "main"
 
           -- Create shallow clone
           let sourceUri = "file:///" <> map toSlash source
-          _ <- gitSuccess temp ["clone", "--depth", "1", sourceUri, shallow] BS.empty
+          _ <- gitSuccess temp ["clone", "--branch", "feature", "--depth", "1", sourceUri, shallow] BS.empty
 
           resolved <- resolveTestRepo shallow "HEAD"
           let basis = requireGitOid featureOid
-          ensureSchema shallow
+          ensureSchema dbPath
           let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
                 { capsuleInputOperationId = requireOperationId "O00000000000000000000000013"
                 , capsuleInputObjectId = ProvenanceAdr (requireAdrId "A00000000000000000000000013")
@@ -1544,29 +1603,342 @@ tests =
                 { parsedDocumentObjectRef = pack "A00000000000000000000000013"
                 , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000013--shallow.decision.md"
                 , parsedManagedCapsule = capsule
-                , parsedBlobOid = Nothing
+                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
                 }
 
-          -- Shallow clone database path
-          let dbPath = shallow </> "provenance.sqlite"
-          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) dbPath [doc] ["O00000000000000000000000013"] basis
+          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) dbPath [doc] ["O00000000000000000000000013"] (resolvedCommitOid resolved)
           case ensureResult of
             Left e -> assertFailure ("ensureProvenance: " <> show e)
             Right _ -> do
-              issues <- queryIssueCodes shallow
-              -- Shallow history should be flagged
-              assertBool "shallow history incomplete warning should be recorded"
-                ("HISTORY_COVERAGE_INCOMPLETE" `elem` issues || not (null issues))
-              -- Classification should still work
-              placements <- queryPlacements shallow "O00000000000000000000000013"
-              assertBool "should still have placements despite shallow history" (not (null placements))
+              completeValues <- queryLandingCompleteness dbPath
+              assertBool "shallow history should mark a landing incomplete"
+                (0 `elem` completeValues)
         )
+    , testCase "target-relative evidence is lossless and ignores later cache facts" targetRelativeEvidenceTest
     ]
 
 -- =====================================================================
 -- Helper functions
 -- =====================================================================
+
+targetRelativeEvidenceTest :: IO ()
+targetRelativeEvidenceTest =
+  withSystemTempDirectory "adrai provenance evidence ünicode" $ \temp -> do
+    let repoDir = temp </> "repo with spaces ü"
+        dbPath = temp </> "cache with spaces ü.sqlite"
+        operation = "O00000000000000000000000999"
+        laterOperation = "O00000000000000000000000998"
+        wrongOperation = "O00000000000000000000000997"
+        config = "config-ü"
+        managedFile = "architecture/adrai/decisions/managed-fixture.md"
+    initTestRepository repoDir
+    _ <- commitFile repoDir managedFile "managed fixture baseline\n"
+    firstOidText <- commitFile repoDir "seed.txt" "first"
+    resolvedFirst <- resolveTestRepo repoDir firstOidText
+    laterOidText <- commitFile repoDir "later.txt" "later"
+    resolvedLater <- resolveTestRepo repoDir laterOidText
+    let firstOid = resolvedCommitOid resolvedFirst
+        laterOid = resolvedCommitOid resolvedLater
+    ensureSchema dbPath
+    connection <- open dbPath
+    execute connection "INSERT INTO registered_operation VALUES(?,?,?,?)"
+      [SQLText operation, SQLText "A00000000000000000000000999", SQLText (gitOidText firstOid), SQLText "signature-ü"]
+    execute connection "INSERT INTO registered_object VALUES(?,?,?,?)"
+      [SQLText operation, SQLText "A00000000000000000000000999", SQLText "architecture/adrai/decisions/ü space.md", SQLText (gitOidText firstOid)]
+    execute connection "INSERT INTO registered_operation VALUES(?,?,?,?)"
+      [SQLText laterOperation, SQLText "A00000000000000000000000998", SQLText (gitOidText laterOid), SQLText "later"]
+    execute connection "INSERT INTO registered_object VALUES(?,?,?,?)"
+      [SQLText operation, SQLText "A00000000000000000000000996", SQLText "architecture/adrai/decisions/second.md", SQLText (gitOidText firstOid)]
+    execute connection "INSERT INTO registered_object VALUES(?,?,?,?)"
+      [SQLText laterOperation, SQLText "A00000000000000000000000998", SQLText "later.md", SQLText (gitOidText laterOid)]
+    execute connection "INSERT INTO registered_operation VALUES(?,?,?,?)"
+      [SQLText wrongOperation, SQLText "A00000000000000000000000997", SQLText (gitOidText firstOid), SQLText "wrong-op"]
+    execute connection "INSERT INTO registered_object VALUES(?,?,?,?)"
+      [SQLText wrongOperation, SQLText "A00000000000000000000000997", SQLText "wrong.md", SQLText (gitOidText firstOid)]
+    execute connection "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)"
+      [SQLText operation, SQLText (gitOidText firstOid), SQLText "original", SQLInteger 9223372036854775806, SQLInteger 9223372036854775805, SQLText "subject-ü", SQLText "[\"raw-parent\"]"]
+    execute connection "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)"
+      [SQLText operation, SQLText (gitOidText laterOid), SQLText "contradictory-later", SQLInteger 3, SQLInteger 4, SQLText "later placement", SQLText "[]"]
+    execute connection "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)"
+      [SQLText laterOperation, SQLText (gitOidText laterOid), SQLText "later", SQLInteger 1, SQLInteger 2, SQLText "later", SQLText "[]"]
+    execute connection "INSERT INTO line_config VALUES(?,?)" [SQLText config, SQLText "{\"unicode\":\"ü\"}"]
+    execute connection "INSERT INTO line_ref_state VALUES(?,?,?)" [SQLText config, SQLText "refs/heads/main", SQLText (gitOidText firstOid)]
+    execute connection "INSERT INTO line_ref_state VALUES(?,?,?)" [SQLText config, SQLText "refs/heads/later", SQLText (gitOidText laterOid)]
+    execute connection "INSERT INTO line_landing VALUES(?,?,?,?,?,?)" [SQLText config, SQLText operation, SQLText "trunk", SQLText "refs/heads/main", SQLText (gitOidText firstOid), SQLInteger 1]
+    execute connection "INSERT INTO line_landing VALUES(?,?,?,?,?,?)" [SQLText config, SQLText operation, SQLText "later", SQLText "refs/heads/later", SQLText (gitOidText laterOid), SQLInteger 0]
+    execute connection "INSERT INTO line_landing VALUES(?,?,?,?,?,?)" [SQLText config, SQLText laterOperation, SQLText "later", SQLText "refs/heads/later", SQLText (gitOidText laterOid), SQLInteger 1]
+    execute connection "INSERT INTO ref_observation VALUES(?,?,?)" [SQLText "refs/heads/main", SQLText (gitOidText firstOid), SQLText "commit"]
+    execute connection "INSERT INTO ref_observation VALUES(?,?,?)" [SQLText "refs/heads/later", SQLText (gitOidText laterOid), SQLText "commit"]
+    execute connection "INSERT INTO observation_root VALUES(?,?,?)" [SQLText "query", SQLText "first", SQLText (gitOidText firstOid)]
+    execute connection "INSERT INTO observation_root VALUES(?,?,?)" [SQLText "query", SQLText "later", SQLText (gitOidText laterOid)]
+    execute connection "INSERT INTO provenance_issue VALUES(?,?,?,?,?,?,?,?)"
+      [SQLText "issue", SQLText "warning", SQLText "CODE", SQLNull, SQLNull, SQLNull, SQLText "message", SQLText operation]
+    close connection
+    -- Deliberately retain all kinds of worktree state.  Evidence acquisition
+    -- owns neither Git nor the checkout, including a managed document.
+    writeFile (repoDir </> "seed.txt") "tracked unstaged working-tree content\n"
+    writeFile (repoDir </> "staged.txt") "staged index content\n"
+    _ <- gitSuccess repoDir ["add", "staged.txt"] BS.empty
+    writeFile (repoDir </> "untracked.txt") "untracked working-tree content\n"
+    headBefore <- gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+    symbolicRefBefore <- gitSuccess repoDir ["symbolic-ref", "-q", "HEAD"] BS.empty
+    symbolicRefOidBefore <- gitSuccess repoDir ["rev-parse", "--verify", "HEAD"] BS.empty
+    statusBefore <- gitSuccess repoDir ["status", "--porcelain=v1", "-z"] BS.empty
+    rawBefore <- gitSuccess repoDir ["diff", "--raw", "-z"] BS.empty
+    stagedRawBefore <- gitSuccess repoDir ["diff", "--cached", "--raw", "-z"] BS.empty
+    indexBefore <- gitSuccess repoDir ["ls-files", "--stage", "-z"] BS.empty
+    trackedBefore <- gitSuccess repoDir ["ls-files", "-z"] BS.empty
+    worktreeBytesBefore <- traverse
+      (\path -> (,) path <$> BS.readFile (repoDir </> path))
+      ["seed.txt", "staged.txt", "untracked.txt", managedFile]
+    schemaBefore <- overlaySchemaFacts dbPath
+    sidecarsBefore <- overlayFileSnapshot dbPath
+    let assertOverlayUnchanged label = do
+          actual <- overlayFileSnapshot dbPath
+          assertBool label (actual == sidecarsBefore)
+        expectedOldEvidence =
+          ProvenanceEvidence
+            firstOid
+            (Just (LineConfigRow config "{\"unicode\":\"ü\"}"))
+            [ ProvenanceOperationEvidence
+                (RegisteredOperationRow operation (Just "A00000000000000000000000999") firstOid "signature-ü")
+                [ RegisteredObjectRow operation "A00000000000000000000000996" "architecture/adrai/decisions/second.md" firstOid
+                , RegisteredObjectRow operation "A00000000000000000000000999" "architecture/adrai/decisions/ü space.md" firstOid
+                ]
+                [ OperationCommitRow
+                    operation
+                    firstOid
+                    "original"
+                    9223372036854775806
+                    9223372036854775805
+                    "subject-ü"
+                    "[\"raw-parent\"]"
+                ]
+                [LineLandingRow config operation "trunk" "refs/heads/main" firstOid 1]
+                [ProvenanceIssueRow "warning" "CODE" Nothing Nothing Nothing "message" (Just operation)]
+            ]
+            [LineRefStateRow config "refs/heads/main" firstOid]
+            [RefObservationRow "refs/heads/main" firstOid "commit"]
+            [ObservationRootRow "query" "first" firstOid]
+        expectedLaterEvidence =
+          ProvenanceEvidence
+            laterOid
+            (Just (LineConfigRow config "{\"unicode\":\"ü\"}"))
+            [ ProvenanceOperationEvidence
+                (RegisteredOperationRow laterOperation (Just "A00000000000000000000000998") laterOid "later")
+                [RegisteredObjectRow laterOperation "A00000000000000000000000998" "later.md" laterOid]
+                [OperationCommitRow laterOperation laterOid "later" 1 2 "later" "[]"]
+                [LineLandingRow config laterOperation "later" "refs/heads/later" laterOid 1]
+                []
+            ]
+            [ LineRefStateRow config "refs/heads/later" laterOid
+            , LineRefStateRow config "refs/heads/main" firstOid
+            ]
+            [ RefObservationRow "refs/heads/later" laterOid "commit"
+            , RefObservationRow "refs/heads/main" firstOid "commit"
+            ]
+            [ ObservationRootRow "query" "first" firstOid
+            , ObservationRootRow "query" "later" laterOid
+            ]
+    oldEvidence <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
+    oldEvidence @?= Right expectedOldEvidence
+    assertOverlayUnchanged "read-only evidence acquisition must preserve database bytes after success"
+    oldEvidenceAgain <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
+    oldEvidenceAgain @?= oldEvidence
+    let relativeDbPath = takeFileName dbPath
+    assertBool "relative-path evidence fixture must not accidentally use an absolute path" (isRelative relativeDbPath)
+    relativeEvidence <- withCurrentDirectory temp $
+      readProvenanceEvidenceAt (resolvedRepository resolvedFirst) relativeDbPath firstOid [operation] config
+    relativeEvidence @?= Right expectedOldEvidence
+    emptyEvidence <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [] config
+    emptyEvidence @?= Right (ProvenanceEvidence firstOid Nothing [] [] [] [])
+    laterAtFirst <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [laterOperation] config
+    laterAtFirst @?= Left (ProvenanceEvidenceMissingTargetPlacement laterOperation)
+    placementlessAtFirst <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [wrongOperation] config
+    placementlessAtFirst @?= Left (ProvenanceEvidenceMissingTargetPlacement wrongOperation)
+    cancellation <- try @SomeException $
+      readProvenanceEvidenceAtWith (resolvedRepository resolvedFirst) dbPath firstOid [operation] config (throwIO ThreadKilled)
+    case cancellation of
+      Left exception -> fromException exception @?= Just ThreadKilled
+      Right _ -> assertFailure "ThreadKilled must be rethrown rather than converted to evidence failure"
+    customCancellation <- try @SomeException $
+      readProvenanceEvidenceAtWith (resolvedRepository resolvedFirst) dbPath firstOid [operation] config (throwIO TestAsyncCancellation)
+    case customCancellation of
+      Left exception -> fromException exception @?= Just TestAsyncCancellation
+      Right _ -> assertFailure "custom asynchronous cancellation must be rethrown"
+    retryEvidence <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
+    assertBool "retry after cancellation reopens the closed connection" (either (const False) (const True) retryEvidence)
+    let missingDb = temp </> "missing.sqlite"
+    synchronousFailure <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) missingDb firstOid [operation] config
+    case synchronousFailure of
+      Left (ProvenanceEvidenceDatabaseError _) -> pure ()
+      other -> assertFailure ("expected typed synchronous database failure, got " <> show other)
+    missingDbCreated <- doesFileExist missingDb
+    assertBool "read-only acquisition must not create a missing database" (not missingDbCreated)
+    laterEvidence <- readProvenanceEvidenceAt (resolvedRepository resolvedLater) dbPath laterOid [laterOperation] config
+    laterEvidence @?= Right expectedLaterEvidence
+    operationAtLater <- readProvenanceEvidenceAt (resolvedRepository resolvedLater) dbPath laterOid [operation] config
+    case operationAtLater of
+      Left problem -> assertFailure ("readProvenanceEvidenceAt contradictory operation at later target: " <> show problem)
+      Right evidence -> do
+        let operationEvidence = head (provenanceEvidenceOperations evidence)
+        map operationCommitRowCommitOid (provenanceEvidenceCommits operationEvidence) @?= sort [firstOid, laterOid]
+        map lineLandingRowCommitOid (provenanceEvidenceLandings operationEvidence) @?= [laterOid, firstOid]
+    headAfterReadOnly <- gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+    symbolicRefAfterReadOnly <- gitSuccess repoDir ["symbolic-ref", "-q", "HEAD"] BS.empty
+    symbolicRefOidAfterReadOnly <- gitSuccess repoDir ["rev-parse", "--verify", "HEAD"] BS.empty
+    statusAfterReadOnly <- gitSuccess repoDir ["status", "--porcelain=v1", "-z"] BS.empty
+    rawAfterReadOnly <- gitSuccess repoDir ["diff", "--raw", "-z"] BS.empty
+    stagedRawAfterReadOnly <- gitSuccess repoDir ["diff", "--cached", "--raw", "-z"] BS.empty
+    indexAfterReadOnly <- gitSuccess repoDir ["ls-files", "--stage", "-z"] BS.empty
+    trackedAfterReadOnly <- gitSuccess repoDir ["ls-files", "-z"] BS.empty
+    worktreeBytesAfterReadOnly <- traverse
+      (\path -> (,) path <$> BS.readFile (repoDir </> path))
+      ["seed.txt", "staged.txt", "untracked.txt", managedFile]
+    sidecarsAfterReadOnly <- overlayFileSnapshot dbPath
+    headAfterReadOnly @?= headBefore
+    symbolicRefAfterReadOnly @?= symbolicRefBefore
+    symbolicRefOidAfterReadOnly @?= symbolicRefOidBefore
+    statusAfterReadOnly @?= statusBefore
+    rawAfterReadOnly @?= rawBefore
+    stagedRawAfterReadOnly @?= stagedRawBefore
+    indexAfterReadOnly @?= indexBefore
+    trackedAfterReadOnly @?= trackedBefore
+    worktreeBytesAfterReadOnly @?= worktreeBytesBefore
+    assertBool "read-only evidence acquisition must preserve database bytes and sidecar inventory" (sidecarsAfterReadOnly == sidecarsBefore)
+    schemaAfterReadOnly <- overlaySchemaFacts dbPath
+    schemaAfterReadOnly @?= schemaBefore
+
+    writerStarted <- newEmptyMVar
+    writerFinished <- newEmptyMVar
+    readerReleased <- newEmptyMVar
+    let concurrentMaintenance = do
+          _ <- forkIO $ do
+            outcome <- try @SomeException $
+              bracket (open dbPath) close $ \writable -> do
+                execute_ writable "PRAGMA busy_timeout=10000"
+                beginResult <- try @SomeException (execute_ writable "BEGIN IMMEDIATE")
+                putMVar writerStarted beginResult
+                case beginResult of
+                  Left exception -> throwIO exception
+                  Right () -> do
+                    writeResult <- try @SomeException $ do
+                      execute writable "UPDATE line_config SET config_json=? WHERE config_key=?" [SQLText "after-concurrent", SQLText config]
+                      execute writable "UPDATE operation_commit SET classification=? WHERE op_id=? AND commit_oid=?" [SQLText "after-concurrent", SQLText operation, SQLText (gitOidText firstOid)]
+                      takeMVar readerReleased
+                      execute_ writable "COMMIT"
+                    case writeResult of
+                      Right () -> pure ()
+                      Left exception -> do
+                        void (try @SomeException (execute_ writable "ROLLBACK"))
+                        throwIO exception
+            putMVar writerFinished outcome
+          pure ()
+        snapshotHook = do
+          concurrentMaintenance
+          begun <- takeMVar writerStarted
+          case begun of
+            Left exception -> throwIO exception
+            Right () -> pure ()
+    concurrentResult <- try @SomeException $
+      readProvenanceEvidenceAtWith (resolvedRepository resolvedFirst) dbPath firstOid [operation] config snapshotHook
+    putMVar readerReleased ()
+    case concurrentResult of
+      Left exception -> assertFailure ("concurrent snapshot read: " <> show exception)
+      Right concurrentEvidence -> case concurrentEvidence of
+        Left problem -> assertFailure ("concurrent snapshot evidence: " <> show problem)
+        Right evidence -> do
+          let observedState =
+                ( provenanceEvidenceConfig evidence
+                , operationCommitRowClassification (head (provenanceEvidenceCommits (head (provenanceEvidenceOperations evidence))))
+                )
+              beforeState = (Just (LineConfigRow config "{\"unicode\":\"ü\"}"), "original")
+              afterState = (Just (LineConfigRow config "after-concurrent"), "after-concurrent")
+          assertBool "a concurrent evidence read must expose one complete multi-table state" (observedState `elem` [beforeState, afterState])
+          observedState @?= beforeState
+    writerOutcome <- takeMVar writerFinished
+    case writerOutcome of
+      Left exception -> assertFailure ("concurrent overlay maintenance: " <> show exception)
+      Right () -> pure ()
+    afterConcurrent <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
+    case afterConcurrent of
+      Left problem -> assertFailure ("after concurrent maintenance: " <> show problem)
+      Right evidence -> do
+        provenanceEvidenceConfig evidence @?= Just (LineConfigRow config "after-concurrent")
+        operationCommitRowClassification (head (provenanceEvidenceCommits (head (provenanceEvidenceOperations evidence)))) @?= "after-concurrent"
+
+    let insertRow statement parameters = do
+          writable <- open dbPath
+          execute writable statement parameters
+          close writable
+        deleteRow statement parameters = do
+          writable <- open dbPath
+          execute writable statement parameters
+          close writable
+        expectInvalid field setup cleanup = do
+          setup
+          actual <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
+          cleanup
+          actual @?= Left (ProvenanceEvidenceInvalidOid field "not-an-oid")
+    expectInvalid "operation_commit.commit_oid"
+      (insertRow "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)" [SQLText operation, SQLText "not-an-oid", SQLText "broken", SQLInteger 1, SQLInteger 1, SQLText "bad", SQLText "[]"])
+      (deleteRow "DELETE FROM operation_commit WHERE op_id=? AND commit_oid=?" [SQLText operation, SQLText "not-an-oid"])
+    expectInvalid "registered_object.blob_oid"
+      (insertRow "INSERT INTO registered_object VALUES(?,?,?,?)" [SQLText operation, SQLText "A00000000000000000000000995", SQLText "architecture/adrai/decisions/bad.md", SQLText "not-an-oid"])
+      (deleteRow "DELETE FROM registered_object WHERE op_id=? AND object_id=?" [SQLText operation, SQLText "A00000000000000000000000995"])
+    expectInvalid "line_landing.commit_oid"
+      (insertRow "INSERT INTO line_landing VALUES(?,?,?,?,?,?)" [SQLText config, SQLText operation, SQLText "bad", SQLText "refs/heads/bad", SQLText "not-an-oid", SQLInteger 0])
+      (deleteRow "DELETE FROM line_landing WHERE config_key=? AND op_id=? AND line_id=? AND ref_name=?" [SQLText config, SQLText operation, SQLText "bad", SQLText "refs/heads/bad"])
+    expectInvalid "line_ref_state.tip_oid"
+      (insertRow "INSERT INTO line_ref_state VALUES(?,?,?)" [SQLText config, SQLText "refs/heads/bad", SQLText "not-an-oid"])
+      (deleteRow "DELETE FROM line_ref_state WHERE config_key=? AND ref_name=?" [SQLText config, SQLText "refs/heads/bad"])
+    expectInvalid "ref_observation.tip_oid"
+      (insertRow "INSERT INTO ref_observation VALUES(?,?,?)" [SQLText "refs/heads/bad", SQLText "not-an-oid", SQLText "commit"])
+      (deleteRow "DELETE FROM ref_observation WHERE ref_name=?" [SQLText "refs/heads/bad"])
+    expectInvalid "observation_root.commit_oid"
+      (insertRow "INSERT INTO observation_root VALUES(?,?,?)" [SQLText "query", SQLText "bad", SQLText "not-an-oid"])
+      (deleteRow "DELETE FROM observation_root WHERE root_kind=? AND root_name=?" [SQLText "query", SQLText "bad"])
+
+    missingRegistration <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid ["O00000000000000000000000996"] config
+    missingRegistration @?= Left (ProvenanceEvidenceMissingRegistration "O00000000000000000000000996")
+    missingConfig <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] "missing-config"
+    missingConfig @?= Left (ProvenanceEvidenceMissingConfig "missing-config")
+    connection' <- open dbPath
+    execute connection' "DELETE FROM registered_object WHERE op_id=?" [SQLText operation]
+    close connection'
+    missingObjects <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
+    missingObjects @?= Left (ProvenanceEvidenceMissingObjects operation)
+    connection'' <- open dbPath
+    execute_ connection'' "DROP TABLE registered_operation"
+    execute_ connection'' "CREATE TABLE registered_operation(op_id TEXT,adr_id TEXT,basis_oid TEXT NOT NULL,signature TEXT NOT NULL)"
+    execute connection'' "INSERT INTO registered_operation VALUES(?,?,?,?)"
+      [SQLText operation, SQLNull, SQLText (gitOidText firstOid), SQLText "one"]
+    execute connection'' "INSERT INTO registered_operation VALUES(?,?,?,?)"
+      [SQLText operation, SQLNull, SQLText (gitOidText firstOid), SQLText "two"]
+    close connection''
+    duplicateRegistration <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
+    duplicateRegistration @?= Left (ProvenanceEvidenceDuplicateRegistration operation)
+    connection''' <- open dbPath
+    execute_ connection''' "DELETE FROM registered_operation"
+    execute connection''' "INSERT INTO registered_operation VALUES(?,?,?,?)"
+      [SQLText operation, SQLNull, SQLText "not-an-oid", SQLText "broken"]
+    close connection'''
+    malformedRow <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
+    malformedRow @?= Left (ProvenanceEvidenceInvalidOid "registered_operation.basis_oid" "not-an-oid")
+
+overlaySchemaFacts :: FilePath -> IO [(Text, Text)]
+overlaySchemaFacts dbPath = do
+  connection <- open dbPath
+  rows <- query_ connection "SELECT type,name FROM sqlite_master ORDER BY type,name" :: IO [(Text, Text)]
+  close connection
+  pure rows
+
+overlayFileSnapshot :: FilePath -> IO [(FilePath, ByteString)]
+overlayFileSnapshot dbPath = do
+  let candidates = [dbPath, dbPath <> "-wal", dbPath <> "-shm", dbPath <> "-journal"]
+  existing <- filterM doesFileExist candidates
+  traverse (\path -> (,) path <$> BS.readFile path) existing
 
 requireAdrId :: Text -> AdrId
 requireAdrId value =
