@@ -28,6 +28,8 @@ module Adrai.Service.Transaction
     GeneratedFile (..),
     -- * Transaction configuration
     TransactionConfig (..),
+    AppendOnlyDependencies (..),
+    defaultAppendOnlyDependencies,
     -- * Null OID constant
     nullOid,
     -- * Git plumbing output
@@ -35,6 +37,7 @@ module Adrai.Service.Transaction
     commitTree,
     -- * Core transaction functions
     commitAppendOnlyOperation,
+    commitAppendOnlyOperationWith,
     commitBootstrapFiles,
   )
 where
@@ -47,7 +50,8 @@ import Adrai.Git
     runRepositoryWithEnvironment,
     GitError (..),
     GitProcessResult (..),
-    repositoryCommonDir,
+     repositoryCommonDir,
+     repositoryGitDir,
     repositoryWorktreeRoot,
     resolveRevision,
     GitHeadState (..),
@@ -90,14 +94,17 @@ import qualified Data.Set as Set
 import Control.Exception
   ( Exception,
     SomeException,
+    SomeAsyncException,
     bracket,
     catch,
     fromException,
+    onException,
     throwIO,
     try,
+    mask,
   )
 import System.Exit (ExitCode (ExitSuccess))
-import Control.Monad (when, void, unless, forM_, filterM)
+import Control.Monad (when, void, unless, forM, forM_, filterM)
 import Data.Char (toLower)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
@@ -106,7 +113,7 @@ import Data.List (find)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Maybe (mapMaybe)
-import Data.IORef (newIORef, modifyIORef', readIORef)
+import Data.IORef (IORef, newIORef, modifyIORef', readIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text as Text
@@ -183,6 +190,44 @@ data TransactionConfig = TransactionConfig
   , configGenerated    :: [GeneratedFile]
   }
   deriving (Eq, Show)
+
+-- | The caller-visible state which an append-only transaction may touch before
+-- its ref CAS becomes authoritative.  Keeping this as bytes (rather than
+-- asking Git to reconstruct the index) is deliberate: a caller's index is
+-- allowed to contain staged binary content which must survive a failed ADRAI
+-- operation byte-for-byte.
+data AppendOnlySnapshot = AppendOnlySnapshot
+  { snapshotTargetRef :: GitRef,
+    snapshotIndexBytes :: Maybe ByteString,
+    snapshotGeneratedFiles :: [(GeneratedFile, Maybe ByteString)],
+    snapshotOwnedDirectories :: [FilePath]
+  }
+
+data AppendOnlyDependencies = AppendOnlyDependencies
+  { appendOnlyInspectRef :: Repository -> GitRef -> GitOid -> Maybe GitOid -> IO (Either TransactionError GitOid),
+    appendOnlyBeforeSnapshot :: IO (),
+    appendOnlyWriteGeneratedFile :: FilePath -> ByteString -> IO (),
+    appendOnlyAfterGeneratedFileWrite :: GeneratedFile -> IO (),
+    appendOnlyAfterGeneratedWrite :: IO (),
+    appendOnlyBeforeRollbackCleanup :: IO (),
+    appendOnlyBeforeTempIndexCleanup :: IO (),
+    appendOnlyAfterTempIndexCleanup :: IO ()
+    , appendOnlyAfterSuccessfulCas :: IO ()
+  }
+
+defaultAppendOnlyDependencies :: AppendOnlyDependencies
+defaultAppendOnlyDependencies =
+  AppendOnlyDependencies
+    { appendOnlyInspectRef = \repository ref _ _ -> branchTip repository ref,
+      appendOnlyBeforeSnapshot = pure (),
+      appendOnlyWriteGeneratedFile = BS.writeFile,
+      appendOnlyAfterGeneratedFileWrite = \_ -> pure (),
+      appendOnlyAfterGeneratedWrite = pure (),
+      appendOnlyBeforeRollbackCleanup = pure (),
+      appendOnlyBeforeTempIndexCleanup = pure (),
+      appendOnlyAfterTempIndexCleanup = pure (),
+      appendOnlyAfterSuccessfulCas = pure ()
+    }
 
 -- | Null OID (all zeros, 40 characters). Used as the expected-old for
 -- unborn-repo CAS.
@@ -370,8 +415,8 @@ validateGeneratedPaths TransactionConfig{..} = do
 -- * No duplicate object IDs.
 -- * Exactly one timestamp and one actor.
 -- * Then write files to the worktree (append-only).
-validateGeneratedFiles :: Repository -> TransactionConfig -> IO (Either TransactionError ())
-validateGeneratedFiles repository TransactionConfig{..} = do
+validateGeneratedFiles :: AppendOnlyDependencies -> Repository -> TransactionConfig -> IORef [GeneratedFile] -> IO (Either TransactionError ())
+validateGeneratedFiles dependencies repository TransactionConfig{..} writtenFilesRef = do
   let genFiles = configGenerated
   when (null genFiles) $
     throwIO (Stage5ValidateGenerated "an operation must create at least one file")
@@ -440,15 +485,17 @@ validateGeneratedFiles repository TransactionConfig{..} = do
     case filePath of
       Left err -> throwIO err
       Right path -> do
-        -- Check the path doesn't already exist (append-only)
-        exists <- doesFileExist path
-        when exists $
-          throwIO (Stage5ValidateGenerated (T.pack "append-only path already exists: " <> p))
-        -- Create parent directories
-        let parentDir = takeDirectory path
-        createDirectoryIfMissing True parentDir
-        -- Write the file
-        BS.writeFile path genFileBytes
+        -- Ownership is recorded before the unmasked write.  That lets rollback
+        -- remove a prefix left by a failed/truncated write, while the snapshot
+        -- still proves that no caller file existed before we touched the path.
+        mask $ \restore -> do
+          exists <- doesFileExist path
+          when exists $
+            throwIO (Stage5ValidateGenerated (T.pack "append-only path already exists: " <> p))
+          createDirectoryIfMissing True (takeDirectory path)
+          modifyIORef' writtenFilesRef (GeneratedFile genFilePath genFileBytes :)
+          restore (appendOnlyWriteGeneratedFile dependencies path genFileBytes)
+          appendOnlyAfterGeneratedFileWrite dependencies (GeneratedFile genFilePath genFileBytes)
 
   return (Right ())
 
@@ -458,63 +505,78 @@ validateGeneratedFiles repository TransactionConfig{..} = do
 
 -- | Stage 6: Create a temporary index from the old head, add generated paths,
 -- and write the resulting tree.
-createTemporaryIndex :: Repository -> GitOid -> [RepoPath] -> IO (Either TransactionError (FilePath, GitOid))
-createTemporaryIndex repository oldHead generatedPaths = do
+createTemporaryIndex :: IO () -> IO () -> Repository -> GitOid -> [RepoPath] -> IO (Either TransactionError GitOid)
+createTemporaryIndex beforeCleanupHook cleanupHook repository oldHead generatedPaths = mask $ \restore -> do
   let commonDir = repositoryCommonDir repository
-
-  -- Create a temporary index file in the git common directory
   (idxPath, idxHandle) <- openTempFile commonDir "adrai-index-"
-  hClose idxHandle
+  hClose idxHandle `onException` removeFile idxPath
+  outcome <- try @SomeException (restore (buildTemporaryTree idxPath))
+  -- Allow a cancellation exactly at the cleanup boundary, but catch it before
+  -- proceeding to the masked deletion.  This prevents a leaked temp index.
+  beforeCleanup <- try @SomeException (restore beforeCleanupHook)
+  cleanup <- try @SomeException (removeFile idxPath >> cleanupHook)
+  case firstFound (asyncFrom outcome) (firstFound (asyncFrom beforeCleanup) (asyncFrom cleanup)) of
+    Just asyncFailure -> throwIO asyncFailure
+    Nothing ->
+      case (outcome, firstSyncFailure beforeCleanup cleanup) of
+        (Right result, Nothing) -> pure result
+        (Left originalFailure, Nothing) -> throwIO originalFailure
+        (Right _, Just cleanupFailure) ->
+          throwIO (RollbackFailed ("temporary index cleanup failed: " <> T.pack (show cleanupFailure)))
+        (Left originalFailure, Just cleanupFailure) ->
+          throwIO
+            ( RollbackFailed
+                ( "transaction failed " <> T.pack (show originalFailure)
+                    <> "; temporary index cleanup also failed: " <> T.pack (show cleanupFailure)
+                )
+            )
+  where
+    asyncFrom :: Either SomeException a -> Maybe SomeAsyncException
+    asyncFrom = either (fromException :: SomeException -> Maybe SomeAsyncException) (const Nothing)
 
-  let env = Map.singleton "GIT_INDEX_FILE" idxPath
-  let gitCmd = \args ->
-        runRepositoryWithEnvironment repository env ("temp-index " <> T.pack (show args)) args BS.empty
+    firstFound :: Maybe a -> Maybe a -> Maybe a
+    firstFound (Just value) _ = Just value
+    firstFound Nothing fallback = fallback
 
-  -- read-tree <old_head> (or --empty for unborn)
-  readTreeResult <-
-    if isNullOid oldHead
-      then gitCmd ["read-tree", "--empty"]
-      else gitCmd ["read-tree", Text.unpack (gitOidText oldHead)]
+    firstSyncFailure :: Either SomeException a -> Either SomeException b -> Maybe SomeException
+    firstSyncFailure firstResult secondResult =
+      case firstResult of
+        Left err -> Just err
+        Right _ -> case secondResult of
+          Left err -> Just err
+          Right _ -> Nothing
 
-  case readTreeResult of
-    Left err -> do
-      removeTempFile idxPath
-      throwIO (Stage6CreateTemporaryIndex ("read-tree failed: " <> T.pack (show err)))
-    Right res
-      | processExitCode res /= ExitSuccess -> do
-          removeTempFile idxPath
-          throwIO (Stage6CreateTemporaryIndex ("read-tree exited " <> T.pack (show (processExitCode res))))
-      | otherwise -> do
-          -- add --sparse -- <paths>
-          addPathsResult <-
-            gitCmd $
-              ["add", "--sparse", "--"]
-                <> map (T.unpack . repoPathText) generatedPaths
-          case addPathsResult of
-            Left err -> do
-              removeTempFile idxPath
-              throwIO (Stage6CreateTemporaryIndex ("add paths failed: " <> T.pack (show err)))
-            Right res2
-              | processExitCode res2 /= ExitSuccess -> do
-                  removeTempFile idxPath
-                  throwIO (Stage6CreateTemporaryIndex ("add paths exited " <> T.pack (show (processExitCode res2))))
-              | otherwise -> do
-                  -- write-tree
-                  treeResult <- gitCmd ["write-tree"]
-                  case treeResult of
-                    Left err -> do
-                      removeTempFile idxPath
-                      throwIO (Stage6CreateTemporaryIndex ("write-tree failed: " <> T.pack (show err)))
-                    Right res3
-                      | processExitCode res3 /= ExitSuccess -> do
-                          removeTempFile idxPath
-                          throwIO (Stage6CreateTemporaryIndex ("write-tree exited " <> T.pack (show (processExitCode res3))))
-                      | otherwise -> do
-                          case parseSingleOidFromOutput "write-tree" (processStdout res3) of
-                            Left parseErr ->
-                              throwIO (Stage6CreateTemporaryIndex ("parse tree OID: " <> parseErr))
-                            Right (GitOid oidStr) ->
-                              removeTempFile idxPath >> return (Right (idxPath, GitOid oidStr))
+    buildTemporaryTree idxPath = do
+      let env = Map.singleton "GIT_INDEX_FILE" idxPath
+          gitCmd args =
+            runRepositoryWithEnvironment repository env ("temp-index " <> T.pack (show args)) args BS.empty
+      readTreeResult <-
+        if isNullOid oldHead
+          then gitCmd ["read-tree", "--empty"]
+          else gitCmd ["read-tree", Text.unpack (gitOidText oldHead)]
+      case readTreeResult of
+        Left err -> throwIO (Stage6CreateTemporaryIndex ("read-tree failed: " <> T.pack (show err)))
+        Right res
+          | processExitCode res /= ExitSuccess ->
+              throwIO (Stage6CreateTemporaryIndex ("read-tree exited " <> T.pack (show (processExitCode res))))
+          | otherwise -> do
+              addPathsResult <- gitCmd (["add", "--sparse", "--"] <> map (T.unpack . repoPathText) generatedPaths)
+              case addPathsResult of
+                Left err -> throwIO (Stage6CreateTemporaryIndex ("add paths failed: " <> T.pack (show err)))
+                Right res2
+                  | processExitCode res2 /= ExitSuccess ->
+                      throwIO (Stage6CreateTemporaryIndex ("add paths exited " <> T.pack (show (processExitCode res2))))
+                  | otherwise -> do
+                      treeResult <- gitCmd ["write-tree"]
+                      case treeResult of
+                        Left err -> throwIO (Stage6CreateTemporaryIndex ("write-tree failed: " <> T.pack (show err)))
+                        Right res3
+                          | processExitCode res3 /= ExitSuccess ->
+                              throwIO (Stage6CreateTemporaryIndex ("write-tree exited " <> T.pack (show (processExitCode res3))))
+                          | otherwise ->
+                              case parseSingleOidFromOutput "write-tree" (processStdout res3) of
+                                Left parseErr -> throwIO (Stage6CreateTemporaryIndex ("parse tree OID: " <> parseErr))
+                                Right treeOid -> pure (Right treeOid)
 
 removeTempFile :: FilePath -> IO ()
 removeTempFile path = void $ try @SomeException (removeFile path)
@@ -730,6 +792,142 @@ blobOidAt repository revision path = do
               Left _ -> Right Nothing
               Right oid -> Right (Just oid)
 
+-- | Capture the only caller-visible inputs that append-only work may touch
+-- before a successful ref CAS.  The generated paths are normally absent, but
+-- retaining the complete preimage makes cleanup fail closed if that invariant
+-- ever changes.
+captureAppendOnlySnapshot :: AppendOnlyDependencies -> Repository -> GitRef -> [GeneratedFile] -> IO (Either TransactionError AppendOnlySnapshot)
+captureAppendOnlySnapshot dependencies repository targetRef generated =
+  case repositoryWorktreeRoot repository of
+    Nothing -> pure (Left (RollbackFailed "worktree root disappeared before rollback snapshot"))
+    Just root -> mask $ \restore -> do
+      result <- try @SomeException $ restore $ do
+        appendOnlyBeforeSnapshot dependencies
+        indexBytes <- readOptionalFile (repositoryGitDir repository </> "index")
+        fileBytes <-
+          forM generated $ \generatedFile@GeneratedFile{..} -> do
+            before <- readOptionalFile (root </> T.unpack (repoPathText genFilePath))
+            pure (generatedFile, before)
+        ownedDirectories <- concat <$> mapM (missingParentDirectories root . genFilePath) generated
+        pure (AppendOnlySnapshot targetRef indexBytes fileBytes ownedDirectories)
+      case result of
+        Left err ->
+          case fromException err :: Maybe SomeAsyncException of
+            Just asyncFailure -> throwIO asyncFailure
+            Nothing -> pure (Left (RollbackFailed ("capture rollback snapshot failed: " <> T.pack (show err))))
+        Right snapshot -> pure (Right snapshot)
+
+readOptionalFile :: FilePath -> IO (Maybe ByteString)
+readOptionalFile path = do
+  exists <- doesFileExist path
+  if exists then Just <$> BS.readFile path else pure Nothing
+
+-- | Directories missing at capture time are the only directories this
+-- transaction can own.  The list is deliberately deepest-first for cleanup.
+missingParentDirectories :: FilePath -> RepoPath -> IO [FilePath]
+missingParentDirectories root repoPath = go (takeDirectory (root </> T.unpack (repoPathText repoPath)))
+  where
+    go directory
+      | directory == root || directory == "." = pure []
+      | otherwise = do
+          exists <- doesDirectoryExist directory
+          if exists
+            then pure []
+            else (directory :) <$> go (takeDirectory directory)
+
+-- | Reconcile a failed append-only operation.  Once a commit OID exists, a
+-- failed update-ref is ambiguous: never touch files or the index until the
+-- branch is proven to remain at its original tip.  If the branch names the new
+-- commit, it is authoritative and there is deliberately nothing to roll back.
+rollbackAppendOnlyFailure :: AppendOnlyDependencies -> Repository -> GitOid -> Maybe GitOid -> AppendOnlySnapshot -> [GeneratedFile] -> IO (Either TransactionError ())
+rollbackAppendOnlyFailure dependencies repository expectedOld maybeNew snapshot writtenFiles = do
+  currentTip <- appendOnlyInspectRef dependencies repository (snapshotTargetRef snapshot) expectedOld maybeNew
+  let safeToRestore = do
+        tip <- currentTip
+        case maybeNew of
+          Just newCommit | tip == newCommit -> Right False
+          _ | tip == expectedOld -> Right True
+          _ -> Left (RollbackFailed "target ref changed or cannot be confirmed after failure; preserving generated files")
+  case safeToRestore of
+    Left err -> pure (Left err)
+    Right False -> pure (Right ())
+    Right True -> restoreAppendOnlySnapshot dependencies repository snapshot writtenFiles
+
+branchTip :: Repository -> GitRef -> IO (Either TransactionError GitOid)
+branchTip repository branchRef = do
+  result <-
+    runRepository repository "rollback rev-parse ref"
+      ["rev-parse", "--verify", Text.unpack (gitRefText branchRef)] BS.empty
+  pure $ case result of
+    Left err -> Left (RollbackFailed ("inspect target ref after failure: " <> T.pack (show err)))
+    Right res
+      | processExitCode res /= ExitSuccess -> Left (RollbackFailed ("inspect target ref after failure exited " <> T.pack (show (processExitCode res))))
+      | otherwise -> first (const (RollbackFailed "inspect target ref after failure returned an invalid OID")) $
+          parseSingleOidFromOutput "rollback rev-parse" (processStdout res)
+
+restoreAppendOnlySnapshot :: AppendOnlyDependencies -> Repository -> AppendOnlySnapshot -> [GeneratedFile] -> IO (Either TransactionError ())
+restoreAppendOnlySnapshot dependencies repository AppendOnlySnapshot{..} writtenFiles = mask $ \restore -> do
+  -- Permit a cancellation at this deterministic boundary, then complete all
+  -- actual restoration while masked.  An async exception is rethrown only
+  -- after the owned bytes and directories have been reconciled.
+  cancellation <- try @SomeException (restore (appendOnlyBeforeRollbackCleanup dependencies))
+  result <- try @SomeException $ do
+    -- Pre-CAS stages must not alter the real index.  Treat any change as
+    -- externally owned rather than overwriting it during rollback.
+    actualIndex <- readOptionalFile (repositoryGitDir repository </> "index")
+    unless (actualIndex == snapshotIndexBytes) $
+      throwIO (RollbackFailed "caller index changed during failed transaction; refusing to overwrite it")
+    case repositoryWorktreeRoot repository of
+      Nothing -> throwIO (RollbackFailed "worktree root disappeared during rollback")
+      Just root -> do
+        let writtenPaths = Set.fromList (map genFilePath writtenFiles)
+            writtenSnapshots = filter (\(file, _) -> genFilePath file `Set.member` writtenPaths) snapshotGeneratedFiles
+        forM_ writtenSnapshots (restoreGeneratedFile root)
+        forM_ snapshotOwnedDirectories (removeOwnedDirectory root)
+  case result of
+    Left err ->
+      case fromException err :: Maybe SomeAsyncException of
+        Just asyncFailure -> throwIO asyncFailure
+        Nothing ->
+          case fromException err of
+            Just transactionError -> pure (Left transactionError)
+            Nothing -> pure (Left (RollbackFailed ("rollback cleanup failed: " <> T.pack (show err))))
+    Right () ->
+      case cancellation of
+        Left err ->
+          case fromException err :: Maybe SomeAsyncException of
+            Just asyncFailure -> throwIO asyncFailure
+            Nothing -> pure (Left (RollbackFailed ("rollback cleanup hook failed: " <> T.pack (show err))))
+        Right () -> pure (Right ())
+
+restoreGeneratedFile :: FilePath -> (GeneratedFile, Maybe ByteString) -> IO ()
+restoreGeneratedFile root (GeneratedFile{..}, before) = do
+  let path = root </> T.unpack (repoPathText genFilePath)
+  current <- readOptionalFile path
+  case (before, current) of
+    (Nothing, Nothing) -> pure ()
+    (Nothing, Just currentBytes)
+      -- A failed write can leave any prefix (including an empty truncation) of
+      -- our bytes.  The preimage was absent, so only that recognizable partial
+      -- output is owned by this transaction.
+      | currentBytes `BS.isPrefixOf` genFileBytes -> removeFile path
+      | otherwise -> throwIO (RollbackFailed ("generated path changed externally; refusing to delete " <> repoPathText genFilePath))
+    (Just originalBytes, Just currentBytes)
+      | currentBytes == originalBytes -> pure ()
+      | currentBytes == genFileBytes -> BS.writeFile path originalBytes
+      | otherwise -> throwIO (RollbackFailed ("generated path changed externally; refusing to restore " <> repoPathText genFilePath))
+    (Just _, Nothing) -> throwIO (RollbackFailed ("pre-existing generated path disappeared; refusing to recreate " <> repoPathText genFilePath))
+
+removeOwnedDirectory :: FilePath -> FilePath -> IO ()
+removeOwnedDirectory root directory
+  | directory == root || directory == "." = pure ()
+  | otherwise = do
+      exists <- doesDirectoryExist directory
+      when exists $ do
+        contents <- getDirectoryContents directory
+        let nonDot = filter (`notElem` [".", ".."]) contents
+        when (null nonDot) $ removeDirectory directory
+
 -- ---------------------------------------------------------------------------
 -- Core transaction: commitAppendOnlyOperation
 -- ---------------------------------------------------------------------------
@@ -750,7 +948,10 @@ blobOidAt repository revision path = do
 -- 7. Commit tree — commit-tree with proper message format.
 -- 8. Update ref and refresh — CAS update-ref + reset generated paths.
 commitAppendOnlyOperation :: Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
-commitAppendOnlyOperation repository config@TransactionConfig{..} = do
+commitAppendOnlyOperation = commitAppendOnlyOperationWith defaultAppendOnlyDependencies
+
+commitAppendOnlyOperationWith :: AppendOnlyDependencies -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
+commitAppendOnlyOperationWith dependencies repository config@TransactionConfig{..} = do
   -- Validate worktree root present (reject bare repos)
   case repositoryWorktreeRoot repository of
     Nothing ->
@@ -770,9 +971,15 @@ commitAppendOnlyOperation repository config@TransactionConfig{..} = do
           Left err -> throwIO err
           Right () -> pure ()
 
-        -- Get old_head (current HEAD)
+        -- Pin the exact attached ref before writing.  Rollback must never use
+        -- whichever branch HEAD happens to name later.
+        pinnedHead <- repositoryHeadState repository
+        targetRef <- case pinnedHead of
+          Left err -> throwIO (Stage3ValidateState ("get branch ref: " <> T.pack (show err)))
+          Right GitHeadDetached -> throwIO (Stage3ValidateState "HEAD detached; attach a branch first")
+          Right (GitHeadAttached branchRef) -> pure branchRef
         oldHeadResult <-
-          case mkRevisionSpec "HEAD" of
+          case mkRevisionSpec (gitRefText targetRef) of
             Left revErr ->
               error ("mkRevisionSpec failed: " <> show revErr)  -- "HEAD" is always valid
             Right spec -> resolveRevision repository spec
@@ -784,79 +991,90 @@ commitAppendOnlyOperation repository config@TransactionConfig{..} = do
             when (oldHead /= configExpectedHead) $
               throwIO (Stage3ValidateState ("expected head mismatch: " <> T.pack configOperationId <> " expected " <> gitOidText configExpectedHead <> " got " <> gitOidText oldHead))
 
-            -- Stage 5: Validate and write generated files
-            validateGeneratedFiles repository config
+            mask (\restore -> do
+              snapshotResult <- restore (captureAppendOnlySnapshot dependencies repository targetRef configGenerated)
+              snapshot <- either throwIO pure snapshotResult
+              newCommitRef <- newIORef Nothing
+              writtenFilesRef <- newIORef []
+              attempt <- try @SomeException $ restore $ do
+                 -- Stage 5: Validate and write generated files
+                 validateGeneratedFiles dependencies repository config writtenFilesRef
+                 appendOnlyAfterGeneratedWrite dependencies
 
-            -- Stages 6-8: Create temporary index, commit, update ref
-            tempIndexResult <- createTemporaryIndex repository oldHead generatedPaths
-            case tempIndexResult of
-              Left err ->
-                throwIO err
-              Right (idxPath, treeOid) -> do
-                -- Stage 7: Commit tree
-                commitResult <- commitTree repository oldHead treeOid configSubject configOperationId configTrailers
-                case commitResult of
-                  Left err -> do
-                    removeTempFile idxPath
-                    throwIO err
-                  Right newCommit -> do
-                    -- Get current branch ref
-                    headState <- repositoryHeadState repository
-                    case headState of
-                      Left err -> do
-                        removeTempFile idxPath
-                        throwIO (Stage8UpdateRef ("get branch ref: " <> T.pack (show err)))
-                      Right (GitHeadAttached branchRef) -> do
-                        -- Stage 8: Update ref and refresh
-                        let refText = gitRefText branchRef
-                        casResult <-
-                          runRepository
-                            repository
-                            "update-ref"
-                            [ "update-ref",
-                              "-m",
-                              "adrai " <> configOperationId,
-                              Text.unpack refText,
-                              Text.unpack (gitOidText newCommit),
-                              Text.unpack (gitOidText oldHead)
-                            ]
-                            BS.empty
-                        case casResult of
-                          Left err -> do
-                            removeTempFile idxPath
-                            throwIO (Stage8UpdateRef ("update-ref failed: " <> T.pack (show err)))
-                          Right res2
-                            | processExitCode res2 /= ExitSuccess -> do
-                                removeTempFile idxPath
-                                throwIO (Stage8UpdateRef ("update-ref exited " <> T.pack (show (processExitCode res2))))
-                            | otherwise -> do
-                                -- Refresh index for generated paths only
-                                indexUpdated <-
-                                  if null generatedPaths
-                                    then pure True
-                                    else do
-                                      refreshResult <-
-                                        runRepository
-                                          repository
-                                          "reset index"
-                                          (["reset", "-q", "HEAD", "--"] <> map (T.unpack . repoPathText) generatedPaths)
-                                          BS.empty
-                                      pure $ case refreshResult of
-                                          Left _ -> False
-                                          Right res -> processExitCode res == ExitSuccess
-                                removeTempFile idxPath
-                                return
-                                  TransactionResult
-                                    { transactionOperationId = configOperationId,
-                                      transactionCommitOid = newCommit,
-                                      transactionCreatedPaths = generatedPaths,
-                                      transactionIndexUpdated = indexUpdated
-                                    }
+                 -- Stages 6-8: Create temporary index, commit, update ref
+                 tempIndexResult <- createTemporaryIndex (appendOnlyBeforeTempIndexCleanup dependencies) (appendOnlyAfterTempIndexCleanup dependencies) repository oldHead generatedPaths
+                 case tempIndexResult of
+                   Left err -> throwIO err
+                   Right treeOid -> do
+                     -- Stage 7: Commit tree
+                     commitResult <- commitTree repository oldHead treeOid configSubject configOperationId configTrailers
+                     case commitResult of
+                       Left err -> throwIO err
+                       Right newCommit -> do
+                         modifyIORef' newCommitRef (const (Just newCommit))
+                         -- Stage 8 always updates the ref pinned before Stage 5;
+                         -- HEAD is intentionally not consulted again here.
+                         let refText = gitRefText targetRef
+                         casResult <-
+                           runRepository
+                             repository
+                             "update-ref"
+                             [ "update-ref",
+                               "-m",
+                               "adrai " <> configOperationId,
+                               Text.unpack refText,
+                               Text.unpack (gitOidText newCommit),
+                               Text.unpack (gitOidText oldHead)
+                             ]
+                             BS.empty
+                         case casResult of
+                           Left err -> throwIO (Stage8UpdateRef ("update-ref failed: " <> T.pack (show err)))
+                           Right res2
+                             | processExitCode res2 /= ExitSuccess ->
+                                 throwIO (Stage8UpdateRef ("update-ref exited " <> T.pack (show (processExitCode res2))))
+                             | otherwise -> do
+                                 appendOnlyAfterSuccessfulCas dependencies
+                                 -- The successful CAS made @newCommit@ authoritative.
+                                 -- Never consult mutable HEAD here: another process may
+                                 -- have checked out a different branch between CAS and
+                                 -- this caller-index refresh.
+                                 indexUpdated <-
+                                   if null generatedPaths
+                                     then pure True
+                                     else do
+                                       refreshResult <-
+                                         runRepository
+                                           repository
+                                           "reset index"
+                                           (["reset", "-q", Text.unpack (gitOidText newCommit), "--"] <> map (T.unpack . repoPathText) generatedPaths)
+                                           BS.empty
+                                       pure $ case refreshResult of
+                                         Left _ -> False
+                                         Right res -> processExitCode res == ExitSuccess
+                                 return
+                                   TransactionResult
+                                     { transactionOperationId = configOperationId,
+                                       transactionCommitOid = newCommit,
+                                       transactionCreatedPaths = generatedPaths,
+                                       transactionIndexUpdated = indexUpdated
+                                     }
+              case attempt of
+                Right transactionResult -> pure transactionResult
+                Left originalFailure -> do
+                  maybeNewCommit <- readIORef newCommitRef
+                  writtenFiles <- readIORef writtenFilesRef
+                  rollbackResult <- rollbackAppendOnlyFailure dependencies repository oldHead maybeNewCommit snapshot writtenFiles
+                  case rollbackResult of
+                    Left rollbackFailure -> throwIO rollbackFailure
+                    Right () -> throwIO originalFailure)
       case lockResult of
         Left err -> do
-          case fromException err of
-            Just txErr -> return (Left txErr)
-            Nothing -> return (Left (Stage2AcquireLock (T.pack (show err))))
+          case (fromException err :: Maybe SomeAsyncException) of
+            Just asyncFailure -> throwIO asyncFailure
+            Nothing ->
+              case fromException err of
+                Just txErr -> return (Left txErr)
+                Nothing -> return (Left (Stage2AcquireLock (T.pack (show err))))
         Right result -> return (Right result)
 
 -- ---------------------------------------------------------------------------
@@ -947,11 +1165,11 @@ commitBootstrapFiles repository config@TransactionConfig{..} = do
             throwIO (Stage3ValidateState "HEAD is detached; attach a branch before bootstrapping")
           Right (GitHeadAttached branchRef) -> do
             -- Stages 6-8
-            tempIndexResult <- createTemporaryIndex repository oldHead generatedPaths
+            tempIndexResult <- createTemporaryIndex (pure ()) (pure ()) repository oldHead generatedPaths
             case tempIndexResult of
               Left err ->
                 throwIO err
-              Right (idxPath, treeOid) -> do
+              Right treeOid -> do
                 -- Stage 7: Commit tree
                 commitArgs <-
                   if isNullOid oldHead
@@ -969,12 +1187,9 @@ commitBootstrapFiles repository config@TransactionConfig{..} = do
 
                 commitResult <- runRepository repository "commit-tree" commitArgs (encodeUtf8 message)
                 case commitResult of
-                  Left err -> do
-                    removeTempFile idxPath
-                    throwIO (Stage7CommitTree ("commit-tree failed: " <> T.pack (show err)))
+                  Left err -> throwIO (Stage7CommitTree ("commit-tree failed: " <> T.pack (show err)))
                   Right res2
-                    | processExitCode res2 /= ExitSuccess -> do
-                        removeTempFile idxPath
+                    | processExitCode res2 /= ExitSuccess ->
                         throwIO (Stage7CommitTree ("commit-tree exited " <> T.pack (show (processExitCode res2))))
                     | otherwise -> do
                         case parseSingleOidFromOutput "commit-tree" (processStdout res2) of
@@ -1002,12 +1217,9 @@ commitBootstrapFiles repository config@TransactionConfig{..} = do
                                 casArgs
                                 BS.empty
                             case casResult of
-                              Left err -> do
-                                removeTempFile idxPath
-                                throwIO (Stage8UpdateRef ("update-ref failed: " <> T.pack (show err)))
+                              Left err -> throwIO (Stage8UpdateRef ("update-ref failed: " <> T.pack (show err)))
                               Right res3
-                                | processExitCode res3 /= ExitSuccess -> do
-                                    removeTempFile idxPath
+                                | processExitCode res3 /= ExitSuccess ->
                                     throwIO (Stage8UpdateRef ("update-ref exited " <> T.pack (show (processExitCode res3))))
                                 | otherwise -> do
                                     -- Refresh index
@@ -1024,7 +1236,6 @@ commitBootstrapFiles repository config@TransactionConfig{..} = do
                                           pure $ case refreshResult of
                                               Left _ -> False
                                               Right res -> processExitCode res == ExitSuccess
-                                    removeTempFile idxPath
                                     return
                                       TransactionResult
                                         { transactionOperationId = configOperationId,
@@ -1035,14 +1246,18 @@ commitBootstrapFiles repository config@TransactionConfig{..} = do
 
       case lockResult of
         Left err -> do
-          case fromException err of
-            Just txErr -> do
-              -- Rollback: restore backups
+          case (fromException err :: Maybe SomeAsyncException) of
+            Just asyncFailure -> do
               rollbackBootstrappedFiles repository generatedPaths configGenerated backupFiles
-              return (Left txErr)
-            Nothing -> do
-              rollbackBootstrappedFiles repository generatedPaths configGenerated backupFiles
-              return (Left (Stage2AcquireLock (T.pack (show err))))
+              throwIO asyncFailure
+            Nothing ->
+              case fromException err of
+                Just txErr -> do
+                  rollbackBootstrappedFiles repository generatedPaths configGenerated backupFiles
+                  return (Left txErr)
+                Nothing -> do
+                  rollbackBootstrappedFiles repository generatedPaths configGenerated backupFiles
+                  return (Left (Stage2AcquireLock (T.pack (show err))))
         Right result -> return (Right result)
 
 -- | Rollback bootstrap files: restore backups or delete new files.
