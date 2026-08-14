@@ -20,7 +20,7 @@
 module Adrai.MutationE2ETest (tests) where
 
 import Adrai.Integration.CLI
-import Adrai.Domain (mkDomain)
+import Adrai.Domain (domainRefinementText, domainText, mkDomain)
 import Adrai.Format.Config (defaultConfigText)
 import Adrai.Format.Document
   ( AppliesToPayload (..),
@@ -68,6 +68,7 @@ import Adrai.Types
      connectionIdText,
      mkActor,
      mkAdrId,
+     mkConnectionId,
     mkRepoPath,
     operationIdText,
     recordIdText,
@@ -1012,6 +1013,204 @@ testP602CRealExecutable =
   testGroup "P6-02C real executable scope"
     [ testCase "scope delta, reviewed replacement, and reviewed conflict merge preserve repository state" p602cScope ]
 
+testP602DRealExecutable :: TestTree
+testP602DRealExecutable =
+  testGroup "P6-02D real executable domain"
+    [ testCase "domain delta, refinement, reviewed replacement, clear, and re-add preserve repository state" p602dDomain ]
+
+p602dDomain :: IO ()
+p602dDomain =
+  withSystemTempDirectory "adrai p6-02d domain" $ \temporary -> do
+    let repo = temporary </> "domain"
+        database = repo </> ".adrai" </> "index.sqlite"
+        stagedName = "unrelated-domain.bin"
+        stagedBytes = BS.pack [7, 0, 255, 9]
+        actorArgs = ["--actor", "human:e2e", "--json"]
+        assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore = do
+          assertStagedBinaryPreserved repo stagedName stagedBytes indexBefore
+          gitStdout repo ["ls-files", "-s", "--", "seed.txt"] >>= (@?= seedIndexBefore)
+          BS.readFile (repo </> "seed.txt") >>= (@?= seedWorktreeBefore)
+        runDomain adr expectedParents arguments = do
+          before <- headCommit repo
+          branch <- currentBranch repo
+          priorManaged <- committedManagedBytes before
+          priorWorktree <- mapM (\(path, _) -> (path,) <$> BS.readFile (repo </> unpack path)) priorManaged
+          stdout <- assertExitSuccess "domain" =<< adraiRequiredRaw repo (["domain", unpack adr] <> arguments <> actorArgs)
+          value <- decodeCanonicalJson "domain" stdout
+          current <- headCommit repo
+          operation <- requireJsonField "domain" value "operation" :: IO Text
+          commit <- requireJsonField "domain" value "commit" :: IO Text
+          resultAdr <- requireJsonField "domain" value "adr" :: IO Text
+          domainId <- requireJsonField "domain" value "domain" :: IO Text
+          parents <- requireJsonField "domain" value "domain_parents" :: IO [Text]
+          mode <- requireJsonField "domain" value "mode" :: IO Text
+          added <- requireJsonField "domain" value "added" :: IO [Text]
+          removed <- requireJsonField "domain" value "removed" :: IO [Text]
+          effective <- requireJsonField "domain" value "domains" :: IO [Text]
+          refinements <- requireJsonField "domain" value "refinements" :: IO [Text]
+          created <- requireJsonField "domain" value "created" :: IO [Text]
+          resultAdr @?= adr
+          commit @?= current
+          parents @?= expectedParents
+          stdout @?= LBS.fromStrict (encodeUtf8 (renderCanonicalJson (JsonObject
+            [ ("added", JsonArray (map JsonString added)), ("adr", JsonString adr), ("commit", JsonString current)
+            , ("committed", JsonBool True), ("created", JsonArray (map JsonString created)), ("database", JsonString (T.pack database))
+            , ("domain", JsonString domainId), ("domain_parents", JsonArray (map JsonString parents)), ("domains", JsonArray (map JsonString effective))
+            , ("index_revision", JsonString current), ("index_updated", JsonBool True), ("index_warnings", JsonNumber 0)
+            , ("indexed", JsonBool True), ("mode", JsonString mode), ("operation", JsonString operation)
+            , ("refinements", JsonArray (map JsonString refinements)), ("removed", JsonArray (map JsonString removed)) ])))
+          gitText repo ["show", "-s", "--format=%P", unpack current] >>= (@?= before)
+          length created @?= 1
+          created @?= ["architecture/adrai/connections/" <> T.take 4 domainId <> "/" <> domainId <> "--domains.connection.md"]
+          changed <- fmap (sort . T.lines) (gitText repo ["diff-tree", "--no-commit-id", "--name-only", "-r", unpack current])
+          changed @?= created
+          mapM_ (\(path, bytes) -> gitStdout repo ["show", unpack current <> ":" <> unpack path] >>= (@?= bytes)) priorManaged
+          mapM_ (\(path, bytes) -> BS.readFile (repo </> unpack path) >>= (@?= bytes)) priorWorktree
+          gitStdout repo ["diff", "--cached", "--name-only", "--", unpack (head created)] >>= (@?= "")
+          document <- parseCommittedAndWorktreeDocument repo current (head created)
+          case document of
+            parsed@(ParsedManagedDocument _ (ManagedConnection connection) capsule _ _) ->
+              case connectionPayload connection of
+                DomainsConnection payload -> do
+                  connectionIdText (connectionRecordId connection) @?= domainId
+                  adrIdText (domainsSubjectAdr payload) @?= adr
+                  map connectionIdText (domainsParentConnections payload) @?= parents
+                  provenanceParents capsule @?= map (ProvenanceConnection . either (error . show) id . mkConnectionId) expectedParents
+                  domainsChange payload @?= mode
+                  map domainText (domainsAdded payload) @?= added
+                  map domainText (domainsRemoved payload) @?= removed
+                  map domainText (domainsEffective payload) @?= effective
+                  map domainRefinementText (domainsRefinements payload) @?= refinements
+                  connectionRationale connection @?= normalizedReason arguments
+                  eventKindText (provenanceEventKind capsule) @?= "domain." <> mode
+                  provenanceTimestampMs capsule `seq` assertBool "domain timestamp must be positive" (provenanceTimestampMs capsule > 0)
+                  gitOidText (provenanceBasis capsule) @?= before
+                  provenanceBranchHint capsule @?= Just branch
+                  provenanceActor capsule @?= either (error . show) id (mkActor HumanActor "e2e" Nothing)
+                  provenanceInputs capsule @?= ProvenanceInputs Nothing Nothing Nothing
+                  provenanceObjectId capsule @?= ProvenanceConnection (connectionRecordId connection)
+                  operationIdText (provenanceOperationId capsule) @?= operation
+                  provenanceToolVersion capsule @?= "adrai/1.0.0"
+                  provenanceSemanticDigest capsule @?= semanticDigest (parsedManagedSemantic parsed)
+                  message <- commitMessageBytes repo current
+                  message @?= encodeUtf8 ("adrai: domain " <> adr <> "\n\nADRAI-Op: " <> operation <> "\nADRAI-ADR: " <> adr <> "\nADRAI-Objects: " <> domainId <> "\n")
+                  assertIndexResolvedOid database current
+                  pure (connection, payload, mode, added, removed, effective, refinements)
+                _ -> assertFailure "domain must create a domains connection" >> fail "unreachable"
+            _ -> assertFailure "domain must create exactly one connection document" >> fail "unreachable"
+        committedManagedBytes revision = do
+          paths <- fmap (filter (\path -> "architecture/adrai/decisions/" `T.isPrefixOf` path || "architecture/adrai/connections/" `T.isPrefixOf` path) . T.lines) (gitText repo ["ls-tree", "-r", "--name-only", unpack revision])
+          mapM (\path -> (path,) <$> gitStdout repo ["show", unpack revision <> ":" <> unpack path]) paths
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "seed\n"
+    git repo ["add", "--", "seed.txt"]
+    git repo ["commit", "-m", "seed"]
+    _ <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    createStdout <- assertExitSuccess "create" =<< adraiRequiredRaw repo ["create", "--title", "Domain", "--summary", "domain e2e", "--body", "domain body\n", "--domain", "compiler", "--actor", "human:e2e", "--json"]
+    createResult <- decodeCanonicalJson "create" createStdout
+    adr <- requireJsonField "create" createResult "adr" :: IO Text
+    initialDomain <- requireJsonField "create" createResult "domain" :: IO Text
+    BS.writeFile (repo </> stagedName) stagedBytes
+    git repo ["add", "--", stagedName]
+    indexBefore <- gitStdout repo ["ls-files", "-s", "--", stagedName]
+    BS.writeFile (repo </> "seed.txt") "staged seed\n"
+    git repo ["add", "--", "seed.txt"]
+    seedIndexBefore <- gitStdout repo ["ls-files", "-s", "--", "seed.txt"]
+    BS.writeFile (repo </> "seed.txt") "dirty seed\n"
+    seedWorktreeBefore <- BS.readFile (repo </> "seed.txt")
+    (expandConnection, expand, expandMode, expandAdded, expandRemoved, expandEffective, expandRefinements) <- runDomain adr [initialDomain] ["--add", "platform", "--reason", "Expand"]
+    expandMode @?= "expand"; expandAdded @?= ["platform"]; expandRemoved @?= []; expandEffective @?= ["compiler", "platform"]; expandRefinements @?= []
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    (contractConnection, contract, contractMode, contractAdded, contractRemoved, contractEffective, _) <- runDomain adr [connectionIdText (connectionRecordId expandConnection)] ["--remove", "compiler", "--reason", "Contract"]
+    contractMode @?= "contract"; contractAdded @?= []; contractRemoved @?= ["compiler"]; contractEffective @?= ["platform"]
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    (mixedConnection, mixed, mixedMode, mixedAdded, mixedRemoved, mixedEffective, _) <- runDomain adr [connectionIdText (connectionRecordId contractConnection)] ["--add", "api", "--remove", "platform", "--reason", "Move"]
+    mixedMode @?= "mixed"; mixedAdded @?= ["api"]; mixedRemoved @?= ["platform"]; mixedEffective @?= ["api"]
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    (refinedConnection, refined, refineMode, refineAdded, refineRemoved, refineEffective, refineMappings) <- runDomain adr [connectionIdText (connectionRecordId mixedConnection)] ["--refine", "api=api.v1", "--reason", "Refine"]
+    refineMode @?= "refine"; refineAdded @?= ["api.v1"]; refineRemoved @?= ["api"]; refineEffective @?= ["api.v1"]; refineMappings @?= ["api=api.v1"]
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    (replacedConnection, replaced, replaceMode, replaceAdded, replaceRemoved, replaceEffective, _) <- runDomain adr [connectionIdText (connectionRecordId refinedConnection)] ["--set", "product", "--reason", "Replace"]
+    replaceMode @?= "replace"; replaceAdded @?= ["product"]; replaceRemoved @?= ["api.v1"]; replaceEffective @?= ["product"]
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    (clearedConnection, cleared, clearMode, clearAdded, clearRemoved, clearEffective, _) <- runDomain adr [connectionIdText (connectionRecordId replacedConnection)] ["--clear", "--reason", "Clear"]
+    clearMode @?= "replace"; clearAdded @?= []; clearRemoved @?= ["product"]; clearEffective @?= []
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    (readdedConnection, readded, readdMode, readdAdded, readdRemoved, readdEffective, _) <- runDomain adr [connectionIdText (connectionRecordId clearedConnection)] ["--add", "services", "--reason", "Re-add"]
+    readdMode @?= "expand"; readdAdded @?= ["services"]; readdRemoved @?= []; readdEffective @?= ["services"]
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    noOpBaseline <- captureMutationFailureBaseline repo database
+    (noOpExit, noOpStdout, noOpStderr) <- adraiRequiredRaw repo ["domain", unpack adr, "--set", "services", "--reason", "No change", "--actor", "human:e2e", "--json"]
+    noOpExit @?= ExitFailure 2
+    noOpStdout @?= ""
+    noOpStderr @?= "adrai: Stage3ValidateState \"reviewed domain set would not change the current domain\"\n"
+    assertMutationFailurePreserved repo database noOpBaseline
+    staleBaseline <- captureMutationFailureBaseline repo database
+    staleHead <- headCommit repo
+    stalePaths <- fmap (filter (\path -> "architecture/adrai/decisions/" `T.isPrefixOf` path || "architecture/adrai/connections/" `T.isPrefixOf` path) . T.lines) (gitText repo ["ls-tree", "-r", "--name-only", unpack staleHead])
+    staleDocuments <- mapM (parseCommittedAndWorktreeDocument repo staleHead) stalePaths
+    currentToken <-
+      case lookupReducedAdr (either (error . show) id (mkAdrId adr)) (reduceManagedGraph (map parsedManagedRecord staleDocuments)) of
+        Nothing -> assertFailure "domain target must reduce to an ADR before stale-token rejection" >> fail "unreachable"
+        Just reduced -> pure (stateTokenText (reducedStateToken reduced))
+    (staleExit, staleStdout, staleStderr) <- adraiRequiredRaw repo ["domain", unpack adr, "--add", "ops", "--reason", "Stale", "--expect", "S0000000000000000000000", "--actor", "human:e2e", "--json"]
+    staleExit @?= ExitFailure 3
+    staleStdout @?= ""
+    staleStderr @?= LBS.fromStrict (encodeUtf8 ("adrai: conflict: Stage3ValidateState \"stale ADR state: expected S0000000000000000000000, current state is " <> currentToken <> "\"\n"))
+    assertMutationFailurePreserved repo database staleBaseline
+    -- Construct a two-head domain-only conflict while retaining the caller's
+    -- staged and dirty bytes.  Delta/refine must reject it; a reviewed set
+    -- is the sole conflict-resolution form.
+    git repo ["stash", "push", "--include-untracked", "-m", "p602d changed topology"]
+    git repo ["switch", "-c", "domain-other"]
+    (otherConnection, _, _, _, _, _, _) <- runDomain adr [connectionIdText (connectionRecordId readdedConnection)] ["--add", "ops", "--reason", "Other branch"]
+    git repo ["switch", "main"]
+    (mainConnection, _, _, _, _, _, _) <- runDomain adr [connectionIdText (connectionRecordId readdedConnection)] ["--add", "docs", "--reason", "Main branch"]
+    git repo ["merge", "--no-ff", "domain-other", "-m", "merge domain heads"]
+    git repo ["stash", "pop", "--index"]
+    conflictBaseline <- captureMutationFailureBaseline repo database
+    (deltaExit, deltaStdout, deltaStderr) <- adraiRequiredRaw repo ["domain", unpack adr, "--add", "finance", "--reason", "Ambiguous delta", "--actor", "human:e2e", "--json"]
+    deltaExit @?= ExitFailure 3
+    deltaStdout @?= ""
+    deltaStderr @?= "adrai: conflict: Stage3ValidateState \"domain target ADR is conflicted\"\n"
+    assertMutationFailurePreserved repo database conflictBaseline
+    refineBaseline <- captureMutationFailureBaseline repo database
+    (refineExit, refineStdout, refineStderr) <- adraiRequiredRaw repo ["domain", unpack adr, "--refine", "services=services.api", "--reason", "Ambiguous refine", "--actor", "human:e2e", "--json"]
+    refineExit @?= ExitFailure 3
+    refineStdout @?= ""
+    refineStderr @?= "adrai: conflict: Stage3ValidateState \"domain target ADR is conflicted\"\n"
+    assertMutationFailurePreserved repo database refineBaseline
+    (changedMergeConnection, changedMergePayload, changedMergeMode, changedMergeAdded, changedMergeRemoved, changedMergeEffective, _) <- runDomain adr (sort [connectionIdText (connectionRecordId otherConnection), connectionIdText (connectionRecordId mainConnection)]) ["--set", "product", "--reason", "Changed reviewed merge"]
+    changedMergeMode @?= "merge"
+    changedMergeAdded @?= ["product"]
+    changedMergeRemoved @?= ["docs", "ops", "services"]
+    changedMergeEffective @?= ["product"]
+    domainsParentConnections changedMergePayload @?= sort [connectionRecordId otherConnection, connectionRecordId mainConnection]
+    assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+    -- A material exact-union reviewed merge must commit even though its
+    -- rendered set-difference is empty.
+    git repo ["stash", "push", "--include-untracked", "-m", "p602d union topology"]
+    git repo ["switch", "-c", "domain-union-other"]
+    (unionOther, _, _, _, _, _, _) <- runDomain adr [connectionIdText (connectionRecordId changedMergeConnection)] ["--add", "ops", "--reason", "Union other"]
+    git repo ["switch", "main"]
+    (unionMain, _, _, _, _, _, _) <- runDomain adr [connectionIdText (connectionRecordId changedMergeConnection)] ["--add", "docs", "--reason", "Union main"]
+    git repo ["merge", "--no-ff", "domain-union-other", "-m", "merge domain union heads"]
+    git repo ["stash", "pop", "--index"]
+    (unionMergeConnection, unionMergePayload, unionMergeMode, unionMergeAdded, unionMergeRemoved, unionMergeEffective, _) <- runDomain adr (sort [connectionIdText (connectionRecordId unionOther), connectionIdText (connectionRecordId unionMain)]) ["--set", "docs", "--set", "ops", "--set", "product", "--reason", "Exact union merge"]
+    unionMergeMode @?= "merge"
+    unionMergeAdded @?= []
+    unionMergeRemoved @?= []
+    unionMergeEffective @?= ["docs", "ops", "product"]
+    domainsParentConnections unionMergePayload @?= sort [connectionRecordId unionOther, connectionRecordId unionMain]
+    connectionIdText (connectionRecordId changedMergeConnection) `seq` connectionIdText (connectionRecordId unionMergeConnection) `seq` assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
+  where
+    normalizedReason arguments =
+      case dropWhile (/= "--reason") arguments of
+        (_ : reason : _) -> T.strip (T.pack reason) <> "\n"
+        _ -> error "domain test requires a reason"
+
 p602cScope :: IO ()
 p602cScope =
   withSystemTempDirectory "adrai p6-02c scope" $ \temporary -> do
@@ -1708,6 +1907,7 @@ tests =
     [ testP602ARealExecutable,
       testP602BRealExecutable,
       testP602CRealExecutable,
+      testP602DRealExecutable,
       testUnbornRepository,
       testUnrelatedStagedEntry,
       testDetachedHead,

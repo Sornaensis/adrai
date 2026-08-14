@@ -15,10 +15,12 @@ module Adrai.CliRunner
     CreateCommand (..),
     AmendCommand (..),
     ScopeCommand (..),
+    DomainCommand (..),
     ContentSource (..),
     CreateRequest (..),
     AmendRequest (..),
     ScopeRequest (..),
+    DomainRequest (..),
     CliDispatchDependencies (..),
     dispatchWith,
     CliParser,
@@ -26,6 +28,7 @@ module Adrai.CliRunner
     parseStructuredCreate,
     parseStructuredAmend,
     materializeScope,
+    materializeDomain,
     parseActor,
     parseDigest,
     CliFailure (..),
@@ -35,6 +38,7 @@ module Adrai.CliRunner
     renderCreateOutcome,
     renderAmendOutcome,
     renderScopeOutcome,
+    renderDomainOutcome,
     renderFailureOutcome,
     emitRenderedToHandles,
     run,
@@ -51,7 +55,7 @@ import Adrai.CliTypes
 import Adrai.History (HistoryOrder (..))
 import Adrai.Retrieval (RetrievalMode (FtsRetrieval, HybridRetrieval, VectorRetrieval))
 import Adrai.Types (ViewMode (CollapsedView, ExplodedView))
-import Adrai.Domain (Domain, canonicalDomains, domainErrorText, domainText)
+import Adrai.Domain (Domain, DomainRefinement, canonicalDomains, domainErrorText, domainText, domainRefinementText, mkDomain, parseDomainRefinement)
 import Adrai.Git (GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitOidText, repositoryWorktreeRoot, systemGit)
 import Adrai.Identity (sortableAdrId, sortableRecordId)
 import qualified Adrai.Format as Format
@@ -59,7 +63,7 @@ import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import Adrai.Provenance (sha256Digest)
 import Adrai.Repository (repositorySnapshot, repositorySnapshotManagedPaths)
 import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
-import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), InitResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeScopeCommand, createAdrCommand, initCommand)
+import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand)
 import Adrai.Service.PostCommitIndex
   ( IndexWarning (..),
     PostCommitIndexError (..),
@@ -217,6 +221,26 @@ data ScopeCommand = ScopeCommand
   }
   deriving (Eq, Show)
 
+data DomainCommand = DomainCommand
+  { domainAdrSpec :: Text
+  , domainAdds :: [Text]
+  , domainRemoves :: [Text]
+  , domainRefines :: [Text]
+  , domainSets :: [Text]
+  , domainClear :: Bool
+  , domainReason :: Maybe Text
+  , domainExpectedState :: Maybe Text
+  , domainActorSpec :: Maybe Text
+  , domainModel :: Maybe Text
+  , domainInputDigest :: Maybe Text
+  , domainPromptDigest :: Maybe Text
+  , domainContextDigest :: Maybe Text
+  , domainPromptFile :: Maybe FilePath
+  , domainContextFile :: Maybe FilePath
+  , domainJson :: Bool
+  }
+  deriving (Eq, Show)
+
 -- | Parsed CLI command, constructed from optparse-applicative.
 data CliCommand
   = CmdCompile
@@ -230,6 +254,7 @@ data CliCommand
   | CmdCreate CreateCommand
   | CmdAmend AmendCommand
   | CmdScope ScopeCommand
+  | CmdDomain DomainCommand
   deriving (Eq, Show)
 
 -- | Top-level CLI parser type alias.
@@ -250,6 +275,7 @@ parser =
       <> command "create" (info (CmdCreate <$> createParser) (progDesc "create an ADR"))
        <> command "amend" (info (CmdAmend <$> amendParser) (progDesc "amend an ADR"))
        <> command "scope" (info (CmdScope <$> scopeParser) (progDesc "change an ADR scope"))
+       <> command "domain" (info (CmdDomain <$> domainParser) (progDesc "change an ADR domain"))
     )
 
 globalConfigParser :: Parser CliConfig
@@ -316,6 +342,29 @@ scopeParser =
     <*> many (optionalText "remove" "PATTERN" "scope pattern to remove (repeatable)")
     <*> many (optionalText "set" "PATTERN" "reviewed replacement scope pattern (repeatable)")
     <*> maybeText "reason" "TEXT" "nonblank scope-change rationale"
+    <*> maybeText "expect" "STATE_TOKEN" "expected current ADR state token"
+    <*> maybeText "actor" "ACTOR" "actor as kind:identifier"
+    <*> maybeText "model" "MODEL" "actor model"
+    <*> maybeText "input-digest" "DIGEST" "SHA-256 input digest"
+    <*> maybeText "prompt-digest" "DIGEST" "SHA-256 prompt digest"
+    <*> maybeText "context-digest" "DIGEST" "SHA-256 context digest"
+    <*> optional (strOption (long "prompt-file" <> metavar "PATH" <> help "prompt source path"))
+    <*> optional (strOption (long "context-file" <> metavar "PATH" <> help "context source path"))
+    <*> switch (long "json" <> help "output JSON")
+  where
+    optionalText name marker description = strOption (long name <> metavar marker <> help description)
+    maybeText name marker description = optional (optionalText name marker description)
+
+domainParser :: Parser DomainCommand
+domainParser =
+  DomainCommand
+    <$> strArgument (metavar "ADR" <> help "ADR identifier whose domains change")
+    <*> many (optionalText "add" "DOMAIN" "domain to add (repeatable)")
+    <*> many (optionalText "remove" "DOMAIN" "domain to remove (repeatable)")
+    <*> many (optionalText "refine" "FROM=TO" "strict domain refinement (repeatable)")
+    <*> many (optionalText "set" "DOMAIN" "reviewed replacement domain (repeatable)")
+    <*> switch (long "clear" <> help "clear domains by reviewed replacement")
+    <*> maybeText "reason" "TEXT" "nonblank domain-change rationale"
     <*> maybeText "expect" "STATE_TOKEN" "expected current ADR state token"
     <*> maybeText "actor" "ACTOR" "actor as kind:identifier"
     <*> maybeText "model" "MODEL" "actor model"
@@ -486,6 +535,15 @@ dispatchWith dependencies (CliInvocation config (CmdScope command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (scopeResult, indexResult) -> renderScopeSuccess command scopeResult indexResult
+dispatchWith dependencies (CliInvocation config (CmdDomain command)) = do
+  requestResult <- cliMaterializeDomain dependencies command
+  case requestResult of
+    Left problem -> renderFailure (CliUserFailure problem)
+    Right request -> do
+      result <- cliRunDomain dependencies config request
+      case result of
+        Left failure -> renderFailure failure
+        Right (domainResult, indexResult) -> renderDomainSuccess command domainResult indexResult
 dispatchWith _ (CliInvocation _ CmdCompile) = do
   putStrLn $ "[compile] compiling repository at " <> configRepo defaultCliConfig
   pure ExitSuccess
@@ -512,15 +570,17 @@ data CliDispatchDependencies = CliDispatchDependencies
   { cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
   , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
   , cliMaterializeScope :: ScopeCommand -> IO (Either Text ScopeRequest)
+  , cliMaterializeDomain :: DomainCommand -> IO (Either Text DomainRequest)
   , cliRunInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
   , cliRunCreate :: CliConfig -> CreateRequest -> IO (Either CliFailure (CreateResult, PostCommitIndexResult))
   , cliRunAmend :: CliConfig -> AmendRequest -> IO (Either CliFailure (AmendResult, PostCommitIndexResult))
   , cliRunScope :: CliConfig -> ScopeRequest -> IO (Either CliFailure (ScopeChangeResult, PostCommitIndexResult))
+  , cliRunDomain :: CliConfig -> DomainRequest -> IO (Either CliFailure (DomainChangeResult, PostCommitIndexResult))
   }
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies materializeCreate materializeAmend materializeScope runProductionInit runProductionCreate runProductionAmend runProductionScope
+  CliDispatchDependencies materializeCreate materializeAmend materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionScope runProductionDomain
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
 runProductionInit config = do
@@ -604,6 +664,28 @@ runProductionScope config request = do
                 Left problem -> pure (Left (transactionFailure problem))
                 Right scopeResult -> Right . (scopeResult,) <$> indexCommitted database repository (scopeChangeCommitOid scopeResult)
 
+runProductionDomain :: CliConfig -> DomainRequest -> IO (Either CliFailure (DomainChangeResult, PostCommitIndexResult))
+runProductionDomain config request = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      indexPath <- prepareIndexPath repository
+      case indexPath of
+        Left problem -> pure (Left (CliUserFailure problem))
+        Right database -> do
+          snapshotResult <- repositorySnapshot repository (RevisionSpec "HEAD")
+          case snapshotResult of
+            Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+            Right snapshot -> do
+              result <- changeDomainCommand repository (repositorySnapshotManagedPaths snapshot)
+                (domainRequestActor request) (domainRequestAdr request) (domainRequestExpectedState request)
+                (domainRequestReason request) (domainRequestChange request)
+                (ProvenanceInputs (domainRequestInputDigest request) (domainRequestPromptDigest request) (domainRequestContextDigest request))
+              case result of
+                Left problem -> pure (Left (transactionFailure problem))
+                Right domainResult -> Right . (domainResult,) <$> indexCommitted database repository (domainChangeCommitOid domainResult)
+
 transactionFailure :: TransactionError -> CliFailure
 transactionFailure problem
   | transactionConflict problem = CliConflictFailure (Text.pack (show problem))
@@ -649,6 +731,18 @@ data ScopeRequest = ScopeRequest
   , scopeRequestInputDigest :: Maybe Digest
   , scopeRequestPromptDigest :: Maybe Digest
   , scopeRequestContextDigest :: Maybe Digest
+  }
+  deriving (Eq, Show)
+
+data DomainRequest = DomainRequest
+  { domainRequestAdr :: AdrId
+  , domainRequestExpectedState :: Maybe StateToken
+  , domainRequestReason :: Text
+  , domainRequestChange :: DomainChangeRequest
+  , domainRequestActor :: Actor
+  , domainRequestInputDigest :: Maybe Digest
+  , domainRequestPromptDigest :: Maybe Digest
+  , domainRequestContextDigest :: Maybe Digest
   }
   deriving (Eq, Show)
 
@@ -798,6 +892,42 @@ materializeScope command = do
       }
   where
     parsePattern = first scopePatternErrorText . mkScopePattern
+
+materializeDomain :: DomainCommand -> IO (Either Text DomainRequest)
+materializeDomain command = do
+  environmentActor <- lookupEnv "ADRAI_ACTOR"
+  promptFromFile <- readDigestFile "prompt" (domainPromptFile command)
+  contextFromFile <- readDigestFile "context" (domainContextFile command)
+  pure $ do
+    promptFileDigest <- promptFromFile
+    contextFileDigest <- contextFromFile
+    adr <- first (Text.pack . show) (mkAdrId (domainAdrSpec command))
+    expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (domainExpectedState command)
+    reason <- maybe (Left "domain requires --reason") Right (domainReason command)
+    if Text.null (Text.strip reason) then Left "domain reason must be nonblank" else Right ()
+    change <- selectDomainRequest command
+    actorText <- maybe (Left "domain requires --actor or ADRAI_ACTOR") Right (domainActorSpec command <|> Text.pack <$> environmentActor)
+    actor <- parseActor actorText (domainModel command)
+    input <- traverse parseDigest (domainInputDigest command)
+    prompt <- resolveDigest "prompt" (domainPromptDigest command) promptFileDigest
+    context <- resolveDigest "context" (domainContextDigest command) contextFileDigest
+    Right DomainRequest
+      { domainRequestAdr = adr, domainRequestExpectedState = expected, domainRequestReason = reason
+      , domainRequestChange = change, domainRequestActor = actor, domainRequestInputDigest = input
+      , domainRequestPromptDigest = prompt, domainRequestContextDigest = context }
+
+selectDomainRequest :: DomainCommand -> Either Text DomainChangeRequest
+selectDomainRequest command =
+  case (domainAdds command, domainRemoves command, domainRefines command, domainSets command, domainClear command) of
+    ([], [], [], [], False) -> Left "domain requires --add, --remove, --refine, --set, or --clear"
+    (adds, removes, [], [], False) -> DomainDelta <$> traverse parseDomain adds <*> traverse parseDomain removes
+    ([], [], refinements@(_ : _), [], False) -> DomainRefine <$> traverse parseRefinement refinements
+    ([], [], [], sets@(_ : _), False) -> DomainReviewedSet <$> traverse parseDomain sets
+    ([], [], [], [], True) -> Right (DomainReviewedSet [])
+    _ -> Left "domain modes --add/--remove, --refine, --set, and --clear are mutually exclusive"
+  where
+    parseDomain = first domainErrorText . mkDomain
+    parseRefinement = first domainErrorText . parseDomainRefinement
 
 emptyStructured :: StructuredCreate
 emptyStructured = StructuredCreate Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
@@ -1009,6 +1139,10 @@ renderScopeSuccess :: ScopeCommand -> ScopeChangeResult -> PostCommitIndexResult
 renderScopeSuccess command result indexResult =
   emitRendered (renderScopeOutcome result indexResult (scopeJson command))
 
+renderDomainSuccess :: DomainCommand -> DomainChangeResult -> PostCommitIndexResult -> IO ExitCode
+renderDomainSuccess command result indexResult =
+  emitRendered (renderDomainOutcome result indexResult (domainJson command))
+
 renderInitOutcome :: InitResult -> PostCommitIndexResult -> Bool -> CliRendered
 renderInitOutcome result indexResult jsonOutput =
   successOutcome jsonOutput (Text.pack (initOperationId result)) (initCommitOid result) [] indexResult
@@ -1068,6 +1202,26 @@ renderScopeOutcome result indexResult jsonOutput =
            , ("scope_parents", JsonArray (map (JsonString . connectionIdText) (scopeChangeParents result)))
            , ("mode", JsonString (scopeChangeMode result))
            , ("applies_to", JsonArray (map (JsonString . scopePatternText) (scopeChangeEffective result)))
+           ]
+
+renderDomainOutcome :: DomainChangeResult -> PostCommitIndexResult -> Bool -> CliRendered
+renderDomainOutcome result indexResult jsonOutput =
+  successOutcome jsonOutput (Text.pack (domainChangeOperationId result)) (domainChangeCommitOid result) identifiers indexResult jsonFields
+  where
+    identifiers =
+      [ "adr=" <> adrIdText (domainChangeAdrId result)
+      , "domain=" <> connectionIdText (domainChangeConnectionId result)
+      ]
+    jsonFields =
+      mutationJsonFields (domainChangeOperationId result) (domainChangeCommitOid result) (domainChangeCreatedPaths result) (domainChangeIndexUpdated result) indexResult
+        <> [ ("adr", JsonString (adrIdText (domainChangeAdrId result)))
+           , ("domain", JsonString (connectionIdText (domainChangeConnectionId result)))
+           , ("domain_parents", JsonArray (map (JsonString . connectionIdText) (domainChangeParents result)))
+           , ("mode", JsonString (domainChangeMode result))
+           , ("domains", JsonArray (map (JsonString . domainText) (domainChangeEffective result)))
+           , ("added", JsonArray (map (JsonString . domainText) (domainChangeAdded result)))
+           , ("removed", JsonArray (map (JsonString . domainText) (domainChangeRemoved result)))
+           , ("refinements", JsonArray (map (JsonString . domainRefinementText) (domainChangeRefinements result)))
            ]
 
 successOutcome jsonOutput operation commit identifiers indexResult jsonFields
@@ -1135,6 +1289,9 @@ transactionConflict problem =
       || "scope target ADR is conflicted" `Text.isInfixOf` message
       || "scope target ADR has no unambiguous current scope" `Text.isInfixOf` message
       || "scope target ADR is not active" `Text.isInfixOf` message
+      || "domain target ADR is conflicted" `Text.isInfixOf` message
+      || "domain target ADR has no unambiguous current domain" `Text.isInfixOf` message
+      || "domain target ADR is not active" `Text.isInfixOf` message
     _ -> False
 
 renderFailure :: CliFailure -> IO ExitCode

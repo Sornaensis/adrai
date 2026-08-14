@@ -37,10 +37,12 @@ import Adrai.CliRunner
      CreateRequest (..),
      AmendRequest (..),
      ScopeRequest (..),
+     DomainRequest (..),
     CliDispatchDependencies (..),
     CreateCommand (..),
      AmendCommand (..),
      ScopeCommand (..),
+     DomainCommand (..),
     InitCommand (..),
     defaultCliConfig,
     parseActor,
@@ -48,6 +50,7 @@ import Adrai.CliRunner
     parseStructuredCreate,
      parseStructuredAmend,
      materializeScope,
+     materializeDomain,
     CliFailure (..),
     CliRendered (..),
     parseArguments,
@@ -57,13 +60,14 @@ import Adrai.CliRunner
     renderCreateOutcome,
      renderAmendOutcome,
      renderScopeOutcome,
+     renderDomainOutcome,
     renderFailureOutcome,
     renderInitOutcome,
   )
 import Adrai.Git (GitOid (..))
-import Adrai.Domain (canonicalDomains)
+import Adrai.Domain (canonicalDomains, mkDomain, parseDomainRefinement)
 import Adrai.Scope (mkScopePattern)
-import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), InitResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
+import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
 import Adrai.Service.PostCommitIndex (IndexWarning (..), PostCommitIndexError (..), PostCommitIndexResult (..))
 import Adrai.Types (ActorKind (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
 import Adrai.Format.Json (JsonValue (..))
@@ -808,6 +812,61 @@ mutationCliContractTests =
                 scopeRequestInputDigest request @?= Just (requireRight (parseDigest ("sha256:" <> T.replicate 43 "A")))
                 scopeRequestPromptDigest request @?= Just (sha256Digest "prompt bytes")
                 scopeRequestContextDigest request @?= Just (sha256Digest "context bytes")
+    , testCase "domain is canonical, repeats frozen inputs, and rejects aliases or content flags" $ do
+        let expected = DomainCommand "A0123456789ABCDEFGHJKMNPQRS" ["platform", "ops"] ["legacy"] [] [] False
+              (Just "Broaden ownership") (Just "S0123456789ABCDEFGHJKMN") (Just "human:architect") (Just "editor") Nothing Nothing Nothing Nothing Nothing True
+        parseCli ["domain", "A0123456789ABCDEFGHJKMNPQRS", "--add", "platform", "--add", "ops", "--remove", "legacy", "--reason", "Broaden ownership", "--expect", "S0123456789ABCDEFGHJKMN", "--actor", "human:architect", "--model", "editor", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdDomain expected))
+        assertParserFailure ["domain-adr", "A0123456789ABCDEFGHJKMNPQRS"]
+        assertParserFailure ["domain", "A0123456789ABCDEFGHJKMNPQRS", "--body", "forbidden"]
+        assertParserFailure ["domain", "A0123456789ABCDEFGHJKMNPQRS", "--input-json", "forbidden.json"]
+        assertParserFailure ["domain", "A0123456789ABCDEFGHJKMNPQRS", "--stdin"]
+    , testCase "domain materialization selects one typed mode and preserves duplicate service inputs" $ do
+        let domainCommand adds removes refines sets clear reason =
+              DomainCommand "A0123456789ABCDEFGHJKMNPQRS" adds removes refines sets clear reason Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing False
+        materializeDomain (domainCommand ["platform", "platform"] [] [] [] False (Just "Reason")) >>= \case
+          Right request -> domainRequestChange request @?= DomainDelta [requireRight (mkDomain "platform"), requireRight (mkDomain "platform")] []
+          Left problem -> assertFailure (T.unpack problem)
+        materializeDomain (domainCommand [] [] ["platform=platform.api"] [] False (Just "Refine")) >>= \case
+          Right request -> domainRequestChange request @?= DomainRefine [requireRight (parseDomainRefinement "platform=platform.api")]
+          Left problem -> assertFailure (T.unpack problem)
+        materializeDomain (domainCommand [] [] [] [] True (Just "Clear")) >>= \case
+          Right request -> domainRequestChange request @?= DomainReviewedSet []
+          Left problem -> assertFailure (T.unpack problem)
+        materializeDomain (domainCommand [] [] [] [] False (Just "Reason")) >>= (@?= Left "domain requires --add, --remove, --refine, --set, or --clear")
+        materializeDomain (domainCommand ["platform"] [] ["platform=platform.api"] [] False (Just "Reason")) >>= (@?= Left "domain modes --add/--remove, --refine, --set, and --clear are mutually exclusive")
+        materializeDomain (domainCommand [] [] [] ["platform"] True (Just "Reason")) >>= (@?= Left "domain modes --add/--remove, --refine, --set, and --clear are mutually exclusive")
+        materializeDomain (domainCommand [] [] [] [] False (Just "  ")) >>= (@?= Left "domain reason must be nonblank")
+    , testCase "domain materialization types token, environment actor, and direct or file provenance digests" $
+        withSystemTempDirectory "adrai domain materialize" $ \temporary -> do
+          let promptPath = temporary <> "/prompt.txt"
+              contextPath = temporary <> "/context.txt"
+              direct = "sha256:" <> T.replicate 43 "A"
+              command prompt context promptFile contextFile =
+                DomainCommand "A0123456789ABCDEFGHJKMNPQRS" ["platform"] [] [] [] False (Just "Reason")
+                  (Just "S0123456789ABCDEFGHJKMN") Nothing (Just "model") (Just direct) prompt context promptFile contextFile False
+          BS.writeFile promptPath "prompt bytes"
+          BS.writeFile contextPath "context bytes"
+          withActorEnvironment "human:from-environment" $
+            do
+              materializeDomain (command Nothing Nothing (Just promptPath) (Just contextPath)) >>= \case
+                Left problem -> assertFailure (T.unpack problem)
+                Right request -> do
+                  domainRequestExpectedState request @?= Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))
+                  domainRequestActor request @?= requireRight (parseActor "human:from-environment" (Just "model"))
+                  domainRequestInputDigest request @?= Just (requireRight (parseDigest direct))
+                  domainRequestPromptDigest request @?= Just (sha256Digest "prompt bytes")
+                  domainRequestContextDigest request @?= Just (sha256Digest "context bytes")
+              materializeDomain (command (Just direct) Nothing (Just promptPath) Nothing) >>= (@?= Left "prompt digest conflicts with the digest derived from its file")
+          let explicitCommand =
+                DomainCommand "A0123456789ABCDEFGHJKMNPQRS" ["platform"] [] [] [] False (Just "Reason")
+                  (Just "S0123456789ABCDEFGHJKMN") (Just "human:explicit") (Just "model") (Just direct) (Just direct) (Just direct) Nothing Nothing False
+          materializeDomain explicitCommand >>= \case
+            Left problem -> assertFailure (T.unpack problem)
+            Right request -> do
+              domainRequestActor request @?= requireRight (parseActor "human:explicit" (Just "model"))
+              domainRequestInputDigest request @?= Just (requireRight (parseDigest direct))
+              domainRequestPromptDigest request @?= Just (requireRight (parseDigest direct))
+              domainRequestContextDigest request @?= Just (requireRight (parseDigest direct))
     , testCase "parser failures map to exit 2" $
         case parseArguments ["create-adr"] of
           Left rendered -> renderedExitCode rendered @?= ExitFailure 2
@@ -885,6 +944,10 @@ mutationCliContractTests =
         renderedStdout (renderScopeOutcome scopeResult indexedResult True) @?=
           "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"applies_to\": [\n    \"src/**\",\n    \"test/**\"\n  ],\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"mode\": \"mixed\",\n  \"operation\": \"operation-44\",\n  \"scope\": \"C4123456789ABCDEFGHJKMNPQRS\",\n  \"scope_parents\": [\n    \"C3123456789ABCDEFGHJKMNPQRS\"\n  ]\n}\n"
         renderedStdout (renderScopeOutcome scopeResult indexFailureResult False) @?= "Committed operation-44 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  scope=C4123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
+    , testCase "domain output consumes the truthful projected delta fields exactly" $ do
+        renderedStdout (renderDomainOutcome domainResult indexedResult True) @?=
+          "{\n  \"added\": [\n    \"platform.api\"\n  ],\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"domain\": \"C5123456789ABCDEFGHJKMNPQRS\",\n  \"domain_parents\": [\n    \"C4123456789ABCDEFGHJKMNPQRS\"\n  ],\n  \"domains\": [\n    \"platform.api\"\n  ],\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"mode\": \"refine\",\n  \"operation\": \"operation-45\",\n  \"refinements\": [\n    \"platform=platform.api\"\n  ],\n  \"removed\": [\n    \"platform\"\n  ]\n}\n"
+        renderedStdout (renderDomainOutcome domainResult indexFailureResult False) @?= "Committed operation-45 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  domain=C5123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
     , testCase "user and conflict outcomes have exact exit classes and stderr" $ do
         let user = renderFailureOutcome (CliUserFailure "invalid input")
             conflict = renderFailureOutcome (CliConflictFailure "stale head")
@@ -912,6 +975,8 @@ mutationCliContractTests =
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
               , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
               , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
               }
         exitCode <- dispatchWith dependencies invocation
         repo <- readIORef selectedRepo
@@ -931,6 +996,8 @@ mutationCliContractTests =
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
               , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
               , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
               }
             invocation = CliInvocation (defaultCliConfig {configRepo = "init-repo"}) (CmdInit (InitCommand True))
         exitCode <- dispatchWith dependencies invocation
@@ -961,6 +1028,8 @@ mutationCliContractTests =
                   pure (Right (amendResult, indexFailureResult))
               , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
               , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
               }
         exitCode <- dispatchWith dependencies invocation
         exitCode @?= ExitSuccess
@@ -976,6 +1045,8 @@ mutationCliContractTests =
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
               , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
               , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
               }
             invocation = CliInvocation defaultCliConfig (CmdCreate createCommand)
         exitCode <- dispatchWith dependencies invocation
@@ -1004,6 +1075,8 @@ mutationCliContractTests =
                   writeIORef selectedRepo (Just (configRepo repo))
                   writeIORef selectedRequest (Just received)
                   pure (Right (scopeResult, indexFailureResult))
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
               }
         dispatchWith dependencies invocation >>= (@?= ExitSuccess)
         readIORef selectedRepo >>= (@?= Just "scope-repo")
@@ -1018,11 +1091,38 @@ mutationCliContractTests =
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
               , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
               , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
               }
             rendered = renderFailureOutcome (CliUserFailure "structured amend field change_summary must be a string")
         dispatchWith dependencies (CliInvocation defaultCliConfig (CmdAmend command)) >>= (@?= ExitFailure 2)
         renderedStdout rendered @?= ""
         renderedStderr rendered @?= "adrai: structured amend field change_summary must be a string\n"
+    , testCase "dispatch seam selects domain service with the typed request and configured repository" $ do
+        selectedRepo <- newIORef Nothing
+        selectedRequest <- newIORef Nothing
+        let command = DomainCommand "A0123456789ABCDEFGHJKMNPQRS" ["platform"] [] [] [] False (Just "Expand") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing True
+            requestDomain = DomainRequest (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")) Nothing "Expand"
+              (DomainDelta [requireRight (mkDomain "platform")] []) (requireRight (parseActor "human:cli" Nothing)) Nothing Nothing Nothing
+            dependencies = CliDispatchDependencies
+              { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+              , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+              , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+              , cliMaterializeDomain = \received -> do
+                  received @?= command
+                  pure (Right requestDomain)
+              , cliRunInit = \_ -> error "init service must not be selected"
+              , cliRunCreate = \_ _ -> error "create service must not be selected"
+              , cliRunAmend = \_ _ -> error "amend service must not be selected"
+              , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliRunDomain = \repo received -> do
+                  writeIORef selectedRepo (Just (configRepo repo))
+                  writeIORef selectedRequest (Just received)
+                  pure (Right (domainResult, indexFailureResult))
+              }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "domain-repo"}) (CmdDomain command)) >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "domain-repo")
+        readIORef selectedRequest >>= (@?= Just requestDomain)
     , testCase "dispatch seam preserves service user and conflict exit classes" $ do
         let invocation = CliInvocation defaultCliConfig (CmdInit (InitCommand False))
             userDependencies = CliDispatchDependencies
@@ -1033,6 +1133,8 @@ mutationCliContractTests =
               , cliRunAmend = \_ _ -> error "amend service must not be selected"
               , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
               , cliRunScope = \_ _ -> error "scope service must not be selected"
+              , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+              , cliRunDomain = \_ _ -> error "domain service must not be selected"
               }
             conflictDependencies = userDependencies
               { cliRunInit = \_ -> pure (Left (CliConflictFailure "stale CAS")) }
@@ -1082,6 +1184,18 @@ mutationCliContractTests =
         [requireRight (mkConnectionId "C3123456789ABCDEFGHJKMNPQRS")]
         "mixed"
         [requireRight (mkScopePattern "src/**"), requireRight (mkScopePattern "test/**")]
+        oid path [path] True
+    domainResult =
+      DomainChangeResult
+        "operation-45"
+        (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
+        (requireRight (mkConnectionId "C5123456789ABCDEFGHJKMNPQRS"))
+        [requireRight (mkConnectionId "C4123456789ABCDEFGHJKMNPQRS")]
+        "refine"
+        [requireRight (mkDomain "platform.api")]
+        [requireRight (mkDomain "platform")]
+        [requireRight (mkDomain "platform.api")]
+        [requireRight (parseDomainRefinement "platform=platform.api")]
         oid path [path] True
     indexedResult = PostCommitIndexResult True (Just "fixture.sqlite") (Just oid) [] Nothing
     indexFailureResult = PostCommitIndexResult False Nothing Nothing [] (Just (PostCommitIndexOpenFailure "readonly"))
