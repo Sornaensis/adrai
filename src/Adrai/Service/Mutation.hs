@@ -26,6 +26,7 @@ module Adrai.Service.Mutation
     CreateResult (..),
     createAdrCommand,
     AmendResult (..),
+    amendAdrCommand,
     amendAdmCommand,
     ScopeChangeResult (..),
     changeScopeCommand,
@@ -47,6 +48,8 @@ import Adrai.Git
     repositoryHeadState,
     RevisionSpec (RevisionSpec),
     GitOid (..),
+    GitBlob (..),
+    GitTreeEntry (..),
     processExitCode,
     processStdout,
   )
@@ -82,10 +85,15 @@ import Adrai.Format.Document
   ( DecisionRecord (..),
     ConnectionRecord (..),
     ConnectionPayload (..),
+    AmendsPayload (..),
     AppliesToPayload (..),
     DomainsPayload (..),
     StatusPayload (..),
     StatusState (..),
+    ParsedManagedDocument,
+    parsedManagedRecord,
+    parseManagedDocument,
+    validateManagedLocation,
     renderDecisionSemantic,
     renderConnectionSemantic,
     canonicalManagedPath,
@@ -132,6 +140,24 @@ import Adrai.Identity
   ( sortableOperationId,
     sortableRecordId,
     sortableConnectionId,
+  )
+import Adrai.Repository
+  ( repositorySnapshot,
+    repositorySnapshotEntries,
+    repositorySnapshotManagedPaths,
+    repositorySnapshotRevision,
+    repositoryTreeBlob,
+    repositoryTreeEntry,
+    ResolvedRepositoryRevision,
+    resolvedCommitOid,
+  )
+import Adrai.Graph
+  ( AxisResolution (..),
+    GraphReduction (..),
+    ReducedAdr (..),
+    ReducedStatus (..),
+    lookupReducedAdr,
+    reduceManagedGraph,
   )
 
 import Data.Bifunctor (first)
@@ -536,14 +562,17 @@ sealCreatedRecord opId oldHead branchName actor timestampMs parentRecord inputs 
 -- Amend ADR
 -- ---------------------------------------------------------------------------
 
--- | Result of the 'amendAdmCommand' operation.
+-- | Result of the 'amendAdrCommand' operation.
 data AmendResult
   = AmendResult
       { amendOperationId  :: String,
         amendAdrId        :: AdrId,
         amendRecordId     :: RecordId,
+        amendConnectionId :: ConnectionId,
         amendCommitOid    :: GitOid,
-        amendUpdatedPath  :: RepoPath
+        amendUpdatedPath  :: RepoPath,
+        amendCreatedPaths :: [RepoPath],
+        amendIndexUpdated :: Bool
       }
   deriving (Eq, Show)
 
@@ -554,6 +583,75 @@ data AmendResult
 -- append-only transaction engine.
 --
 -- The new capsule carries eventKind @"decision.amend"@.
+amendAdrCommand ::
+  Repository ->
+  ManagedPaths ->
+  Actor ->
+  AdrId ->
+  RecordId ->
+  T.Text ->
+  T.Text ->
+  T.Text ->
+  ProvenanceInputs ->
+  IO (Either TransactionError AmendResult)
+amendAdrCommand
+  repository
+  _managedPaths
+  actor
+  adrId
+  recordId
+  newTitle
+  newSummary
+  newBody
+  inputs =
+    requireAttachedHead repository >>= \case
+      Left err -> pure (Left err)
+      Right branchName -> amendAtAttachedHead branchName
+  where
+    inherit replacement original = if T.null replacement then original else replacement
+    amendAtAttachedHead branchName = do
+      snapshotResult <- repositorySnapshot repository (RevisionSpec "HEAD")
+      case snapshotResult of
+        Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
+        Right snapshot -> case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot of
+          Left err -> pure (Left err)
+          Right documents -> case selectAmendmentSource adrId recordId documents of
+            Left err -> pure (Left err)
+            Right (sourceRecord, sourceHead, currentDomains) -> do
+              let title = inherit newTitle (decisionTitle sourceRecord)
+                  summary = inherit newSummary (decisionSummary sourceRecord)
+                  body = inherit newBody (decisionBody sourceRecord)
+              if title == decisionTitle sourceRecord && summary == decisionSummary sourceRecord && body == decisionBody sourceRecord
+                then pure (Left (Stage3ValidateState "amend would not change the current decision"))
+                else createAmendment snapshot branchName sourceRecord sourceHead currentDomains title summary body
+    createAmendment snapshot branchName _sourceRecord sourceHead currentDomains title summary body = do
+      timestampMs <- currentTimestamp
+      let timestampBytes = encodeTimestampMs timestampMs
+      entropy <- randomEntropy
+      case (sortableOperationId timestampBytes entropy, sortableRecordId timestampBytes entropy, sortableConnectionId timestampBytes (createConnectionEntropy "amends" entropy)) of
+        (Right opId, Right amendedId, Right connectionId) -> do
+          let amendedRecord = DecisionRecord adrId amendedId title summary currentDomains body
+              amendsConnection = ConnectionRecord connectionId (AmendsConnection (AmendsPayload adrId amendedId [sourceHead])) "Amends current decision head.\n"
+              members = [ManagedDecision amendedRecord, ManagedConnection amendsConnection]
+              paths = repositorySnapshotManagedPaths snapshot
+          case traverse (sealAmendMember opId (repositorySnapshotRevision snapshot) branchName actor timestampMs sourceHead inputs paths) members of
+            Left err -> pure (Left err)
+            Right generated -> do
+              let operationText = T.unpack (operationIdText opId)
+                  config = TransactionConfig operationText ("adrai: amend " <> adrIdText adrId)
+                    (Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", intercalate "," [T.unpack (recordIdText amendedId), T.unpack (connectionIdText connectionId)])])
+                    (resolvedCommitOid (repositorySnapshotRevision snapshot)) generated
+              commitAppendOnlyOperation repository config >>= \case
+                Left transactionError -> pure (Left transactionError)
+                Right TransactionResult {..} -> case transactionCreatedPaths of
+                  decisionPath : _ -> pure (Right AmendResult
+                    { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId,
+                      amendConnectionId = connectionId, amendCommitOid = transactionCommitOid, amendUpdatedPath = decisionPath,
+                      amendCreatedPaths = transactionCreatedPaths, amendIndexUpdated = transactionIndexUpdated })
+                  [] -> pure (Left (Stage8UpdateRef "amend transaction reported no created paths"))
+        _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+
+-- | Backwards-compatible spelling retained for existing explorer callers.
 amendAdmCommand ::
   Repository ->
   ManagedPaths ->
@@ -565,114 +663,78 @@ amendAdmCommand ::
   T.Text ->
   ProvenanceInputs ->
   IO (Either TransactionError AmendResult)
-amendAdmCommand
-  repository
-  managedPaths
-  actor
-  adrId
-  recordId
-  newTitle
-  newSummary
-  newBody
-  inputs = do
-    oldHeadResult <- resolveRevision repository (RevisionSpec "HEAD")
-    case oldHeadResult of
-      Left err ->
-        pure (Left (Stage3ValidateState ("resolve HEAD: " <> T.pack (show err))))
-      Right oldHead -> do
-        timestampMs <- currentTimestampMs
-        entropy <- randomEntropy
-        let opIdResult = sortableOperationId timestampMs entropy
-            recIdResult = sortableRecordId timestampMs entropy
-        case (opIdResult, recIdResult) of
-          (Right opId, Right recId) -> do
-            -- Read the existing decision record from the worktree
-            let oldDir  = T.unpack (repoPathText (managedDecisionPath managedPaths) <> "/" <> T.take 4 (recordIdText recId))
-                oldFile = oldDir </> T.unpack (recordIdText recId <> "--decision.decision.md")
-                oldRepoPath = RepoPath (T.pack oldFile)
-            worktreeRoot <- pure (repositoryWorktreeRoot repository)
-            existingBytes <-
-              case worktreeRoot of
-                Nothing -> pure BS.empty
-                Just root -> do
-                  let filePath = root </> oldFile
-                  result <- try @SomeException (BS.readFile filePath)
-                  case result of
-                    Left _  -> pure BS.empty
-                    Right b -> pure b
+amendAdmCommand = amendAdrCommand
 
-            -- Build the amended record
-            let amendedRecord =
-                  DecisionRecord
-                    { decisionAdr = adrId,
-                      decisionRecord = recId,
-                      decisionTitle = newTitle,
-                      decisionSummary = newSummary,
-                      decisionDomains = [],
-                      decisionBody = newBody
-                    }
+requireAttachedHead :: Repository -> IO (Either TransactionError T.Text)
+requireAttachedHead repository = do
+  repositoryHeadState repository >>= \case
+    Left err -> pure (Left (Stage3ValidateState ("symbolic-ref HEAD failed: " <> T.pack (show err))))
+    Right GitHeadDetached -> pure (Left (Stage3ValidateState "HEAD is detached; attach a branch first"))
+    Right (GitHeadAttached ref) ->
+      pure (Right (fromMaybe (gitRefText ref) (T.stripPrefix "refs/heads/" (gitRefText ref))))
 
-            -- Render the semantic to compute the digest
-            let semanticEither = renderDecisionSemantic amendedRecord
-            case semanticEither of
-              Left docErr ->
-                pure (Left (Stage5ValidateGenerated ("amend render: " <> T.pack (show docErr))))
-              Right semantic -> do
-                let digest = semanticDigest semantic
-                    eventIdResult = mkEventKind "decision.amend"
-                case eventIdResult of
-                  Left provErr ->
-                    pure (Left (Stage5ValidateGenerated ("amend eventKind: " <> T.pack (show provErr))))
-                  Right eventKind -> do
-                    let parentId = ProvenanceRecord recId
-                        ts = 1000000000000
-                        capsuleInput =
-                          ProvenanceCapsuleInput
-                            { capsuleInputOperationId = opId,
-                              capsuleInputObjectId = ProvenanceRecord recId,
-                              capsuleInputEventKind = eventKind,
-                              capsuleInputActor = actor,
-                              capsuleInputTimestampMs = ts,
-                              capsuleInputBasis = oldHead,
-                              capsuleInputParents = [parentId],
-                              capsuleInputBranchHint = Nothing,
-                              capsuleInputUpstreamHint = Nothing,
-                              capsuleInputLineAnchors = [],
-                              capsuleInputSemanticDigest = digest,
-                              capsuleInputToolVersion = "adrai/0.1.0",
-                              capsuleInputDigests = inputs
-                            }
-                    let capsuleResult = mkProvenanceCapsule capsuleInput
-                    case capsuleResult of
-                      Left provErr ->
-                        pure (Left (Stage5ValidateGenerated ("amend capsule: " <> T.pack (show provErr))))
-                      Right capsule -> do
-                        let sealedEither = sealManagedDocument (ManagedDecision amendedRecord) capsule
-                        case sealedEither of
-                          Left docErr ->
-                            pure (Left (Stage5ValidateGenerated ("amend seal: " <> T.pack (show docErr))))
-                          Right sealedBytes -> do
-                            let generatedPath = canonicalManagedPath managedPaths (ManagedDecision amendedRecord)
-                            case generatedPath of
-                              Left err ->
-                                pure (Left (Stage4GenerateFiles ("amend path: " <> T.pack (show err))))
-                              Right genPath -> do
-                                let generated =
-                                      [ GeneratedFile genPath sealedBytes ]
-                                    config =
-                                      TransactionConfig
-                                        { configOperationId = T.unpack (operationIdText opId),
-                                          configSubject = "adrai: amend " <> adrIdText adrId,
-                                          configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (recordIdText recId))],
-                                          configExpectedHead = oldHead,
-                                          configGenerated = generated
-                                        }
-                                _ <- commitAppendOnlyOperation repository config
-                                pure (Right (AmendResult
-                                  (T.unpack (operationIdText opId))
-                                  adrId recId oldHead genPath))
-          _ ->
-            pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
+committedDocuments paths snapshot =
+  traverse parseEntry (repositorySnapshotEntries snapshot)
+  where
+    parseEntry observation =
+      case repositoryTreeBlob observation of
+        Nothing -> Left (Stage3ValidateState "committed managed source contains a non-blob entry")
+        Just blob -> do
+          document <- first (Stage3ValidateState . ("parse committed managed document: " <>) . T.pack . show) $
+            parseManagedDocument (gitTreePath (repositoryTreeEntry observation)) (gitBlobBytes blob)
+          first (Stage3ValidateState . ("validate committed managed location: " <>) . T.pack . show) $
+            validateManagedLocation paths document
+          Right document
+
+selectAmendmentSource :: AdrId -> RecordId -> [ParsedManagedDocument] -> Either TransactionError (DecisionRecord, RecordId, [Domain])
+selectAmendmentSource adr requestedRecord documents = do
+  let reduction = reduceManagedGraph (map parsedManagedRecord documents)
+  reduced <- maybe (Left (Stage3ValidateState "amend target ADR is unknown")) Right (lookupReducedAdr adr reduction)
+  if not (null (reducedConflictAxes reduced))
+    then Left (Stage3ValidateState "amend target ADR is conflicted")
+    else pure ()
+  status <- maybe (Left (Stage3ValidateState "amend target ADR has no current status")) Right (axisResolutionEffective (reducedStatusAxis reduced))
+  if reducedStatusState status /= StatusActive
+    then Left (Stage3ValidateState "amend target ADR is not active")
+    else pure ()
+  case (axisResolutionHeads (reducedDecisionAxis reduced), axisResolutionEffective (reducedDecisionAxis reduced)) of
+    ([head], Just record)
+      | head == requestedRecord -> Right (record, head, axisResolutionEffective (reducedDomainAxis reduced))
+      | otherwise -> Left (Stage3ValidateState "amend target record is not the current decision head")
+    _ -> Left (Stage3ValidateState "amend target ADR has no unambiguous current decision")
+
+sealAmendMember :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> RecordId -> ProvenanceInputs -> ManagedPaths -> ManagedRecord -> Either TransactionError GeneratedFile
+sealAmendMember opId revision branchName actor timestampMs priorHead inputs paths managed = do
+  semantic <- first (Stage5ValidateGenerated . ("amend render: " <>) . T.pack . show) $
+    case managed of
+      ManagedDecision decision -> renderDecisionSemantic decision
+      ManagedConnection connection -> renderConnectionSemantic connection
+  eventKind <- first (Stage5ValidateGenerated . ("amend eventKind: " <>) . T.pack . show) $
+    mkEventKind $ case managed of
+      ManagedDecision _ -> "decision.amend"
+      ManagedConnection _ -> "connection.amends"
+  capsule <- first (Stage5ValidateGenerated . ("amend capsule: " <>) . T.pack . show) $
+    mkProvenanceCapsule
+      ProvenanceCapsuleInput
+        { capsuleInputOperationId = opId,
+          capsuleInputObjectId = case managed of
+            ManagedDecision decision -> ProvenanceRecord (decisionRecord decision)
+            ManagedConnection connection -> ProvenanceConnection (connectionRecordId connection),
+          capsuleInputEventKind = eventKind,
+          capsuleInputActor = actor,
+          capsuleInputTimestampMs = timestampMs,
+          capsuleInputBasis = resolvedCommitOid revision,
+          capsuleInputParents = [ProvenanceRecord priorHead],
+          capsuleInputBranchHint = Just branchName,
+          capsuleInputUpstreamHint = Nothing,
+          capsuleInputLineAnchors = [],
+          capsuleInputSemanticDigest = semanticDigest semantic,
+          capsuleInputToolVersion = "adrai/1.0.0",
+          capsuleInputDigests = inputs
+        }
+  sealed <- first (Stage5ValidateGenerated . ("amend seal: " <>) . T.pack . show) (sealManagedDocument managed capsule)
+  path <- first (Stage4GenerateFiles . ("amend path: " <>) . T.pack . show) (canonicalManagedPath paths managed)
+  pure (GeneratedFile path sealed)
 
 -- ---------------------------------------------------------------------------
 -- Change Scope

@@ -6,6 +6,7 @@ module Adrai.MutationServiceTest (tests) where
 import Adrai.Domain (mkDomain)
 import Adrai.Format.Document
   ( AppliesToPayload (..),
+    AmendsPayload (..),
     ConnectionPayload (..),
     ConnectionRecord (..),
     DecisionRecord (..),
@@ -13,9 +14,11 @@ import Adrai.Format.Document
     ManagedRecord (..),
     ParsedManagedDocument (..),
     StatusPayload (..),
-    StatusState (StatusActive),
+    StatusState (StatusActive, StatusObsolete),
     canonicalManagedPath,
     parseManagedDocument,
+    renderConnectionSemantic,
+    sealManagedDocument,
   )
 import Adrai.Git
   ( GitHeadState (..),
@@ -35,8 +38,12 @@ import Adrai.GitTestSupport
   )
 import Adrai.Fixture.CompilerRepository (healthyCompilerFiles)
 import Adrai.Provenance
-  ( ProvenanceObjectId (..),
+  ( ProvenanceCapsule,
+    ProvenanceCapsuleInput (..),
+    ProvenanceObjectId (..),
     eventKindText,
+    mkEventKind,
+    mkProvenanceCapsule,
     provenanceActor,
     provenanceBasis,
     provenanceBranchHint,
@@ -46,11 +53,14 @@ import Adrai.Provenance
     provenanceParents,
     provenanceTimestampMs,
     provenanceToolVersion,
+    semanticDigest,
   )
 import Adrai.Scope (mkScopePattern)
 import Adrai.Service.Mutation
   ( CreateResult (..),
+    AmendResult (..),
     InitResult (..),
+    amendAdmCommand,
     createAdrCommand,
     initCommand,
   )
@@ -64,15 +74,20 @@ import Adrai.Service.PostCommitIndex
     compilePostCommitIndexWith,
     postCommitIndexDependencies,
   )
-import Adrai.Service.Transaction (TransactionError)
+import Adrai.Service.Transaction (TransactionError (..))
 import Adrai.Types
   ( ActorKind (HumanActor),
     Actor,
+    AdrId,
+    RecordId,
+    ProvenanceInputs (..),
     RepoPath,
     configManagedPaths,
     defaultConfig,
     mkActor,
     mkAdrId,
+    mkConnectionId,
+    mkOperationId,
     mkRecordId,
     operationIdText,
     repoPathText,
@@ -85,7 +100,7 @@ import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort)
 import qualified Data.Set as Set
 import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, throwIO, try)
 import Database.SQLite.Simple (Only (..), close, open, query_)
-import System.Directory (doesFileExist, listDirectory, removeFile, renameFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>), takeFileName)
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempDirectory)
@@ -113,6 +128,11 @@ tests =
     , testCase "post-commit database close failure keeps its live handle and cleanup failure observable" postCommitIndexLiveCloseFailureIsObservable
     , testCase "create commits four sealed records and returns transaction result" createCommitsExactlyFourRecords
     , testCase "create failure leaves HEAD and unrelated staged index entry unchanged" createFailurePreservesRepositoryState
+    , testCase "amend commits a truthful append-only decision and amendment edge" amendCommitsTruthfulAppendOnlyOperation
+    , testCase "amend rejections do not create a commit" amendRejectionsDoNotCommit
+    , testCase "successive amendments chain from the prior current head" successiveAmendmentsChainFromPriorHead
+    , testCase "amend rejects inactive, conflicted, and misplaced committed sources" amendRejectsInvalidCommittedState
+    , testCase "amend transaction failure is retry-safe before generated files exist" amendFailurePropagatesTransactionError
     ]
 
 initCommitsBootstrapFiles :: IO ()
@@ -641,6 +661,246 @@ createFailurePreservesRepositoryState =
     result <- runCreate repository
     assertBool "detached-HEAD transaction must fail" (isLeft result)
     gitText directory ["rev-parse", "HEAD"] >>= (@?= oldHead)
+
+amendCommitsTruthfulAppendOnlyOperation :: IO ()
+amendCommitsTruthfulAppendOnlyOperation =
+  withCreateRepository $ \directory repository _ -> do
+    _ <- commitFile directory "tracked-worktree.txt" "committed tracked bytes\n"
+    created <- assertRight =<< runCreate repository
+    let stagedPath = directory </> "unrelated-staged.txt"
+        stagedBytes = "preserve staged bytes across amend\NUL"
+        trackedPath = directory </> "tracked-worktree.txt"
+        trackedIndexBytes = "tracked staged bytes across amend\NUL"
+        trackedWorktreeBytes = "tracked unstaged bytes across amend\NUL"
+    BS.writeFile stagedPath stagedBytes
+    _ <- gitSuccess directory ["add", "unrelated-staged.txt"] BS.empty
+    BS.writeFile trackedPath trackedIndexBytes
+    _ <- gitSuccess directory ["add", "tracked-worktree.txt"] BS.empty
+    BS.writeFile trackedPath trackedWorktreeBytes
+    indexBefore <- gitSuccess directory ["ls-files", "-s", "--", "unrelated-staged.txt"] BS.empty
+    trackedIndexBefore <- gitSuccess directory ["ls-files", "-s", "--", "tracked-worktree.txt"] BS.empty
+    beforeMs <- posixTimeMs
+    amended <- assertRight =<< runAmend repository (createAdrId created) (createRecordId created) "Amended transaction" ""
+      "## Decision\nUse one truthful append-only amendment.\n"
+    afterMs <- posixTimeMs
+    headAfter <- gitText directory ["rev-parse", "HEAD"]
+    headAfter @?= gitOidText (amendCommitOid amended)
+    parents <- gitText directory ["show", "-s", "--format=%P", Text.unpack headAfter]
+    parents @?= gitOidText (createCommitOid created)
+    changed <- fmap (sort . Text.lines) (gitText directory ["diff-tree", "--no-commit-id", "--name-only", "-r", Text.unpack headAfter])
+    let returnedPaths = sort (map repoPathText (amendCreatedPaths amended))
+    changed @?= returnedPaths
+    length returnedPaths @?= 2
+    assertBool "the transaction reports its index refresh" (amendIndexUpdated amended)
+    assertBool "the compatibility updated path belongs to the exact created-path result" (amendUpdatedPath amended `elem` amendCreatedPaths amended)
+    indexAfter <- gitSuccess directory ["ls-files", "-s", "--", "unrelated-staged.txt"] BS.empty
+    indexAfter @?= indexBefore
+    trackedIndexAfter <- gitSuccess directory ["ls-files", "-s", "--", "tracked-worktree.txt"] BS.empty
+    trackedIndexAfter @?= trackedIndexBefore
+    BS.readFile stagedPath >>= (@?= stagedBytes)
+    BS.readFile trackedPath >>= (@?= trackedWorktreeBytes)
+    documents <- mapM (amendDocumentAt directory amended) (amendCreatedPaths amended)
+    assertTruthfulAmendDocuments created amended beforeMs afterMs documents
+
+amendRejectionsDoNotCommit :: IO ()
+amendRejectionsDoNotCommit =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    headBefore <- gitText directory ["rev-parse", "HEAD"]
+    unknown <- assertRight (mkAdrId "A00000000000000000000000002")
+    unknownResult <- runAmend repository unknown (createRecordId created) "Unknown" "" "body\n"
+    assertBool "unknown ADR must be rejected" (isLeft unknownResult)
+    gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+    unknownRecord <- assertRight (mkRecordId "R00000000000000000000000002")
+    staleResult <- runAmend repository (createAdrId created) unknownRecord "Stale" "" "body\n"
+    assertBool "a non-current record must be rejected" (isLeft staleResult)
+    gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+    noOpResult <- runAmend repository (createAdrId created) (createRecordId created) "" "" ""
+    assertBool "a no-op amendment must be rejected" (isLeft noOpResult)
+    gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+
+amendFailurePropagatesTransactionError :: IO ()
+amendFailurePropagatesTransactionError =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    headBefore <- gitText directory ["rev-parse", "HEAD"]
+    worktreeBefore <- managedWorktreeState directory
+    _ <- gitSuccess directory ["checkout", "--detach"] BS.empty
+    result <- runAmend repository (createAdrId created) (createRecordId created) "Detached failure" "" "body\n"
+    result @?= Left (Stage3ValidateState "HEAD is detached; attach a branch first")
+    gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+    managedWorktreeState directory >>= (@?= worktreeBefore)
+
+successiveAmendmentsChainFromPriorHead :: IO ()
+successiveAmendmentsChainFromPriorHead =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    firstAmendment <- assertRight =<< runAmend repository (createAdrId created) (createRecordId created) "First amendment" "" "first body\n"
+    secondAmendment <- assertRight =<< runAmend repository (createAdrId created) (amendRecordId firstAmendment) "Second amendment" "" "second body\n"
+    documents <- mapM (amendDocumentAt directory secondAmendment) (amendCreatedPaths secondAmendment)
+    let expectedParents = [ProvenanceRecord (amendRecordId firstAmendment)]
+    mapM_ (\document -> provenanceParents (parsedManagedCapsule document) @?= expectedParents) documents
+    case [payload | document <- documents, ManagedConnection connection <- [parsedManagedRecord document], AmendsConnection payload <- [connectionPayload connection]] of
+      [payload] -> do
+        amendsFromRecord payload @?= amendRecordId secondAmendment
+        amendsToRecords payload @?= [amendRecordId firstAmendment]
+      other -> assertFailure ("expected one second amendment edge, got " <> show other)
+    stale <- runAmend repository (createAdrId created) (createRecordId created) "Stale root" "" "body\n"
+    assertBool "known stale prior head must be rejected" (isLeft stale)
+
+amendRejectsInvalidCommittedState :: IO ()
+amendRejectsInvalidCommittedState = do
+  rejectInactive
+  rejectConflicted
+  rejectMisplaced
+  where
+    rejectInactive = withCreateRepository $ \directory repository _ -> do
+      created <- assertRight =<< runCreate repository
+      commitInactiveStatus directory created
+      headBefore <- gitText directory ["rev-parse", "HEAD"]
+      result <- runAmend repository (createAdrId created) (createRecordId created) "Inactive" "" "body\n"
+      assertBool "inactive ADR must be rejected" (isLeft result)
+      gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+    rejectConflicted = withCreateRepository $ \directory repository _ -> do
+      created <- assertRight =<< runCreate repository
+      firstAmendment <- assertRight =<< runAmend repository (createAdrId created) (createRecordId created) "First branch" "" "body\n"
+      _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+      conflicting <- assertRight =<< runAmend repository (createAdrId created) (createRecordId created) "Second branch" "" "body\n"
+      _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (amendCommitOid firstAmendment))] BS.empty
+      headBefore <- gitText directory ["rev-parse", "HEAD"]
+      result <- runAmend repository (createAdrId created) (amendRecordId conflicting) "Conflict" "" "body\n"
+      assertBool "conflicted ADR must be rejected" (isLeft result)
+      gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+    rejectMisplaced = withCreateRepository $ \directory repository _ -> do
+      created <- assertRight =<< runCreate repository
+      path <- case [candidate | candidate <- createCreatedPaths created, ".decision.md" `Text.isSuffixOf` repoPathText candidate] of
+        [candidate] -> pure candidate
+        other -> assertFailure ("expected one creation decision path, got " <> show other) >> fail "unreachable"
+      bytes <- gitSuccess directory ["show", Text.unpack (gitOidText (createCommitOid created) <> ":" <> repoPathText path)] BS.empty
+      _ <- gitSuccess directory ["rm", "--", Text.unpack (repoPathText path)] BS.empty
+      createDirectoryIfMissing True (directory </> "architecture/adrai/decisions")
+      BS.writeFile (directory </> "architecture/adrai/decisions/misplaced.decision.md") bytes
+      _ <- gitSuccess directory ["add", "-A"] BS.empty
+      _ <- gitSuccess directory ["commit", "-m", "misplace decision"] BS.empty
+      headBefore <- gitText directory ["rev-parse", "HEAD"]
+      result <- runAmend repository (createAdrId created) (createRecordId created) "Misplaced" "" "body\n"
+      assertBool "misplaced committed record must be rejected" (isLeft result)
+      gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+
+managedWorktreeState :: FilePath -> IO [Text.Text]
+managedWorktreeState directory =
+  fmap Text.lines (gitText directory ["status", "--porcelain=v1", "--untracked-files=all", "--", "architecture/adrai"])
+
+commitInactiveStatus :: FilePath -> CreateResult -> IO ()
+commitInactiveStatus directory created = do
+  actor <- createActor
+  connectionId <- assertRight (mkConnectionId "C00000000000000000000000009")
+  operationId <- assertRight (mkOperationId "O00000000000000000000000009")
+  let statusRecord =
+        ConnectionRecord
+          { connectionRecordId = connectionId,
+            connectionPayload =
+              StatusConnection
+                StatusPayload
+                  { statusSubjectAdr = createAdrId created,
+                    statusParentConnections = [createStatusId created],
+                    statusState = StatusObsolete,
+                    statusRecordHeads = [createRecordId created],
+                    statusReplacementAdr = Nothing
+                  },
+            connectionRationale = "Mark decision obsolete.\n"
+          }
+      managed = ManagedConnection statusRecord
+  semantic <- assertRight (renderConnectionSemantic statusRecord)
+  eventKind <- assertRight (mkEventKind "decision.obsolete")
+  basis <- GitOid <$> gitText directory ["rev-parse", "HEAD"]
+  capsule <-
+    assertRight
+      ( mkProvenanceCapsule
+          ProvenanceCapsuleInput
+            { capsuleInputOperationId = operationId,
+              capsuleInputObjectId = ProvenanceConnection connectionId,
+              capsuleInputEventKind = eventKind,
+              capsuleInputActor = actor,
+              capsuleInputTimestampMs = 1700000000000,
+              capsuleInputBasis = basis,
+              capsuleInputParents = [ProvenanceConnection (createStatusId created)],
+              capsuleInputBranchHint = Just "main",
+              capsuleInputUpstreamHint = Nothing,
+              capsuleInputLineAnchors = [],
+              capsuleInputSemanticDigest = semanticDigest semantic,
+              capsuleInputToolVersion = "adrai/1.0.0",
+              capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
+            }
+      )
+  bytes <- assertRight (sealManagedDocument managed capsule)
+  path <- assertRight (canonicalManagedPath (configManagedPaths defaultConfig) managed)
+  _ <- commitFile directory (Text.unpack (repoPathText path)) bytes
+  pure ()
+
+amendDocumentAt :: FilePath -> AmendResult -> RepoPath -> IO ParsedManagedDocument
+amendDocumentAt directory amended path = do
+  bytes <- gitSuccess directory ["show", Text.unpack (gitOidText (amendCommitOid amended) <> ":" <> repoPathText path)] BS.empty
+  assertRight (parseManagedDocument path bytes)
+
+assertTruthfulAmendDocuments :: CreateResult -> AmendResult -> Integer -> Integer -> [ParsedManagedDocument] -> IO ()
+assertTruthfulAmendDocuments created amended beforeMs afterMs documents = do
+  expectedActor <- createActor
+  domain <- assertRight (mkDomain "compiler")
+  let capsules = map parsedManagedCapsule documents
+      expectedParents = [ProvenanceRecord (createRecordId created)]
+      expectedObjects =
+        Set.fromList
+          [ ProvenanceRecord (amendRecordId amended),
+            ProvenanceConnection (amendConnectionId amended)
+          ]
+  Set.fromList (map provenanceObjectId capsules) @?= expectedObjects
+  assertBool "amendment members share one claimed timestamp" (not (null capsules) && all (== provenanceTimestampMs (head capsules)) (map provenanceTimestampMs capsules))
+  assertBool "amendment timestamp is a real operation timestamp" (all (\capsule -> provenanceTimestampMs capsule >= beforeMs && provenanceTimestampMs capsule <= afterMs) capsules)
+  mapM_ (assertAmendCapsule expectedActor created amended expectedParents) capsules
+  case [(decision, capsule) | document <- documents, ManagedDecision decision <- [parsedManagedRecord document], let capsule = parsedManagedCapsule document] of
+    [(decision, capsule)] -> do
+      decisionAdr decision @?= createAdrId created
+      decisionRecord decision @?= amendRecordId amended
+      decisionTitle decision @?= "Amended transaction"
+      decisionSummary decision @?= "Create commits the complete canonical document set."
+      decisionDomains decision @?= [domain]
+      decisionBody decision @?= "## Decision\nUse one truthful append-only amendment.\n"
+      eventKindText (provenanceEventKind capsule) @?= "decision.amend"
+      provenanceParents capsule @?= expectedParents
+    other -> assertFailure ("expected one amended decision, got " <> show other)
+  case [(connection, payload, capsule) | document <- documents, ManagedConnection connection <- [parsedManagedRecord document], AmendsConnection payload <- [connectionPayload connection], let capsule = parsedManagedCapsule document] of
+    [(connection, payload, capsule)] -> do
+      connectionRecordId connection @?= amendConnectionId amended
+      amendsSubjectAdr payload @?= createAdrId created
+      amendsFromRecord payload @?= amendRecordId amended
+      amendsToRecords payload @?= [createRecordId created]
+      eventKindText (provenanceEventKind capsule) @?= "connection.amends"
+      provenanceParents capsule @?= expectedParents
+    other -> assertFailure ("expected one amendment edge, got " <> show other)
+
+assertAmendCapsule :: Actor -> CreateResult -> AmendResult -> [ProvenanceObjectId] -> ProvenanceCapsule -> IO ()
+assertAmendCapsule expectedActor created amended expectedParents capsule = do
+  operationIdText (provenanceOperationId capsule) @?= Text.pack (amendOperationId amended)
+  provenanceBasis capsule @?= createCommitOid created
+  provenanceActor capsule @?= expectedActor
+  provenanceBranchHint capsule @?= Just "main"
+  provenanceToolVersion capsule @?= "adrai/1.0.0"
+  provenanceParents capsule @?= expectedParents
+
+runAmend :: Repository -> AdrId -> RecordId -> Text.Text -> Text.Text -> Text.Text -> IO (Either TransactionError AmendResult)
+runAmend repository adr sourceRecord title summary body = do
+  actor <- createActor
+  amendAdmCommand
+    repository
+    (configManagedPaths defaultConfig)
+    actor
+    adr
+    sourceRecord
+    title
+    summary
+    body
+    (ProvenanceInputs Nothing Nothing Nothing)
 
 assertCanonicalCreatedDocument :: FilePath -> CreateResult -> Text.Text -> RepoPath -> IO ParsedManagedDocument
 assertCanonicalCreatedDocument directory created oldHead path = do
