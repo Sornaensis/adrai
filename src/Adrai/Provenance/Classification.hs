@@ -29,6 +29,8 @@ module Adrai.Provenance.Classification
   , loadCommitRows
   , candidateCommits
   , processCandidates
+  , decodeExactBlobTreeEntry
+  , canonicalParentsJson
   , pruneUnavailablePlacements
   , recordIssue
   , issueKey
@@ -38,11 +40,15 @@ where
 import Adrai.Git
   ( GitError,
     GitOid(..),
-    GitObjectType (GitCommitObject),
+    GitObjectType (GitBlobObject, GitCommitObject),
     GitObjectInfo (..),
     GitProcessResult (..),
     Repository (..),
     batchObjectInfo,
+    decodeGitTreeOutput,
+    gitTreeObjectType,
+    gitTreeOid,
+    gitTreePath,
     gitOidText,
     runRepository,
   )
@@ -68,6 +74,7 @@ import Adrai.Types
     OperationId (..),
     RepoPath (..),
     digestBytes,
+    mkRepoPath,
     operationIdText,
     repoPathText,
   )
@@ -80,7 +87,6 @@ import Data.Bifunctor (first)
 import Data.Ord (comparing)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Data.Text.Encoding.Error as TextEncodingError
 import Data.Text (Text)
 import qualified Data.Vector as Vector
 import qualified Data.Map.Strict as Map
@@ -561,25 +567,30 @@ processCandidates repo conn candidates newOpIds = do
                                   classification = determineClassification
                                     hasTrailer firstParentIsBasis intro
 
-                              execute conn
-                                "INSERT OR IGNORE INTO operation_commit VALUES(?,?,?,?,?,?,?)"
-                                [ SQLText opId
-                                , SQLText commitText
-                                , SQLText (operationClassificationValue classification)
-                                , SQLInteger (fromIntegral (storedCommitAuthored commitData))
-                                , SQLInteger (fromIntegral (storedCommitCommitted commitData))
-                                , SQLText (storedCommitSubject commitData)
-                                , SQLText (Text.unwords (storedCommitParents commitData))
-                                ]
-
-                              let expectedObjects = parseObjectsTrailer (storedCommitMessage commitData)
-                              when (isJust expectedObjects && expectedObjects /= Just objectIds) $ do
-                                let expectedText = Text.pack (show (sort (Set.toList (fromMaybe Set.empty expectedObjects))))
-                                    actualText = Text.pack (show (sort (Set.toList objectIds)))
-                                recordIssue conn "warning" "OPERATION_OBJECT_SET_MISMATCH"
-                                  ("commit " <> commitText <> " declares objects " <> expectedText <>
-                                   " but current operation contains " <> actualText)
+                              case canonicalParentsJson (storedCommitParents commitData) of
+                                Nothing -> recordIssue conn "warning" "INVALID_COMMIT_PARENTS"
+                                  ("commit " <> commitText <> " has malformed or duplicate parent OIDs")
                                   Nothing (Just opId) Nothing (Just opId)
+                                Just parentsJson -> do
+                                  execute conn
+                                    "INSERT OR IGNORE INTO operation_commit VALUES(?,?,?,?,?,?,?)"
+                                    [ SQLText opId
+                                    , SQLText commitText
+                                    , SQLText (operationClassificationValue classification)
+                                    , SQLInteger (fromIntegral (storedCommitAuthored commitData))
+                                    , SQLInteger (fromIntegral (storedCommitCommitted commitData))
+                                    , SQLText (storedCommitSubject commitData)
+                                    , SQLText parentsJson
+                                    ]
+
+                                  let expectedObjects = parseObjectsTrailer (storedCommitMessage commitData)
+                                  when (isJust expectedObjects && expectedObjects /= Just objectIds) $ do
+                                    let expectedText = Text.pack (show (sort (Set.toList (fromMaybe Set.empty expectedObjects))))
+                                        actualText = Text.pack (show (sort (Set.toList objectIds)))
+                                    recordIssue conn "warning" "OPERATION_OBJECT_SET_MISMATCH"
+                                      ("commit " <> commitText <> " declares objects " <> expectedText <>
+                                       " but current operation contains " <> actualText)
+                                      Nothing (Just opId) Nothing (Just opId)
 
                         when (not contains && hasTrailer) $ do
                           recordIssue conn "warning" "TRAILER_WITHOUT_SEALED_OBJECTS"
@@ -627,7 +638,7 @@ checkCommitPath
   -> Text
   -> IO Bool
 checkCommitPath repo commitOid path expectedBlobOid =
-  let args = ["ls-tree", "-z", "--full-tree", Text.unpack (gitOidText commitOid),
+  let args = ["--literal-pathspecs", "ls-tree", "-z", "--full-tree", Text.unpack (gitOidText commitOid),
               "--", Text.unpack path]
   in do
     result <- runRepository repo "ls-tree path" args mempty
@@ -636,18 +647,27 @@ checkCommitPath repo commitOid path expectedBlobOid =
       Right proc ->
         if processExitCode proc /= ExitSuccess
           then pure False
-          else pure $ case decodeTreeEntry (processStdout proc) of
-            Just (entryOid, _) -> entryOid == expectedBlobOid
-            Nothing -> False
+          else pure (decodeExactBlobTreeEntry path expectedBlobOid (processStdout proc))
 
-decodeTreeEntry :: ByteString -> Maybe (Text, Text)
-decodeTreeEntry raw =
-  case Text.strip (TextEncoding.decodeUtf8With TextEncodingError.lenientDecode raw) of
-    "" -> Nothing
-    line ->
-      case Text.words line of
-        [mode, typeStr, oid, _path] -> Just (oid, typeStr)
-        _ -> Nothing
+-- | Validate the exact, single NUL-framed response expected from an argv-based
+-- @git ls-tree -z -- <path>@ request.  The Git decoder operates on raw bytes,
+-- splitting only Git's structural NUL/TAB delimiters; no path bytes are ever
+-- whitespace-tokenized or leniently decoded here.
+decodeExactBlobTreeEntry :: Text -> Text -> ByteString -> Bool
+decodeExactBlobTreeEntry expectedPath expectedBlobOid raw =
+  case (mkRepoPath expectedPath, mkGitOid expectedBlobOid, decodeGitTreeOutput raw) of
+    (Right path, Right blobOid, Right [entry]) ->
+      gitTreePath entry == path
+        && gitTreeOid entry == blobOid
+        && gitTreeObjectType entry == GitBlobObject
+    _ -> False
+
+canonicalParentsJson :: [Text] -> Maybe Text
+canonicalParentsJson parents = do
+  validated <- traverse (fmap gitOidText . textToGitOid) parents
+  if length validated == Set.size (Set.fromList validated)
+    then Just (TextEncoding.decodeUtf8 (BSL.toStrict (Aeson.encode validated)))
+    else Nothing
 
 determineClassification
   :: Bool  -- hasTrailer

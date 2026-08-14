@@ -64,6 +64,8 @@ import Adrai.Provenance.Classification
     registerOperationGroups,
     storeNewCommits,
     candidateCommits,
+    canonicalParentsJson,
+    decodeExactBlobTreeEntry,
     processCandidates,
   )
 import Adrai.Provenance.Overlay
@@ -276,6 +278,15 @@ queryPlacements dbPath opId = do
   close conn
   pure rows
 
+queryPlacementParentJson :: FilePath -> Text -> IO [(Text, Text)]
+queryPlacementParentJson dbPath opId = do
+  conn <- open dbPath
+  rows <-
+    query conn "SELECT commit_oid, parents_json FROM operation_commit WHERE op_id = ? ORDER BY commit_oid"
+      [SQLText opId] :: IO [(Text, Text)]
+  close conn
+  pure rows
+
 -- | Query the @provenance_issue@ table for issue codes.
 queryIssueCodes :: FilePath -> IO [Text]
 queryIssueCodes dbPath = do
@@ -479,6 +490,40 @@ classifyOperations repo dbPath parsedDocs newOps = do
 -- Test suite
 -- =====================================================================
 
+treePathProtocolTest :: IO ()
+treePathProtocolTest = do
+  let oid = Text.replicate 40 "a"
+      path = "architecture/adrai/decisions/ümlaut space.decision.md"
+      record mode objectType objectOid objectPath =
+        TextEncoding.encodeUtf8 mode <> " " <> TextEncoding.encodeUtf8 objectType
+          <> " " <> TextEncoding.encodeUtf8 objectOid <> "\t"
+          <> TextEncoding.encodeUtf8 objectPath <> "\0"
+      valid = record "100644" "blob" oid path
+      malformedCases =
+        [ ("wrong path", record "100644" "blob" oid "architecture/adrai/decisions/other.md")
+        , ("wrong blob", record "100644" "blob" (Text.replicate 40 "b") path)
+        , ("non-blob", record "040000" "tree" oid path)
+        , ("bad mode", record "not-a-mode" "blob" oid path)
+        , ("bad oid", record "100644" "blob" "not-an-oid" path)
+        , ("truncated", BS.init valid)
+        , ("two records", valid <> valid)
+        , ("trailing bytes", valid <> "garbage")
+        , ("control path payload", record "100644" "blob" oid "architecture/adrai/decisions/tab\tnewline\n\SOH.md")
+        ]
+  assertBool "exact Unicode path with spaces is accepted" (decodeExactBlobTreeEntry path oid valid)
+  forM_ malformedCases $ \(label, raw) ->
+    assertBool label (not (decodeExactBlobTreeEntry path oid raw))
+
+parentJsonProtocolTest :: IO ()
+parentJsonProtocolTest = do
+  let first = Text.replicate 40 "a"
+      second = Text.replicate 40 "b"
+  canonicalParentsJson [] @?= Just "[]"
+  canonicalParentsJson [first] @?= Just ("[\"" <> first <> "\"]")
+  canonicalParentsJson [first, second] @?= Just ("[\"" <> first <> "\",\"" <> second <> "\"]")
+  canonicalParentsJson ["not-an-oid"] @?= Nothing
+  canonicalParentsJson [first, first] @?= Nothing
+
 addedPathsProtocolTest :: IO ()
 addedPathsProtocolTest = do
   let first = GitOid (Text.replicate 40 "a")
@@ -603,6 +648,10 @@ tests =
     "Provenance overlay topology"
     [ testCase "added_paths_protocol_is_nul_framed_and_strict" addedPathsProtocolTest,
 
+      testCase "ls_tree_path_protocol_is_binary_safe_and_fail_closed" treePathProtocolTest,
+
+      testCase "operation_commit_parents_json_is_canonical_and_strict" parentJsonProtocolTest,
+
       testCase "added_paths_real_git_is_root_nonroot_multi_and_isolated" addedPathsRealGitTest,
 
       testCase "added_paths_real_git_uses_exact_add_semantics_for_rename_copy_and_deletion" addedPathsChangeShapesGitTest,
@@ -687,10 +736,10 @@ tests =
             "O00000000000000000000000001"
             basisOid
           _ <- commitFiles repoDir
-            [ ("architecture/adrai/decisions/000/00000000000000000000000001--first.decision.md",
-               TextEncoding.encodeUtf8 decisionContent)]
+             [ ("architecture/adrai/decisions/ümlaut space.decision.md",
+                TextEncoding.encodeUtf8 decisionContent)]
           decisionBlobOid <- outputText <$> gitSuccess repoDir
-            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000001--first.decision.md"] BS.empty
+            ["rev-parse", "HEAD:architecture/adrai/decisions/ümlaut space.decision.md"] BS.empty
 
           let basis = requireGitOid basisOid
           resolved <- resolveTestRepo repoDir "HEAD"
@@ -718,7 +767,7 @@ tests =
                 Right c -> c
           let doc = ParsedManagedDocument
                 { parsedDocumentObjectRef = pack "A00000000000000000000000001"
-                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000001--first.decision.md"
+                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/ümlaut space.decision.md"
                 , parsedManagedCapsule = capsule
                 , parsedBlobOid = Just (requireGitOid decisionBlobOid)
                 , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
@@ -734,6 +783,12 @@ tests =
               let classified = map snd placements
               assertBool "classification should be 'original'" ("original" `elem` classified)
               assertBool "commit_oid matches HEAD" (any (\(oid, _) -> oid == gitOidText (resolvedCommitOid resolved)) placements)
+              parentRows <- queryPlacementParentJson overlayPath "O00000000000000000000000001"
+              parentRows @?=
+                [ ( gitOidText (resolvedCommitOid resolved)
+                  , TextEncoding.decodeUtf8 (Lazy.toStrict (Aeson.encode [basisOid]))
+                  )
+                ]
         ),
 
       -- 2. Feature branch op, fast-forward merge preserves "original" classification.
@@ -881,6 +936,10 @@ tests =
               let classified = map snd placements
               -- No-ff merge should show as introduction because main changed
               assertBool "no-ff merge should be introduction" ("introduction" `elem` classified)
+              mergeParents <- outputText <$> gitSuccess repoDir ["show", "-s", "--format=%P", "HEAD"] BS.empty
+              parentRows <- queryPlacementParentJson overlayPath "O00000000000000000000000003"
+              lookup (gitOidText (resolvedCommitOid resolved)) parentRows @?=
+                Just (TextEncoding.decodeUtf8 (Lazy.toStrict (Aeson.encode (Text.words mergeParents))))
         ),
 
       -- 4. Merge with ADRAI-Op trailer should be classified as introduction.
