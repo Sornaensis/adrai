@@ -12,17 +12,30 @@
 module Adrai.Provenance.Lock
   ( OverlayLock (..),
     acquireOverlayLock,
+    acquireOverlayLockWith,
+    acquireOverlayLockWithToken,
     releaseOverlayLock,
+    releaseOverlayLockWith,
     withOverlayLock,
+    withOverlayLockWithReleaseHook,
   )
 where
 
 import Adrai.Sqlite (asQuery)
 import Control.Concurrent (threadDelay)
-import Control.Exception (Exception, SomeException, catch, finally, fromException, throwIO, try)
-import Control.Monad (void)
-import Data.Int (Int64)
+import Control.Exception
+  ( Exception,
+    SomeAsyncException,
+    SomeException,
+    fromException,
+    mask,
+    mask_,
+    throwIO,
+    try,
+  )
 import Data.String (fromString)
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import Data.Int (Int64)
 import Data.Time.Clock (getCurrentTime)
 import qualified Data.Text as Text
 import Database.SQLite.Simple
@@ -34,6 +47,7 @@ import Database.SQLite.Simple
     open,
     query_,
     close,
+    withTransaction,
   )
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory, (</>))
@@ -45,7 +59,9 @@ import System.FilePath (takeDirectory, (</>))
 data OverlayLock
   = OverlayLock
   { lockPath         :: FilePath,
-    lockConnection   :: Connection
+    lockConnection   :: Connection,
+    lockHolderPid    :: Text.Text,
+    lockReleased     :: IORef Bool
   }
 
 -- | Derive the lock database path from the provenance database path.
@@ -69,73 +85,132 @@ lockTableDdl =
 -- an ``INSERT OR IGNORE`` to claim the lock row.  Returns 'OverlayLock'
 -- if acquired, 'Nothing' if the lock is already held.
 acquireOverlayLock :: FilePath -> IO (Maybe OverlayLock)
-acquireOverlayLock provenanceDb = do
+acquireOverlayLock provenanceDb = acquireOverlayLockWith provenanceDb (pure ())
+
+-- | Testable acquisition boundary.  The hook runs after the atomic singleton
+-- claim and before ownership verification, allowing cancellation cleanup to
+-- be proved without weakening the production wrapper.
+acquireOverlayLockWith :: FilePath -> IO () -> IO (Maybe OverlayLock)
+acquireOverlayLockWith provenanceDb afterClaim = do
+  now <- getCurrentTime
+  acquireOverlayLockWithToken provenanceDb (Text.pack (show now)) afterClaim
+
+-- | Deterministic token seam for collision tests.  Ownership never depends on
+-- token equality; SQLite's connection-local insertion result is authoritative.
+acquireOverlayLockWithToken :: FilePath -> Text.Text -> IO () -> IO (Maybe OverlayLock)
+acquireOverlayLockWithToken provenanceDb holderPid afterClaim = mask $ \restore -> do
   let lockPath' = lockDatabasePath provenanceDb
       lockDir     = takeDirectory lockPath'
   -- Ensure parent directory exists (SQLite needs the directory).
   createDirectoryIfMissing True lockDir
 
-  result <- try @SomeException $ do
-    conn <- open lockPath'
-    execute_ conn (asQuery (Text.pack lockTableDdl))
+  let acquiredAt = holderPid
+  connectionResult <- try @SomeException (open lockPath')
+  case connectionResult of
+    Left problem -> throwIO problem
+    Right conn -> do
+      acquisition <- try @SomeException $ do
+        restore (execute_ conn (asQuery (Text.pack lockTableDdl)))
+        withTransaction conn $ restore $ do
+          -- Use the fixed SQLite rowid as the singleton constraint.  The
+          -- insertion and ownership check share one rollback-capable
+          -- transaction, so cancellation cannot publish an ownerless row.
+          execute conn "INSERT OR IGNORE INTO overlay_lock(rowid, holder_pid, acquired_at) VALUES (1, ?, ?)"
+            [ SQLText holderPid, SQLText acquiredAt ]
+          afterClaim
+          inserted <- query_ conn (asQuery "SELECT changes()") :: IO [Only Int64]
+          if inserted == [Only 1]
+            then pure ()
+            else throwIO LockAlreadyHeld
+      case acquisition of
+        Right () -> do
+          released <- newIORef False
+          pure (Just (OverlayLock lockPath' conn holderPid released))
+        Left problem -> do
+          cleanupProblems <- cleanupConnection conn
+          rethrowFirstCancellation (problem : cleanupProblems)
+          case fromException problem of
+            Just LockAlreadyHeld -> case cleanupProblems of
+              cleanupProblem : _ -> throwIO cleanupProblem
+              [] -> pure Nothing
+            _ -> throwIO problem
 
-    now <- getCurrentTime
-    -- Use the UTCTime as a unique identifier for this lock acquisition.
-    -- In a real multi-process scenario the actual OS PID would be more
-    -- robust, but the timestamp is sufficient for unit tests and
-    -- single-machine deployments where concurrent processes are rare.
-    let holderPid   = Text.pack (show now)
-        acquiredAt  = Text.pack (show now)
-    -- Try to INSERT the lock row; IGNORE if it already exists.
-    execute conn "INSERT OR IGNORE INTO overlay_lock(holder_pid, acquired_at) VALUES (?, ?)"
-      [ SQLText holderPid, SQLText acquiredAt ]
-
-    -- Check if the row was actually inserted (i.e. we acquired the lock).
-    rows <- query_ conn (asQuery "SELECT COUNT(*) FROM overlay_lock") :: IO [Only Int64]
-    if rows == [Only 1]
-      then return conn
-      else do
-        close conn
-        throwIO LockAlreadyHeld
-
-  case result of
-    Left e -> case fromException e of
-      Just LockAlreadyHeld -> pure Nothing
-      _                    -> throwIO e
-    Right conn -> pure (Just (OverlayLock lockPath' conn))
-
--- | Release the overlay lock by deleting the lock row and closing the
--- connection.  Safe to call multiple times (ignores errors on close).
+-- | Release the overlay lock by deleting the owned singleton row and closing
+-- the connection.  Repeated calls are harmless; a genuine first-release
+-- failure is reported after every cleanup step has been attempted.
 releaseOverlayLock :: OverlayLock -> IO ()
-releaseOverlayLock lock = void $ try @SomeException $ do
-  _ <- execute_ (lockConnection lock) (asQuery "DELETE FROM overlay_lock")
-  close (lockConnection lock)
+releaseOverlayLock lock = releaseOverlayLockWith lock (pure ())
+
+-- | Testable release boundary.  The hook runs after the owned row is removed
+-- and before the connection closes.  Cleanup always completes before any
+-- synchronous or asynchronous hook failure is rethrown.
+releaseOverlayLockWith :: OverlayLock -> IO () -> IO ()
+releaseOverlayLockWith lock afterDelete = mask_ $ do
+  alreadyReleased <- atomicModifyIORef' (lockReleased lock) (\released -> (True, released))
+  if alreadyReleased
+    then pure ()
+    else do
+      deleteResult <- try @SomeException
+        (execute (lockConnection lock) "DELETE FROM overlay_lock WHERE rowid=1 AND holder_pid=?" [SQLText (lockHolderPid lock)])
+      hookResult <- try @SomeException afterDelete
+      closeResult <- try @SomeException (close (lockConnection lock))
+      rethrowFirstProblem [problem | Left problem <- [deleteResult, hookResult, closeResult]]
 
 -- | Run an action with the overlay lock held.
 --
--- Blocks until acquired or times out (5 seconds).  The lock is always
--- released in a @finally@ clause even if the action throws.
+-- Blocks until acquired or times out (5 seconds).  Masked cleanup always runs,
+-- and cancellation outranks any simultaneous synchronous cleanup failure.
 withOverlayLock :: FilePath -> IO a -> IO a
-withOverlayLock provenanceDb action = do
-  lock <- acquireOverlayLock provenanceDb
-  case lock of
-    Nothing -> do
-      -- Retry up to 50 times with short delays (simple 5-second timeout).
-      result <- try @SomeException $ do
-        delay 100000  -- 100ms
-        acquireOverlayLock provenanceDb
-      case result of
-        Right (Just l) ->
-          finally (action `catch` handler l) (releaseOverlayLock l)
-        Right Nothing  -> throwIO LockTimeout
-        Left _         -> throwIO LockTimeout
-    Just l ->
-      finally (action `catch` handler l) (releaseOverlayLock l)
+withOverlayLock provenanceDb action =
+  withOverlayLockWithReleaseHook provenanceDb action (pure ())
+
+-- | Testable bracket boundary for proving exception priority when both the
+-- protected action and release cleanup fail.  Production callers use
+-- 'withOverlayLock'.
+withOverlayLockWithReleaseHook :: FilePath -> IO a -> IO () -> IO a
+withOverlayLockWithReleaseHook provenanceDb action afterDelete = mask $ \restore -> do
+  lock <- acquireWithRetry restore 50
+  actionResult <- try @SomeException (restore action)
+  releaseResult <- try @SomeException (releaseOverlayLockWith lock afterDelete)
+  let problems = [problem | Left problem <- [voidResult actionResult, releaseResult]]
+  rethrowFirstCancellation problems
+  case (actionResult, releaseResult) of
+    (Left problem, _) -> throwIO problem
+    (Right _, Left problem) -> throwIO problem
+    (Right value, Right ()) -> pure value
   where
-    handler :: OverlayLock -> SomeException -> IO a
-    handler lock exc = do
-      releaseOverlayLock lock
-      throwIO exc
+    acquireWithRetry restore remaining = do
+      candidate <- acquireOverlayLock provenanceDb
+      case candidate of
+        Just lock -> pure lock
+        Nothing
+          | remaining <= 0 -> throwIO LockTimeout
+          | otherwise -> restore (delay 100000) >> acquireWithRetry restore (remaining - 1)
+
+    voidResult result = case result of
+      Left problem -> Left problem
+      Right _ -> Right ()
+
+-- | Close a connection acquired by a failed lock attempt without allowing a
+-- synchronous close failure to replace the acquisition failure.  Cancellation
+-- is retained and rethrown after cleanup.
+cleanupConnection :: Connection -> IO [SomeException]
+cleanupConnection connection = mask_ $ do
+  closeResult <- try @SomeException (close connection)
+  pure [problem | Left problem <- [closeResult]]
+
+rethrowFirstCancellation :: [SomeException] -> IO ()
+rethrowFirstCancellation problems =
+  case [async | problem <- problems, Just async <- [fromException problem]] of
+    async : _ -> throwIO (async :: SomeAsyncException)
+    [] -> pure ()
+
+rethrowFirstProblem :: [SomeException] -> IO ()
+rethrowFirstProblem problems = do
+  rethrowFirstCancellation problems
+  case problems of
+    problem : _ -> throwIO problem
+    [] -> pure ()
 
 -- | Exception thrown when the lock is already held by another process.
 data LockException

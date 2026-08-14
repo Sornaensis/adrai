@@ -88,6 +88,8 @@ module Adrai.Provenance.Overlay
 
     -- * Schema validation and creation
     overlayValid,
+    overlayValidWith,
+    overlayValidWithCleanup,
     createOverlaySchema,
 
     -- * Path helpers
@@ -104,7 +106,14 @@ import Adrai.Types
     OperationId (..),
     RepoPath (..)
   )
-import Control.Exception (SomeException, try)
+import Control.Exception
+  ( SomeAsyncException,
+    SomeException,
+    fromException,
+    mask,
+    throwIO,
+    try,
+  )
 import Control.Monad (forM_)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -465,18 +474,42 @@ provenanceDatabasePath currentDb = parent </> "provenance.sqlite"
 --
 -- Mirrors the Python @_overlay_valid()@ function.
 overlayValid :: FilePath -> IO Bool
-overlayValid path = do
-  result <- try @SomeException (validateSchema path)
-  pure (case result of
-    Right True  -> True
-    _           -> False)
-  where
-    validateSchema :: FilePath -> IO Bool
-    validateSchema dbPath = do
-      conn <- open dbPath
-      rows <- query_ conn "SELECT value FROM meta WHERE key='schema'" :: IO [Only Text]
-      close conn
-      pure (rows == [Only overlaySchemaVersion])
+overlayValid path = overlayValidWith path (pure ())
+
+-- | Testable form of 'overlayValid'.  The hook runs after the validation
+-- connection is acquired and before the schema query.  Synchronous failures
+-- remain an ordinary invalid result, while cancellation is never hidden.
+overlayValidWith :: FilePath -> IO () -> IO Bool
+overlayValidWith path afterOpen = overlayValidWithCleanup path afterOpen (pure ())
+
+-- | Full validation test seam.  The cleanup hook is run before closing the
+-- connection and exists only to make dual-failure precedence deterministic in
+-- tests.  Validation and cleanup are bracketed manually so an asynchronous
+-- validation failure cannot be replaced by a synchronous close failure.
+overlayValidWithCleanup :: FilePath -> IO () -> IO () -> IO Bool
+overlayValidWithCleanup path afterOpen beforeClose = mask $ \restore -> do
+  opened <- try @SomeException (restore (open path))
+  case opened of
+    Left problem -> classifyValidation [problem] Nothing
+    Right connection -> do
+      validation <- try @SomeException $ restore $ do
+        afterOpen
+        rows <- query_ connection "SELECT value FROM meta WHERE key='schema'" :: IO [Only Text]
+        pure (rows == [Only overlaySchemaVersion])
+      hookResult <- try @SomeException beforeClose
+      closeResult <- try @SomeException (close connection)
+      let cleanupProblems = [problem | Left problem <- [hookResult, closeResult]]
+      case validation of
+        Left problem -> classifyValidation (problem : cleanupProblems) Nothing
+        Right valid -> classifyValidation cleanupProblems (Just valid)
+
+classifyValidation :: [SomeException] -> Maybe Bool -> IO Bool
+classifyValidation problems result =
+  case [async | problem <- problems, Just async <- [fromException problem]] of
+    async : _ -> throwIO (async :: SomeAsyncException)
+    [] -> case (problems, result) of
+      ([], Just valid) -> pure valid
+      _ -> pure False
 
 -- | Create the overlay schema tables and indexes, then insert the schema
 -- version into the meta table.  All operations run within a single
