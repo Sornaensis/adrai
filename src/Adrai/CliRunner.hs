@@ -49,6 +49,7 @@ module Adrai.CliRunner
     renderReactivateOutcome,
     renderShowOutcome,
     renderCompareOutcome,
+    renderHistoryOutcome,
     renderFailureOutcome,
     emitRenderedToHandles,
     run,
@@ -62,7 +63,14 @@ import Adrai.CliTypes
     RelevantCommand (..),
     CompareCommand (..),
   )
-import Adrai.History (HistoryOrder (..))
+import Adrai.History
+  ( ActorSelector (..),
+    HistoryOptions (..),
+    HistoryOrder (..),
+    HistoryProjection,
+    historyProjectionJson,
+    renderHistoryProjection,
+  )
 import Adrai.Retrieval (RetrievalMode (FtsRetrieval, HybridRetrieval, VectorRetrieval))
 import Adrai.Types (ViewMode (CollapsedView, ExplodedView))
 import Adrai.Domain (Domain, DomainRefinement, canonicalDomains, domainErrorText, domainText, domainRefinementText, mkDomain, parseDomainRefinement)
@@ -76,10 +84,13 @@ import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePa
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
 import Adrai.Service.Query
   ( CompareRequest (..),
+    HistoryRequest (..),
     ShowRequest (..),
     ShowResult (..),
     compareFailureText,
+    historyFailureText,
     runCompare,
+    runHistory,
     runShow,
     showFailureIsConflict,
     showFailureText,
@@ -99,6 +110,8 @@ import Adrai.Types
      RecordId,
      StateToken,
      ProvenanceInputs (..),
+     actorId,
+     actorKind,
      adrIdText,
      connectionIdText,
      mkActor,
@@ -507,14 +520,11 @@ historyParser :: Parser HistoryCommand
 historyParser =
   HistoryCommand
     <$> optional (strArgument (metavar "ADR_ID" <> help "optional ADR ID or prefix"))
-    <*> ( flag' NewestFirst (long "newest-first" <> help "show newest entries first (default)")
-        <|> flag' OldestFirst (long "oldest-first" <> help "show oldest entries first")
-        )
-    <*> option auto (long "limit" <> value 50 <> showDefault <> help "max results (default 50)")
-    <*> optional (liftA2 (,) (strArgument (metavar "ACTOR" <> help "actor kind"))
-                                 (strArgument (metavar "MODEL" <> help "model name")))
-    <*> optional (option auto (long "since" <> help "show entries after this timestamp"))
-    <*> optional (option auto (long "until" <> help "show entries before this timestamp"))
+    <*> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "immutable revision to query (default: HEAD)")
+    <*> option auto (long "limit" <> value 20 <> showDefault <> help "max results (default 20)")
+    <*> optional (strOption (long "actor" <> metavar "KIND:IDENTIFIER" <> help "filter by actor"))
+    <*> optional (option auto (long "since" <> metavar "MILLISECONDS" <> help "show entries at or after this Unix timestamp in milliseconds"))
+    <*> optional (option auto (long "until" <> metavar "MILLISECONDS" <> help "show entries at or before this Unix timestamp in milliseconds"))
     <*> switch (long "reverse" <> help "reverse the order")
     <*> switch (long "json" <> help "output JSON")
 
@@ -667,9 +677,11 @@ dispatchWith dependencies (CliInvocation config (CmdShow command)) = do
       case result of
         Left failure -> renderFailure failure
         Right projection -> renderShowSuccess command projection
-dispatchWith _ (CliInvocation _ CmdHistory {}) = do
-  putStrLn "[history] fetching history"
-  pure ExitSuccess
+dispatchWith dependencies (CliInvocation config (CmdHistory command)) = do
+  result <- cliRunHistory dependencies config command
+  case result of
+    Left failure -> renderFailure failure
+    Right projection -> emitRendered (renderHistoryOutcome command projection)
 dispatchWith _ (CliInvocation _ (CmdSearch SearchCommand { searchQuery })) = do
   putStrLn $ "[search] querying: " <> Text.unpack searchQuery
   pure ExitSuccess
@@ -685,6 +697,7 @@ dispatchWith dependencies (CliInvocation config (CmdCompare command)) = do
 data CliDispatchDependencies = CliDispatchDependencies
   { cliRunShow :: ~(CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult))
   , cliRunCompare :: ~(CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection))
+  , cliRunHistory :: ~(CliConfig -> HistoryCommand -> IO (Either CliFailure HistoryProjection))
   , cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
   , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
   , cliMaterializeObsolete :: ~(ObsoleteCommand -> IO (Either Text ObsoleteCliRequest))
@@ -702,7 +715,7 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies runProductionShow runProductionCompare materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies runProductionShow runProductionCompare runProductionHistory materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
 
 runProductionShow :: CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult)
 runProductionShow config command = do
@@ -739,6 +752,37 @@ runProductionCompare config command = do
       pure $ case result of
         Left failure -> Left (CliUserFailure (compareFailureText failure))
         Right projection -> Right projection
+
+runProductionHistory :: CliConfig -> HistoryCommand -> IO (Either CliFailure HistoryProjection)
+runProductionHistory config command =
+  case traverse historyActorSelector (historyActor command) of
+    Left problem -> pure (Left (CliUserFailure problem))
+    Right actorSelector -> do
+      repositoryResult <- discoverRepository systemGit (configRepo config)
+      case repositoryResult of
+        Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+        Right repository -> do
+          result <-
+            runHistory repository
+              HistoryRequest
+                { historyRequestReference = historyAdrId command,
+                  historyRequestRevision = historyAt command,
+                  historyRequestOptions =
+                    HistoryOptions
+                      { historyOptionOrder = if historyReverse command then OldestFirst else NewestFirst,
+                        historyOptionLimit = historyLimit command,
+                        historyOptionActor = actorSelector,
+                        historyOptionSince = historySince command,
+                        historyOptionUntil = historyUntil command
+                      }
+                }
+          pure $ case result of
+            Left failure -> Left (CliUserFailure (historyFailureText failure))
+            Right projection -> Right projection
+  where
+    historyActorSelector value = do
+      actor <- parseActor value Nothing
+      Right (ActorSelector (actorKind actor) (actorId actor))
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
 runProductionInit config = do
@@ -1408,6 +1452,17 @@ renderCompareOutcome command projection =
     output
       | compareJson command = renderCanonicalJson (compareProjectionJson projection)
       | otherwise = TextEncoding.decodeUtf8 (renderCompareProjection projection)
+
+renderHistoryOutcome :: HistoryCommand -> HistoryProjection -> CliRendered
+renderHistoryOutcome command projection =
+  CliRendered
+    output
+    ""
+    ExitSuccess
+  where
+    output
+      | historyJson command = renderCanonicalJson (historyProjectionJson projection)
+      | otherwise = TextEncoding.decodeUtf8 (renderHistoryProjection projection)
 
 renderInitSuccess :: InitResult -> PostCommitIndexResult -> Bool -> IO ExitCode
 renderInitSuccess result indexResult jsonOutput = emitRendered (renderInitOutcome result indexResult jsonOutput)

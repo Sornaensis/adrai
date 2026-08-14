@@ -23,10 +23,8 @@ module Adrai.CliTypes
   )
 where
 
-import Adrai.Graph (lookupReducedAdr)
 import Adrai.History
-  ( HistoryError (..),
-    HistoryOptions (..),
+  ( HistoryOptions (..),
     HistoryOrder (..),
     ActorSelector (..),
     projectHistory,
@@ -69,13 +67,10 @@ import Adrai.Types
   ( ViewMode (..),
     RepoPath (..),
     ActorKind (..),
-    AdrId,
     RevisionSelector (AtRevision),
-    mkAdrId,
     mkRepoPath,
     RepoPathViolation (..),
   )
-import Unsafe.Coerce (unsafeCoerce)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Vector as Vector
@@ -148,9 +143,9 @@ showCommandJson snapshot cmd =
 -- | CLI argument representation for the @history@ command.
 data HistoryCommand = HistoryCommand
   { historyAdrId    :: Maybe Text  -- optional ADR prefix to filter
-  , historyOrder    :: HistoryOrder
+  , historyAt       :: Text
   , historyLimit    :: Int
-  , historyActor    :: Maybe (Text, Text)  -- (kind, model)
+  , historyActor    :: Maybe Text
   , historySince    :: Maybe Integer
   , historyUntil    :: Maybe Integer
   , historyReverse  :: Bool
@@ -165,50 +160,42 @@ textToActorKind "llm"    = Just LlmActor
 textToActorKind "service" = Just ServiceActor
 textToActorKind _        = Nothing
 
--- | Resolve an optional ADR reference text into an AdrId for history queries.
-resolveAdrReference :: ReadSnapshot -> Text -> Either HistoryError AdrId
-resolveAdrReference snapshot ref
-  | Text.null ref  = Left (HistoryAdrNotFound (case mkAdrId (Text.empty :: Text) of Right a -> a; Left _ -> unsafeCoerce (Text.empty :: Text)))
-  | otherwise = case mkAdrId ref of
-      Left v    -> Left (HistoryAdrNotFound (case mkAdrId (Text.pack (show v)) of Right a -> a; Left _ -> unsafeCoerce (Text.pack (show v))))
-      Right adr -> case lookupReducedAdr adr (readSnapshotReduction snapshot) of
-        Nothing -> Left (HistoryAdrNotFound adr)
-        Just _  -> Right adr
-
-adrFromText :: Text -> AdrId
-adrFromText t = case mkAdrId t of
-  Right a -> a
-  Left _  -> unsafeCoerce t
-
 -- | Dispatch a history command on a read snapshot.
 historyCommandJson :: ReadSnapshot -> HistoryCommand -> IO Aeson.Value
 historyCommandJson snapshot cmd =
-  let options = HistoryOptions
-        { historyOptionOrder = case historyOrder cmd of
-            NewestFirst -> if historyReverse cmd then OldestFirst else NewestFirst
-            OldestFirst -> if historyReverse cmd then NewestFirst else OldestFirst
-        , historyOptionLimit = min (max (historyLimit cmd) 1) 1000
-        , historyOptionActor = case historyActor cmd of
-            Nothing -> Nothing
-            Just (kind, model) -> ActorSelector <$> textToActorKind kind <*> pure model
-        , historyOptionSince = historySince cmd
-        , historyOptionUntil = historyUntil cmd
-        }
-      adrRef = case historyAdrId cmd of
-        Nothing  -> Left (HistoryAdrNotFound (adrFromText (Text.empty :: Text)))
-        Just ref -> resolveAdrReference snapshot ref
-  in case adrRef of
-       Left err -> pure $ Aeson.object
-         [ "schema" .= Aeson.String "adrai/history/v1"
-         , "error"  .= Aeson.String (Text.pack (show err))
-         ]
-       Right adr ->
-         case projectHistory snapshot (Just adr) options of
-           Left err -> pure $ Aeson.object
-             [ "schema" .= Aeson.String "adrai/history/v1"
-             , "error"  .= Aeson.String (Text.pack (show err))
-             ]
-           Right proj -> pure (toAesonValue (historyProjectionJson proj))
+  case traverse actorSelectorFromText (historyActor cmd) of
+    Left problem -> pure (errorJson problem)
+    Right selector ->
+      let options = HistoryOptions
+            { historyOptionOrder = if historyReverse cmd then OldestFirst else NewestFirst
+            , historyOptionLimit = historyLimit cmd
+            , historyOptionActor = selector
+            , historyOptionSince = historySince cmd
+            , historyOptionUntil = historyUntil cmd
+            }
+          adrRef = case historyAdrId cmd of
+            Nothing  -> Right Nothing
+            Just ref -> Just <$> Query.resolveAdrReference snapshot ref
+      in case adrRef of
+           Left err -> pure (errorJson (Text.pack (show err)))
+           Right adr ->
+             case projectHistory snapshot adr options of
+               Left err -> pure (errorJson (Text.pack (show err)))
+               Right proj -> pure (toAesonValue (historyProjectionJson proj))
+  where
+    actorSelectorFromText value =
+      case Text.splitOn ":" value of
+        [kind, identifier]
+          | not (Text.null identifier) ->
+              case textToActorKind kind of
+                Just actorKind -> Right (ActorSelector actorKind identifier)
+                Nothing -> Left "actor kind must be human, llm, or service"
+        _ -> Left "actor must have the form kind:identifier"
+    errorJson problem =
+      Aeson.object
+        [ "schema" .= Aeson.String "adrai/history/v1"
+        , "error" .= Aeson.String problem
+        ]
 
 -- | CLI argument representation for the @search@ command.
 data SearchCommand = SearchCommand

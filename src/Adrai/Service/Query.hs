@@ -13,11 +13,15 @@ module Adrai.Service.Query
     ShowFailure (..),
     CompareRequest (..),
     CompareFailure (..),
+    HistoryRequest (..),
+    HistoryFailure (..),
     runShow,
     runCompare,
+    runHistory,
     showFailureText,
     showFailureIsConflict,
     compareFailureText,
+    historyFailureText,
   )
 where
 
@@ -34,6 +38,12 @@ import Adrai.Compiler.Snapshot
 import qualified Adrai.Format.Document as Document
 import Adrai.Git (Repository, RevisionSpec (..), gitOidText, gitTreeOid, gitTreePath)
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
+import Adrai.History
+  ( HistoryError (..),
+    HistoryOptions,
+    HistoryProjection,
+    projectHistory,
+  )
 import Adrai.Provenance
   ( provenanceObjectId,
     provenanceObjectIdText,
@@ -112,6 +122,21 @@ data CompareFailure
   | CompareProjectionFailure QueryError
   deriving (Eq, Show)
 
+data HistoryRequest = HistoryRequest
+  { historyRequestReference :: Maybe Text,
+    historyRequestRevision :: Text,
+    historyRequestOptions :: HistoryOptions
+  }
+  deriving (Eq, Show)
+
+data HistoryFailure
+  = HistoryRepositoryFailure Text
+  | HistoryIntegrityFailure [Text]
+  | HistoryPlacementFailure PlacementHydrationError
+  | HistoryReferenceFailure ReferenceLookupError
+  | HistoryProjectionFailure HistoryError
+  deriving (Eq, Show)
+
 data SnapshotReadFailure
   = SnapshotRepositoryFailure Text
   | SnapshotIntegrityFailure [Text]
@@ -164,6 +189,18 @@ runCompare repository request = do
                 beforeSnapshot
                 afterSnapshot
             )
+
+runHistory :: Repository -> HistoryRequest -> IO (Either HistoryFailure HistoryProjection)
+runHistory repository request = do
+  snapshotResult <- readSnapshotAt repository (historyRequestRevision request)
+  pure $ case snapshotResult of
+    Left failure -> Left (historySnapshotFailure failure)
+    Right snapshot -> do
+      requestedAdr <-
+        case historyRequestReference request of
+          Nothing -> Right Nothing
+          Just reference -> Just <$> either (Left . HistoryReferenceFailure) Right (resolveAdrReference snapshot reference)
+      either (Left . HistoryProjectionFailure) Right (projectHistory snapshot requestedAdr (historyRequestOptions request))
 
 readSnapshotAt :: Repository -> Text -> IO (Either SnapshotReadFailure ReadSnapshot)
 readSnapshotAt repository requestedRevision = do
@@ -224,6 +261,13 @@ compareSnapshotFailure failure =
     SnapshotIntegrityFailure diagnostics -> CompareIntegrityFailure diagnostics
     SnapshotPlacementFailure problem -> ComparePlacementFailure problem
 
+historySnapshotFailure :: SnapshotReadFailure -> HistoryFailure
+historySnapshotFailure failure =
+  case failure of
+    SnapshotRepositoryFailure message -> HistoryRepositoryFailure message
+    SnapshotIntegrityFailure diagnostics -> HistoryIntegrityFailure diagnostics
+    SnapshotPlacementFailure problem -> HistoryPlacementFailure problem
+
 classificationDocuments raw = traverse classify
   where
     entries = map repositoryTreeEntry (rawRepositorySnapshotEntries raw)
@@ -268,3 +312,14 @@ compareFailureText failure =
     CompareIntegrityFailure diagnostics -> "repository integrity failure: " <> Text.intercalate "; " diagnostics
     ComparePlacementFailure problem -> "provenance hydration failure: " <> Text.pack (show problem)
     CompareProjectionFailure problem -> Text.pack (show problem)
+
+historyFailureText :: HistoryFailure -> Text
+historyFailureText failure =
+  case failure of
+    HistoryRepositoryFailure message -> message
+    HistoryIntegrityFailure diagnostics -> "repository integrity failure: " <> Text.intercalate "; " diagnostics
+    HistoryPlacementFailure problem -> "provenance hydration failure: " <> Text.pack (show problem)
+    HistoryReferenceFailure problem -> referenceLookupErrorText problem
+    HistoryProjectionFailure (HistoryInvalidLimit limit) ->
+      "history limit must be between 1 and 1000: " <> Text.pack (show limit)
+    HistoryProjectionFailure problem -> Text.pack (show problem)

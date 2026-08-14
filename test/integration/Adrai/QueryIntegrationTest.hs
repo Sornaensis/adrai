@@ -9,8 +9,9 @@ module Adrai.QueryIntegrationTest (tests) where
 
 import Adrai.Git (discoverRepository, systemGit)
 import Adrai.Integration.CLI hiding (parseCompareResults, parseHistory, parseSearchResults)
+import Adrai.History (HistoryOptions (..), HistoryOrder (..), renderHistoryProjection)
 import Adrai.Query (renderCollapsedProjection, renderCompareProjection)
-import Adrai.Service.Query (CompareRequest (..), ShowRequest (..), ShowResult (..), runCompare, runShow)
+import Adrai.Service.Query (CompareRequest (..), HistoryRequest (..), ShowRequest (..), ShowResult (..), runCompare, runHistory, runShow)
 import Adrai.Types (ViewMode (..))
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException)
@@ -234,6 +235,7 @@ tests =
       testP602FRealExecutableConflict,
       testP602FRealExecutableIntegrityFailure,
       testP602GRealExecutableCompare,
+      testP602HRealExecutableHistory,
       testShowCollapsedEvolution,
       testCompareBranchOnly,
       testCompareReverseShowsRemoved,
@@ -1048,6 +1050,152 @@ testP602GRealExecutableCompare =
                     fields @?= ["record", "title", "summary", "body", "record_heads"]
                   _ -> assertFailure "unexpected compare entry expectation"
             _ -> assertFailure "compare fixture expected at most one entry"
+
+testP602HRealExecutableHistory :: TestTree
+testP602HRealExecutableHistory =
+  testCase "P6-02H real executable history is filtered, revision-local, canonical, and read-only" $
+    withSystemTempDirectory "adrai p6-02h history ü" $ \tmpDir -> do
+      repo <- createTestRepo tmpDir
+      _ <- p602fJsonOrThrow repo ["init", "--json"]
+      created <- p602fJsonOrThrow repo
+        [ "create"
+        , "--title", "History Unicode ü decision"
+        , "--summary", "Initial history state"
+        , "--body", "## Decision\nProject immutable history.\n"
+        , "--domain", "platform"
+        , "--applies-to", "src/**"
+        , "--actor", "llm:planner"
+        , "--model", "history-model"
+        , "--json"
+        ]
+      (adr, record) <- case _Object created of
+        Just object -> case (object .: "adr", object .: "record") of
+          (Just adrId, Just recordId) -> pure (adrId, recordId)
+          _ -> assertFailure "history create omitted ADR or record" >> fail "unreachable"
+        Nothing -> assertFailure "history create result is not an object" >> fail "unreachable"
+      createdRevision <- headCommit repo
+      amended <- p602fJsonOrThrow repo
+        [ "amend", T.unpack adr
+        , "--title", "History Unicode ü decision v2"
+        , "--summary", "Amended history state"
+        , "--change-summary", "Prove immutable history"
+        , "--body", "## Decision\nProject immutable history exactly.\n"
+        , "--actor", "human:architect"
+        , "--json"
+        ]
+      amendConnection <- case _Object amended >>= (.: "connection") of
+        Just value -> pure value
+        Nothing -> assertFailure "history amend omitted connection" >> fail "unreachable"
+      amendedRevision <- headCommit repo
+
+      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+      beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+      let managedPaths =
+            filter ("architecture/adrai/" `isPrefixOf`)
+              (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
+      beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
+      BS.writeFile (repo </> "history staged.bin") "\NUL\SOHhistory staged bytes\255"
+      _ <- gitStdout repo ["add", "--", "history staged.bin"]
+      BS.writeFile (repo </> "README.md") "# Test\nhistory caller dirty bytes\n"
+      BS.writeFile (repo </> "history untracked ü.txt") "keep this untracked file"
+      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+      beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
+      beforeWorktree <- gitStdout repo ["diff", "--binary"]
+
+      full <- p602fJsonOrThrow repo ["history", "--json"]
+      assertHistoryEnvelope full Nothing amendedRevision "newest-first" 20 False ["amended", "created"]
+
+      forM_ [adr, T.toLower (T.take 10 record), T.toLower (T.take 10 amendConnection)] $ \reference -> do
+        filtered <- p602fJsonOrThrow repo ["history", T.unpack reference, "--json"]
+        assertHistoryEnvelope filtered (Just adr) amendedRevision "newest-first" 20 False ["amended", "created"]
+
+      reversed <- p602fJsonOrThrow repo ["history", T.unpack adr, "--reverse", "--json"]
+      assertHistoryEnvelope reversed (Just adr) amendedRevision "oldest-first" 20 False ["created", "amended"]
+      limited <- p602fJsonOrThrow repo ["history", T.unpack adr, "--limit", "1", "--json"]
+      assertHistoryEnvelope limited (Just adr) amendedRevision "newest-first" 1 True ["amended"]
+      actorFiltered <- p602fJsonOrThrow repo ["history", T.unpack adr, "--actor", "human:architect", "--json"]
+      assertHistoryEnvelope actorFiltered (Just adr) amendedRevision "newest-first" 20 False ["amended"]
+      sinceFiltered <- p602fJsonOrThrow repo ["history", T.unpack adr, "--since", "0", "--json"]
+      assertHistoryEnvelope sinceFiltered (Just adr) amendedRevision "newest-first" 20 False ["amended", "created"]
+      untilFiltered <- p602fJsonOrThrow repo ["history", T.unpack adr, "--until", "0", "--json"]
+      assertHistoryEnvelope untilFiltered (Just adr) amendedRevision "newest-first" 20 False []
+
+      historical <- p602fJsonOrThrow repo ["history", T.unpack adr, "--at", T.unpack createdRevision, "--json"]
+      assertHistoryEnvelope historical (Just adr) createdRevision "newest-first" 20 False ["created"]
+
+      repository <- do
+        discovered <- discoverRepository systemGit repo
+        case discovered of
+          Left problem -> assertFailure ("discover history fixture: " <> show problem) >> fail "unreachable"
+          Right value -> pure value
+      expectedText <- do
+        outcome <- runHistory repository (HistoryRequest (Just adr) "HEAD" (HistoryOptions NewestFirst 20 Nothing Nothing Nothing))
+        case outcome of
+          Right projection -> pure (LBS.fromStrict (renderHistoryProjection projection))
+          Left problem -> assertFailure ("programmatic history failed: " <> show problem) >> fail "unreachable"
+      (textExit, textOut, textErr) <- p602fRaw repo ["history", T.unpack adr]
+      textExit @?= ExitSuccess
+      textErr @?= ""
+      textOut @?= expectedText
+
+      (limitExit, limitOut, limitErr) <- p602fRaw repo ["history", "--limit", "0", "--json"]
+      limitExit @?= ExitFailure 2
+      limitOut @?= ""
+      limitErr @?= "adrai: history limit must be between 1 and 1000: 0\n"
+      (actorExit, actorOut, actorErr) <- p602fRaw repo ["history", "--actor", "planner", "--json"]
+      actorExit @?= ExitFailure 2
+      actorOut @?= ""
+      actorErr @?= "adrai: actor must have the form kind:identifier\n"
+      (selectorExit, selectorOut, selectorErr) <- p602fRaw repo ["history", "A00000000000000000000000000", "--json"]
+      selectorExit @?= ExitFailure 2
+      selectorOut @?= ""
+      selectorErr @?= "adrai: ADRAI reference not found in this revision: A00000000000000000000000000\n"
+      (revisionExit, revisionOut, revisionErr) <- p602fRaw repo ["history", "--at", "refs/heads/does-not-exist", "--json"]
+      revisionExit @?= ExitFailure 2
+      revisionOut @?= ""
+      assertBool "invalid history revision is a user error" ("adrai: " `LBS.isPrefixOf` revisionErr)
+
+      afterHead <- headCommit repo
+      afterRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+      afterTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+      afterStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      afterIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+      afterCached <- gitStdout repo ["diff", "--cached", "--binary"]
+      afterWorktree <- gitStdout repo ["diff", "--binary"]
+      afterManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
+      afterHead @?= amendedRevision
+      afterRef @?= beforeRef
+      afterTree @?= beforeTree
+      afterStatus @?= beforeStatus
+      afterIndex @?= beforeIndex
+      afterCached @?= beforeCached
+      afterWorktree @?= beforeWorktree
+      afterManaged @?= beforeManaged
+  where
+    assertHistoryEnvelope value expectedAdr expectedRevision expectedOrder expectedLimit expectedTruncated expectedLabels =
+      case _Object value of
+        Nothing -> assertFailure "history output is not an object"
+        Just object -> do
+          sortOn id (map AesonKey.toText (KM.keys object))
+            @?= sortOn id ["adr", "as_of", "filters", "limit", "operations", "order", "schema", "truncated", "view"]
+          (object .: "schema" :: Maybe Text) @?= Just "adrai/history/v1"
+          (object .: "view" :: Maybe Text) @?= Just "history"
+          (object .: "adr" :: Maybe (Maybe Text)) @?= Just expectedAdr
+          (object .: "as_of" :: Maybe Text) @?= Just expectedRevision
+          (object .: "order" :: Maybe Text) @?= Just expectedOrder
+          (object .: "limit" :: Maybe Int) @?= Just expectedLimit
+          (object .: "truncated" :: Maybe Bool) @?= Just expectedTruncated
+          operations <- case object .: "operations" of
+            Just result -> pure (result :: [Data.Aeson.Value])
+            Nothing -> assertFailure "history output omitted operations" >> fail "unreachable"
+          mapMaybe historyLabel operations @?= expectedLabels
+          forM_ operations $ \operation -> case _Object operation of
+            Nothing -> assertFailure "history operation is not an object"
+            Just operationObject -> do
+              assertBool "history operation exposes actor" (KM.member "actor" operationObject)
+              assertBool "history operation exposes operation ID" (KM.member "operation" operationObject)
+              assertBool "history operation exposes canonical timestamp" (KM.member "claimed_at" operationObject)
 
 testShowCollapsedEvolution :: TestTree
 testShowCollapsedEvolution =

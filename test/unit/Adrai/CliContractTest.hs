@@ -72,6 +72,7 @@ import Adrai.CliRunner
      renderReactivateOutcome,
      renderShowOutcome,
      renderCompareOutcome,
+     renderHistoryOutcome,
     renderFailureOutcome,
     renderInitOutcome,
   )
@@ -89,7 +90,15 @@ import Adrai.Retrieval (SearchMaterialization(..))
 
 import Adrai.Sqlite (ColdDatabaseStats (..))
 import Adrai.Graph (GraphReduction (..))
-import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
+import Adrai.History
+  ( HistoryOptions (..),
+    HistoryOrder (..),
+    HistoryProjection (..),
+    ReadSnapshot (..),
+    RevisionIdentity (..),
+    historyProjectionJson,
+    renderHistoryProjection,
+  )
 import Adrai.Query
   ( CompareCounts (CompareCounts),
     CompareProjection (..),
@@ -584,22 +593,21 @@ cliTypeConstructorTests =
         showAt cmd @?= "refs/heads/release"
         showJson cmd @?= True
         showRaw cmd @?= False,
-      testCase "HistoryCommand with reverse flag swaps order" $ do
+      testCase "HistoryCommand preserves the frozen revision and filter boundary" $ do
         let cmd = HistoryCommand
               { historyAdrId = Nothing
-              , historyOrder = NewestFirst
+              , historyAt = "refs/heads/release"
               , historyLimit = 10
-              , historyActor = Nothing
-              , historySince = Nothing
-              , historyUntil = Nothing
+              , historyActor = Just "llm:planner"
+              , historySince = Just 1000
+              , historyUntil = Just 2000
               , historyReverse = True
               , historyJson = False
               }
-        -- The reverse flag is stored as-is on the command type;
-        -- the swapping logic is in historyCommandJson, but we test
-        -- that the field is preserved correctly on construction.
+        historyAt cmd @?= "refs/heads/release"
+        historyActor cmd @?= Just "llm:planner"
         historyReverse cmd @?= True
-        historyOrder cmd @?= NewestFirst,
+        historyLimit cmd @?= 10,
       testCase "SearchCommand preserves query mode" $ do
         let cmd = SearchCommand
               { searchQuery = "test query"
@@ -721,6 +729,26 @@ schemaContractTests =
         renderedExitCode textRendered @?= ExitSuccess
         renderedStderr textRendered @?= ""
         renderedStdout textRendered @?= Text.Encoding.decodeUtf8 (renderCompareProjection projection),
+      testCase "history render outcome is exact canonical JSON or the established text renderer" $ do
+        let options = HistoryOptions OldestFirst 7 Nothing (Just 1000) (Just 2000)
+            projection = HistoryProjection
+              (RevisionIdentity "refs/heads/release" "3333333333333333333333333333333333333333")
+              Nothing
+              OldestFirst
+              7
+              False
+              options
+              []
+            jsonCommand = HistoryCommand Nothing "refs/heads/release" 7 Nothing (Just 1000) (Just 2000) True True
+            textCommand = jsonCommand {historyJson = False}
+            jsonRendered = renderHistoryOutcome jsonCommand projection
+            textRendered = renderHistoryOutcome textCommand projection
+        renderedExitCode jsonRendered @?= ExitSuccess
+        renderedStderr jsonRendered @?= ""
+        renderedStdout jsonRendered @?= renderCanonicalJson (historyProjectionJson projection)
+        renderedExitCode textRendered @?= ExitSuccess
+        renderedStderr textRendered @?= ""
+        renderedStdout textRendered @?= Text.Encoding.decodeUtf8 (renderHistoryProjection projection),
       testCase "all JSON output types have sorted keys (deterministic serialization)" $ do
         -- Verify compileResultJson keys are sorted
         let compileResultJsonKeys = objectKeys (compileResultJson (mkCompileResult))
@@ -875,6 +903,57 @@ mutationCliContractTests =
           >>= (@?= ExitSuccess)
         readIORef selectedRepo >>= (@?= Just "compare-repo")
         readIORef selectedCommand >>= (@?= Just explicit)
+    , testCase "history accepts only its frozen revision, limit, actor, time, reverse, and JSON options" $ do
+        let explicit = HistoryCommand
+              (Just "A0123456789")
+              "refs/heads/release"
+              7
+              (Just "llm:planner")
+              (Just 1000)
+              (Just 2000)
+              True
+              True
+            defaulted = HistoryCommand Nothing "HEAD" 20 Nothing Nothing Nothing False False
+        parseCli ["history", "A0123456789", "--at", "refs/heads/release", "--limit", "7", "--actor", "llm:planner", "--since", "1000", "--until", "2000", "--reverse", "--json"]
+          @?= Right (CliInvocation defaultCliConfig (CmdHistory explicit))
+        parseCli ["history"]
+          @?= Right (CliInvocation defaultCliConfig (CmdHistory defaulted))
+        assertParserFailure ["history", "--newest-first"]
+        assertParserFailure ["history", "--oldest-first"]
+        assertParserFailure ["history", "llm", "planner"]
+        selectedRepo <- newIORef Nothing
+        selectedCommand <- newIORef Nothing
+        let options = HistoryOptions NewestFirst 20 Nothing Nothing Nothing
+            projection = HistoryProjection
+              (RevisionIdentity "HEAD" "4444444444444444444444444444444444444444")
+              Nothing
+              NewestFirst
+              20
+              False
+              options
+              []
+            dependencies =
+              CliDispatchDependencies
+                { cliRunShow = \_ _ -> error "show service must not be selected",
+                  cliRunCompare = \_ _ -> error "compare service must not be selected",
+                  cliRunHistory = \config received -> do
+                    writeIORef selectedRepo (Just (configRepo config))
+                    writeIORef selectedCommand (Just received)
+                    pure (Right projection),
+                  cliMaterializeCreate = \_ -> error "create materialization must not be selected",
+                  cliMaterializeAmend = \_ -> error "amend materialization must not be selected",
+                  cliMaterializeScope = \_ -> error "scope materialization must not be selected",
+                  cliMaterializeDomain = \_ -> error "domain materialization must not be selected",
+                  cliRunInit = \_ -> error "init service must not be selected",
+                  cliRunCreate = \_ _ -> error "create service must not be selected",
+                  cliRunAmend = \_ _ -> error "amend service must not be selected",
+                  cliRunScope = \_ _ -> error "scope service must not be selected",
+                  cliRunDomain = \_ _ -> error "domain service must not be selected"
+                }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "history-repo"}) (CmdHistory defaulted))
+          >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "history-repo")
+        readIORef selectedCommand >>= (@?= Just defaulted)
     , testCase "global repo selects create and repeatable fields" $ do
         let expected =
               CreateCommand
