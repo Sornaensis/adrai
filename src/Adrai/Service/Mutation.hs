@@ -29,6 +29,7 @@ module Adrai.Service.Mutation
     amendAdrCommand,
     amendCurrentAdrCommand,
     amendAdmCommand,
+    ScopeChangeRequest (..),
     ScopeChangeResult (..),
     changeScopeCommand,
     DomainChangeResult (..),
@@ -80,6 +81,7 @@ import Adrai.Provenance
     provenanceTimestampMs,
     provenanceObjectId,
     provenanceOperationContext,
+    normalizeLineEndings,
     mkProvenanceCapsule,
   )
 import Adrai.Format.Document
@@ -156,6 +158,7 @@ import Adrai.Repository
   )
 import Adrai.Graph
   ( AxisResolution (..),
+    GraphAxis (ScopeAxis),
     GraphReduction (..),
     ReducedAdr (..),
     ReducedStatus (..),
@@ -801,6 +804,19 @@ data ScopeChangeResult
       }
   deriving (Eq, Show)
 
+-- | The two intentionally narrow scope-update modes.  A delta is only safe
+-- against one current scope head; a reviewed set can also reconcile the scope
+-- axis when it has multiple current heads.
+data ScopeChangeRequest
+  = ScopeDelta
+      { scopeDeltaAdded :: [ScopePattern],
+        scopeDeltaRemoved :: [ScopePattern]
+      }
+  | ScopeReviewedSet
+      { scopeReviewedPatterns :: [ScopePattern]
+      }
+  deriving (Eq, Show)
+
 -- | Change the scope patterns applied to an ADR.
 --
 -- Adds and/or removes scope patterns, builds a new AppliesToPayload,
@@ -813,8 +829,8 @@ changeScopeCommand ::
   Actor ->
   AdrId ->
   Maybe StateToken ->
-  [ScopePattern] -> -- added
-  [ScopePattern] -> -- removed
+  T.Text -> -- reason
+  ScopeChangeRequest ->
   ProvenanceInputs ->
   IO (Either TransactionError ScopeChangeResult)
 changeScopeCommand
@@ -823,23 +839,24 @@ changeScopeCommand
   actor
   adrId
   expectedState
-  added
-  removed
+  reason
+  request
   inputs =
-    requireAttachedHead repository >>= \case
+    case normalizeScopeReason reason of
       Left err -> pure (Left err)
-      Right branchName ->
-        repositorySnapshot repository (RevisionSpec "HEAD") >>= \case
-          Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
-          Right snapshot ->
-            case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot >>= selectCurrentScopeSource adrId expectedState of
-              Left err -> pure (Left err)
-              Right (priorHead, currentEffective) ->
-                case canonicalScopeDelta currentEffective added removed of
+      Right rationale ->
+        requireAttachedHead repository >>= \case
+          Left err -> pure (Left err)
+          Right branchName ->
+            repositorySnapshot repository (RevisionSpec "HEAD") >>= \case
+              Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
+              Right snapshot ->
+                case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot >>= selectScopeUpdate adrId expectedState request of
                   Left err -> pure (Left err)
-                  Right (changeKind, effective) -> createScopeUpdate snapshot branchName priorHead changeKind effective
+                  Right (parents, changeKind, added, removed, effective) ->
+                    createScopeUpdate snapshot branchName parents changeKind added removed effective rationale
   where
-    createScopeUpdate snapshot branchName priorHead changeKind effective = do
+    createScopeUpdate snapshot branchName parents changeKind added removed effective rationale = do
       timestampMs <- currentTimestamp
       let timestampBytes = encodeTimestampMs timestampMs
       entropy <- randomEntropy
@@ -849,16 +866,16 @@ changeScopeCommand
                 { connectionRecordId = connId
                 , connectionPayload = AppliesToConnection AppliesToPayload
                     { appliesToSubjectAdr = adrId
-                    , appliesToParentConnections = [priorHead]
+                    , appliesToParentConnections = parents
                     , appliesToChange = changeKind
-                    , appliesToAdded = sort added
-                    , appliesToRemoved = sort removed
+                    , appliesToAdded = added
+                    , appliesToRemoved = removed
                     , appliesToEffective = effective
                     }
-                , connectionRationale = "Scope change operation\n"
+                , connectionRationale = rationale
                 }
               paths = repositorySnapshotManagedPaths snapshot
-          case sealScopeUpdate opId (repositorySnapshotRevision snapshot) branchName actor timestampMs priorHead inputs paths connRecord of
+          case sealScopeUpdate opId (repositorySnapshotRevision snapshot) branchName actor timestampMs parents inputs paths connRecord of
             Left err -> pure (Left err)
             Right generated -> do
               let config = TransactionConfig
@@ -883,8 +900,8 @@ changeScopeCommand
                   _ -> pure (Left (Stage8UpdateRef "scope transaction did not report exactly one created path"))
         _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
 
-selectCurrentScopeSource :: AdrId -> Maybe StateToken -> [ParsedManagedDocument] -> Either TransactionError (ConnectionId, [ScopePattern])
-selectCurrentScopeSource adr expected documents = do
+selectScopeUpdate :: AdrId -> Maybe StateToken -> ScopeChangeRequest -> [ParsedManagedDocument] -> Either TransactionError ([ConnectionId], T.Text, [ScopePattern], [ScopePattern], [ScopePattern])
+selectScopeUpdate adr expected request documents = do
   let reduction = reduceManagedGraph (map parsedManagedRecord documents)
   reduced <- maybe (Left (Stage3ValidateState "scope target ADR is unknown")) Right (lookupReducedAdr adr reduction)
   case expected of
@@ -892,16 +909,75 @@ selectCurrentScopeSource adr expected documents = do
     Just expectedToken
       | expectedToken == reducedStateToken reduced -> Right ()
       | otherwise -> Left (Stage3ValidateState ("stale ADR state: expected " <> stateTokenText expectedToken <> ", current state is " <> stateTokenText (reducedStateToken reduced)))
-  if null (reducedConflictAxes reduced)
-    then Right ()
-    else Left (Stage3ValidateState "scope target ADR is conflicted")
   status <- maybe (Left (Stage3ValidateState "scope target ADR has no current status")) Right (axisResolutionEffective (reducedStatusAxis reduced))
   if reducedStatusState status == StatusActive
     then Right ()
     else Left (Stage3ValidateState "scope target ADR is not active")
-  case axisResolutionHeads (reducedScopeAxis reduced) of
-    [priorHead] -> Right (priorHead, axisResolutionEffective (reducedScopeAxis reduced))
-    _ -> Left (Stage3ValidateState "scope target ADR has no unambiguous current scope")
+  let scopeHeads = axisResolutionHeads (reducedScopeAxis reduced)
+      scopeConflictOnly = reducedConflictAxes reduced == [ScopeAxis]
+      noConflicts = null (reducedConflictAxes reduced)
+  case request of
+    ScopeDelta added removed -> do
+      if noConflicts
+        then Right ()
+        else Left (Stage3ValidateState "scope target ADR is conflicted")
+      case scopeHeads of
+        [priorHead] -> do
+          (changeKind, effective) <- canonicalScopeDelta (axisResolutionEffective (reducedScopeAxis reduced)) added removed
+          Right ([priorHead], changeKind, sort added, sort removed, effective)
+        _ -> Left (Stage3ValidateState "scope target ADR has no unambiguous current scope")
+    ScopeReviewedSet reviewed -> do
+      if noConflicts || scopeConflictOnly
+        then Right ()
+        else Left (Stage3ValidateState "scope target ADR is conflicted")
+      requested <- canonicalReviewedScopeSet reviewed
+      case scopeHeads of
+        [priorHead] -> do
+          let current = axisResolutionEffective (reducedScopeAxis reduced)
+          (added, removed) <- exactScopeDifference True current requested
+          Right ([priorHead], "replace", added, removed, requested)
+        parents@(_ : _ : _) -> do
+          current <- effectiveScopeUnion parents (reducedScopeHistory reduced)
+          -- A reviewed merge is itself a material operation: even when the
+          -- requested set equals the parent union, it replaces several
+          -- current heads with one canonical merge head and resolves the
+          -- scope conflict.  Only this multi-parent path permits an empty
+          -- semantic delta.
+          (added, removed) <- exactScopeDifference False current requested
+          Right (sort parents, "merge", added, removed, requested)
+        _ -> Left (Stage3ValidateState "scope target ADR has no current scope")
+
+canonicalReviewedScopeSet :: [ScopePattern] -> Either TransactionError [ScopePattern]
+canonicalReviewedScopeSet reviewed
+  | Set.null reviewedSet = Left (Stage3ValidateState "reviewed scope set must not be empty")
+  | Set.size reviewedSet /= length reviewed = Left (Stage3ValidateState "reviewed scope set contains duplicates")
+  | otherwise = Right (Set.toAscList reviewedSet)
+  where
+    reviewedSet = Set.fromList reviewed
+
+effectiveScopeUnion :: [ConnectionId] -> [ConnectionRecord] -> Either TransactionError [ScopePattern]
+effectiveScopeUnion parents history =
+  fmap Set.toAscList (traverse lookupEffective (sort parents) >>= pure . Set.unions)
+  where
+    lookupEffective parent =
+      case [appliesToEffective payload | connection <- history, connectionRecordId connection == parent, AppliesToConnection payload <- [connectionPayload connection]] of
+        [effective] -> Right (Set.fromList effective)
+        _ -> Left (Stage3ValidateState "scope target ADR has an invalid current scope head")
+
+exactScopeDifference :: Bool -> [ScopePattern] -> [ScopePattern] -> Either TransactionError ([ScopePattern], [ScopePattern])
+exactScopeDifference rejectNoOp current requested
+  | rejectNoOp && currentSet == requestedSet = Left (Stage3ValidateState "reviewed scope set would not change the current scope")
+  | otherwise = Right (Set.toAscList (requestedSet `Set.difference` currentSet), Set.toAscList (currentSet `Set.difference` requestedSet))
+  where
+    currentSet = Set.fromList current
+    requestedSet = Set.fromList requested
+
+normalizeScopeReason :: T.Text -> Either TransactionError T.Text
+normalizeScopeReason raw
+  | T.null normalized = Left (Stage3ValidateState "scope reason must be nonblank")
+  | otherwise = Right (normalized <> "\n")
+  where
+    normalized = T.strip (normalizeLineEndings raw)
 
 canonicalScopeDelta :: [ScopePattern] -> [ScopePattern] -> [ScopePattern] -> Either TransactionError (T.Text, [ScopePattern])
 canonicalScopeDelta current added removed
@@ -923,15 +999,15 @@ canonicalScopeDelta current added removed
       | Set.null addedSet = "contract"
       | otherwise = "mixed"
 
-sealScopeUpdate :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> ConnectionId -> ProvenanceInputs -> ManagedPaths -> ConnectionRecord -> Either TransactionError GeneratedFile
-sealScopeUpdate opId revision branchName actor timestampMs priorHead inputs paths connection = do
+sealScopeUpdate :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> [ConnectionId] -> ProvenanceInputs -> ManagedPaths -> ConnectionRecord -> Either TransactionError GeneratedFile
+sealScopeUpdate opId revision branchName actor timestampMs parents inputs paths connection = do
   semantic <- first (Stage5ValidateGenerated . ("scope render: " <>) . T.pack . show) (renderConnectionSemantic connection)
   eventKind <- first (Stage5ValidateGenerated . ("scope eventKind: " <>) . T.pack . show) (mkEventKind "scope.update")
   capsule <- first (Stage5ValidateGenerated . ("scope capsule: " <>) . T.pack . show) $
     mkProvenanceCapsule ProvenanceCapsuleInput
       { capsuleInputOperationId = opId, capsuleInputObjectId = ProvenanceConnection (connectionRecordId connection)
       , capsuleInputEventKind = eventKind, capsuleInputActor = actor, capsuleInputTimestampMs = timestampMs
-      , capsuleInputBasis = resolvedCommitOid revision, capsuleInputParents = [ProvenanceConnection priorHead]
+      , capsuleInputBasis = resolvedCommitOid revision, capsuleInputParents = map ProvenanceConnection parents
       , capsuleInputBranchHint = Just branchName, capsuleInputUpstreamHint = Nothing, capsuleInputLineAnchors = []
       , capsuleInputSemanticDigest = semanticDigest semantic, capsuleInputToolVersion = "adrai/1.0.0", capsuleInputDigests = inputs
       }

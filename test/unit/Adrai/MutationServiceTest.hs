@@ -37,6 +37,13 @@ import Adrai.GitTestSupport
     outputText,
   )
 import Adrai.Fixture.CompilerRepository (healthyCompilerFiles)
+import Adrai.Graph
+  ( AxisResolution (..),
+    ReducedAdr (..),
+    lookupReducedAdr,
+    reduceManagedGraph,
+    reducedStateToken,
+  )
 import Adrai.Provenance
   ( ProvenanceCapsule,
     ProvenanceCapsuleInput (..),
@@ -60,6 +67,7 @@ import Adrai.Scope (ScopePattern, mkScopePattern)
 import Adrai.Service.Mutation
   ( CreateResult (..),
     AmendResult (..),
+    ScopeChangeRequest (..),
     ScopeChangeResult (..),
     InitResult (..),
     amendAdmCommand,
@@ -94,10 +102,12 @@ import Adrai.Types
     mkConnectionId,
     mkDigest,
     mkOperationId,
+    mkRepoPath,
     mkRecordId,
     mkStateToken,
     operationIdText,
     repoPathText,
+    stateTokenText,
   )
 import qualified Data.ByteString as BS
 import qualified Data.Text as Text
@@ -144,10 +154,14 @@ tests =
         ]
     , testGroup
         "P6-02C scope mutation service"
-        [ testCase "scope updates expand, contract, and mix from the current scope head" scopeUpdatesAreTruthful
+    [ testCase "scope updates expand, contract, and mix from the current scope head" scopeUpdatesAreTruthful
+        , testCase "scope reviewed set replaces one current scope head truthfully" scopeReviewedSetReplacesOneHead
+        , testCase "scope reviewed set merges two current scope heads and clears only scope conflict" scopeReviewedSetMergesScopeConflict
+        , testCase "scope reviewed merge resolves two heads even when the reviewed set equals their union" scopeReviewedSetMergesUnchangedUnion
         , testCase "scope rejections preserve the complete caller-visible repository state" scopeRejectionsPreserveRepository
         , testCase "scope rejects inactive ADRs with the exact state error" rejectInactiveScope
         , testCase "scope rejects conflicted heads with the exact state error" rejectConflictedScope
+        , testCase "scope reviewed set rejects a conflict outside the scope axis without state changes" rejectNonScopeConflict
         , testCase "scope rejects detached HEAD before generating files" scopeDetachedHeadRejected
         , testCase "scope transaction failure after generation preserves every caller-owned state" scopeTransactionFailurePreservesEverything
         ]
@@ -862,6 +876,124 @@ scopeUpdatesAreTruthful =
         Just basis -> basis
         Nothing -> createCommitOid created
 
+scopeReviewedSetReplacesOneHead :: IO ()
+scopeReviewedSetReplacesOneHead =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    assets <- assertRight (mkScopePattern "assets/**")
+    docs <- assertRight (mkScopePattern "docs/**")
+    source <- assertRight (mkScopePattern "src/**")
+    inputs <- scopeInputs
+    beforeDocuments <- committedManagedDocuments directory
+    before <- currentReducedAdr (createAdrId created) beforeDocuments
+    beforeMs <- posixTimeMs
+    update <- assertRight =<< runScopeSetWithInputs repository (createAdrId created) (Just (reducedStateToken before)) "  Reviewed scope replacement\r\nwith evidence  " [docs, assets] inputs
+    afterMs <- posixTimeMs
+    document <- scopeDocumentAt directory update
+    assertScopeDocument update (createScopeId created) "replace" [assets, docs] [source] [assets, docs] document
+    case parsedManagedRecord document of
+      ManagedConnection connection -> connectionRationale connection @?= "Reviewed scope replacement\nwith evidence\n"
+      _ -> assertFailure "expected scope connection"
+    let capsule = parsedManagedCapsule document
+    provenanceBasis capsule @?= createCommitOid created
+    provenanceActor capsule @?= createActorPure
+    provenanceBranchHint capsule @?= Just "main"
+    provenanceInputs capsule @?= inputs
+    assertBool "replace timestamp is positive and from this operation" (provenanceTimestampMs capsule >= beforeMs && provenanceTimestampMs capsule <= afterMs && provenanceTimestampMs capsule > 0)
+    canonicalManagedPath (configManagedPaths defaultConfig) (parsedManagedRecord document) @?= Right (scopeChangeNewPath update)
+    scopeChangeCreatedPaths update @?= [scopeChangeNewPath update]
+    assertBool "replace transaction refreshed the index" (scopeChangeIndexUpdated update)
+    after <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
+    assertBool "replace changes the checked state token" (reducedStateToken after /= reducedStateToken before)
+  where
+    createActorPure = case mkActor HumanActor "mutation-service-test" Nothing of Right actor -> actor; Left err -> error (show err)
+
+scopeReviewedSetMergesScopeConflict :: IO ()
+scopeReviewedSetMergesScopeConflict =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    leftPattern <- assertRight (mkScopePattern "left/**")
+    rightPattern <- assertRight (mkScopePattern "right/**")
+    finalPattern <- assertRight (mkScopePattern "final/**")
+    left <- assertRight =<< runScope repository (createAdrId created) Nothing [leftPattern] []
+    _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+    right <- assertRight =<< runScope repository (createAdrId created) Nothing [rightPattern] []
+    _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (scopeChangeCommitOid left))] BS.empty
+    conflictedDocuments <- committedManagedDocuments directory
+    conflicted <- currentReducedAdr (createAdrId created) conflictedDocuments
+    axisResolutionHeads (reducedScopeAxis conflicted) @?= sort [scopeChangeConnectionId left, scopeChangeConnectionId right]
+    basisBefore <- gitText directory ["rev-parse", "HEAD"]
+    beforeMs <- posixTimeMs
+    inputs <- scopeInputs
+    merged <- assertRight =<< runScopeSetWithInputs repository (createAdrId created) (Just (reducedStateToken conflicted)) "Merge reviewed scope" [finalPattern] inputs
+    afterMs <- posixTimeMs
+    document <- scopeDocumentAt directory merged
+    let parents = sort [scopeChangeConnectionId left, scopeChangeConnectionId right]
+        oldUnion = sort [leftPattern, rightPattern, assertRightScope "src/**"]
+    assertScopeDocumentWithParents merged parents "merge" [finalPattern] oldUnion [finalPattern] document
+    case parsedManagedRecord document of
+      ManagedConnection connection -> connectionRationale connection @?= "Merge reviewed scope\n"
+      _ -> assertFailure "expected scope connection"
+    let capsule = parsedManagedCapsule document
+    gitOidText (provenanceBasis capsule) @?= basisBefore
+    provenanceActor capsule @?= createActorPure
+    provenanceBranchHint capsule @?= Just "main"
+    provenanceInputs capsule @?= inputs
+    assertBool "merge timestamp is positive and from this operation" (provenanceTimestampMs capsule >= beforeMs && provenanceTimestampMs capsule <= afterMs && provenanceTimestampMs capsule > 0)
+    canonicalManagedPath (configManagedPaths defaultConfig) (parsedManagedRecord document) @?= Right (scopeChangeNewPath merged)
+    scopeChangeCreatedPaths merged @?= [scopeChangeNewPath merged]
+    assertBool "merge transaction refreshed the index" (scopeChangeIndexUpdated merged)
+    resolvedDocuments <- committedManagedDocuments directory
+    resolved <- currentReducedAdr (createAdrId created) resolvedDocuments
+    reducedConflictAxes resolved @?= []
+    axisResolutionHeads (reducedScopeAxis resolved) @?= [scopeChangeConnectionId merged]
+    axisResolutionEffective (reducedScopeAxis resolved) @?= [finalPattern]
+    assertBool "merge changes the checked state token" (reducedStateToken resolved /= reducedStateToken conflicted)
+  where
+    assertRightScope value = case mkScopePattern value of Right scope -> scope; Left err -> error (show err)
+    createActorPure = case mkActor HumanActor "mutation-service-test" Nothing of Right actor -> actor; Left err -> error (show err)
+
+scopeReviewedSetMergesUnchangedUnion :: IO ()
+scopeReviewedSetMergesUnchangedUnion =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    leftPattern <- assertRight (mkScopePattern "left/**")
+    rightPattern <- assertRight (mkScopePattern "right/**")
+    source <- assertRight (mkScopePattern "src/**")
+    left <- assertRight =<< runScope repository (createAdrId created) Nothing [leftPattern] []
+    _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+    right <- assertRight =<< runScope repository (createAdrId created) Nothing [rightPattern] []
+    _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (scopeChangeCommitOid left))] BS.empty
+    conflicted <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
+    let parents = sort [scopeChangeConnectionId left, scopeChangeConnectionId right]
+        union = sort [source, leftPattern, rightPattern]
+    axisResolutionHeads (reducedScopeAxis conflicted) @?= parents
+    inputs <- scopeInputs
+    basisBefore <- gitText directory ["rev-parse", "HEAD"]
+    beforeMs <- posixTimeMs
+    merged <- assertRight =<< runScopeSetWithInputs repository (createAdrId created) (Just (reducedStateToken conflicted)) "Reconcile scope heads" union inputs
+    afterMs <- posixTimeMs
+    document <- scopeDocumentAt directory merged
+    assertScopeDocumentWithParents merged parents "merge" [] [] union document
+    case parsedManagedRecord document of
+      ManagedConnection connection -> connectionRationale connection @?= "Reconcile scope heads\n"
+      _ -> assertFailure "expected scope connection"
+    let capsule = parsedManagedCapsule document
+    gitOidText (provenanceBasis capsule) @?= basisBefore
+    provenanceActor capsule @?= createActorPure
+    provenanceBranchHint capsule @?= Just "main"
+    provenanceInputs capsule @?= inputs
+    assertBool "empty-delta merge timestamp is positive and from this operation" (provenanceTimestampMs capsule >= beforeMs && provenanceTimestampMs capsule <= afterMs && provenanceTimestampMs capsule > 0)
+    canonicalManagedPath (configManagedPaths defaultConfig) (parsedManagedRecord document) @?= Right (scopeChangeNewPath merged)
+    scopeChangeCreatedPaths merged @?= [scopeChangeNewPath merged]
+    assertBool "empty-delta merge transaction refreshed the index" (scopeChangeIndexUpdated merged)
+    resolved <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
+    reducedConflictAxes resolved @?= []
+    axisResolutionHeads (reducedScopeAxis resolved) @?= [scopeChangeConnectionId merged]
+    axisResolutionEffective (reducedScopeAxis resolved) @?= union
+  where
+    createActorPure = case mkActor HumanActor "mutation-service-test" Nothing of Right actor -> actor; Left err -> error (show err)
+
 scopeRejectionsPreserveRepository :: IO ()
 scopeRejectionsPreserveRepository =
   withCreateRepository $ \directory repository _ -> do
@@ -874,22 +1006,26 @@ scopeRejectionsPreserveRepository =
     BS.writeFile stagedPath "staged\NULbytes"
     _ <- gitSuccess directory ["add", "scope-unrelated-staged.txt"] BS.empty
     BS.writeFile dirtyPath "dirty\NULbytes"
-    before <- repositoryObservableState directory
+    before <- scopeFailureSnapshot directory [stagedPath, dirtyPath]
     let reject label expected action = do
           result <- action
           result @?= Left (Stage3ValidateState expected)
-          repositoryObservableState directory >>= (@?= before)
+          scopeFailureSnapshot directory [stagedPath, dirtyPath] >>= (@?= before)
     reject "empty delta" "scope change would be empty" (runScope repository (createAdrId created) Nothing [] [])
     reject "duplicate additions" "scope additions contain duplicates" (runScope repository (createAdrId created) Nothing [extra, extra] [])
     reject "duplicate removals" "scope removals contain duplicates" (runScope repository (createAdrId created) Nothing [] [assertRightScope "src/**", assertRightScope "src/**"])
     reject "overlapping/canonicalized no-op delta" "scope additions and removals overlap" (runScope repository (createAdrId created) Nothing [extra] [extra])
     reject "already-effective addition" "scope additions already exist in the current scope" (runScope repository (createAdrId created) Nothing [assertRightScope "src/**"] [])
     reject "absent removal" "scope removals are absent from the current scope" (runScope repository (createAdrId created) Nothing [] [extra])
+    reject "sole effective scope removal" "scope change would leave no effective scope" (runScope repository (createAdrId created) Nothing [] [assertRightScope "src/**"])
+    reject "blank reason" "scope reason must be nonblank" (runScopeRequest repository (createAdrId created) Nothing "  \r\n  " (ScopeDelta [extra] []) =<< scopeInputs)
+    reject "empty reviewed set" "reviewed scope set must not be empty" (runScopeSet repository (createAdrId created) Nothing "Reviewed" [])
+    reject "duplicate reviewed set" "reviewed scope set contains duplicates" (runScopeSet repository (createAdrId created) Nothing "Reviewed" [extra, extra])
+    reject "unchanged reviewed set" "reviewed scope set would not change the current scope" (runScopeSet repository (createAdrId created) Nothing "Reviewed" [assertRightScope "src/**"])
+    current <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
     staleResult <- runScope repository (createAdrId created) (Just stale) [extra] []
-    assertBool "stale token reports a state-token rejection" $ case staleResult of
-      Left (Stage3ValidateState message) -> "stale ADR state: expected " `Text.isPrefixOf` message
-      _ -> False
-    repositoryObservableState directory >>= (@?= before)
+    staleResult @?= Left (Stage3ValidateState ("stale ADR state: expected " <> stateTokenText stale <> ", current state is " <> stateTokenText (reducedStateToken current)))
+    scopeFailureSnapshot directory [stagedPath, dirtyPath] >>= (@?= before)
     unknown <- assertRight (mkAdrId "A00000000000000000000000002")
     let unknownExpected = "scope target ADR is unknown"
     reject "unknown ADR" unknownExpected (runScope repository unknown Nothing [extra] [])
@@ -924,6 +1060,23 @@ rejectConflictedScope =
     result <- runScope repository (createAdrId created) Nothing [followup] []
     result @?= Left (Stage3ValidateState "scope target ADR is conflicted")
     repositoryObservableState directory >>= (@?= before)
+
+rejectNonScopeConflict :: IO ()
+rejectNonScopeConflict =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    firstCommit <- commitDomainExpansion directory created "C00000000000000000000000011" "O00000000000000000000000011" "platform"
+    _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+    _ <- commitDomainExpansion directory created "C00000000000000000000000012" "O00000000000000000000000012" "product"
+    _ <- gitSuccess directory ["cherry-pick", Text.unpack firstCommit] BS.empty
+    finalPattern <- assertRight (mkScopePattern "final/**")
+    prepareScopeObservableFiles directory
+    let stagedPath = directory </> "scope-unrelated-staged.txt"
+        dirtyPath = directory </> "scope-unrelated-dirty.txt"
+    before <- scopeFailureSnapshot directory [stagedPath, dirtyPath]
+    result <- runScopeSet repository (createAdrId created) Nothing "Reviewed but unsafe" [finalPattern]
+    result @?= Left (Stage3ValidateState "scope target ADR is conflicted")
+    scopeFailureSnapshot directory [stagedPath, dirtyPath] >>= (@?= before)
 
 scopeDetachedHeadRejected :: IO ()
 scopeDetachedHeadRejected =
@@ -986,7 +1139,22 @@ runScope repository adr expected added removed = do
 runScopeWithInputs :: Repository -> AdrId -> Maybe StateToken -> [ScopePattern] -> [ScopePattern] -> ProvenanceInputs -> IO (Either TransactionError ScopeChangeResult)
 runScopeWithInputs repository adr expected added removed inputs = do
   actor <- createActor
-  changeScopeCommand repository (configManagedPaths defaultConfig) actor adr expected added removed inputs
+  changeScopeCommand repository (configManagedPaths defaultConfig) actor adr expected "Scope change operation" (ScopeDelta added removed) inputs
+
+runScopeSet :: Repository -> AdrId -> Maybe StateToken -> Text.Text -> [ScopePattern] -> IO (Either TransactionError ScopeChangeResult)
+runScopeSet repository adr expected reason reviewed = do
+  actor <- createActor
+  inputs <- scopeInputs
+  runScopeSetWithInputs repository adr expected reason reviewed inputs
+
+runScopeSetWithInputs :: Repository -> AdrId -> Maybe StateToken -> Text.Text -> [ScopePattern] -> ProvenanceInputs -> IO (Either TransactionError ScopeChangeResult)
+runScopeSetWithInputs repository adr expected reason reviewed inputs =
+  runScopeRequest repository adr expected reason (ScopeReviewedSet reviewed) inputs
+
+runScopeRequest :: Repository -> AdrId -> Maybe StateToken -> Text.Text -> ScopeChangeRequest -> ProvenanceInputs -> IO (Either TransactionError ScopeChangeResult)
+runScopeRequest repository adr expected reason request inputs = do
+  actor <- createActor
+  changeScopeCommand repository (configManagedPaths defaultConfig) actor adr expected reason request inputs
 
 scopeInputs :: IO ProvenanceInputs
 scopeInputs = do
@@ -1009,19 +1177,37 @@ connectionPayloadFrom document =
     _ -> Nothing
 
 assertScopeDocument :: ScopeChangeResult -> ConnectionId -> Text.Text -> [ScopePattern] -> [ScopePattern] -> [ScopePattern] -> ParsedManagedDocument -> IO ()
-assertScopeDocument update parent change added removed effective document = do
+assertScopeDocument update parent = assertScopeDocumentWithParents update [parent]
+
+assertScopeDocumentWithParents :: ScopeChangeResult -> [ConnectionId] -> Text.Text -> [ScopePattern] -> [ScopePattern] -> [ScopePattern] -> ParsedManagedDocument -> IO ()
+assertScopeDocumentWithParents update parents change added removed effective document = do
   case connectionPayloadFrom document of
     Just payload -> do
-      appliesToParentConnections payload @?= [parent]
+      appliesToParentConnections payload @?= parents
       appliesToChange payload @?= change
       appliesToAdded payload @?= added
       appliesToRemoved payload @?= removed
       appliesToEffective payload @?= effective
     Nothing -> assertFailure "expected parsed scope payload"
   let capsule = parsedManagedCapsule document
-  provenanceParents capsule @?= [ProvenanceConnection parent]
+  provenanceParents capsule @?= map ProvenanceConnection parents
   eventKindText (provenanceEventKind capsule) @?= "scope.update"
   provenanceObjectId capsule @?= ProvenanceConnection (scopeChangeConnectionId update)
+
+committedManagedDocuments :: FilePath -> IO [ParsedManagedDocument]
+committedManagedDocuments directory = do
+  managed <- managedCommittedBytes directory
+  traverse parse managed
+  where
+    parse (path, bytes) = do
+      repoPath <- assertRight (mkRepoPath path)
+      assertRight (parseManagedDocument repoPath bytes)
+
+currentReducedAdr :: AdrId -> [ParsedManagedDocument] -> IO ReducedAdr
+currentReducedAdr adr documents =
+  case lookupReducedAdr adr (reduceManagedGraph (map parsedManagedRecord documents)) of
+    Just reduced -> pure reduced
+    Nothing -> assertFailure "expected reduced ADR" >> fail "unreachable"
 
 repositoryObservableState :: FilePath -> IO (Text.Text, Text.Text, BS.ByteString, BS.ByteString, BS.ByteString, [Text.Text])
 repositoryObservableState directory = do
@@ -1090,6 +1276,56 @@ commitInactiveStatus directory created = do
   path <- assertRight (canonicalManagedPath (configManagedPaths defaultConfig) managed)
   _ <- commitFile directory (Text.unpack (repoPathText path)) bytes
   pure ()
+
+commitDomainExpansion :: FilePath -> CreateResult -> Text.Text -> Text.Text -> Text.Text -> IO Text.Text
+commitDomainExpansion directory created connectionText operationText domainTextValue = do
+  actor <- createActor
+  connectionId <- assertRight (mkConnectionId connectionText)
+  operationId <- assertRight (mkOperationId operationText)
+  domain <- assertRight (mkDomain domainTextValue)
+  compiler <- assertRight (mkDomain "compiler")
+  let domainRecord =
+        ConnectionRecord
+          { connectionRecordId = connectionId,
+            connectionPayload =
+              DomainsConnection
+                DomainsPayload
+                  { domainsSubjectAdr = createAdrId created,
+                    domainsParentConnections = [createDomainId created],
+                    domainsChange = "expand",
+                    domainsAdded = [domain],
+                    domainsRemoved = [],
+                    domainsEffective = sort [compiler, domain],
+                    domainsRefinements = []
+                  },
+            connectionRationale = "Domain expansion.\n"
+          }
+      managed = ManagedConnection domainRecord
+  semantic <- assertRight (renderConnectionSemantic domainRecord)
+  eventKind <- assertRight (mkEventKind "domain.update")
+  basis <- GitOid <$> gitText directory ["rev-parse", "HEAD"]
+  capsule <-
+    assertRight
+      ( mkProvenanceCapsule
+          ProvenanceCapsuleInput
+            { capsuleInputOperationId = operationId,
+              capsuleInputObjectId = ProvenanceConnection connectionId,
+              capsuleInputEventKind = eventKind,
+              capsuleInputActor = actor,
+              capsuleInputTimestampMs = 1700000000000,
+              capsuleInputBasis = basis,
+              capsuleInputParents = [ProvenanceConnection (createDomainId created)],
+              capsuleInputBranchHint = Just "main",
+              capsuleInputUpstreamHint = Nothing,
+              capsuleInputLineAnchors = [],
+              capsuleInputSemanticDigest = semanticDigest semantic,
+              capsuleInputToolVersion = "adrai/1.0.0",
+              capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
+            }
+      )
+  bytes <- assertRight (sealManagedDocument managed capsule)
+  path <- assertRight (canonicalManagedPath (configManagedPaths defaultConfig) managed)
+  commitFile directory (Text.unpack (repoPathText path)) bytes
 
 amendDocumentAt :: FilePath -> AmendResult -> RepoPath -> IO ParsedManagedDocument
 amendDocumentAt directory amended path = do
