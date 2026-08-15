@@ -29,14 +29,17 @@ import Database.SQLite.Simple
     query,
   )
 import System.Directory
-  ( createDirectoryIfMissing,
+  ( canonicalizePath,
+    createDirectoryIfMissing,
     doesDirectoryExist,
     listDirectory,
     removeDirectoryRecursive,
     removeFile,
   )
-import System.FilePath (takeDirectory, (</>))
+import System.Environment (lookupEnv)
+import System.FilePath (isAbsolute, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Process.Typed (proc, readProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
   ( (@?=),
@@ -88,6 +91,31 @@ extractCreated v = do
 -- | Convert a Maybe Text to a String, using empty string for Nothing.
 maybeUnpack :: Maybe Text -> String
 maybeUnpack = maybe "" unpack
+
+-- | Run the real executable while preserving the inherited process
+-- environment.  The shared integration runner intentionally installs a
+-- minimal Git fixture environment, which removes Windows PATH and prevents
+-- the production executable from locating Git.
+realSpawnAdrai :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
+realSpawnAdrai repo arguments = do
+  executable <- lookupEnv "ADRAI_EXE" >>= \case
+    Just path | not (null path) && isAbsolute path -> pure path
+    _ -> fail "EnvironmentTest requires ADRAI_EXE to name an absolute executable under test"
+  readProcess (proc executable ("--repo" : repo : arguments))
+
+realAdraiJsonOrThrow :: FilePath -> [String] -> IO Data.Aeson.Value
+realAdraiJsonOrThrow repo arguments = do
+  (exitCode, stdout, stderr) <- realSpawnAdrai repo arguments
+  case exitCode of
+    ExitSuccess ->
+      case Data.Aeson.eitherDecode stdout of
+        Right value -> pure value
+        Left problem -> fail ("adrai " <> unwords arguments <> " JSON error: " <> problem)
+    ExitFailure code ->
+      fail
+        ( "adrai " <> unwords arguments <> " error: CLI failed (exit " <> show code <> "): "
+            <> unpack (decodeUtf8 (LBS.toStrict stderr))
+        )
 
 -- | Check if a 'Text' prefix is contained in a 'Maybe Text' body.
 -- Returns False when the body is Nothing.
@@ -741,6 +769,22 @@ testWorktreeBranchMergeBack =
     $ withSystemTempDirectory "adrai worktree merge" $ \tmpDir -> do
         repo <- createTestRepo tmpDir
         createAdraiInit repo
+        mainBefore <- headCommit repo
+
+        -- Materialize the canonical main index before the linked-worktree
+        -- branch exists, so the post-merge compile must update an existing
+        -- main-owned database rather than merely create a new cache.
+        mainCompiledBeforeValue <- realAdraiJsonOrThrow repo ["compile", "--json"]
+        mainCompiledBefore <-
+          case parseCompileResult mainCompiledBeforeValue of
+            Just value -> pure value
+            Nothing -> assertFailure "pre-merge compile JSON did not match the public result schema" >> fail "unreachable"
+        mainDatabase <- canonicalizePath (repo </> ".adrai" </> "index.sqlite")
+        mainDatabaseBefore <- canonicalizePath (coldCompilerDatabase mainCompiledBefore)
+        mainDatabaseBefore @?= mainDatabase
+        coldCompilerRevision mainCompiledBefore @?= mainBefore
+        getMeta mainDatabaseBefore "resolved_oid" >>= (@?= Just (unpack mainBefore))
+        mainDatabaseBytesBefore <- BS.readFile mainDatabaseBefore
 
         -- Create a worktree
         let worktree = tmpDir </> "feature-merge-wt"
@@ -748,29 +792,88 @@ testWorktreeBranchMergeBack =
 
         -- Create an ADR in the worktree
         wtAdr <-
-          createAdr
-            worktree
-            "Merge worktree ADR"
-            "A linked-worktree operation integrates normally."
-            "## Decision\nTreat linked worktrees as ordinary branch locations."
-            ["tooling.git"]
-            ["architecture/**"]
+          realAdraiJsonOrThrow worktree
+            [ "create",
+              "--title", "Merge worktree ADR",
+              "--summary", "A linked-worktree operation integrates normally.",
+              "--body", "## Decision\nTreat linked worktrees as ordinary branch locations.\n",
+              "--actor", "llm:planner",
+              "--model", "demo-model",
+              "--domain", "tooling.git",
+              "--applies-to", "architecture/**",
+              "--json"
+            ]
 
         let wtCommit = extractCommit wtAdr :: Maybe Text
             adrId = maybeUnpack (extractAdrId wtAdr)
+        featureCommit <- headCommit worktree
+        wtCommit @?= Just featureCommit
+
+        -- The feature cache is physically distinct from main's canonical
+        -- index even though both repositories share the same Git object store.
+        worktreeCompiledValue <- realAdraiJsonOrThrow worktree ["compile", "--json"]
+        worktreeCompiled <-
+          case parseCompileResult worktreeCompiledValue of
+            Just value -> pure value
+            Nothing -> assertFailure "worktree compile JSON did not match the public result schema" >> fail "unreachable"
+        worktreeDatabase <- canonicalizePath (coldCompilerDatabase worktreeCompiled)
+        assertBool "main and linked worktree use distinct index paths" (mainDatabase /= worktreeDatabase)
+        coldCompilerRevision worktreeCompiled @?= featureCommit
+        getMeta worktreeDatabase "resolved_oid" >>= (@?= Just (unpack featureCommit))
+
+        -- The linked worktree writes only its feature branch.  Main has not
+        -- advanced and cannot expose the feature ADR before integration.
+        headCommit repo >>= (@?= mainBefore)
+        (preMergeExit, preMergeOut, preMergeErr) <- realSpawnAdrai repo ["show", adrId, "--json"]
+        preMergeExit @?= ExitFailure 2
+        preMergeOut @?= ""
+        preMergeErr @?=
+          LBS.fromStrict
+            ("adrai: ADRAI reference not found in this revision: " <> encodeUtf8 (pack adrId) <> "\n")
 
         -- Fast-forward merge
         git repo ["merge", "--ff-only", "feature/merge"]
+        mainAfter <- headCommit repo
+        mainAfter @?= featureCommit
+        assertBool "fast-forward integration advances main" (mainAfter /= mainBefore)
 
-        -- The ADR should now be visible from main
+        -- Canonical public compilation from main must publish metadata for
+        -- the integrated main revision, not a prior main/worktree cache.
+        compiledValue <- realAdraiJsonOrThrow repo ["compile", "--json"]
+        compiled <-
+          case parseCompileResult compiledValue of
+            Just value -> pure value
+            Nothing -> assertFailure "compile JSON did not match the public result schema" >> fail "unreachable"
+        coldCompilerRevision compiled @?= mainAfter
+        mainDatabaseAfter <- canonicalizePath (coldCompilerDatabase compiled)
+        mainDatabaseAfter @?= mainDatabase
+        assertBool "merged main compile must not reuse the linked-worktree index" (mainDatabaseAfter /= worktreeDatabase)
+        getMeta mainDatabaseAfter "resolved_oid" >>= (@?= Just (unpack mainAfter))
+        mainDatabaseBytesAfter <- BS.readFile mainDatabaseAfter
+        assertBool "main index bytes change when the integrated revision is published"
+          (mainDatabaseBytesAfter /= mainDatabaseBytesBefore)
+
+        -- Public reads from main now expose the integrated ADR.
         shown <-
-          adraiJsonOrThrow repo
+          realAdraiJsonOrThrow repo
             [ "show", adrId, "--json" ]
         let foundAdrId = extractAdrId shown :: Maybe Text
         foundAdrId @?= Just (pack adrId)
 
+        searched <-
+          realAdraiJsonOrThrow repo
+            [ "search", "linked-worktree operation integrates normally",
+              "--mode", "fts",
+              "--json"
+            ]
+        case parseSearchResults searched of
+          Just (_, _, _, _, results) ->
+            assertBool "main search exposes the integrated ADR" (any ((== Just (pack adrId)) . extractAdrId) results)
+          Nothing -> assertFailure "search JSON did not match the public result schema"
+
         -- Clean up worktree
         removeWorktree repo worktree
+        doesDirectoryExist worktree >>= (@?= False)
 
 -- =====================================================================
 -- Test 8: Sparse checkout can create and query ADRs

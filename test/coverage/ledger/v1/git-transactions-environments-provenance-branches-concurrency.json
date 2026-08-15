@@ -434,15 +434,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
                      "pythonMethod":  "test_worktree_branch_can_merge_back_and_rebuild_from_main",
                      "behaviorContract":  "A linked-worktree branch can merge to main and the main revision database rebuilds to expose the integrated ADR.",
-                     "haskellTestName":  "worktree branch merges back and rebuilds from main",
-                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "worktree_branch_can_merge_back_and_rebuild_from_main",
+                     "haskellTestPath":  "test/integration/Adrai/EnvironmentTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"worktree branch merges back and rebuilds from main\"",
-                                      "fixture":  "Static read of test_repository_environments.py::test_worktree_branch_can_merge_back_and_rebuild_from_main; Python not executed.",
-                                      "result":  "Static read of test_repository_environments.py::test_worktree_branch_can_merge_back_and_rebuild_from_main; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/worktree_branch_can_merge_back_and_rebuild_from_main/\" -j 1'",
+                                      "fixture":  "EnvironmentTest.testWorktreeBranchMergeBack creates a real linked worktree ADR through the standard executable, proves main's pre-existing canonical index resolves to the pre-merge OID and cannot show the ADR, proves the worktree has a distinct cache at the feature OID, fast-forwards main to that exact OID, then proves the same main index is republished at the integrated OID and public show/FTS expose the ADR; the test-owned worktree is removed and its directory absence asserted.",
+                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /worktree_branch_can_merge_back_and_rebuild_from_main/ -j1 ALL 1 PASS in 12.75s"
                                   }
                  },
                  {
