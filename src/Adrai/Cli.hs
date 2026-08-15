@@ -40,7 +40,10 @@ where
 import qualified Adrai.CliRunner as CliRunner
 import Adrai.CliRunner (CliCommand (..))
 import Adrai.CliTypes
-  ( ShowCommand (..),
+  ( CompileResult (..),
+    coldCompilerToCompileResult,
+    compileResultJson,
+    ShowCommand (..),
     showCommandJson,
     HistoryCommand (..),
     historyCommandJson,
@@ -53,13 +56,7 @@ import Adrai.CliTypes
     toAesonValue,
     textToActorKind,
   )
-import Adrai.Compiler (ColdCompilerResult (..))
-import Adrai.Format.Json (JsonValue (..))
 import Adrai.History (HistoryOrder (..))
-import Adrai.Sqlite
-  ( ColdDatabaseStats (..),
-  )
-import Database.SQLite.Simple (Connection (..))
 import qualified Data.Aeson as Aeson
 import qualified Data.Vector as Vector
 import Data.Aeson ( (.=) )
@@ -75,89 +72,6 @@ type CliParser = CliRunner.CliParser
 maybeJson :: (a -> Aeson.Value) -> Maybe a -> Aeson.Value
 maybeJson _ Nothing  = Aeson.Null
 maybeJson f (Just v) = f v
-
--- | Result shape for the @compile@ command output.
--- Mirrors the Python @CompileResult@ dataclass so JSON consumers
--- can reason about a single stable schema.
-data CompileResult = CompileResult
-  { coldCompilerDatabase             :: FilePath
-  , coldCompilerRevision             :: Text
-  , coldCompilerIssueCount           :: Int
-  , coldCompilerErrorCount           :: Int
-  , coldCompilerWarningCount         :: Int
-  , coldCompilerEmbeddingComputed    :: Int
-  , coldCompilerEmbeddingReused      :: Int
-  , coldCompilerCacheMode            :: Text
-  , coldCompilerDocumentsParsed      :: Int
-  , coldCompilerDocumentsReused      :: Int
-  , coldCompilerHistoryCommitsScanned :: Int
-  , coldCompilerIncrementalKind      :: Text
-  , coldCompilerAdrsRebuilt          :: Int
-  , coldCompilerAdrsReused           :: Int
-  , coldCompilerAnnBuckets           :: Int
-  , coldCompilerCacheKey             :: Text
-  , coldCompilerCacheRetainRevisions :: Int
-  }
-  deriving (Eq, Show)
-
--- | Convert a @ColdCompilerResult@ into the CLI-facing
--- @CompileResult@.  Only the database path and pure stats are
--- required; the rest are filled with safe defaults that will be
--- overridden by subsequent phases (e.g. P4-05.2 for cache mode).
-coldCompilerToCompileResult
-  :: ColdCompilerResult
-  -> FilePath  -- database path
-  -> CompileResult
-coldCompilerToCompileResult stats dbPath =
-  let s = coldCompilerDatabaseStats stats
-      issueCount = coldDatabaseIssueCount s
-      conflictCount = coldDatabaseConflictCount s
-      -- Errors are modelled as conflicts; warnings are derived
-      -- as the remainder of issues beyond conflicts.
-      errorCount = conflictCount
-      warningCount = max 0 (issueCount - conflictCount)
-   in CompileResult
-        { coldCompilerDatabase = dbPath
-        , coldCompilerRevision = coldDatabaseSemanticState s
-        , coldCompilerIssueCount = issueCount
-        , coldCompilerErrorCount = errorCount
-        , coldCompilerWarningCount = warningCount
-        , coldCompilerEmbeddingComputed = 0
-        , coldCompilerEmbeddingReused = 0
-        , coldCompilerCacheMode = "full"
-        , coldCompilerDocumentsParsed = coldDatabaseManagedSourceCount s
-        , coldCompilerDocumentsReused = 0
-        , coldCompilerHistoryCommitsScanned = 0
-        , coldCompilerIncrementalKind = "full"
-        , coldCompilerAdrsRebuilt = coldDatabaseOperationCount s
-        , coldCompilerAdrsReused = 0
-        , coldCompilerAnnBuckets = coldDatabaseSearchDocumentCount s
-        , coldCompilerCacheKey = ""
-        , coldCompilerCacheRetainRevisions = 12
-        }
-
--- | Serialise a @CompileResult@ to an Aeson 'Aeson.Value' object.
--- Keys are sorted at render time for deterministic output.
-compileResultJson :: CompileResult -> Aeson.Value
-compileResultJson result = Aeson.object $ sortOn fst
-  [ "adrs_rebuilt"             .= Aeson.Number (fromIntegral (coldCompilerAdrsRebuilt result))
-  , "adrs_reused"              .= Aeson.Number (fromIntegral (coldCompilerAdrsReused result))
-  , "ann_buckets"              .= Aeson.Number (fromIntegral (coldCompilerAnnBuckets result))
-  , "cache_key"                .= Aeson.String (coldCompilerCacheKey result)
-  , "cache_mode"               .= Aeson.String (coldCompilerCacheMode result)
-  , "cache_retain_revisions"   .= Aeson.Number (fromIntegral (coldCompilerCacheRetainRevisions result))
-  , "database"                 .= Aeson.String (Text.pack (coldCompilerDatabase result))
-  , "documents_parsed"         .= Aeson.Number (fromIntegral (coldCompilerDocumentsParsed result))
-  , "documents_reused"         .= Aeson.Number (fromIntegral (coldCompilerDocumentsReused result))
-  , "embedding_computed"       .= Aeson.Number (fromIntegral (coldCompilerEmbeddingComputed result))
-  , "embedding_reused"         .= Aeson.Number (fromIntegral (coldCompilerEmbeddingReused result))
-  , "errors"                   .= Aeson.Number (fromIntegral (coldCompilerErrorCount result))
-  , "history_commits_scanned"  .= Aeson.Number (fromIntegral (coldCompilerHistoryCommitsScanned result))
-  , "incremental_kind"         .= Aeson.String (coldCompilerIncrementalKind result)
-  , "issues"                   .= Aeson.Number (fromIntegral (coldCompilerIssueCount result))
-  , "revision"                 .= Aeson.String (coldCompilerRevision result)
-  , "warnings"                 .= Aeson.Number (fromIntegral (coldCompilerWarningCount result))
-  ]
 
 -- | A single diagnostic issue discovered during @doctor@.
 data DoctorIssue = DoctorIssue

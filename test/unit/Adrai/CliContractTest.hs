@@ -29,10 +29,12 @@ import Adrai.Cli
     CompareCommand (..),
     toAesonValue,
   )
-import Adrai.CliTypes (ViewMode (..), RetrievalMode (..), textToActorKind)
+import Adrai.CliTypes (ViewMode (..), RetrievalMode (..), compileResultValue, textToActorKind)
+import qualified Adrai.CliTypes as CliTypes
 import Adrai.CliRunner
   ( CliConfig (..),
     CliCommand (..),
+    CompileCommand (..),
     CliInvocation (..),
     ContentSource (..),
      CreateRequest (..),
@@ -73,6 +75,8 @@ import Adrai.CliRunner
      renderShowOutcome,
      renderCompareOutcome,
      renderHistoryOutcome,
+     renderCompileOutcome,
+     capturePostCommitIndex,
     renderFailureOutcome,
     renderInitOutcome,
   )
@@ -130,7 +134,7 @@ import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, inf
 import System.Exit (ExitCode (..))
 import System.IO (IOMode (WriteMode), withBinaryFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
-import Control.Exception (bracket)
+import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, fromException, throwIO, try)
 import System.IO.Temp (withSystemTempDirectory)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Foldable (for_)
@@ -580,7 +584,11 @@ toAesonValueTests =
 cliTypeConstructorTests :: TestTree
 cliTypeConstructorTests =
   testGroup "CLI type constructors"
-    [ testCase "ShowCommand fields are preserved through construction" $ do
+    [ testCase "CompileCommand preserves the frozen revision and output boundary" $ do
+        let cmd = CompileCommand "refs/heads/release" True
+        compileAt cmd @?= "refs/heads/release"
+        compileJson cmd @?= True,
+      testCase "ShowCommand fields are preserved through construction" $ do
         let cmd = ShowCommand
                { showAdrId = "A0123456789ABCDEFGHJKMNPQRS"
                , showView = CollapsedView
@@ -664,7 +672,38 @@ cliTypeConstructorTests =
 schemaContractTests :: TestTree
 schemaContractTests =
   testGroup "JSON schema contracts"
-    [ testCase "compileResultJson keys are sorted alphabetically (deterministic serialization)" $ do
+    [ testCase "compile result relocation preserves the public Aeson projection" $ do
+        CliTypes.compileResultJson mkCompileResult @?= compileResultJson mkCompileResult,
+      testCase "compile render outcome is exact canonical JSON or truthful final-LF text" $ do
+        let jsonCommand = CompileCommand "HEAD" True
+            textCommand = jsonCommand {compileJson = False}
+            jsonRendered = renderCompileOutcome jsonCommand mkCompileResult
+            textRendered = renderCompileOutcome textCommand mkCompileResult
+        renderedExitCode jsonRendered @?= ExitSuccess
+        renderedStderr jsonRendered @?= ""
+        renderedStdout jsonRendered @?= renderCanonicalJson (compileResultValue mkCompileResult)
+        renderedExitCode textRendered @?= ExitSuccess
+        renderedStderr textRendered @?= ""
+        renderedStdout textRendered
+          @?= "revision=abc123\ndatabase=/tmp/test.db\ndocuments_parsed=20\nissues=5\n",
+      testCase "compile index wrapper rethrows cancellation after cleanup and permits retry" $ do
+        cleanupObserved <- newIORef False
+        cancelled <- try
+          (capturePostCommitIndex (writeIORef cleanupObserved True >> throwIO ThreadKilled))
+          :: IO (Either SomeException PostCommitIndexResult)
+        case cancelled of
+          Left exception -> fromException exception @?= Just ThreadKilled
+          Right result -> assertFailure ("ThreadKilled became an ordinary index result: " <> show result)
+        readIORef cleanupObserved >>= (@?= True)
+        let retryResult = PostCommitIndexResult True (Just "retry.sqlite") (Just (GitOid "0123456789abcdef0123456789abcdef01234567")) [] Nothing
+        capturePostCommitIndex (pure retryResult) >>= (@?= retryResult)
+        synchronous <- capturePostCommitIndex (ioError (userError "synchronous compile failure"))
+        postCommitIndexed synchronous @?= False
+        case postCommitIndexError synchronous of
+          Just (PostCommitIndexCompileException message) ->
+            assertBool "synchronous exception remains diagnostic" ("synchronous compile failure" `T.isInfixOf` message)
+          other -> assertFailure ("unexpected synchronous compile result: " <> show other),
+      testCase "compileResultJson keys are sorted alphabetically (deterministic serialization)" $ do
         let result = mkCompileResult
             json = compileResultJson result
             keys = objectKeys json
@@ -815,6 +854,37 @@ mutationCliContractTests =
   testGroup "init/create CLI contracts"
     [ testCase "global repo defaults before init" $ do
         parseCli ["init"] @?= Right (CliInvocation defaultCliConfig (CmdInit (InitCommand False)))
+    , testCase "compile accepts only frozen revision and JSON options and dispatches the typed request" $ do
+        let explicit = CompileCommand "refs/heads/release" True
+            defaulted = CompileCommand "HEAD" False
+        parseCli ["compile", "--at", "refs/heads/release", "--json"]
+          @?= Right (CliInvocation defaultCliConfig (CmdCompile explicit))
+        parseCli ["compile"]
+          @?= Right (CliInvocation defaultCliConfig (CmdCompile defaulted))
+        assertParserFailure ["compile", "HEAD"]
+        assertParserFailure ["compile", "--database", "other.sqlite"]
+        selectedRepo <- newIORef Nothing
+        selectedCommand <- newIORef Nothing
+        let dependencies =
+              CliDispatchDependencies
+                { cliRunCompile = \config received -> do
+                    writeIORef selectedRepo (Just (configRepo config))
+                    writeIORef selectedCommand (Just received)
+                    pure (Right mkCompileResult)
+                , cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+                , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+                , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+                , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+                , cliRunInit = \_ -> error "init service must not be selected"
+                , cliRunCreate = \_ _ -> error "create service must not be selected"
+                , cliRunAmend = \_ _ -> error "amend service must not be selected"
+                , cliRunScope = \_ _ -> error "scope service must not be selected"
+                , cliRunDomain = \_ _ -> error "domain service must not be selected"
+                }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "compile repo"}) (CmdCompile explicit))
+          >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "compile repo")
+        readIORef selectedCommand >>= (@?= Just explicit)
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
         let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True
         parseCli ["show", "R0123456789ABCDEFGHJKMNPQRS", "--view", "exploded", "--at", "refs/heads/release", "--raw", "--json"]

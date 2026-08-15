@@ -5,7 +5,11 @@
 -- This module is imported by both "Adrai.Cli" and "Adrai.CliRunner"
 -- to break the module dependency cycle.
 module Adrai.CliTypes
-  ( ViewMode (..),
+  ( CompileResult (..),
+    coldCompilerToCompileResult,
+    compileResultJson,
+    compileResultValue,
+    ViewMode (..),
     RetrievalMode (..),
     RelevantSource (..),
     ShowCommand (..),
@@ -23,6 +27,7 @@ module Adrai.CliTypes
   )
 where
 
+import Adrai.Compiler (ColdCompilerResult (..))
 import Adrai.History
   ( HistoryOptions (..),
     HistoryOrder (..),
@@ -63,6 +68,7 @@ import Adrai.Retrieval
     retrievalModeName,
     SearchMaterialization (..),
   )
+import Adrai.Sqlite (ColdDatabaseStats (..))
 import Adrai.Types
   ( ViewMode (..),
     RepoPath (..),
@@ -75,7 +81,6 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Vector as Vector
 import Data.Aeson ( (.=) )
-import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.SQLite.Simple (Connection, open)
@@ -99,6 +104,79 @@ toAesonValue (JsonNumber n)       = Aeson.Number (fromInteger n)
 toAesonValue (JsonDecimal d)      = Aeson.Number (realToFrac d)
 toAesonValue (JsonBool b)         = Aeson.Bool b
 toAesonValue JsonNull             = Aeson.Null
+
+-- | Result shape for the @compile@ command output.
+data CompileResult = CompileResult
+  { coldCompilerDatabase :: FilePath
+  , coldCompilerRevision :: Text
+  , coldCompilerIssueCount :: Int
+  , coldCompilerErrorCount :: Int
+  , coldCompilerWarningCount :: Int
+  , coldCompilerEmbeddingComputed :: Int
+  , coldCompilerEmbeddingReused :: Int
+  , coldCompilerCacheMode :: Text
+  , coldCompilerDocumentsParsed :: Int
+  , coldCompilerDocumentsReused :: Int
+  , coldCompilerHistoryCommitsScanned :: Int
+  , coldCompilerIncrementalKind :: Text
+  , coldCompilerAdrsRebuilt :: Int
+  , coldCompilerAdrsReused :: Int
+  , coldCompilerAnnBuckets :: Int
+  , coldCompilerCacheKey :: Text
+  , coldCompilerCacheRetainRevisions :: Int
+  }
+  deriving (Eq, Show)
+
+-- | Preserve the established public compile projection for direct cold builds.
+coldCompilerToCompileResult :: ColdCompilerResult -> FilePath -> CompileResult
+coldCompilerToCompileResult compiled database =
+  let stats = coldCompilerDatabaseStats compiled
+      issueCount = coldDatabaseIssueCount stats
+      conflictCount = coldDatabaseConflictCount stats
+   in CompileResult
+        { coldCompilerDatabase = database
+        , coldCompilerRevision = coldDatabaseSemanticState stats
+        , coldCompilerIssueCount = issueCount
+        , coldCompilerErrorCount = conflictCount
+        , coldCompilerWarningCount = max 0 (issueCount - conflictCount)
+        , coldCompilerEmbeddingComputed = 0
+        , coldCompilerEmbeddingReused = 0
+        , coldCompilerCacheMode = "full"
+        , coldCompilerDocumentsParsed = coldDatabaseManagedSourceCount stats
+        , coldCompilerDocumentsReused = 0
+        , coldCompilerHistoryCommitsScanned = 0
+        , coldCompilerIncrementalKind = "full"
+        , coldCompilerAdrsRebuilt = coldDatabaseOperationCount stats
+        , coldCompilerAdrsReused = 0
+        , coldCompilerAnnBuckets = coldDatabaseSearchDocumentCount stats
+        , coldCompilerCacheKey = ""
+        , coldCompilerCacheRetainRevisions = 12
+        }
+
+compileResultJson :: CompileResult -> Aeson.Value
+compileResultJson = toAesonValue . compileResultValue
+
+-- | Canonical renderer input shared by the public executable and Aeson API.
+compileResultValue :: CompileResult -> JsonValue
+compileResultValue result = JsonObject
+  [ ("adrs_rebuilt", JsonNumber (fromIntegral (coldCompilerAdrsRebuilt result)))
+  , ("adrs_reused", JsonNumber (fromIntegral (coldCompilerAdrsReused result)))
+  , ("ann_buckets", JsonNumber (fromIntegral (coldCompilerAnnBuckets result)))
+  , ("cache_key", JsonString (coldCompilerCacheKey result))
+  , ("cache_mode", JsonString (coldCompilerCacheMode result))
+  , ("cache_retain_revisions", JsonNumber (fromIntegral (coldCompilerCacheRetainRevisions result)))
+  , ("database", JsonString (Text.pack (coldCompilerDatabase result)))
+  , ("documents_parsed", JsonNumber (fromIntegral (coldCompilerDocumentsParsed result)))
+  , ("documents_reused", JsonNumber (fromIntegral (coldCompilerDocumentsReused result)))
+  , ("embedding_computed", JsonNumber (fromIntegral (coldCompilerEmbeddingComputed result)))
+  , ("embedding_reused", JsonNumber (fromIntegral (coldCompilerEmbeddingReused result)))
+  , ("errors", JsonNumber (fromIntegral (coldCompilerErrorCount result)))
+  , ("history_commits_scanned", JsonNumber (fromIntegral (coldCompilerHistoryCommitsScanned result)))
+  , ("incremental_kind", JsonString (coldCompilerIncrementalKind result))
+  , ("issues", JsonNumber (fromIntegral (coldCompilerIssueCount result)))
+  , ("revision", JsonString (coldCompilerRevision result))
+  , ("warnings", JsonNumber (fromIntegral (coldCompilerWarningCount result)))
+  ]
 
 -- | CLI argument representation for the @show@ command.
 data ShowCommand = ShowCommand

@@ -11,6 +11,7 @@ module Adrai.CliRunner
     defaultCliConfig,
     CliInvocation (..),
     CliCommand (..),
+    CompileCommand (..),
     InitCommand (..),
     CreateCommand (..),
     AmendCommand (..),
@@ -50,6 +51,8 @@ module Adrai.CliRunner
     renderShowOutcome,
     renderCompareOutcome,
     renderHistoryOutcome,
+    renderCompileOutcome,
+    capturePostCommitIndex,
     renderFailureOutcome,
     emitRenderedToHandles,
     run,
@@ -57,7 +60,9 @@ module Adrai.CliRunner
 where
 
 import Adrai.CliTypes
-  ( ShowCommand (..),
+  ( CompileResult (..),
+    compileResultValue,
+    ShowCommand (..),
     HistoryCommand (..),
     SearchCommand (..),
     RelevantCommand (..),
@@ -79,7 +84,7 @@ import Adrai.Identity (sortableAdrId, sortableRecordId)
 import qualified Adrai.Format as Format
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import Adrai.Provenance (sha256Digest)
-import Adrai.Repository (repositorySnapshot, repositorySnapshotManagedPaths)
+import Adrai.Repository (resolvedCommitOid, resolveRepositoryRevision, repositorySnapshot, repositorySnapshotManagedPaths)
 import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
 import Adrai.Service.Query
@@ -134,10 +139,12 @@ import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as ByteString
 import Data.Bifunctor (first)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.Read as TextRead
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Directory (createDirectoryIfMissing)
 import System.Environment (getArgs, lookupEnv)
@@ -145,7 +152,8 @@ import System.FilePath ((</>))
 import System.IO (Handle, hGetContents, stderr, stdin, stdout)
 import System.Random (randomRIO)
 import Control.Monad (replicateM)
-import Control.Exception (SomeException, displayException, try)
+import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, fromException, throwIO, try)
+import Database.SQLite.Simple (close, open, query_)
 import qualified Options.Applicative as Opt
 import Options.Applicative
   ( Parser,
@@ -190,6 +198,12 @@ defaultCliConfig =
     , configDatabase = Nothing
     , configAt = "HEAD"
     }
+
+data CompileCommand = CompileCommand
+  { compileAt :: Text
+  , compileJson :: Bool
+  }
+  deriving (Eq, Show)
 
 -- | The global configuration is parsed before the subcommand, matching the
 -- public @adrai [--repo PATH] COMMAND@ invocation shape.
@@ -319,7 +333,7 @@ data DomainCommand = DomainCommand
 
 -- | Parsed CLI command, constructed from optparse-applicative.
 data CliCommand
-  = CmdCompile
+  = CmdCompile CompileCommand
   | CmdDoctor
   | CmdShow ShowCommand
   | CmdHistory HistoryCommand
@@ -342,7 +356,7 @@ type CliParser = Parser CliInvocation
 parser :: CliParser
 parser =
   CliInvocation <$> globalConfigParser <*> subparser
-    ( command "compile" (info (pure CmdCompile) (progDesc "compile the repository"))
+    ( command "compile" (info (CmdCompile <$> compileParser) (progDesc "compile the repository"))
      <> command "doctor" (info (pure CmdDoctor) (progDesc "diagnose the database"))
      <> command "show" (info (CmdShow <$> showParser) (progDesc "show a single ADR"))
      <> command "history" (info (CmdHistory <$> historyParser) (progDesc "show operation history"))
@@ -368,6 +382,12 @@ globalConfigParser =
        <> showDefault
        <> help "repository directory (default: current directory)"
       )
+
+compileParser :: Parser CompileCommand
+compileParser =
+  CompileCommand
+    <$> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "revision to compile (default HEAD)")
+    <*> switch (long "json" <> help "output JSON")
 
 initParser :: Parser InitCommand
 initParser = InitCommand <$> switch (long "json" <> help "output JSON")
@@ -663,9 +683,11 @@ dispatchWith dependencies (CliInvocation config (CmdDomain command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (domainResult, indexResult) -> renderDomainSuccess command domainResult indexResult
-dispatchWith _ (CliInvocation _ CmdCompile) = do
-  putStrLn $ "[compile] compiling repository at " <> configRepo defaultCliConfig
-  pure ExitSuccess
+dispatchWith dependencies (CliInvocation config (CmdCompile command)) = do
+  result <- cliRunCompile dependencies config command
+  case result of
+    Left failure -> renderFailure failure
+    Right compiled -> emitRendered (renderCompileOutcome command compiled)
 dispatchWith _ (CliInvocation _ CmdDoctor) = do
   putStrLn "[doctor] diagnosing database"
   pure ExitSuccess
@@ -695,7 +717,8 @@ dispatchWith dependencies (CliInvocation config (CmdCompare command)) = do
     Right projection -> emitRendered (renderCompareOutcome command projection)
 
 data CliDispatchDependencies = CliDispatchDependencies
-  { cliRunShow :: ~(CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult))
+  { cliRunCompile :: ~(CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult))
+  , cliRunShow :: ~(CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult))
   , cliRunCompare :: ~(CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection))
   , cliRunHistory :: ~(CliConfig -> HistoryCommand -> IO (Either CliFailure HistoryProjection))
   , cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
@@ -715,7 +738,91 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies runProductionShow runProductionCompare runProductionHistory materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies runProductionCompile runProductionShow runProductionCompare runProductionHistory materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+
+runProductionCompile :: CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult)
+runProductionCompile config command = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      revisionResult <- resolveRepositoryRevision repository (RevisionSpec (compileAt command))
+      case revisionResult of
+        Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+        Right revision -> do
+          databaseResult <- prepareIndexPath repository
+          case databaseResult of
+            Left problem -> pure (Left (CliUserFailure problem))
+            Right database -> do
+              indexed <- indexCommitted database repository (resolvedCommitOid revision)
+              case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
+                (True, Just published, Just indexedRevision, Nothing)
+                  | published /= database -> pure (Left (CliUserFailure "compile published an unexpected database path"))
+                  | indexedRevision /= resolvedCommitOid revision -> pure (Left (CliUserFailure "compile published an unexpected revision"))
+                  | otherwise -> loadPublishedCompileResult published indexedRevision
+                (_, _, _, Just problem) -> pure (Left (CliUserFailure ("compile failed: " <> Text.pack (show problem))))
+                _ -> pure (Left (CliUserFailure "compile returned an incomplete result"))
+
+loadPublishedCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
+loadPublishedCompileResult database expectedRevision = do
+  captured <- try (bracket (open database) close readRows) :: IO (Either SomeException [(Text, Text)])
+  case captured of
+    Left exception ->
+      case fromException exception of
+        Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+        Nothing -> pure (Left (CliUserFailure ("unable to read compiled database metadata: " <> Text.pack (displayException exception))))
+    Right rows -> pure (first CliUserFailure (compileResultFromMeta database expectedRevision rows))
+  where
+    readRows connection = query_ connection "SELECT key,value FROM meta ORDER BY key"
+
+compileResultFromMeta :: FilePath -> GitOid -> [(Text, Text)] -> Either Text CompileResult
+compileResultFromMeta database expectedRevision rows = do
+  resolved <- one "resolved_oid"
+  if resolved == gitOidText expectedRevision
+    then pure ()
+    else Left "compiled database revision does not match the requested revision"
+  managedSources <- count "managed_source_count"
+  issueCount <- count "issue_count"
+  conflictCount <- count "conflict_count"
+  operationCount <- count "operation_count"
+  searchDocuments <- count "search_document_count"
+  cacheKey <- one "materialization_fingerprint"
+  if conflictCount <= issueCount
+    then
+      Right
+        CompileResult
+          { coldCompilerDatabase = database
+          , coldCompilerRevision = resolved
+          , coldCompilerIssueCount = issueCount
+          , coldCompilerErrorCount = conflictCount
+          , coldCompilerWarningCount = issueCount - conflictCount
+          , coldCompilerEmbeddingComputed = 0
+          , coldCompilerEmbeddingReused = 0
+          , coldCompilerCacheMode = "full"
+          , coldCompilerDocumentsParsed = managedSources
+          , coldCompilerDocumentsReused = 0
+          , coldCompilerHistoryCommitsScanned = 0
+          , coldCompilerIncrementalKind = "full"
+          , coldCompilerAdrsRebuilt = operationCount
+          , coldCompilerAdrsReused = 0
+          , coldCompilerAnnBuckets = searchDocuments
+          , coldCompilerCacheKey = cacheKey
+          , coldCompilerCacheRetainRevisions = 12
+          }
+    else Left "compiled database conflict count exceeds issue count"
+  where
+    grouped = Map.fromListWith (<>) [(key, [value]) | (key, value) <- rows]
+    one key =
+      case Map.lookup key grouped of
+        Just [value] -> Right value
+        Just _ -> Left ("compiled database has duplicate metadata key: " <> key)
+        Nothing -> Left ("compiled database is missing metadata key: " <> key)
+    count key = do
+      raw <- one key
+      case TextRead.decimal raw of
+        Right (value, "")
+          | value <= fromIntegral (maxBound :: Int) -> Right value
+        _ -> Left ("compiled database has invalid nonnegative integer metadata: " <> key)
 
 runProductionShow :: CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult)
 runProductionShow config command = do
@@ -1408,11 +1515,18 @@ prepareIndexPath repository =
         Right () -> pure (Right database)
 
 indexCommitted :: FilePath -> Repository -> GitOid -> IO PostCommitIndexResult
-indexCommitted database repository commit = do
-  indexed <- try (compilePostCommitIndex repository commit database) :: IO (Either SomeException PostCommitIndexResult)
-  pure $ case indexed of
-    Left exception -> indexFailure (PostCommitIndexCompileException (Text.pack (displayException exception)))
-    Right result -> result
+indexCommitted database repository commit =
+  capturePostCommitIndex (compilePostCommitIndex repository commit database)
+
+capturePostCommitIndex :: IO PostCommitIndexResult -> IO PostCommitIndexResult
+capturePostCommitIndex action = do
+  indexed <- try action :: IO (Either SomeException PostCommitIndexResult)
+  case indexed of
+    Left exception ->
+      case fromException exception of
+        Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+        Nothing -> pure (indexFailure (PostCommitIndexCompileException (Text.pack (displayException exception))))
+    Right result -> pure result
   where
     indexFailure problem = PostCommitIndexResult False Nothing Nothing [] (Just problem)
 
@@ -1422,6 +1536,20 @@ data CliRendered = CliRendered
   , renderedExitCode :: ExitCode
   }
   deriving (Eq, Show)
+
+renderCompileOutcome :: CompileCommand -> CompileResult -> CliRendered
+renderCompileOutcome command result =
+  CliRendered output "" ExitSuccess
+  where
+    output
+      | compileJson command = renderCanonicalJson (compileResultValue result)
+      | otherwise =
+          Text.unlines
+            [ "revision=" <> coldCompilerRevision result
+            , "database=" <> Text.pack (coldCompilerDatabase result)
+            , "documents_parsed=" <> Text.pack (show (coldCompilerDocumentsParsed result))
+            , "issues=" <> Text.pack (show (coldCompilerIssueCount result))
+            ]
 
 renderShowSuccess :: ShowCommand -> ShowResult -> IO ExitCode
 renderShowSuccess command result = emitRendered (renderShowOutcome command result)

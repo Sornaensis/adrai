@@ -1,20 +1,32 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Adrai.CompilerSearchSqliteTest (tests) where
 
 import Adrai.Compiler
+import Adrai.Cli (CompileResult (..))
+import Adrai.CliTypes (compileResultValue)
 import Adrai.CompilerMaterializationTest (p303RationaleSnapshot)
 import Adrai.Graph (GraphAxis (DecisionAxis), reduceManagedGraph)
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
 import Adrai.Property.Generators
 import Adrai.Retrieval
 import Adrai.Sqlite
+import Adrai.Format.Json (renderCanonicalJson)
+import Adrai.Integration.CLI (createTestRepo, gitEnv, gitStdout, parseCompileResult)
 import Control.Exception (bracket)
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as LBS
+import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Database.SQLite.Simple
   ( Connection,
     Only (Only),
@@ -26,6 +38,12 @@ import Database.SQLite.Simple
   )
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, testCase)
+import Test.Tasty.HUnit (assertFailure)
+import System.Exit (ExitCode (..))
+import System.Environment (getEnvironment, lookupEnv)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
+import System.Process.Typed (proc, readProcess, setEnv)
 
 tests :: TestTree
 tests =
@@ -35,8 +53,169 @@ tests =
       testCase "schema initialization rolls back earlier ordinary and FTS objects on a later target failure" schemaRollbackContract,
       testCase "only current rationale and deterministic first-wins aliases reach ordinary and FTS storage" currentRationaleAndAliasContract,
       testCase "decision conflict candidates are independently retrievable and superseded root is absent" conflictContract,
-      testCase "complete replacement removes stale rows and a mid-write failure rolls back" replacementContract
+      testCase "complete replacement removes stale rows and a mid-write failure rolls back" replacementContract,
+      testCase "P6-02I real executable compile is revision-bound, canonical, readable, and preserves caller state" p602iRealExecutableCompile
     ]
+
+p602iRealExecutableCompile :: IO ()
+p602iRealExecutableCompile =
+  withSystemTempDirectory "adrai p6-02i compile ü" $ \temporary -> do
+    repository <- createTestRepo (temporary </> "repo parent with spaces")
+    _ <- p602iJsonOrThrow repository ["init", "--json"]
+    _ <- create repository "Compile ü first decision" "compiler.first"
+    historicalRevision <- headOid repository
+    _ <- create repository "Compile ü second decision" "compiler.second"
+    currentRevision <- headOid repository
+
+    BS.writeFile (repository </> "compile staged.bin") "\NUL\SOHstaged compile bytes\255"
+    _ <- gitStdout repository ["add", "--", "compile staged.bin"]
+    BS.writeFile (repository </> "README.md") "# Test\ncompile dirty bytes\n"
+    BS.writeFile (repository </> "compile untracked ü.txt") "compile untracked UTF-8 bytes"
+    beforeHead <- headOid repository
+    beforeRef <- gitStdout repository ["symbolic-ref", "--quiet", "HEAD"]
+    beforeTree <- gitStdout repository ["ls-tree", "-r", "--name-only", "HEAD"]
+    beforeStatus <- gitStdout repository ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+    beforeIndex <- gitStdout repository ["ls-files", "--stage", "-z"]
+    beforeCached <- gitStdout repository ["diff", "--cached", "--binary"]
+    beforeWorktree <- gitStdout repository ["diff", "--binary"]
+    beforeStagedBytes <- BS.readFile (repository </> "compile staged.bin")
+    beforeDirtyBytes <- BS.readFile (repository </> "README.md")
+    beforeUntrackedBytes <- BS.readFile (repository </> "compile untracked ü.txt")
+
+    current <- compileJson repository ["compile", "--json"]
+    coldCompilerRevision current @?= currentRevision
+    assertBool "current compile publishes a readable SQLite path" (not (null (coldCompilerDatabase current)))
+    currentMeta <- readCompileMeta (coldCompilerDatabase current)
+    lookup "resolved_oid" currentMeta @?= Just currentRevision
+    lookup "managed_source_count" currentMeta @?= Just (Text.pack (show (coldCompilerDocumentsParsed current)))
+    lookup "operation_count" currentMeta @?= Just (Text.pack (show (coldCompilerAdrsRebuilt current)))
+    lookup "search_document_count" currentMeta @?= Just (Text.pack (show (coldCompilerAnnBuckets current)))
+
+    historical <- compileJson repository ["compile", "--at", Text.unpack historicalRevision, "--json"]
+    coldCompilerRevision historical @?= historicalRevision
+    coldCompilerDatabase historical @?= coldCompilerDatabase current
+    assertBool "historical compile selects fewer managed documents" (coldCompilerDocumentsParsed historical < coldCompilerDocumentsParsed current)
+    assertBool "historical compile selects fewer operations" (coldCompilerAdrsRebuilt historical < coldCompilerAdrsRebuilt current)
+    historicalMeta <- readCompileMeta (coldCompilerDatabase historical)
+    lookup "resolved_oid" historicalMeta @?= Just historicalRevision
+    databaseBeforeFailure <- BS.readFile (coldCompilerDatabase historical)
+
+    assertFailureCall repository ["compile", "--at", "refs/heads/does-not-exist", "--json"] 2 "adrai: "
+    BS.readFile (coldCompilerDatabase historical) >>= (@?= databaseBeforeFailure)
+    assertFailureCall repository ["compile", "--database", "forbidden.sqlite"] 2 "Invalid option `--database'"
+    BS.readFile (coldCompilerDatabase historical) >>= (@?= databaseBeforeFailure)
+
+    (plainExit, plainOut, plainErr) <- p602iRaw repository ["compile"]
+    plainExit @?= ExitSuccess
+    plainErr @?= ""
+    plainOut
+      @?= LBS.fromStrict
+        ( TextEncoding.encodeUtf8
+            ( Text.unlines
+                [ "revision=" <> coldCompilerRevision current
+                , "database=" <> Text.pack (coldCompilerDatabase current)
+                , "documents_parsed=" <> Text.pack (show (coldCompilerDocumentsParsed current))
+                , "issues=" <> Text.pack (show (coldCompilerIssueCount current))
+                ]
+            )
+        )
+    readCompileMeta (coldCompilerDatabase current) >>= \metadata -> lookup "resolved_oid" metadata @?= Just currentRevision
+
+    afterHead <- headOid repository
+    afterRef <- gitStdout repository ["symbolic-ref", "--quiet", "HEAD"]
+    afterTree <- gitStdout repository ["ls-tree", "-r", "--name-only", "HEAD"]
+    afterStatus <- gitStdout repository ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+    afterIndex <- gitStdout repository ["ls-files", "--stage", "-z"]
+    afterCached <- gitStdout repository ["diff", "--cached", "--binary"]
+    afterWorktree <- gitStdout repository ["diff", "--binary"]
+    afterStagedBytes <- BS.readFile (repository </> "compile staged.bin")
+    afterDirtyBytes <- BS.readFile (repository </> "README.md")
+    afterUntrackedBytes <- BS.readFile (repository </> "compile untracked ü.txt")
+    afterHead @?= beforeHead
+    afterRef @?= beforeRef
+    afterTree @?= beforeTree
+    afterStatus @?= beforeStatus
+    afterIndex @?= beforeIndex
+    afterCached @?= beforeCached
+    afterWorktree @?= beforeWorktree
+    afterStagedBytes @?= beforeStagedBytes
+    afterDirtyBytes @?= beforeDirtyBytes
+    afterUntrackedBytes @?= beforeUntrackedBytes
+  where
+    create repository title domain =
+      p602iJsonOrThrow repository
+        [ "create"
+        , "--title", title
+        , "--summary", title <> " summary"
+        , "--body", "## Decision\nCompile the selected immutable revision.\n"
+        , "--domain", domain
+        , "--applies-to", "src/**"
+        , "--actor", "human:compiler"
+        , "--json"
+        ]
+    headOid repository = Text.strip . TextEncoding.decodeUtf8 . LBS.toStrict <$> gitStdout repository ["rev-parse", "HEAD"]
+    compileJson repository arguments = do
+      (exitCode, stdoutBytes, stderrBytes) <- p602iRaw repository arguments
+      exitCode @?= ExitSuccess
+      stderrBytes @?= ""
+      value <- case Aeson.eitherDecode stdoutBytes of
+        Left problem -> assertFailure ("compile JSON decode failed: " <> problem) >> fail "unreachable"
+        Right decoded -> pure decoded
+      result <- case parseCompileResult value of
+        Nothing -> assertFailure "compile JSON did not match the frozen result schema" >> fail "unreachable"
+        Just parsed -> pure parsed
+      stdoutBytes @?= LBS.fromStrict (TextEncoding.encodeUtf8 (renderCanonicalJson (compileResultValue result)))
+      case value of
+        Aeson.Object object ->
+          sort (map AesonKey.toText (KeyMap.keys object))
+            @?= sort
+              [ "adrs_rebuilt", "adrs_reused", "ann_buckets", "cache_key", "cache_mode"
+              , "cache_retain_revisions", "database", "documents_parsed", "documents_reused"
+              , "embedding_computed", "embedding_reused", "errors", "history_commits_scanned"
+              , "incremental_kind", "issues", "revision", "warnings"
+              ]
+        _ -> assertFailure "compile JSON was not an object"
+      pure result
+    assertFailureCall repository arguments expectedExit expectedPrefix = do
+      (exitCode, stdoutBytes, stderrBytes) <- p602iRaw repository arguments
+      exitCode @?= ExitFailure expectedExit
+      stdoutBytes @?= ""
+      assertBool
+        ("compile failure has deterministic stderr, got " <> show stderrBytes)
+        (LBS.fromStrict (TextEncoding.encodeUtf8 expectedPrefix) `LBS.isPrefixOf` stderrBytes)
+
+readCompileMeta :: FilePath -> IO [(Text, Text)]
+readCompileMeta database = bracket (open database) close $ \connection ->
+  query connection "SELECT key,value FROM meta ORDER BY key" ()
+
+p602iRaw :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
+p602iRaw repository arguments = do
+  executable <- lookupEnv "ADRAI_EXE" >>= \case
+    Just path | not (null path) -> pure path
+    _ -> assertFailure "P6-02I requires ADRAI_EXE to name the executable under test" >> fail "unreachable"
+  inherited <- getEnvironment
+  readProcess (setEnv (p602iEnvironment inherited) (proc executable ("--repo" : repository : arguments)))
+
+p602iJsonOrThrow :: FilePath -> [String] -> IO Aeson.Value
+p602iJsonOrThrow repository arguments = do
+  (exitCode, stdoutBytes, stderrBytes) <- p602iRaw repository arguments
+  case exitCode of
+    ExitSuccess ->
+      case Aeson.decode stdoutBytes of
+        Just value -> pure value
+        Nothing -> assertFailure "P6-02I executable emitted non-JSON success output" >> fail "unreachable"
+    ExitFailure code ->
+      assertFailure ("P6-02I executable failed with exit " <> show code <> ": " <> Text.unpack (TextEncoding.decodeUtf8 (LBS.toStrict stderrBytes))) >> fail "unreachable"
+
+p602iEnvironment :: [(String, String)] -> [(String, String)]
+p602iEnvironment inherited =
+  gitEnv
+    <> filter
+      (\(key, _) -> folded key `elem` required && all ((/= folded key) . folded . fst) gitEnv)
+      inherited
+  where
+    required = map folded ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"]
+    folded = Text.toCaseFold . Text.pack
 
 schemaRollbackContract :: IO ()
 schemaRollbackContract = withMemory $ \connection -> do
