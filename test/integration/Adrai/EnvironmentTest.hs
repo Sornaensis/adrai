@@ -18,7 +18,8 @@ import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.List (sort)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text, strip, unpack, pack)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
@@ -116,6 +117,31 @@ realAdraiJsonOrThrow repo arguments = do
         ( "adrai " <> unwords arguments <> " error: CLI failed (exit " <> show code <> "): "
             <> unpack (decodeUtf8 (LBS.toStrict stderr))
         )
+
+realCreateAdr
+  :: FilePath
+  -> Text
+  -> Text
+  -> Text
+  -> [Text]
+  -> [Text]
+  -> IO Data.Aeson.Value
+realCreateAdr repo title summary body domains scopes =
+  realAdraiJsonOrThrow repo $
+    [ "create",
+      "--title", unpack title,
+      "--summary", unpack summary,
+      "--body", unpack normalizedBody,
+      "--actor", "llm:planner",
+      "--model", "demo-model"
+    ]
+      <> concatMap (\domain -> ["--domain", unpack domain]) domains
+      <> concatMap (\scope -> ["--applies-to", unpack scope]) scopes
+      <> ["--json"]
+  where
+    normalizedBody
+      | "\n" `T.isSuffixOf` body = body
+      | otherwise = body <> "\n"
 
 -- | Check if a 'Text' prefix is contained in a 'Maybe Text' body.
 -- Returns False when the body is Nothing.
@@ -632,38 +658,56 @@ testTwoWorktreesDifferentAdrs =
     $ withSystemTempDirectory "adrai two worktrees" $ \tmpDir -> do
         repo <- createTestRepo tmpDir
         createAdraiInit repo
-        _ <- createCacheAdr repo
+        BS.writeFile (repo </> ".gitignore") ".adrai/\n"
+        git repo ["--literal-pathspecs", "add", "--", ".gitignore"]
+        git repo ["commit", "-m", "test: ignore ADRAI cache"]
+        baseAdr <-
+          realCreateAdr
+            repo
+            "Stable cache identity"
+            "Cache identity derives from semantic inputs."
+            ( "## Context\nBuilds move between workspaces.\n\n"
+                <> "## Decision\nCache keys exclude absolute workspace paths and use source digests.\n\n"
+                <> "## Consequences\nInputs must be normalized."
+            )
+            ["compiler.cache"]
+            ["src/compiler/cache/**"]
+        baseDatabase <- assertMutationIndex "base create" repo baseAdr
+
+        -- The shared ADR is committed Git state; its first cache is disposable.
+        -- Remove only that generated test cache so both diverging worktrees
+        -- cold-publish their own branch-local indexes without exercising the
+        -- separate Windows warm-replacement contract.
+        removeDirectoryRecursive (repo </> ".adrai")
+        doesDirectoryExist (repo </> ".adrai") >>= (@?= False)
 
         -- Create a worktree
         let worktree = tmpDir </> "feature-worktree"
         createWorktree repo worktree "feature/worktree-divergence"
 
         -- Create a main-only ADR
-        void $
-          createAdr
+        mainAdr <-
+          realCreateAdr
             repo
             "Main-only release gate"
             "Main requires architecture checks before release."
             "## Decision\nBlock releases when ADRAI doctor reports errors."
             ["delivery.release"]
             ["ci/release/**"]
+        mainDatabasePublished <- assertMutationIndex "main create" repo mainAdr
+        mainDatabasePublished @?= baseDatabase
 
         -- Create a worktree-only ADR
-        void $
-          createAdr
+        worktreeAdr <-
+          realCreateAdr
             worktree
             "Worktree-only deployment topology"
             "The feature worktree evaluates a sidecar deployment."
             "## Decision\nRun the experimental indexer as a sidecar."
             ["deployment.experimental"]
             ["deploy/sidecar/**"]
-
-        -- Compile both
-        mainDbPath <- compileRepo repo
-        wtDbPath <- compileRepo worktree
-        assertBool
-          "main and worktree databases differ"
-          (mainDbPath /= wtDbPath)
+        worktreeDatabasePublished <- assertMutationIndex "worktree create" worktree worktreeAdr
+        assertBool "linked worktree create publishes a distinct index" (mainDatabasePublished /= worktreeDatabasePublished)
 
         mainTip <- headCommit repo
         wtTip <- headCommit worktree
@@ -671,14 +715,99 @@ testTwoWorktreesDifferentAdrs =
           "main and worktree tips differ"
           (mainTip /= wtTip)
 
-        -- Meta revisions should match respective heads
-        metaMain <- getMeta mainDbPath "source_revision"
-        metaMain @?= Just (unpack mainTip)
-        metaWt <- getMeta wtDbPath "source_revision"
-        metaWt @?= Just (unpack wtTip)
+        let baseAdrId = maybeUnpack (extractAdrId baseAdr)
+            mainAdrId = maybeUnpack (extractAdrId mainAdr)
+            worktreeAdrId = maybeUnpack (extractAdrId worktreeAdr)
+            mainVisible = [(baseAdrId, "Stable cache identity"), (mainAdrId, "Main-only release gate")]
+            worktreeVisible = [(baseAdrId, "Stable cache identity"), (worktreeAdrId, "Worktree-only deployment topology")]
+            mainHidden = [(worktreeAdrId, "Worktree-only deployment topology")]
+            worktreeHidden = [(mainAdrId, "Main-only release gate")]
+
+        -- Run each public branch view in both orders.  Every invocation
+        -- rechecks its own HEAD-bound database before querying the other
+        -- worktree, so a shared/stale cache cannot satisfy the assertions.
+        mainFirst <- assertWorktreeView "main first" repo mainTip mainVisible mainHidden
+        worktreeFirst <- assertWorktreeView "worktree second" worktree wtTip worktreeVisible worktreeHidden
+        mainFirst @?= mainDatabasePublished
+        worktreeFirst @?= worktreeDatabasePublished
+        assertBool "linked worktrees publish distinct database paths" (mainFirst /= worktreeFirst)
+        _ <- assertWorktreeView "worktree first on repeat" worktree wtTip worktreeVisible worktreeHidden
+        _ <- assertWorktreeView "main second on repeat" repo mainTip mainVisible mainHidden
 
         -- Clean up worktree
         removeWorktree repo worktree
+        doesDirectoryExist worktree >>= (@?= False)
+  where
+    assertMutationIndex label location result = do
+      resultObject <-
+        case _Object result of
+          Just value -> pure value
+          Nothing -> assertFailure (label <> ": mutation result is not a JSON object") >> fail "unreachable"
+      case resultObject .: "indexed" :: Maybe Bool of
+        Just True -> pure ()
+        actual -> assertFailure (label <> ": expected indexed=true, got " <> show actual <> " in " <> show result)
+      (resultObject .: "index_warnings" :: Maybe Integer) @?= Just 0
+      indexRevision <-
+        case resultObject .: "index_revision" :: Maybe Text of
+          Just value -> pure value
+          Nothing -> assertFailure (label <> ": missing index_revision") >> fail "unreachable"
+      extractCommit result @?= Just indexRevision
+      headCommit location >>= (@?= indexRevision)
+      database <-
+        case resultObject .: "database" :: Maybe FilePath of
+          Just value -> canonicalizePath value
+          Nothing -> assertFailure (label <> ": missing database") >> fail "unreachable"
+      expectedDatabase <- canonicalizePath (location </> ".adrai" </> "index.sqlite")
+      database @?= expectedDatabase
+      getMeta database "resolved_oid" >>= (@?= Just (unpack indexRevision))
+      pure database
+
+    assertWorktreeView label location expectedHead visible hidden = do
+      beforeState <- repositoryObservableState location
+      database <- canonicalizePath (location </> ".adrai" </> "index.sqlite")
+      getMeta database "resolved_oid" >>= (@?= Just (unpack expectedHead))
+      forM_ visible $ \(adrId, queryText) -> do
+        shown <- realAdraiJsonOrThrow location ["show", adrId, "--json"]
+        extractAdrId shown @?= Just (pack adrId)
+        searched <- realAdraiJsonOrThrow location ["search", queryText, "--mode", "fts", "--json"]
+        case parseSearchResults searched of
+          Just (_, _, _, _, results) ->
+            assertBool (label <> ": search exposes " <> adrId) (pack adrId `elem` mapMaybe extractAdrId results)
+          Nothing -> assertFailure (label <> ": search JSON did not match the public result schema")
+      forM_ hidden $ \(adrId, queryText) -> do
+        (showExit, showOut, showErr) <- realSpawnAdrai location ["show", adrId, "--json"]
+        showExit @?= ExitFailure 2
+        showOut @?= ""
+        showErr @?=
+          LBS.fromStrict
+            ("adrai: ADRAI reference not found in this revision: " <> encodeUtf8 (pack adrId) <> "\n")
+        searched <- realAdraiJsonOrThrow location ["search", queryText, "--mode", "fts", "--json"]
+        case parseSearchResults searched of
+          Just (_, _, _, _, results) ->
+            assertBool (label <> ": search excludes " <> adrId) (pack adrId `notElem` mapMaybe extractAdrId results)
+          Nothing -> assertFailure (label <> ": search JSON did not match the public result schema")
+      allVisible <- realAdraiJsonOrThrow location ["search", "Decision", "--mode", "fts", "--include-obsolete", "--limit", "1000", "--json"]
+      case parseSearchResults allVisible of
+        Just (_, _, _, _, results) ->
+          sort (mapMaybe extractAdrId results) @?= sort (map (pack . fst) visible)
+        Nothing -> assertFailure (label <> ": complete search JSON did not match the public result schema")
+      databaseAfter <- canonicalizePath (location </> ".adrai" </> "index.sqlite")
+      databaseAfter @?= database
+      getMeta databaseAfter "resolved_oid" >>= (@?= Just (unpack expectedHead))
+      headCommit location >>= (@?= expectedHead)
+      afterState <- repositoryObservableState location
+      assertBool (label <> ": public reads preserve symbolic HEAD, tree, index, status, refs, and reflogs") (afterState == beforeState)
+      pure database
+
+    repositoryObservableState location = do
+      symbolicHead <- gitStdout location ["symbolic-ref", "-q", "HEAD"]
+      headTree <- gitStdout location ["rev-parse", "HEAD^{tree}"]
+      stagedIndex <- gitStdout location ["ls-files", "--stage", "-z"]
+      stagedDiff <- gitStdout location ["diff", "--cached", "--raw", "-z"]
+      status <- gitStdout location ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      refs <- gitStdout location ["for-each-ref", "--format=%(refname)%00%(objectname)%00", "refs/heads", "refs/remotes"]
+      reflogs <- gitStdout location ["reflog", "show", "--all", "--format=%gD%x00%H%x00%gs%x00"]
+      pure (symbolicHead, headTree, stagedIndex, stagedDiff, status, refs, reflogs)
 
 -- =====================================================================
 -- Test 6: Linked worktree commits only its branch and uses common lock

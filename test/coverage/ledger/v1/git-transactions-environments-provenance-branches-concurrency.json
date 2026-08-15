@@ -599,15 +599,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_branch_switch_consistency.py",
                      "pythonMethod":  "test_two_worktrees_keep_different_adr_sets_and_compiled_databases",
                      "behaviorContract":  "Two linked worktrees retain distinct reachable ADR sets and revision-specific compiled databases.",
-                     "haskellTestName":  "two worktrees keep distinct adr sets and databases",
-                     "haskellTestPath":  "test/e2e/Adrai/BranchSwitchConsistencyTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "two_worktrees_keep_different_adr_sets_and_compiled_databases",
+                     "haskellTestPath":  "test/integration/Adrai/EnvironmentTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "partial",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"two worktrees keep distinct adr sets and databases\"",
-                                      "fixture":  "P4-02 RepositoryIsolationTest concurrently observes two linked worktrees and asserts distinct commit OIDs and managed-path/blob sets under one canonical common-directory namespace. ADR parsing and revision-specific compiled databases remain unimplemented; Python was read statically and not executed.",
-                                      "result":  "P4-02 RepositoryIsolationTest concurrently observes two linked worktrees and asserts distinct commit OIDs and managed-path/blob sets under one canonical common-directory namespace. ADR parsing and revision-specific compiled databases remain unimplemented; Python was read statically and not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/two_worktrees_keep_different_adr_sets_and_compiled_databases/\" -j 1'",
+                                      "fixture":  "EnvironmentTest.testTwoWorktreesDifferentAdrs commits one shared ADR, cold-publishes independent main and linked-worktree indexes through real create commands, proves exact canonical database paths and resolved OIDs, proves exact public ADR sets plus opposite-branch show/search exclusion, repeats the views in reverse order without cache leakage, preserves each caller Git state, and removes the test-owned linked worktree.",
+                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /two_worktrees_keep_different_adr_sets_and_compiled_databases/ -j1 ALL 1 PASS in 124.34s"
                                   }
                  },
                  {
