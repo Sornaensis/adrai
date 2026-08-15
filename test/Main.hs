@@ -89,9 +89,13 @@ import qualified Adrai.VectorProperties
 import qualified Adrai.VectorQualityTest
 import qualified Adrai.VectorTest
 import Control.Exception (bracket)
+import qualified Data.ByteString.Char8 as BS8
 import Database.SQLite.Simple (close, execute_, open)
 import Hedgehog (property, success)
-import System.Environment (getArgs)
+import System.Environment (getArgs, getProgName, lookupEnv)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
+import System.FilePath (takeFileName)
+import System.IO (appendFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.Hedgehog (testProperty)
 import Test.Tasty.HUnit (testCase)
@@ -99,6 +103,15 @@ import Test.Tasty.HUnit (testCase)
 main :: IO ()
 main = do
   arguments <- getArgs
+  program <- getProgName
+  marker <- lookupEnv "ADRAI_TEST_REFERENCE_TRANSACTION_HOOK"
+  case (takeFileName program, marker) of
+    ("reference-transaction", Just "p6-03f-0a-native-hook-v1") -> referenceTransactionHook arguments
+    ("reference-transaction", _) -> exitWith (ExitFailure 64)
+    _ -> normalMain arguments
+
+normalMain :: [String] -> IO ()
+normalMain arguments =
   case arguments of
     ["--write-p3-01-goldens"] -> Adrai.VectorQualityTest.writeP301Goldens
     ["--write-p3-02-goldens"] -> Adrai.RetrievalPlanGoldenTest.writeP302Goldens
@@ -110,6 +123,44 @@ main = do
     ["--coverage-ledger-report"] -> Adrai.CoverageLedgerAudit.writeCurrentLedgerReport
     ["--require-coverage-ledger-closed"] -> Adrai.CoverageLedgerAudit.requireCurrentLedgerClosed
     _ -> defaultMain tests
+
+referenceTransactionHook :: [String] -> IO ()
+referenceTransactionHook [phase] = do
+  behavior <- lookupEnv "ADRAI_TEST_REFERENCE_TRANSACTION_BEHAVIOR"
+  phaseLog <- lookupEnv "ADRAI_TEST_REFERENCE_TRANSACTION_PHASE_LOG"
+  headPath <- lookupEnv "ADRAI_TEST_REFERENCE_TRANSACTION_HEAD_PATH"
+  case (behavior, phaseLog) of
+    (Just configuredBehavior, Just logPath) -> do
+      appendFile logPath (phase <> "\n")
+      case (phase, configuredBehavior) of
+        ("preparing", "reject-prepared") -> exitWith (ExitFailure 42)
+        ("preparing", behaviorWithHead) | hookSwitchPrefix `prefixOf` behaviorWithHead -> exitWith (ExitFailure 42)
+        ("committed", "reject-prepared") -> exitWith ExitSuccess
+        ("aborted", "reject-prepared") -> exitWith ExitSuccess
+        ("committed", behaviorWithHead) | hookSwitchPrefix `prefixOf` behaviorWithHead -> exitWith ExitSuccess
+        ("aborted", behaviorWithHead) | hookSwitchPrefix `prefixOf` behaviorWithHead -> do
+          let target = drop (length hookSwitchPrefix) behaviorWithHead
+          case headPath of
+            Just configuredHeadPath | validHeadTarget target -> BS8.writeFile configuredHeadPath (BS8.pack ("ref: " <> target <> "\n")) >> exitWith ExitSuccess
+            _ -> exitWith (ExitFailure 65)
+        _ -> exitWith (ExitFailure 65)
+    _ -> exitWith (ExitFailure 65)
+referenceTransactionHook _ = exitWith (ExitFailure 65)
+
+prefixOf :: String -> String -> Bool
+prefixOf prefix value = take (length prefix) value == prefix
+
+validHeadTarget :: String -> Bool
+validHeadTarget target =
+  headRefPrefix `prefixOf` target
+    && not (null (drop (length headRefPrefix) target))
+    && all (`notElem` [' ', '\t', '\r', '\n']) target
+
+hookSwitchPrefix :: String
+hookSwitchPrefix = "reject-prepared-switch-head:"
+
+headRefPrefix :: String
+headRefPrefix = "refs/heads/"
 
 tests :: TestTree
 tests =

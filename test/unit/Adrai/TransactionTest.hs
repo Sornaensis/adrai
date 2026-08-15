@@ -19,7 +19,15 @@ import Adrai.Git
     gitOidText,
     systemGit,
   )
-import Adrai.GitTestSupport (commitFile, createWorktree, gitSuccess, initTestRepository, outputText)
+import Adrai.GitTestSupport
+  ( commitFile,
+    createWorktree,
+    gitSuccess,
+    initTestRepository,
+    installFailingCleanFilter,
+    outputText,
+    withRejectingReferenceTransactionHook,
+  )
 import Adrai.Integration.CLI (createAdraiInit)
 import Adrai.Provenance
   ( ProvenanceCapsuleInput (..),
@@ -285,10 +293,7 @@ tests =
                 stagedPath = repositoryPath </> "staged.bin"
                 stagedBytes = BS.pack [0, 255, 4, 9]
             initTestRepository repositoryPath
-            _ <- commitFile repositoryPath ".gitattributes" "*.md filter=adrai-fail\n"
-            parentText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
-            _ <- gitSuccess repositoryPath ["config", "filter.adrai-fail.clean", "false"] BS.empty
-            _ <- gitSuccess repositoryPath ["config", "filter.adrai-fail.required", "true"] BS.empty
+            parentText <- installFailingCleanFilter repositoryPath
             BS.writeFile stagedPath stagedBytes
             _ <- gitSuccess repositoryPath ["add", "--", "staged.bin"] BS.empty
             indexBefore <- BS.readFile (repositoryPath </> ".git" </> "index")
@@ -324,13 +329,11 @@ tests =
             let repositoryPath = temporary </> "repository"
                 stagedPath = repositoryPath </> "staged.bin"
                 stagedBytes = BS.pack [127, 0, 255, 8]
-                hookPath = repositoryPath </> ".git" </> "adrai-no-hooks" </> "reference-transaction"
             initTestRepository repositoryPath
             parentText <- commitFile repositoryPath "seed.txt" "seed\n"
             BS.writeFile stagedPath stagedBytes
             _ <- gitSuccess repositoryPath ["add", "--", "staged.bin"] BS.empty
             indexBefore <- BS.readFile (repositoryPath </> ".git" </> "index")
-            BS.writeFile hookPath "#!/bin/sh\nif test \"$1\" = prepared; then\n  exit 1\nfi\nexit 0\n"
             repository <-
               discoverRepository systemGit repositoryPath >>= \case
                 Left problem -> assertFailure (show problem)
@@ -346,7 +349,7 @@ tests =
                       configExpectedHead = parent,
                       configGenerated = [generated]
                     }
-            commitAppendOnlyOperation repository config >>= \case
+            withRejectingReferenceTransactionHook repositoryPath Nothing (commitAppendOnlyOperation repository config) >>= \case
               Left (Stage8UpdateRef _) -> pure ()
               Left problem -> assertFailure ("expected original Stage8 failure, got " <> show problem)
               Right result -> assertFailure ("expected Stage8 failure, got " <> show result)
@@ -363,11 +366,9 @@ tests =
       , testCase "Stage8 rollback rechecks the pinned main ref after hook rejection" $
           withSystemTempDirectory "adrai transaction pinned ref" $ \temporary -> do
             let repositoryPath = temporary </> "repository"
-                hookPath = repositoryPath </> ".git" </> "adrai-no-hooks" </> "reference-transaction"
             initTestRepository repositoryPath
             parentText <- commitFile repositoryPath "seed.txt" "seed\n"
             _ <- gitSuccess repositoryPath ["branch", "other", "HEAD"] BS.empty
-            BS.writeFile hookPath "#!/bin/sh\nif test \"$1\" = prepared; then\n  exit 1\nfi\nif test \"$1\" = aborted; then\n  printf 'ref: refs/heads/other\\n' > \"$GIT_DIR/HEAD\"\nfi\nexit 0\n"
             repository <- discoverRepository systemGit repositoryPath >>= \case
               Left problem -> assertFailure (show problem)
               Right discovered -> pure discovered
@@ -375,7 +376,7 @@ tests =
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
                 config = TransactionConfig operationText "adrai: pinned ref" (Map.fromList [("Objects", "pinned-ref")]) parent [generated]
-            commitAppendOnlyOperation repository config >>= \case
+            withRejectingReferenceTransactionHook repositoryPath (Just "refs/heads/other") (commitAppendOnlyOperation repository config) >>= \case
               Left (Stage8UpdateRef _) -> pure ()
               Left problem -> assertFailure ("expected Stage8 failure, got " <> show problem)
               Right result -> assertFailure ("expected Stage8 failure, got " <> show result)
@@ -386,10 +387,8 @@ tests =
       , testCase "authoritative new ref outcome preserves generated paths without destructive rollback" $
           withSystemTempDirectory "adrai transaction authoritative new" $ \temporary -> do
             let repositoryPath = temporary </> "repository"
-                hookPath = repositoryPath </> ".git" </> "adrai-no-hooks" </> "reference-transaction"
             initTestRepository repositoryPath
             parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            BS.writeFile hookPath "#!/bin/sh\nif test \"$1\" = prepared; then\n  exit 1\nfi\nexit 0\n"
             repository <- discoverRepository systemGit repositoryPath >>= \case
               Left problem -> assertFailure (show problem)
               Right discovered -> pure discovered
@@ -404,7 +403,7 @@ tests =
                           Just newCommit -> pure (Right newCommit)
                     }
                 config = TransactionConfig operationText "adrai: authoritative new" (Map.fromList [("Objects", "authoritative-new")]) parent [generated]
-            commitAppendOnlyOperationWith dependencies repository config >>= \case
+            withRejectingReferenceTransactionHook repositoryPath Nothing (commitAppendOnlyOperationWith dependencies repository config) >>= \case
               Left (Stage8UpdateRef _) -> pure ()
               Left problem -> assertFailure ("expected original Stage8 failure, got " <> show problem)
               Right result -> assertFailure ("expected Stage8 failure, got " <> show result)
@@ -413,11 +412,9 @@ tests =
       , testCase "ambiguous target ref outcome fails closed and preserves generated paths" $
           withSystemTempDirectory "adrai transaction ambiguous ref" $ \temporary -> do
             let repositoryPath = temporary </> "repository"
-                hookPath = repositoryPath </> ".git" </> "adrai-no-hooks" </> "reference-transaction"
                 otherCommit = GitOid "1111111111111111111111111111111111111111"
             initTestRepository repositoryPath
             parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            BS.writeFile hookPath "#!/bin/sh\nif test \"$1\" = prepared; then\n  exit 1\nfi\nexit 0\n"
             repository <- discoverRepository systemGit repositoryPath >>= \case
               Left problem -> assertFailure (show problem)
               Right discovered -> pure discovered
@@ -426,7 +423,7 @@ tests =
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
                 dependencies = defaultAppendOnlyDependencies { appendOnlyInspectRef = \_ _ _ _ -> pure (Right otherCommit) }
                 config = TransactionConfig operationText "adrai: ambiguous ref" (Map.fromList [("Objects", "ambiguous-ref")]) parent [generated]
-            commitAppendOnlyOperationWith dependencies repository config >>= \case
+            withRejectingReferenceTransactionHook repositoryPath Nothing (commitAppendOnlyOperationWith dependencies repository config) >>= \case
               Left (RollbackFailed detail) -> assertBool "ambiguous ref is reported as a failed rollback" ("target ref changed" `Text.isInfixOf` detail)
               Left problem -> assertFailure ("expected RollbackFailed, got " <> show problem)
               Right result -> assertFailure ("expected ambiguous ref failure, got " <> show result)
@@ -435,10 +432,8 @@ tests =
       , testCase "target ref inspection failure fails closed and preserves generated paths" $
           withSystemTempDirectory "adrai transaction unreadable ref" $ \temporary -> do
             let repositoryPath = temporary </> "repository"
-                hookPath = repositoryPath </> ".git" </> "adrai-no-hooks" </> "reference-transaction"
             initTestRepository repositoryPath
             parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            BS.writeFile hookPath "#!/bin/sh\nif test \"$1\" = prepared; then\n  exit 1\nfi\nexit 0\n"
             repository <- discoverRepository systemGit repositoryPath >>= \case
               Left problem -> assertFailure (show problem)
               Right discovered -> pure discovered
@@ -447,7 +442,7 @@ tests =
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
                 dependencies = defaultAppendOnlyDependencies { appendOnlyInspectRef = \_ _ _ _ -> pure (Left (RollbackFailed "injected target-ref read failure")) }
                 config = TransactionConfig operationText "adrai: unreadable ref" (Map.fromList [("Objects", "unreadable-ref")]) parent [generated]
-            commitAppendOnlyOperationWith dependencies repository config >>= \case
+            withRejectingReferenceTransactionHook repositoryPath Nothing (commitAppendOnlyOperationWith dependencies repository config) >>= \case
               Left (RollbackFailed detail) -> assertBool "inspection failure is retained" ("injected target-ref read failure" `Text.isInfixOf` detail)
               Left problem -> assertFailure ("expected RollbackFailed, got " <> show problem)
               Right result -> assertFailure ("expected inspection failure, got " <> show result)
@@ -456,11 +451,9 @@ tests =
       , testCase "rollback inspection callback receives the ref pinned before HEAD changes" $
           withSystemTempDirectory "adrai transaction observed pinned ref" $ \temporary -> do
             let repositoryPath = temporary </> "repository"
-                hookPath = repositoryPath </> ".git" </> "adrai-no-hooks" </> "reference-transaction"
             initTestRepository repositoryPath
             parentText <- commitFile repositoryPath "seed.txt" "seed\n"
             _ <- gitSuccess repositoryPath ["branch", "other", "HEAD"] BS.empty
-            BS.writeFile hookPath "#!/bin/sh\nif test \"$1\" = prepared; then\n  exit 1\nfi\nif test \"$1\" = aborted; then\n  printf 'ref: refs/heads/other\\n' > \"$GIT_DIR/HEAD\"\nfi\nexit 0\n"
             repository <- discoverRepository systemGit repositoryPath >>= \case
               Left problem -> assertFailure (show problem)
               Right discovered -> pure discovered
@@ -475,7 +468,7 @@ tests =
                         appendOnlyInspectRef defaultAppendOnlyDependencies inspectedRepository inspectedRef expectedOld maybeNew
                     }
                 config = TransactionConfig operationText "adrai: observed pinned ref" (Map.fromList [("Objects", "observed-pinned-ref")]) parent [generated]
-            commitAppendOnlyOperationWith dependencies repository config >>= \case
+            withRejectingReferenceTransactionHook repositoryPath (Just "refs/heads/other") (commitAppendOnlyOperationWith dependencies repository config) >>= \case
               Left (Stage8UpdateRef _) -> pure ()
               Left problem -> assertFailure ("expected Stage8 failure, got " <> show problem)
               Right result -> assertFailure ("expected Stage8 failure, got " <> show result)
@@ -487,10 +480,7 @@ tests =
           withSystemTempDirectory "adrai transaction cleanup failure" $ \temporary -> do
             let repositoryPath = temporary </> "repository"
             initTestRepository repositoryPath
-            _ <- commitFile repositoryPath ".gitattributes" "*.md filter=adrai-fail\n"
-            parentText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
-            _ <- gitSuccess repositoryPath ["config", "filter.adrai-fail.clean", "false"] BS.empty
-            _ <- gitSuccess repositoryPath ["config", "filter.adrai-fail.required", "true"] BS.empty
+            parentText <- installFailingCleanFilter repositoryPath
             repository <- discoverRepository systemGit repositoryPath >>= \case
               Left problem -> assertFailure (show problem)
               Right discovered -> pure discovered
@@ -801,8 +791,17 @@ gitLockTests =
         outcomes <- sequence [wait left, wait right]
         let acquired = [lock | Right lock <- outcomes]
         assertEqual "only one stale contender becomes owner" 1 (length acquired)
-        let owners = [pid | Left (LockHeld _ pid) <- outcomes]
-        assertEqual "the non-owner observes the current canonical PID" [gitLockPid (head acquired)] owners
+        let contenderFailures = [(heldPath, pid) | Left (LockHeld heldPath pid) <- outcomes]
+        assertEqual "exactly one contender is rejected with typed native contention" 1 (length contenderFailures)
+        assertEqual "the contended path remains canonical" [path] (map fst contenderFailures)
+        let winningLock = head acquired
+            winningBytes = BS8.pack ("pid=" <> show (gitLockPid winningLock) <> "\n")
+        BS.readFile path >>= assertEqual "the native winner rewrites canonical owner bytes before returning" winningBytes
+        gitLockStatus repository >>= \case
+          Left (LockHeld observedPath observedPid) -> do
+            assertEqual "status observes the native winner's canonical path" path observedPath
+            assertEqual "status observes the native winner's canonical PID" (gitLockPid winningLock) observedPid
+          other -> assertFailure ("expected held native winner after simultaneous contention, got " <> show other)
         mapM_ releaseGitLock acquired
         gitLockStatus repository >>= assertEqual "released contender leaves no native owner" (Right Nothing),
     testCase "three-field GitLock values cannot release a newer same-process owner" $
