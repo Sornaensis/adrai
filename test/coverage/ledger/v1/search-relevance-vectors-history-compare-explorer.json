@@ -472,30 +472,30 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_search_cli_explorer.py",
                      "pythonMethod":  "test_fts_vector_and_hybrid_rank_relevant_adr_with_stable_shape",
                      "behaviorContract":  "FTS, vector, and hybrid modes rank the relevant ADR and return a stable public result shape.",
-                     "haskellTestName":  "search modes rank relevant adr with stable shape",
-                     "haskellTestPath":  "test/e2e/Adrai/SearchCliExplorerTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02J search modes rank relevant ADR with stable shape",
+                     "haskellTestPath":  "test/integration/Adrai/QueryIntegrationTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"search modes rank relevant adr with stable shape\"",
-                                      "fixture":  "Static anchor test_search_cli_explorer.py:18; current Dropwire golden is the acceptance baseline; Python not executed.",
-                                      "result":  "Static anchor test_search_cli_explorer.py:18; current Dropwire golden is the acceptance baseline; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "QueryIntegrationTest.testP602JRealExecutableSearch loops over FTS, vector, and hybrid modes and asserts the exact versioned envelope, selected ADR, retrieval metadata, resolution state, and deterministic order.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {
                      "pythonPath":  "ADRAI_1_Source/tests/test_search_cli_explorer.py",
                      "pythonMethod":  "test_file_filter_is_deterministic_and_globs_are_repository_style",
                      "behaviorContract":  "File-scope filtering is deterministic and interprets globs with repository-relative semantics.",
-                     "haskellTestName":  "file filter is deterministic with repository globs",
-                     "haskellTestPath":  "test/e2e/Adrai/SearchCliExplorerTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02J repository-relative file filter is deterministic",
+                     "haskellTestPath":  "test/integration/Adrai/QueryIntegrationTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"file filter is deterministic with repository globs\"",
-                                      "fixture":  "Static anchor test_search_cli_explorer.py:36; Python not executed.",
-                                      "result":  "Static anchor test_search_cli_explorer.py:36; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "QueryIntegrationTest.testP602JRealExecutableSearch queries a concrete repository-relative file against the committed src/cache/** applies-to glob and asserts the exact sole ADR result.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {
@@ -517,15 +517,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_search_cli_explorer.py",
                      "pythonMethod":  "test_domain_actor_and_time_filters",
                      "behaviorContract":  "Domain, actor, since, and until filters constrain search consistently.",
-                     "haskellTestName":  "domain actor and time filters constrain search",
-                     "haskellTestPath":  "test/e2e/Adrai/SearchCliExplorerTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02J domain actor and time filters constrain search",
+                     "haskellTestPath":  "test/integration/Adrai/QueryIntegrationTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain actor and time filters constrain search\"",
-                                      "fixture":  "Static anchor test_search_cli_explorer.py:84; Python not executed.",
-                                      "result":  "Static anchor test_search_cli_explorer.py:84; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "QueryIntegrationTest.testP602JRealExecutableSearch asserts exact result sets for platform and legacy domains, llm:planner actor, and since/until boundaries.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {
@@ -547,15 +547,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_search_cli_explorer.py",
                      "pythonMethod":  "test_as_of_queries_compile_the_requested_tree_not_the_worktree",
                      "behaviorContract":  "As-of queries compile the requested committed tree and ignore unrelated current-worktree state.",
-                     "haskellTestName":  "as of queries compile requested tree not worktree",
-                     "haskellTestPath":  "test/e2e/Adrai/SearchCliExplorerTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02 revision queries compile requested tree not worktree",
+                     "haskellTestPath":  "test/integration/Adrai/QueryIntegrationTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"as of queries compile requested tree not worktree\"",
-                                      "fixture":  "Static anchor test_search_cli_explorer.py:122; Python not executed.",
-                                      "result":  "Static anchor test_search_cli_explorer.py:122; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "QueryIntegrationTest P6-02F/J historical assertions exclude later-only content while preserving unrelated staged, dirty, and untracked state; P6-02I independently binds compilation to the requested historical OID.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {
@@ -577,15 +577,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_search_cli_explorer.py",
                      "pythonMethod":  "test_search_validation_and_obsolete_visibility",
                      "behaviorContract":  "Search validates modes and limits and hides obsolete ADRs unless explicitly requested.",
-                     "haskellTestName":  "search validation and obsolete visibility",
-                     "haskellTestPath":  "test/e2e/Adrai/SearchCliExplorerTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02J search validation and obsolete visibility",
+                     "haskellTestPath":  "test/integration/Adrai/QueryIntegrationTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"search validation and obsolete visibility\"",
-                                      "fixture":  "Static anchor test_search_cli_explorer.py:172; Python not executed.",
-                                      "result":  "Static anchor test_search_cli_explorer.py:172; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "QueryIntegrationTest.testP602JRealExecutableSearch proves default obsolete hiding, explicit include-obsolete visibility, supported modes, positive-limit enforcement, alias rejection, and deterministic user errors.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {
@@ -637,30 +637,30 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_search_cli_explorer.py",
                      "pythonMethod":  "test_cli_exit_codes_distinguish_error_conflict_and_doctor_failure",
                      "behaviorContract":  "CLI exits distinguish user error, semantic conflict, and unhealthy doctor results.",
-                     "haskellTestName":  "cli exit codes distinguish error conflict and doctor failure",
-                     "haskellTestPath":  "test/e2e/Adrai/SearchCliExplorerTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02 user conflict and doctor exit classes are distinct",
+                     "haskellTestPath":  "test/integration/Adrai/MutationE2ETest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"cli exit codes distinguish error conflict and doctor failure\"",
-                                      "fixture":  "Static anchor test_search_cli_explorer.py:296; cli/exits.json is the frozen contract; Python not executed.",
-                                      "result":  "Static anchor test_search_cli_explorer.py:296; cli/exits.json is the frozen contract; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "MutationE2ETest P6-02B-E assertions distinguish user exit 2 from semantic conflict exit 3 and p602lDoctor proves healthy 0, invalid-revision 2, and unhealthy 4; P6-02F/J independently prove read conflicts use 3.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {
                      "pythonPath":  "ADRAI_1_Source/tests/test_search_cli_explorer.py",
                      "pythonMethod":  "test_show_accepts_logical_record_and_connection_ids",
                      "behaviorContract":  "Show resolves ADR, record, and connection references to the same logical decision.",
-                     "haskellTestName":  "show accepts logical record and connection ids",
-                     "haskellTestPath":  "test/e2e/Adrai/SearchCliExplorerTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02F show resolves logical ADR record and connection IDs",
+                     "haskellTestPath":  "test/integration/Adrai/QueryIntegrationTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"show accepts logical record and connection ids\"",
-                                      "fixture":  "Static anchor test_search_cli_explorer.py:344; Python not executed.",
-                                      "result":  "Static anchor test_search_cli_explorer.py:344; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "QueryIntegrationTest.testP602FRealExecutableShow resolves full ADR, record, and connection references plus lowercase 10-character A/R/C prefixes and asserts the same logical ADR projection.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {
@@ -967,15 +967,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_relevance.py",
                      "pythonMethod":  "test_cli_json_text_and_errors_are_stable",
                      "behaviorContract":  "Relevant-command JSON, human-readable text, and validation errors have stable public forms.",
-                     "haskellTestName":  "relevance cli json text and errors are stable",
-                     "haskellTestPath":  "test/e2e/Adrai/RelevanceCliTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02K relevant JSON text and errors are stable",
+                     "haskellTestPath":  "test/integration/Adrai/QueryIntegrationTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"relevance cli json text and errors are stable\"",
-                                      "fixture":  "Static anchor test_relevance.py:603; public JSON fixture supplies frozen shape; Python not executed.",
-                                      "result":  "Static anchor test_relevance.py:603; public JSON fixture supplies frozen shape; Python not executed."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "QueryIntegrationTest.testP602KRealExecutableRelevant asserts exact schema/key order and canonical JSON, plain-output parity, historical and worktree projections, limits, and exact path/decode/repository validation classes.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {

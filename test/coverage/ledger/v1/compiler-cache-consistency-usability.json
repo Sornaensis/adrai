@@ -393,15 +393,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
                      "pythonMethod":  "test_compile_cli_reports_cache_and_work_reuse_counters",
                      "behaviorContract":  "Compile JSON reports cache mode, parsed and reused document counts, and the number of history commits scanned.",
-                     "haskellTestName":  "compile CLI reports cache and work reuse counters",
-                     "haskellTestPath":  "test/e2e/Adrai/CompileCliTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02I compile reports cache and work reuse counters",
+                     "haskellTestPath":  "test/integration/Adrai/CompilerSearchSqliteTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "partial",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"compile CLI reports cache and work reuse counters\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:185-191",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:185-191 | test/fixtures/contracts/v1/public-json/contracts.json:47-50"
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "CompilerSearchSqliteTest.p602iRealExecutableCompile asserts the exact canonical 17-key compile JSON, current and historical SQLite metadata, cache/work counters, revision binding, and caller-state preservation.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {

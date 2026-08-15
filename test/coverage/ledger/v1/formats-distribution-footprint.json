@@ -179,15 +179,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_distribution_cli.py",
                      "pythonMethod":  "test_cli_has_one_explorer_and_no_removed_commands",
                      "behaviorContract":  "The public command inventory contains one option-free explorer and rejects removed trust, vectors, and migrate commands.",
-                     "haskellTestName":  "CLI exposes one explorer and rejects removed commands",
-                     "haskellTestPath":  "test/e2e/Adrai/CliInventoryTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02M CLI exposes one option-free explorer and rejects removed commands",
+                     "haskellTestPath":  "test/unit/Adrai/CliContractTest.hs",
+                     "haskellTestType":  "unit",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"CLI exposes one explorer and rejects removed commands\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_distribution_cli.py:54-77",
-                                      "result":  "ADRAI_1_Source/tests/test_distribution_cli.py:54-77 | test/fixtures/contracts/v1/cli/commands.json:21-92"
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /init/&&/create/&&/CLI/&&/contracts/ -j 1'",
+                                      "fixture":  "CliContractTest.mutationCliContractTests case 'explore is the one option-free public terminal command' accepts only explore with global --repo and rejects positional arguments, options, trust, vectors, and migrate.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; init/create CLI contracts ALL 49 PASS in 0.03s"
                                   }
                  },
                  {

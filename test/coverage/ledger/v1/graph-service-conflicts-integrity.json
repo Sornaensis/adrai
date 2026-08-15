@@ -359,15 +359,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_domains.py",
                      "pythonMethod":  "test_cli_refines_domains_and_returns_stable_json",
                      "behaviorContract":  "The public CLI refines domains and emits the stable compact JSON response and exit behavior promised by the public contract.",
-                     "haskellTestName":  "CLI domain refinement returns stable JSON",
-                     "haskellTestPath":  "test/e2e/Adrai/DomainCliTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-02D domain refinement returns stable JSON",
+                     "haskellTestPath":  "test/integration/Adrai/MutationE2ETest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"CLI domain refinement returns stable JSON\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_domains.py:462 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:462 (static prototype test)"
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "fixture":  "MutationE2ETest.p602dDomain exercises real-executable domain refinement and asserts canonical JSON bytes, exact delta/refinement/effective facts, exit classes, topology, provenance, and caller-state preservation.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
                                   }
                  },
                  {
@@ -494,15 +494,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_public_workflows.py",
                      "pythonMethod":  "test_parser_exposes_exactly_the_implemented_public_commands",
                      "behaviorContract":  "The command parser exposes exactly the supported public commands and does not advertise unimplemented operations.",
-                     "haskellTestName":  "parser exposes exactly supported public commands",
-                     "haskellTestPath":  "test/golden/Adrai/CliContractTest.hs",
-                     "haskellTestType":  "golden",
+                     "haskellTestName":  "P6-02 parser exposes exactly the frozen 15-command inventory",
+                     "haskellTestPath":  "test/unit/Adrai/CliContractTest.hs",
+                     "haskellTestType":  "unit",
                      "phaseOwner":  "P6",
-                     "state":  "partial",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"parser exposes exactly supported public commands\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:273 (static prototype test); existing golden: test/fixtures/contracts/v1/cli/commands.json",
-                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:273 (static prototype test); existing golden: test/fixtures/contracts/v1/cli/commands.json"
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /init/&&/create/&&/CLI/&&/contracts/ -j 1'",
+                                      "fixture":  "CliContractTest.mutationCliContractTests contains the canonical parser contract for every frozen command and the repository-owned test/fixtures/contracts/v1/cli/commands.json inventory.",
+                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; init/create CLI contracts ALL 49 PASS in 0.03s"
                                   }
                  },
                  {
