@@ -12,6 +12,7 @@ module Adrai.CliRunner
     CliInvocation (..),
     CliCommand (..),
     CompileCommand (..),
+    DoctorCommand (..),
     InitCommand (..),
     CreateCommand (..),
     AmendCommand (..),
@@ -54,6 +55,7 @@ module Adrai.CliRunner
     renderSearchOutcome,
     renderRelevantOutcome,
     renderCompileOutcome,
+    renderDoctorOutcome,
     capturePostCommitIndex,
     renderFailureOutcome,
     emitRenderedToHandles,
@@ -64,6 +66,10 @@ where
 import Adrai.CliTypes
   ( CompileResult (..),
     compileResultValue,
+    DoctorOutput (..),
+    DoctorIssue (..),
+    DoctorCounts (..),
+    doctorOutputJson,
     ShowCommand (..),
     HistoryCommand (..),
     SearchCommand (..),
@@ -83,7 +89,7 @@ import Adrai.History
 import Adrai.Retrieval (RetrievalMode (FtsRetrieval, HybridRetrieval, VectorRetrieval))
 import Adrai.Types (ViewMode (CollapsedView, ExplodedView))
 import Adrai.Domain (Domain, DomainRefinement, canonicalDomains, domainErrorText, domainText, domainRefinementText, mkDomain, parseDomainRefinement)
-import Adrai.Git (GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitOidText, repositoryWorktreeRoot, systemGit)
+import Adrai.Git (GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitOidText, isShallowRepository, repositoryWorktreeRoot, systemGit)
 import Adrai.Identity (sortableAdrId, sortableRecordId)
 import qualified Adrai.Format as Format
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
@@ -158,6 +164,7 @@ import qualified Data.ByteString as ByteString
 import Data.Bifunctor (first)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import qualified Data.Scientific as Scientific
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -170,7 +177,7 @@ import System.IO (Handle, hGetContents, stderr, stdin, stdout)
 import System.Random (randomRIO)
 import Control.Monad (replicateM)
 import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, fromException, throwIO, try)
-import Database.SQLite.Simple (close, open, query_)
+import Database.SQLite.Simple (close, open, query, query_)
 import qualified Options.Applicative as Opt
 import Options.Applicative
   ( Parser,
@@ -220,6 +227,12 @@ defaultCliConfig =
 data CompileCommand = CompileCommand
   { compileAt :: Text
   , compileJson :: Bool
+  }
+  deriving (Eq, Show)
+
+data DoctorCommand = DoctorCommand
+  { doctorAt :: Text
+  , doctorJson :: Bool
   }
   deriving (Eq, Show)
 
@@ -352,7 +365,7 @@ data DomainCommand = DomainCommand
 -- | Parsed CLI command, constructed from optparse-applicative.
 data CliCommand
   = CmdCompile CompileCommand
-  | CmdDoctor
+  | CmdDoctor DoctorCommand
   | CmdShow ShowCommand
   | CmdHistory HistoryCommand
   | CmdSearch SearchCommand
@@ -375,7 +388,7 @@ parser :: CliParser
 parser =
   CliInvocation <$> globalConfigParser <*> subparser
     ( command "compile" (info (CmdCompile <$> compileParser) (progDesc "compile the repository"))
-     <> command "doctor" (info (pure CmdDoctor) (progDesc "diagnose the database"))
+     <> command "doctor" (info (CmdDoctor <$> doctorParser) (progDesc "diagnose the database"))
      <> command "show" (info (CmdShow <$> showParser) (progDesc "show a single ADR"))
      <> command "history" (info (CmdHistory <$> historyParser) (progDesc "show operation history"))
      <> command "search" (info (CmdSearch <$> searchParser) (progDesc "search ADRs"))
@@ -405,6 +418,12 @@ compileParser :: Parser CompileCommand
 compileParser =
   CompileCommand
     <$> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "revision to compile (default HEAD)")
+    <*> switch (long "json" <> help "output JSON")
+
+doctorParser :: Parser DoctorCommand
+doctorParser =
+  DoctorCommand
+    <$> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "revision to diagnose (default HEAD)")
     <*> switch (long "json" <> help "output JSON")
 
 initParser :: Parser InitCommand
@@ -713,9 +732,11 @@ dispatchWith dependencies (CliInvocation config (CmdCompile command)) = do
   case result of
     Left failure -> renderFailure failure
     Right compiled -> emitRendered (renderCompileOutcome command compiled)
-dispatchWith _ (CliInvocation _ CmdDoctor) = do
-  putStrLn "[doctor] diagnosing database"
-  pure ExitSuccess
+dispatchWith dependencies (CliInvocation config (CmdDoctor command)) = do
+  result <- cliRunDoctor dependencies config command
+  case result of
+    Left failure -> renderFailure failure
+    Right output -> emitRendered (renderDoctorOutcome command output)
 dispatchWith dependencies (CliInvocation config (CmdShow command)) = do
   if showRaw command && showView command /= ExplodedView
     then renderFailure (CliUserFailure "--raw requires --view exploded")
@@ -753,6 +774,7 @@ dispatchWith dependencies (CliInvocation config (CmdCompare command)) = do
 
 data CliDispatchDependencies = CliDispatchDependencies
   { cliRunCompile :: ~(CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult))
+  , cliRunDoctor :: ~(CliConfig -> DoctorCommand -> IO (Either CliFailure DoctorOutput))
   , cliRunShow :: ~(CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult))
   , cliRunCompare :: ~(CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection))
   , cliRunHistory :: ~(CliConfig -> HistoryCommand -> IO (Either CliFailure HistoryProjection))
@@ -775,7 +797,7 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies runProductionCompile runProductionShow runProductionCompare runProductionHistory runProductionSearch runProductionRelevant materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies runProductionCompile runProductionDoctor runProductionShow runProductionCompare runProductionHistory runProductionSearch runProductionRelevant materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
 
 runProductionCompile :: CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult)
 runProductionCompile config command = do
@@ -799,6 +821,118 @@ runProductionCompile config command = do
                   | otherwise -> loadPublishedCompileResult published indexedRevision
                 (_, _, _, Just problem) -> pure (Left (CliUserFailure ("compile failed: " <> Text.pack (show problem))))
                 _ -> pure (Left (CliUserFailure "compile returned an incomplete result"))
+
+runProductionDoctor :: CliConfig -> DoctorCommand -> IO (Either CliFailure DoctorOutput)
+runProductionDoctor config command = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      revisionResult <- resolveRepositoryRevision repository (RevisionSpec (doctorAt command))
+      case revisionResult of
+        Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+        Right revision -> do
+          shallowResult <- isShallowRepository repository
+          case shallowResult of
+            Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+            Right shallow -> do
+              databaseResult <- prepareIndexPath repository
+              case databaseResult of
+                Left problem -> pure (Left (CliUserFailure problem))
+                Right database -> do
+                  indexed <- indexCommitted database repository (resolvedCommitOid revision)
+                  case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
+                    (True, Just published, Just indexedRevision, Nothing)
+                      | published /= database -> pure (Left (CliUserFailure "doctor published an unexpected database path"))
+                      | indexedRevision /= resolvedCommitOid revision -> pure (Left (CliUserFailure "doctor published an unexpected revision"))
+                      | otherwise -> loadDoctorOutput published indexedRevision shallow
+                    (_, _, _, Just problem) -> pure (Left (CliUserFailure ("doctor failed: " <> Text.pack (show problem))))
+                    _ -> pure (Left (CliUserFailure "doctor returned an incomplete index result"))
+
+loadDoctorOutput :: FilePath -> GitOid -> Bool -> IO (Either CliFailure DoctorOutput)
+loadDoctorOutput database expectedRevision shallow = do
+  captured <- try (bracket (open database) close readRows) :: IO (Either SomeException DoctorRows)
+  case captured of
+    Left exception ->
+      case fromException exception of
+        Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+        Nothing -> pure (Left (CliUserFailure ("unable to read doctor database: " <> Text.pack (displayException exception))))
+    Right (metadata, issues, conflicts) ->
+      pure (first CliUserFailure (doctorOutputFromRows database expectedRevision shallow metadata issues conflicts))
+  where
+    readRows connection = do
+      metadata <- query_ connection "SELECT key,value FROM meta ORDER BY key"
+      issues <- query_ connection "SELECT ordinal,code,severity,origin,adr_id,object_id,path,message FROM issue ORDER BY ordinal"
+      conflicts <- query_ connection "SELECT adr_id,state_token,summaries FROM adr_conflict ORDER BY adr_id"
+      pure (metadata, issues, conflicts)
+
+type DoctorRows =
+  ( [(Text, Text)]
+  , [(Int, Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)]
+  , [(Text, Text, Text)]
+  )
+
+doctorOutputFromRows
+  :: FilePath
+  -> GitOid
+  -> Bool
+  -> [(Text, Text)]
+  -> [(Int, Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)]
+  -> [(Text, Text, Text)]
+  -> Either Text DoctorOutput
+doctorOutputFromRows database expectedRevision shallow metadata issueRows conflictRows = do
+  compiled <- compileResultFromMeta database expectedRevision metadata
+  if coldCompilerIssueCount compiled == length issueRows
+    then pure ()
+    else Left "doctor issue rows do not match compiled issue count"
+  issues <- traverse materializeIssue issueRows
+  let errorCount = length (filter ((== "error") . doctorIssueSeverity) issues)
+      warningCount = length issues - errorCount
+  Right
+    DoctorOutput
+      { doctorOk = errorCount == 0
+      , doctorRevision = gitOidText expectedRevision
+      , doctorDatabase = Just database
+      , doctorShallow = shallow
+      , doctorIssues = issues
+      , doctorCacheStatus = []
+      , doctorCounts = DoctorCounts errorCount warningCount
+      , doctorCurrentAccess = Nothing
+      , doctorDatabaseBuild = Nothing
+      }
+  where
+    conflicts = Map.fromList [(adr, (token, summaries)) | (adr, token, summaries) <- conflictRows]
+
+    materializeIssue (_, code, severity, _, adr, objectId, path, message)
+      | severity /= "error" && severity /= "warning" =
+          Left ("doctor database has invalid issue severity: " <> severity)
+      | code == "ADR_CONFLICT" =
+          case adr >>= (`Map.lookup` conflicts) of
+            Nothing -> Left "doctor conflict issue is missing its conflict details"
+            Just (token, summaries) ->
+              Right
+                DoctorIssue
+                  { doctorIssueSeverity = severity
+                  , doctorIssueCode = code
+                  , doctorIssueMessage = message
+                  , doctorIssueAdrId = adr
+                  , doctorIssueObjectId = objectId
+                  , doctorIssuePath = path
+                  , doctorIssueStateToken = Just token
+                  , doctorIssueConflicts = map Aeson.String (Text.splitOn "\n" summaries)
+                  }
+      | otherwise =
+          Right
+            DoctorIssue
+              { doctorIssueSeverity = severity
+              , doctorIssueCode = code
+              , doctorIssueMessage = message
+              , doctorIssueAdrId = adr
+              , doctorIssueObjectId = objectId
+              , doctorIssuePath = path
+              , doctorIssueStateToken = Nothing
+              , doctorIssueConflicts = []
+              }
 
 loadPublishedCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
 loadPublishedCompileResult database expectedRevision = do
@@ -1597,6 +1731,53 @@ data CliRendered = CliRendered
   , renderedExitCode :: ExitCode
   }
   deriving (Eq, Show)
+
+renderDoctorOutcome :: DoctorCommand -> DoctorOutput -> CliRendered
+renderDoctorOutcome command result =
+  CliRendered output "" exitCode
+  where
+    output
+      | doctorJson command = renderCanonicalJson (aesonValueToJsonValue (doctorOutputJson result))
+      | otherwise =
+          Text.unlines
+            ( [ "ok=" <> booleanText (doctorOk result)
+              , "revision=" <> doctorRevision result
+              , "database=" <> maybe "null" Text.pack (doctorDatabase result)
+              , "shallow=" <> booleanText (doctorShallow result)
+              , "errors=" <> Text.pack (show (doctorErrorCount (doctorCounts result)))
+              , "warnings=" <> Text.pack (show (doctorWarningCount (doctorCounts result)))
+              ]
+                <> map issueLine (doctorIssues result)
+            )
+    exitCode
+      | doctorOk result = ExitSuccess
+      | otherwise = ExitFailure 4
+    booleanText True = "true"
+    booleanText False = "false"
+    issueLine issue =
+      "issue="
+        <> doctorIssueSeverity issue
+        <> ":"
+        <> doctorIssueCode issue
+        <> ":"
+        <> doctorIssueMessage issue
+
+aesonValueToJsonValue :: Aeson.Value -> JsonValue
+aesonValueToJsonValue value =
+  case value of
+    Aeson.Object fields ->
+      JsonObject
+        [ (Aeson.Key.toText key, aesonValueToJsonValue member)
+        | (key, member) <- KeyMap.toList fields
+        ]
+    Aeson.Array members -> JsonArray (map aesonValueToJsonValue (foldr (:) [] members))
+    Aeson.String member -> JsonString member
+    Aeson.Number member ->
+      case Scientific.floatingOrInteger member of
+        Right integer -> JsonNumber integer
+        Left decimal -> JsonDecimal decimal
+    Aeson.Bool member -> JsonBool member
+    Aeson.Null -> JsonNull
 
 renderCompileOutcome :: CompileCommand -> CompileResult -> CliRendered
 renderCompileOutcome command result =

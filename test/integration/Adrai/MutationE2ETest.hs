@@ -1026,6 +1026,122 @@ testP602ERealExecutable =
     , testCase "two-head obsolete and reactivate require explicit status resolution" p602eStatusConflicts
     ]
 
+testP602LRealExecutable :: TestTree
+testP602LRealExecutable =
+  testGroup "P6-02L real executable doctor"
+    [ testCase "doctor binds exact revisions and preserves caller-owned repository state" p602lDoctor ]
+
+p602lDoctor :: IO ()
+p602lDoctor =
+  withSystemTempDirectory "adrai p6-02l doctor" $ \temporary -> do
+    let repo = temporary </> "doctor repository \252"
+        database = repo </> ".adrai" </> "index.sqlite"
+        invalidPath = "architecture/adrai/decisions/broken.decision.md"
+        stagedPath = "caller-staged.bin"
+        dirtyPath = "seed.txt"
+        untrackedPath = "caller \252 space.txt"
+        stagedBytes = BS.pack [0, 255, 17, 0, 128, 64, 10]
+        callerPaths = [stagedPath, dirtyPath, untrackedPath]
+        expectedHealthy revision =
+          JsonObject
+            [ ("cache", JsonArray [])
+            , ("counts", JsonObject [("errors", JsonNumber 0), ("warnings", JsonNumber 0)])
+            , ("current_access", JsonNull)
+            , ("database", JsonString (T.pack database))
+            , ("database_build", JsonNull)
+            , ("issues", JsonArray [])
+            , ("ok", JsonBool True)
+            , ("revision", JsonString revision)
+            , ("shallow", JsonBool False)
+            ]
+        invalidIssue =
+          JsonObject
+            [ ("adr_id", JsonNull)
+            , ("code", JsonString "INVALID_MANAGED_DOCUMENT")
+            , ("conflicts", JsonArray [])
+            , ("message", JsonString "invalid managed document: DocumentCapsuleCount 0")
+            , ("object_id", JsonNull)
+            , ("path", JsonString (T.pack invalidPath))
+            , ("severity", JsonString "error")
+            , ("state_token", JsonNull)
+            ]
+        expectedInvalid revision =
+          JsonObject
+            [ ("cache", JsonArray [])
+            , ("counts", JsonObject [("errors", JsonNumber 1), ("warnings", JsonNumber 0)])
+            , ("current_access", JsonNull)
+            , ("database", JsonString (T.pack database))
+            , ("database_build", JsonNull)
+            , ("issues", JsonArray [invalidIssue])
+            , ("ok", JsonBool False)
+            , ("revision", JsonString revision)
+            , ("shallow", JsonBool False)
+            ]
+        runPreserved label arguments expectedExit expectedJson = do
+          baseline <- captureDoctorGitBaseline repo callerPaths
+          (exitCode, stdout, stderr) <- adraiRequiredRaw repo arguments
+          exitCode @?= expectedExit
+          stderr @?= ""
+          stdout @?= LBS.fromStrict (encodeUtf8 (renderCanonicalJson expectedJson))
+          assertDoctorGitPreserved repo callerPaths baseline
+          pure stdout
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> dirtyPath) "committed seed\n"
+    git repo ["add", "--", dirtyPath]
+    git repo ["commit", "-m", "doctor seed"]
+    _ <- assertExitSuccess "doctor setup init" =<< adraiRequiredRaw repo ["init", "--json"]
+    healthyRevision <- headCommit repo
+    assertIndexResolvedOid database healthyRevision
+
+    createDirectoryIfMissing True (takeDirectory (repo </> invalidPath))
+    BS.writeFile (repo </> invalidPath) "broken"
+    git repo ["add", "--", invalidPath]
+    git repo ["commit", "-m", "commit invalid managed document"]
+    invalidRevision <- headCommit repo
+    assertBool "invalid fixture must advance beyond healthy revision" (invalidRevision /= healthyRevision)
+
+    BS.writeFile (repo </> stagedPath) stagedBytes
+    git repo ["add", "--", stagedPath]
+    BS.writeFile (repo </> dirtyPath) "caller dirty seed \252\n"
+    BS.writeFile (repo </> untrackedPath) "caller untracked \252\n"
+
+    _ <- runPreserved "historical healthy doctor" ["doctor", "--at", T.unpack healthyRevision, "--json"] ExitSuccess (expectedHealthy healthyRevision)
+    assertIndexResolvedOid database healthyRevision
+    _ <- runPreserved "current invalid doctor" ["doctor", "--json"] (ExitFailure 4) (expectedInvalid invalidRevision)
+    assertIndexResolvedOid database invalidRevision
+
+    plainBaseline <- captureDoctorGitBaseline repo callerPaths
+    (plainExit, plainStdout, plainStderr) <- adraiRequiredRaw repo ["doctor", "--at", T.unpack healthyRevision]
+    plainExit @?= ExitSuccess
+    plainStderr @?= ""
+    plainStdout
+      @?= LBS.fromStrict
+        ( encodeUtf8
+            ( "ok=true\nrevision=" <> healthyRevision
+                <> "\ndatabase=" <> T.pack database
+                <> "\nshallow=false\nerrors=0\nwarnings=0\n"
+            )
+        )
+    assertDoctorGitPreserved repo callerPaths plainBaseline
+    assertIndexResolvedOid database healthyRevision
+
+    rejectionBaseline <- captureDoctorGitBaseline repo callerPaths
+    databaseBeforeRejection <- BS.readFile database
+    (revisionExit, revisionStdout, revisionStderr) <- adraiRequiredRaw repo ["doctor", "--at", "refs/heads/missing", "--json"]
+    revisionExit @?= ExitFailure 2
+    revisionStdout @?= ""
+    assertBool "invalid doctor revision must be a caught user error" ("adrai: " `LBS.isPrefixOf` revisionStderr && LBS.isSuffixOf "\n" revisionStderr)
+    assertDoctorGitPreserved repo callerPaths rejectionBaseline
+    BS.readFile database >>= (@?= databaseBeforeRejection)
+
+    let missingRepo = temporary </> "missing repository"
+    (missingExit, missingStdout, missingStderr) <- adraiRequiredRaw missingRepo ["doctor", "--json"]
+    missingExit @?= ExitFailure 2
+    missingStdout @?= ""
+    assertBool "missing doctor repository must be a caught user error" ("adrai: " `LBS.isPrefixOf` missingStderr && LBS.isSuffixOf "\n" missingStderr)
+
 p602eStatusConflicts :: IO ()
 p602eStatusConflicts =
   withSystemTempDirectory "adrai p6-02e status conflicts" $ \temporary -> do
@@ -1776,6 +1892,62 @@ data MutationFailureBaseline = MutationFailureBaseline
   , failureOwnedDirectories :: [(FilePath, [FilePath])]
   }
 
+data DoctorGitBaseline = DoctorGitBaseline
+  { doctorBaselineHead :: Text
+  , doctorBaselineSymbolicRef :: Text
+  , doctorBaselineRefOid :: Text
+  , doctorBaselineTree :: LBS.ByteString
+  , doctorBaselineRawIndex :: BS.ByteString
+  , doctorBaselineIndex :: LBS.ByteString
+  , doctorBaselineCachedDiff :: LBS.ByteString
+  , doctorBaselineWorktreeDiff :: LBS.ByteString
+  , doctorBaselineStatus :: LBS.ByteString
+  , doctorBaselineManagedCommitted :: [(Text, LBS.ByteString)]
+  , doctorBaselineManagedWorktree :: [(Text, BS.ByteString)]
+  , doctorBaselineCallerBytes :: [(FilePath, BS.ByteString)]
+  }
+  deriving (Eq, Show)
+
+captureDoctorGitBaseline :: FilePath -> [FilePath] -> IO DoctorGitBaseline
+captureDoctorGitBaseline repo callerPaths = do
+  currentHead <- headCommit repo
+  currentRef <- symbolicHeadRef repo
+  currentRefOid <- strip <$> gitText repo ["rev-parse", T.unpack currentRef]
+  completeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+  rawIndex <- BS.readFile (repo </> ".git" </> "index")
+  completeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+  cachedDiff <- gitStdout repo ["diff", "--cached", "--binary"]
+  worktreeDiff <- gitStdout repo ["diff", "--binary"]
+  status <- gitStdout repo ["status", "--porcelain=v1", "-z", "--untracked-files=all"]
+  let managedPaths = filter isManagedPath (T.lines (decodeUtf8 (LBS.toStrict completeTree)))
+  committed <- mapM (\path -> (,) path <$> gitStdout repo ["show", "HEAD:" <> T.unpack path]) managedPaths
+  worktree <- mapM (\path -> (,) path <$> BS.readFile (repo </> T.unpack path)) managedPaths
+  callerBytes <- mapM (\path -> (,) path <$> BS.readFile (repo </> path)) callerPaths
+  pure
+    DoctorGitBaseline
+      { doctorBaselineHead = currentHead
+      , doctorBaselineSymbolicRef = currentRef
+      , doctorBaselineRefOid = currentRefOid
+      , doctorBaselineTree = completeTree
+      , doctorBaselineRawIndex = rawIndex
+      , doctorBaselineIndex = completeIndex
+      , doctorBaselineCachedDiff = cachedDiff
+      , doctorBaselineWorktreeDiff = worktreeDiff
+      , doctorBaselineStatus = status
+      , doctorBaselineManagedCommitted = committed
+      , doctorBaselineManagedWorktree = worktree
+      , doctorBaselineCallerBytes = callerBytes
+      }
+  where
+    isManagedPath path =
+      "architecture/adrai/decisions/" `T.isPrefixOf` path
+        || "architecture/adrai/connections/" `T.isPrefixOf` path
+
+assertDoctorGitPreserved :: FilePath -> [FilePath] -> DoctorGitBaseline -> IO ()
+assertDoctorGitPreserved repo callerPaths baseline = do
+  current <- captureDoctorGitBaseline repo callerPaths
+  current @?= baseline
+
 captureMutationFailureBaseline :: FilePath -> FilePath -> IO MutationFailureBaseline
 captureMutationFailureBaseline repo database = do
   currentHead <- headCommit repo
@@ -2192,6 +2364,7 @@ tests =
       testP602CRealExecutable,
       testP602DRealExecutable,
       testP602ERealExecutable,
+      testP602LRealExecutable,
       testUnbornRepository,
       testUnrelatedStagedEntry,
       testDetachedHead,

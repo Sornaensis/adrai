@@ -35,6 +35,7 @@ import Adrai.CliRunner
   ( CliConfig (..),
     CliCommand (..),
     CompileCommand (..),
+    DoctorCommand (..),
     CliInvocation (..),
     ContentSource (..),
      CreateRequest (..),
@@ -78,6 +79,7 @@ import Adrai.CliRunner
      renderSearchOutcome,
      renderRelevantOutcome,
      renderCompileOutcome,
+     renderDoctorOutcome,
      capturePostCommitIndex,
     renderFailureOutcome,
     renderInitOutcome,
@@ -919,6 +921,80 @@ mutationCliContractTests =
         dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "compile repo"}) (CmdCompile explicit))
           >>= (@?= ExitSuccess)
         readIORef selectedRepo >>= (@?= Just "compile repo")
+        readIORef selectedCommand >>= (@?= Just explicit)
+    , testCase "doctor accepts only revision and JSON, renders exact health exits, and dispatches typed intent" $ do
+        let revision = "0123456789abcdef0123456789abcdef01234567"
+            defaulted = DoctorCommand "HEAD" False
+            explicit = DoctorCommand "refs/heads/release" True
+            healthy =
+              DoctorOutput
+                { doctorOk = True
+                , doctorRevision = revision
+                , doctorDatabase = Just "doctor.sqlite"
+                , doctorShallow = False
+                , doctorIssues = []
+                , doctorCacheStatus = []
+                , doctorCounts = DoctorCounts 0 0
+                , doctorCurrentAccess = Nothing
+                , doctorDatabaseBuild = Nothing
+                }
+            unhealthy =
+              healthy
+                { doctorOk = False
+                , doctorIssues = [DoctorIssue "error" "BROKEN" "bad" Nothing Nothing Nothing Nothing []]
+                , doctorCounts = DoctorCounts 1 0
+                }
+            expectedJson =
+              "{\n"
+                <> "  \"cache\": [],\n"
+                <> "  \"counts\": {\n"
+                <> "    \"errors\": 0,\n"
+                <> "    \"warnings\": 0\n"
+                <> "  },\n"
+                <> "  \"current_access\": null,\n"
+                <> "  \"database\": \"doctor.sqlite\",\n"
+                <> "  \"database_build\": null,\n"
+                <> "  \"issues\": [],\n"
+                <> "  \"ok\": true,\n"
+                <> "  \"revision\": \"" <> revision <> "\",\n"
+                <> "  \"shallow\": false\n"
+                <> "}\n"
+        parseCli ["doctor"] @?= Right (CliInvocation defaultCliConfig (CmdDoctor defaulted))
+        parseCli ["doctor", "--at", "refs/heads/release", "--json"]
+          @?= Right (CliInvocation defaultCliConfig (CmdDoctor explicit))
+        for_ [["doctor", "HEAD"], ["doctor", "--database", "other.sqlite"], ["doctor", "--worktree"]] assertParserFailure
+        renderDoctorOutcome explicit healthy @?= CliRendered expectedJson "" ExitSuccess
+        renderDoctorOutcome defaulted healthy
+          @?= CliRendered
+                ("ok=true\nrevision=" <> revision <> "\ndatabase=doctor.sqlite\nshallow=false\nerrors=0\nwarnings=0\n")
+                ""
+                ExitSuccess
+        renderDoctorOutcome defaulted unhealthy
+          @?= CliRendered
+                ("ok=false\nrevision=" <> revision <> "\ndatabase=doctor.sqlite\nshallow=false\nerrors=1\nwarnings=0\nissue=error:BROKEN:bad\n")
+                ""
+                (ExitFailure 4)
+        selectedRepo <- newIORef Nothing
+        selectedCommand <- newIORef Nothing
+        let dependencies =
+              CliDispatchDependencies
+                { cliRunDoctor = \config received -> do
+                    writeIORef selectedRepo (Just (configRepo config))
+                    writeIORef selectedCommand (Just received)
+                    pure (Right healthy)
+                , cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+                , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+                , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+                , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+                , cliRunInit = \_ -> error "init service must not be selected"
+                , cliRunCreate = \_ _ -> error "create service must not be selected"
+                , cliRunAmend = \_ _ -> error "amend service must not be selected"
+                , cliRunScope = \_ _ -> error "scope service must not be selected"
+                , cliRunDomain = \_ _ -> error "domain service must not be selected"
+                }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "doctor repo"}) (CmdDoctor explicit))
+          >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "doctor repo")
         readIORef selectedCommand >>= (@?= Just explicit)
     , testCase "search accepts only the frozen positional syntax, materializes strictly, renders exactly, and dispatches typed intent" $ do
         let defaulted = SearchCommand "" HybridRetrieval CollapsedView Nothing [] Nothing Nothing Nothing "HEAD" False 10 False
