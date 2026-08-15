@@ -12,7 +12,7 @@
 -- bit-identical public output and all 20 semantic SQLite tables.
 module Adrai.ConsistencyTest (tests) where
 
-import Adrai.Integration.CLI
+import Adrai.Integration.CLI hiding (adraiJson, adraiJsonOrThrow, tablesEqual)
 import Control.Monad (forM, forM_, void, when)
 import qualified Data.Aeson
 import qualified Data.Aeson.Key as AesonKey
@@ -28,7 +28,9 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Vector qualified as Vector
 import Database.SQLite.Simple
-  ( close,
+  ( Only (..),
+    SQLData,
+    close,
     open,
     query_,
   )
@@ -39,14 +41,51 @@ import System.Directory
     removeDirectoryRecursive,
     renamePath,
   )
-import System.FilePath ((</>), takeDirectory, (<.>))
+import System.Environment (lookupEnv)
+import System.Exit (ExitCode (..))
+import System.FilePath ((</>), isAbsolute, takeDirectory, (<.>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.Process.Typed (proc, readProcess)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase)
+import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
 -- ---------------------------------------------------------------------------
 -- JSON helper accessors
 -- ---------------------------------------------------------------------------
+
+-- | Run the executable selected for the standard test component without
+-- replacing its inherited environment.  The shared integration helper pins a
+-- minimal Git environment, which is appropriate for direct Git fixtures but
+-- prevents the native executable from resolving @git@ on Windows.
+adraiJson :: FilePath -> [String] -> IO (Either Text Data.Aeson.Value)
+adraiJson repoPath arguments = do
+  (exitCode, stdout, stderr) <- adraiRaw repoPath arguments
+  case exitCode of
+    ExitSuccess ->
+      case Data.Aeson.decode stdout of
+        Just value -> pure (Right value)
+        Nothing -> pure (Left "JSON parse error: invalid JSON")
+    ExitFailure code ->
+      pure
+        ( Left
+            ( "CLI failed (exit " <> T.pack (show code) <> "): "
+                <> decodeUtf8 (LBS.toStrict stderr)
+            )
+        )
+
+adraiRaw :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
+adraiRaw repoPath arguments = do
+  executable <- lookupEnv "ADRAI_EXE" >>= \case
+    Just path | not (null path) && isAbsolute path -> pure path
+    _ -> fail "ConsistencyTest requires ADRAI_EXE to name an absolute executable under test"
+  readProcess (proc executable ("--repo" : repoPath : arguments))
+
+adraiJsonOrThrow :: FilePath -> [String] -> IO Data.Aeson.Value
+adraiJsonOrThrow repoPath arguments = do
+  result <- adraiJson repoPath arguments
+  case result of
+    Left problem -> fail ("adrai " <> unwords arguments <> " error: " <> unpack problem)
+    Right value -> pure value
 
 _Object :: Data.Aeson.Value -> Maybe (KM.KeyMap Data.Aeson.Value)
 _Object (Data.Aeson.Object o) = Just o
@@ -114,13 +153,13 @@ headVal (Data.Aeson.Array arr) =
   if Vector.null arr then Nothing else Just (Vector.head arr)
 headVal _ = Nothing
 
--- | Extract the ADR ID from a create-adr result value.
+-- | Extract the ADR ID from a create result value.
 extractAdrId :: Data.Aeson.Value -> Maybe Text
 extractAdrId v = do
   o <- _Object v
   o .: "adr"
 
--- | Extract commit hash from a create-adr result.
+-- | Extract commit hash from a create result.
 extractCommit :: Data.Aeson.Value -> Maybe Text
 extractCommit v = do
   o <- _Object v
@@ -145,45 +184,79 @@ createCacheAdr
   :: FilePath
   -> IO Data.Aeson.Value
 createCacheAdr repo =
-  createAdr
+  createConsistencyAdr
     repo
     "Stable cache identity"
     "Cache identity derives from semantic inputs."
     "## Context\nBuilds move between workspaces.\n\n## Decision\nCache keys exclude absolute workspace paths and use source digests.\n\n## Consequences\nInputs must be normalized."
     ["compiler.cache"]
     ["src/compiler/cache/**"]
+    "llm:planner"
+    (Just "demo-model")
 
 -- | Create the "jobs / durable delivery" fixture ADR.
 createJobsAdr
   :: FilePath
   -> IO Data.Aeson.Value
 createJobsAdr repo =
-  createAdr
+  createConsistencyAdr
     repo
     "At-least-once job delivery"
     "Workers acknowledge durable jobs only after successful execution."
     "## Decision\nUse durable queues and idempotent job handlers."
     ["runtime.jobs"]
     ["src/jobs/**"]
+    "llm:planner"
+    (Just "demo-model")
 
 -- | Create a release-only ADR for the release branch.
 createReleaseAdr
   :: FilePath
   -> IO Data.Aeson.Value
 createReleaseAdr repo =
-  adraiJsonOrThrow repo
-    [ "create-adr",
-      "--title", "Release-only compatibility shim",
-      "--summary", "The old release retains its compatibility shim.",
-      "--body", "## Decision\nKeep the compatibility shim on the old release line.",
-      "--domain", "release.compatibility",
-      "--applies-to", "src/legacy/**",
-      "--actor", "human:release-owner",
-      "--model", "demo-model",
-      "--json"
-    ]
+  createConsistencyAdr
+    repo
+    "Release-only compatibility shim"
+    "The old release retains its compatibility shim."
+    "## Decision\nKeep the compatibility shim on the old release line."
+    ["release.compatibility"]
+    ["src/legacy/**"]
+    "human:release-owner"
+    (Just "demo-model")
 
--- | Amend an ADR via the ``amend-adr`` CLI command.
+createConsistencyAdr
+  :: FilePath
+  -> Text
+  -> Text
+  -> Text
+  -> [Text]
+  -> [Text]
+  -> Text
+  -> Maybe Text
+  -> IO Data.Aeson.Value
+createConsistencyAdr repo title summary body domains scopes actor model =
+  adraiJsonOrThrow repo
+    ( [ "create",
+        "--title", unpack title,
+        "--summary", unpack summary,
+        "--body", unpack (canonicalBody body),
+        "--actor", unpack actor
+      ]
+        <> maybe [] (\value -> ["--model", unpack value]) model
+        <> concatMap (\domain -> ["--domain", unpack domain]) domains
+        <> concatMap (\scope -> ["--applies-to", unpack scope]) scopes
+        <> ["--json"]
+    )
+
+initializeConsistencyRepo :: FilePath -> IO ()
+initializeConsistencyRepo repo = void (adraiJsonOrThrow repo ["init", "--json"])
+
+canonicalBody :: Text -> Text
+canonicalBody body
+  | "\n" `T.isSuffixOf` body = body
+  | otherwise = body <> "\n"
+
+-- | Amend an ADR through the current public CLI.
 amendAdrViaCli
   :: FilePath
   -> Text
@@ -193,13 +266,16 @@ amendAdrViaCli
   -> IO Data.Aeson.Value
 amendAdrViaCli repo adrId maybeTitle maybeSummary maybeBody =
   adraiJsonOrThrow repo
-    ( [ "amend-adr", unpack adrId ]
+    ( [ "amend", unpack adrId,
+        "--change-summary", "consistency oracle amendment",
+        "--actor", "human:architect"
+      ]
         <> concat
           [ maybe [] (\v -> ["--title", unpack v]) maybeTitle,
             maybe [] (\v -> ["--summary", unpack v]) maybeSummary,
-            maybe [] (\v -> ["--body", unpack v]) maybeBody
+            maybe [] (\v -> ["--body", unpack (canonicalBody v)]) maybeBody
           ]
-        <> ["--actor", "human:architect", "--json"]
+        <> ["--json"]
     )
 
 -- | Commit arbitrary files in the repo (fixture helper).
@@ -210,7 +286,7 @@ commitFilesWithMsg
   -> IO Text
 commitFilesWithMsg repo files message = do
   mapM_ writeAndCommit files
-  git repo ["--literal-pathspecs", "add", "--"]
+  git repo (["--literal-pathspecs", "add", "--"] <> map fst files)
   git repo ["commit", "-m", unpack message]
   gitStdout repo ["rev-parse", "HEAD"] >>= \h ->
     pure (strip (decodeUtf8 (LBS.toStrict h)))
@@ -260,31 +336,23 @@ semanticTables =
     "adr_materialization"
   ]
 
--- | Normalise a ByteString value inside an SQLite row so that
--- binary content is represented as a hex string (matching the
--- Python ``_normal`` function).
-normalise :: String -> String
-normalise s =
-  let bytes = BS.pack (map (fromIntegral . fromEnum) s)
-  in if BS.length bytes > 0 && BS.head bytes < 128
-     then s
-     else "{\"bytes\":\"" <> map (toEnum . fromIntegral) (BS.unpack bytes) <> "\"}"
-
 -- | Get all semantic table contents from a database.
-semanticTableContents :: FilePath -> IO [(String, [[String]])]
+semanticTableContents :: FilePath -> IO [(String, [[SQLData]])]
 semanticTableContents dbPath =
-  let fetchTable tbl conn = do
-        let tblName = decodeUtf8 tbl
-        let q = Query (T.pack ("SELECT * FROM " ++ unpack tblName ++ " ORDER BY rowid"))
-        rows <- query_ conn q :: IO [[String]]
-        pure (T.unpack tblName, rows)
+  let fetchTable (Only tblName) conn = do
+        let q = Query (T.pack ("SELECT * FROM " ++ unpack tblName))
+        rows <- query_ conn q :: IO [[SQLData]]
+        pure (T.unpack tblName, sortOn show rows)
   in do
     conn <- open dbPath
     tables <- query_ conn "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-      :: IO [BS.ByteString]
+      :: IO [Only Text]
     results <- forM tables (\tbl -> fetchTable tbl conn)
     close conn
     pure $ sortOn fst results
+
+tablesEqual :: Eq value => [(String, [[value]])] -> [(String, [[value]])] -> Bool
+tablesEqual = (==)
 
 -- | Remove the .adrai directory if it exists.
 removeAdraiIfExists :: FilePath -> IO ()
@@ -307,8 +375,16 @@ data Snapshot = Snapshot
   , snapSearches   :: Map Text Data.Aeson.Value
   , snapCompare    :: Maybe Data.Aeson.Value
   , snapDoctor     :: Maybe Data.Aeson.Value
-  , snapTables     :: [(String, [[String]])]
+  , snapTables     :: [(String, [[SQLData]])]
   } deriving (Eq, Show)
+
+-- | The semantic state that every public channel in a lightweight snapshot
+-- must expose. Healthy snapshots fail fast on any CLI error; conflicted
+-- snapshots accept only the one frozen decision-conflict shape.
+data PublicSnapshotExpectation
+  = ExpectHealthy
+  | ExpectDecisionConflict Text
+  deriving (Eq, Show)
 
 -- | Build a snapshot of the given repository.
 -- This is the core of the consistency oracle: it collects all public
@@ -323,7 +399,7 @@ snapshot repo compareFrom = do
   -- Search all visible ADRs
   allResults <- adraiJsonOrThrow repo
     [ "search", "--include-obsolete", "--limit", "1000", "--json" ]
-  let adrIds = sort $ mapMaybe adrFromResult (fromMaybe [] (valValueList allResults))
+  let adrIds = sort (adrIdsFromSearch allResults)
   -- If no ADRs found, get empty list
   let adrIds' = if null adrIds then [] else adrIds
 
@@ -343,13 +419,13 @@ snapshot repo compareFrom = do
 
   -- Searches
   fts <- adraiJsonOrThrow repo
-    [ "search", "--query", "cache identity durable", "--fts",
+    [ "search", "cache identity durable", "--mode", "fts",
       "--include-obsolete", "--limit", "50", "--json" ]
   vector <- adraiJsonOrThrow repo
-    [ "search", "--query", "memoized artifact fingerprint", "--vector",
+    [ "search", "memoized artifact fingerprint", "--mode", "vector",
       "--include-obsolete", "--limit", "50", "--json" ]
   hybrid <- adraiJsonOrThrow repo
-    [ "search", "--query", "durable worker acknowledgement", "--hybrid",
+    [ "search", "durable worker acknowledgement", "--mode", "hybrid",
       "--include-obsolete", "--limit", "50", "--json" ]
   fileSearch <- adraiJsonOrThrow repo
     [ "search", "--file", "src/compiler/cache/Key.py",
@@ -368,7 +444,7 @@ snapshot repo compareFrom = do
 
   -- Compare
   compareResult <- adraiJsonOrThrow repo
-    [ "compare", "--from", unpack compareFrom, "--to", "HEAD",
+    [ "compare", unpack compareFrom, "HEAD",
       "--include-unchanged", "--json" ]
   -- Strip cache field from compare
   let strippedCompare = stripCacheField compareResult
@@ -378,7 +454,7 @@ snapshot repo compareFrom = do
   let strippedDoctor = stripCacheField doctorResult
 
   -- Semantic database tables
-  let dbPath = repo </> ".adrai" </> "adrai.sqlite"
+  let dbPath = repo </> ".adrai" </> "index.sqlite"
   tables <- semanticTableContents dbPath
 
   pure Snapshot
@@ -438,14 +514,38 @@ snapshotsTablesEqual s1 s2 =
 -- | Get ADR IDs from a search result.
 adrIdsFromSearch :: Data.Aeson.Value -> [Text]
 adrIdsFromSearch v =
-  mapMaybe adrFromResult (fromMaybe [] (valValueList v))
+  mapMaybe adrFromResult (getSearchResults v)
 
--- | Get the "conflict" field from a collapsed projection.
+-- | Retain a successful JSON response or one exact, expected semantic
+-- conflict. Any other public CLI failure remains a test failure.
+publicJsonOrConflict :: FilePath -> [String] -> Text -> IO Data.Aeson.Value
+publicJsonOrConflict repo arguments expectedFailure = do
+  result <- adraiJson repo arguments
+  case result of
+    Right value -> pure value
+    Left failure
+      | failure == expectedFailure -> pure (Data.Aeson.String failure)
+      | otherwise -> fail ("adrai " <> unwords arguments <> " error: " <> unpack failure)
+
+showConflictFailure :: Text
+showConflictFailure =
+  "CLI failed (exit 3): adrai: conflict: ADR requires resolution: 2 decision heads\n"
+
+searchConflictFailure :: Text
+searchConflictFailure =
+  "CLI failed (exit 3): adrai: conflict: search results require resolution: 2 decision heads\n"
+
+-- | Get the public resolution requirement from a collapsed projection or its
+-- frozen conflict failure.
 getConflict :: Data.Aeson.Value -> Maybe Bool
 getConflict v =
   case _Object v of
-    Nothing -> Nothing
-    Just o  -> o .: "conflict"
+    Just o -> o .: "resolution_required"
+    Nothing ->
+      case v of
+        Data.Aeson.String failure
+          | "adrai: conflict: ADR requires resolution: 2 decision heads" `T.isInfixOf` failure -> Just True
+        _ -> Nothing
 
 -- | Get the "record" field from a collapsed projection.
 getRecord :: Data.Aeson.Value -> Maybe Data.Aeson.Value
@@ -496,6 +596,55 @@ getDoctorOk v =
     Nothing -> Nothing
     Just o  -> o .: "ok"
 
+requireDoctorJson :: FilePath -> ExitCode -> IO Data.Aeson.Value
+requireDoctorJson repo expectedExit = do
+  (exitCode, stdout, stderr) <- adraiRaw repo ["doctor", "--json"]
+  exitCode @?= expectedExit
+  stderr @?= ""
+  case Data.Aeson.decode stdout of
+    Nothing -> assertFailure "doctor did not emit valid JSON"
+    Just value -> pure value
+
+assertConflictDoctor :: FilePath -> Text -> IO Data.Aeson.Value
+assertConflictDoctor repo expectedAdr = do
+  doctor <- requireDoctorJson repo (ExitFailure 4)
+  getDoctorOk doctor @?= Just False
+  doctorIssues <-
+    case _Object doctor >>= (.: "issues") of
+      Just values -> pure (values :: [Data.Aeson.Value])
+      Nothing -> assertFailure "conflicted doctor output is missing issues"
+  connection <- open (repo </> ".adrai" </> "index.sqlite")
+  issueRows <- query_ connection
+    "SELECT code,adr_id,message FROM issue WHERE code='ADR_CONFLICT' ORDER BY ordinal"
+    :: IO [(Text, Maybe Text, Text)]
+  conflictRows <- query_ connection
+    "SELECT adr_id,state_token,summaries FROM adr_conflict ORDER BY adr_id"
+    :: IO [(Text, Text, Text)]
+  close connection
+  case (doctorIssues, issueRows, conflictRows) of
+    ( [Data.Aeson.Object issue]
+      , [("ADR_CONFLICT", Just issueAdr, issueMessage)]
+      , [(conflictAdr, stateToken, summaries)]
+      ) -> do
+        issueAdr @?= expectedAdr
+        conflictAdr @?= expectedAdr
+        issueMessage @?= T.intercalate "; " (T.splitOn "\n" summaries)
+        (issue .: "code" :: Maybe Text) @?= Just "ADR_CONFLICT"
+        (issue .: "adr_id" :: Maybe Text) @?= Just expectedAdr
+        (issue .: "state_token" :: Maybe Text) @?= Just stateToken
+        (issue .: "conflicts" :: Maybe [Text]) @?= Just (T.splitOn "\n" summaries)
+    other -> assertFailure ("unexpected doctor conflict join: " <> show other)
+  pure doctor
+
+assertHealthyDoctor :: FilePath -> IO Data.Aeson.Value
+assertHealthyDoctor repo = do
+  doctor <- requireDoctorJson repo ExitSuccess
+  getDoctorOk doctor @?= Just True
+  case _Object doctor >>= (.: "issues") of
+    Just values -> (values :: [Data.Aeson.Value]) @?= []
+    Nothing -> assertFailure "healthy doctor output is missing issues"
+  pure doctor
+
 -- | Get the "visible" field (search results) from a snapshot's search.
 getSearchResults :: Data.Aeson.Value -> [Data.Aeson.Value]
 getSearchResults v =
@@ -510,50 +659,71 @@ getSearchResults v =
 -- | Build a snapshot matching the Python ``public_snapshot`` helper
 -- used by test_consistency_oracle.py. This is a lighter snapshot that
 -- omits the full database tables but includes everything else.
-publicSnapshot :: FilePath -> [Text] -> IO Snapshot
-publicSnapshot repo adrIds = do
+publicSnapshot :: FilePath -> PublicSnapshotExpectation -> [Text] -> IO Snapshot
+publicSnapshot repo expectation adrIds = do
   compiled <- adraiJsonOrThrow repo ["compile", "--json"]
   let revision = fromMaybe "" (lookupText compiled "revision")
 
-  visible <- adraiJsonOrThrow repo
+  visible <- snapshotJson
     [ "search", "--include-obsolete", "--limit", "1000", "--json" ]
-  let visibleAdrs = sort (adrIdsFromSearch visible)
+    searchConflictFailure
+  visibleAdrs <-
+    case (expectation, visible) of
+      (ExpectDecisionConflict _, Data.Aeson.String failure)
+        | failure == searchConflictFailure -> pure (sort adrIds)
+      (ExpectDecisionConflict _, value) ->
+        assertFailure ("conflicted snapshot must expose the frozen search conflict, got " <> show value)
+      (ExpectHealthy, value) -> do
+        let discovered = sort (adrIdsFromSearch value)
+            expected = sort adrIds
+        if discovered == expected
+          then pure discovered
+          else assertFailure ("visible ADR set mismatch: expected " <> show expected <> ", got " <> show discovered)
 
   -- Collapsed and exploded projections for each ADR
   collapsedMap <- Map.fromList <$> mapM (\adrId -> do
-    v <- adraiJsonOrThrow repo
+    v <- snapshotJson
       [ "show", unpack adrId, "--view", "collapsed", "--json" ]
+      showConflictFailure
     pure (adrId, v)
     ) visibleAdrs
 
   explodedMap <- Map.fromList <$> mapM (\adrId -> do
-    v <- adraiJsonOrThrow repo
+    v <- snapshotJson
       [ "show", unpack adrId, "--view", "exploded", "--json" ]
+      showConflictFailure
     pure (adrId, v)
     ) visibleAdrs
 
   -- Searches
-  fts <- adraiJsonOrThrow repo
-    [ "search", "--query", "content digest queue acknowledgement",
-      "--fts", "--include-obsolete", "--limit", "100", "--json" ]
-  vector <- adraiJsonOrThrow repo
-    [ "search", "--query", "memoized artifact fingerprint",
-      "--vector", "--include-obsolete", "--limit", "100", "--json" ]
-  hybrid <- adraiJsonOrThrow repo
-    [ "search", "--query", "durable worker execution",
-      "--hybrid", "--include-obsolete", "--limit", "100", "--json" ]
-  fileCache <- adraiJsonOrThrow repo
+  fts <- snapshotJson
+    [ "search", "content digest queue acknowledgement", "--mode", "fts",
+      "--include-obsolete", "--limit", "100", "--json" ]
+    searchConflictFailure
+  vector <- snapshotJson
+    [ "search", "memoized artifact fingerprint", "--mode", "vector",
+      "--include-obsolete", "--limit", "100", "--json" ]
+    searchConflictFailure
+  hybrid <- snapshotJson
+    [ "search", "durable worker execution", "--mode", "hybrid",
+      "--include-obsolete", "--limit", "100", "--json" ]
+    searchConflictFailure
+  fileCache <- snapshotJson
     [ "search", "--file", "src/runtime/cache/Key.py",
       "--include-obsolete", "--limit", "100", "--json" ]
-  fileJobs <- adraiJsonOrThrow repo
+    searchConflictFailure
+  fileJobs <- snapshotJson
     [ "search", "--file", "src/jobs/Worker.py",
       "--include-obsolete", "--limit", "100", "--json" ]
-  domainCompiler <- adraiJsonOrThrow repo
+    searchConflictFailure
+  domainCompiler <- snapshotJson
     [ "search", "--domain", "compiler",
       "--include-obsolete", "--limit", "100", "--json" ]
-  domainRuntime <- adraiJsonOrThrow repo
+    searchConflictFailure
+  domainRuntime <- snapshotJson
     [ "search", "--domain", "runtime",
       "--include-obsolete", "--limit", "100", "--json" ]
+    searchConflictFailure
 
   let searchesMap = Map.fromList
         [ ("fts", fts),
@@ -565,8 +735,26 @@ publicSnapshot repo adrIds = do
           ("domain_runtime", domainRuntime)
         ]
 
+  case expectation of
+    ExpectHealthy -> pure ()
+    ExpectDecisionConflict _ -> do
+      forM_ (Map.elems collapsedMap <> Map.elems explodedMap) $ \projection ->
+        projection @?= Data.Aeson.String showConflictFailure
+      forM_ ["fts", "vector", "hybrid", "domain_compiler"] $ \key ->
+        Map.lookup key searchesMap @?= Just (Data.Aeson.String searchConflictFailure)
+      forM_ ["file_cache", "file_jobs", "domain_runtime"] $ \key ->
+        case Map.lookup key searchesMap of
+          Nothing -> assertFailure ("missing conflicted search projection: " <> unpack key)
+          Just outcome -> getSearchResults outcome @?= []
+
+  doctor <-
+    case expectation of
+      ExpectHealthy -> assertHealthyDoctor repo
+      ExpectDecisionConflict expectedAdr -> assertConflictDoctor repo expectedAdr
+  let strippedDoctor = stripCacheField doctor
+
   -- Database tables
-  let dbPath = repo </> ".adrai" </> "adrai.sqlite"
+  let dbPath = repo </> ".adrai" </> "index.sqlite"
   tables <- semanticTableContents dbPath
 
   pure Snapshot
@@ -576,9 +764,14 @@ publicSnapshot repo adrIds = do
     , snapExploded = explodedMap
     , snapSearches = searchesMap
     , snapCompare = Nothing
-    , snapDoctor = Nothing
+    , snapDoctor = Just strippedDoctor
     , snapTables = tables
     }
+  where
+    snapshotJson arguments conflictFailure =
+      case expectation of
+        ExpectHealthy -> adraiJsonOrThrow repo arguments
+        ExpectDecisionConflict _ -> publicJsonOrConflict repo arguments conflictFailure
 
 -- ---------------------------------------------------------------------------
 -- Helpers for "withColdRebuild" pattern
@@ -586,11 +779,11 @@ publicSnapshot repo adrIds = do
 
 -- | Take a snapshot, remove .adrai, take another snapshot, and verify
 -- they are identical (both public API and all 20 semantic tables).
-assertColdWarmMatches :: FilePath -> [Text] -> IO ()
-assertColdWarmMatches repo adrIds = do
-  warm <- publicSnapshot repo adrIds
+assertColdWarmMatches :: FilePath -> PublicSnapshotExpectation -> [Text] -> IO ()
+assertColdWarmMatches repo expectation adrIds = do
+  warm <- publicSnapshot repo expectation adrIds
   removeAdraiIfExists repo
-  cold <- publicSnapshot repo adrIds
+  cold <- publicSnapshot repo expectation adrIds
 
   -- Public API must match
   assertBool "public snapshot mismatch (revision, ADRs, projections, searches)"
@@ -637,6 +830,7 @@ testAllMutationAxes :: IO ()
 testAllMutationAxes =
   withSystemTempDirectory "adrai consistency mutation" $ \tmpDir -> do
     repo <- createTestRepo tmpDir
+    initializeConsistencyRepo repo
 
     -- Create fixture ADRs
     cache <- createCacheAdr repo
@@ -668,35 +862,35 @@ testAllMutationAxes =
 
     -- Mutation: change domains
     adraiJsonOrThrow repo
-      [ "amend-adr", unpack cacheId,
-        "--change-domain", "compiler.cache=compiler.cache.identity",
+      [ "domain", unpack cacheId,
+        "--refine", "compiler.cache=compiler.cache.identity",
+        "--reason", "refine cache domain",
         "--actor", "human:compiler-owner", "--json"
       ]
 
     -- Mutation: change scope
     adraiJsonOrThrow repo
-      [ "amend-adr", unpack cacheId,
-        "--add-scope", "src/runtime/cache/**",
+      [ "scope", unpack cacheId,
+        "--add", "src/runtime/cache/**",
+        "--reason", "expand cache scope",
         "--actor", "human:compiler-owner", "--json"
       ]
 
     -- Mutation: obsolete then reactivate ADR (jobs)
     adraiJsonOrThrow repo
-      [ "amend-adr", unpack jobsId,
-        "--status", "obsolete",
+      [ "obsolete", unpack jobsId,
         "--reason", "A replacement was expected to own queue acknowledgement.",
         "--actor", "human:runtime-owner", "--json"
       ]
     adraiJsonOrThrow repo
-      [ "amend-adr", unpack jobsId,
-        "--status", "active",
+      [ "reactivate", unpack jobsId,
         "--reason", "The replacement did not cover worker acknowledgement semantics.",
         "--actor", "human:runtime-owner", "--json"
       ]
 
     -- First cold/warm verification on main
     let allAdrIds = [cacheId, jobsId]
-    assertColdWarmMatches repo allAdrIds
+    assertColdWarmMatches repo ExpectHealthy allAdrIds
 
     -- Create develop branch with noise commits
     git repo ["switch", "-c", "develop"]
@@ -708,17 +902,16 @@ testAllMutationAxes =
 
     -- Create feature branch with observability ADR
     git repo ["switch", "-c", "feature/observability"]
-    observability <- adraiJsonOrThrow repo
-      [ "create-adr",
-        "--title", "Structured runtime telemetry",
-        "--summary", "Runtime operations emit stable structured telemetry events.",
-        "--body", "## Decision\nEmit structured events with stable names and correlation identifiers.",
-        "--domain", "runtime.observability",
-        "--applies-to", "src/runtime/telemetry/**",
-        "--actor", "llm:feature-agent",
-        "--model", "planner-v1",
-        "--json"
-      ]
+    observability <-
+      createConsistencyAdr
+        repo
+        "Structured runtime telemetry"
+        "Runtime operations emit stable structured telemetry events."
+        "## Decision\nEmit structured events with stable names and correlation identifiers."
+        ["runtime.observability"]
+        ["src/runtime/telemetry/**"]
+        "llm:feature-agent"
+        (Just "planner-v1")
     let observabilityId = fromMaybe "" (extractAdrId observability)
     let allAdrIds' = [cacheId, jobsId, observabilityId]
 
@@ -735,7 +928,7 @@ testAllMutationAxes =
       "develop: continue after feature merge"
 
     -- Second cold/warm verification on develop
-    assertColdWarmMatches repo allAdrIds'
+    assertColdWarmMatches repo ExpectHealthy allAdrIds'
 
     -- Switch to main, merge develop
     git repo ["switch", "main"]
@@ -743,7 +936,7 @@ testAllMutationAxes =
     mainTip <- headCommit repo
 
     -- Verify on main: observability ADR is visible
-    assertColdWarmMatches repo allAdrIds'
+    assertColdWarmMatches repo ExpectHealthy allAdrIds'
 
     -- Verify observability ADR appears in main's visible set
     mainVisible <- adraiJsonOrThrow repo
@@ -760,7 +953,7 @@ testAllMutationAxes =
 
     -- Switch to release branch and verify
     git repo ["switch", "release/2025-08-01"]
-    assertColdWarmMatches repo allAdrIds
+    assertColdWarmMatches repo ExpectHealthy allAdrIds
 
     -- Verify observability ADR is NOT visible on release
     releaseVisible <- adraiJsonOrThrow repo
@@ -781,7 +974,7 @@ testAllMutationAxes =
 
     -- Compare release vs main
     comparison <- adraiJsonOrThrow repo
-      [ "compare", "--from", "release/2025-08-01", "--to", unpack mainTip, "--json" ]
+      [ "compare", "release/2025-08-01", unpack mainTip, "--json" ]
     let entries = fromMaybe [] (getCompareEntries comparison)
     let addedAdrs = mapMaybe getEntryAdr $ filter ((== Just "added") . getEntryKind) entries
     let changedAdrs = mapMaybe getEntryAdr $ filter ((== Just "changed") . getEntryKind) entries
@@ -793,7 +986,7 @@ testAllMutationAxes =
     -- Repeated switching must recover exactly the same state
     forM_ [0 .. 2] $ \_ -> do
       git repo ["switch", "main"]
-      mainSnap <- publicSnapshot repo allAdrIds'
+      mainSnap <- publicSnapshot repo ExpectHealthy allAdrIds'
       -- Verify observability is visible
       mainCheck <- adraiJsonOrThrow repo
         [ "search", "--include-obsolete", "--limit", "1000", "--json" ]
@@ -816,6 +1009,7 @@ testDivergentAmendments :: IO ()
 testDivergentAmendments =
   withSystemTempDirectory "adrai consistency divergent" $ \tmpDir -> do
     repo <- createTestRepo tmpDir
+    initializeConsistencyRepo repo
 
     -- Create initial ADR on main
     created <- createCacheAdr repo
@@ -847,7 +1041,7 @@ testDivergentAmendments =
     git repo ["merge", "--no-ff", "feature/cache-key", "-m", "merge competing cache policy"]
 
     -- Verify conflicted state
-    conflictedSnap <- publicSnapshot repo [createdId]
+    conflictedSnap <- publicSnapshot repo (ExpectDecisionConflict createdId) [createdId]
     let collapsed = Map.lookup createdId (snapCollapsed conflictedSnap)
     case collapsed of
       Nothing -> assertFailure "could not find collapsed ADR in conflicted snapshot"
@@ -855,9 +1049,18 @@ testDivergentAmendments =
         let conflict = getConflict v
         assertBool "ADR should have conflict=true after divergent merge"
           (conflict == Just True)
-
+        v @?= Data.Aeson.String "CLI failed (exit 3): adrai: conflict: ADR requires resolution: 2 decision heads\n"
+    let conflictSearchFailure =
+          Data.Aeson.String
+            "CLI failed (exit 3): adrai: conflict: search results require resolution: 2 decision heads\n"
+    forM_ ["domain_compiler", "fts", "hybrid", "vector"] $ \key ->
+      Map.lookup key (snapSearches conflictedSnap) @?= Just conflictSearchFailure
+    forM_ ["domain_runtime", "file_cache", "file_jobs"] $ \key ->
+      case Map.lookup key (snapSearches conflictedSnap) of
+        Nothing -> assertFailure ("missing conflicted search projection: " <> unpack key)
+        Just outcome -> getSearchResults outcome @?= []
     -- Cold/warm match in conflicted state
-    assertColdWarmMatches repo [createdId]
+    assertColdWarmMatches repo (ExpectDecisionConflict createdId) [createdId]
 
     -- Resolve by amending again
     resolved <- amendAdrViaCli repo createdId
@@ -866,7 +1069,7 @@ testDivergentAmendments =
       (Just "## Decision\nUse source, compiler ABI, and target-platform digests for cache identity.")
 
     -- Final cold/warm verification
-    finalSnap <- publicSnapshot repo [createdId]
+    finalSnap <- publicSnapshot repo ExpectHealthy [createdId]
     let collapsed' = Map.lookup createdId (snapCollapsed finalSnap)
     case collapsed' of
       Nothing -> assertFailure "could not find collapsed ADR in final snapshot"
@@ -875,28 +1078,20 @@ testDivergentAmendments =
         assertBool "ADR conflict should be resolved"
           (conflict' == Just False)
 
-        -- The resolved record should match what amend-adr returned
+        -- The resolved record should match the ordinary amend result.
         let resolvedRecord = fromMaybe "" (lookupString resolved "record")
-            collapsedRecord' = fromMaybe "" (lookupString (fromMaybe (Data.Aeson.String "") (getRecord v')) "record")
+            collapsedRecord' = fromMaybe "" (getRecord v' >>= valText)
         assertBool "resolved record should match collapsed record"
-          (resolvedRecord == collapsedRecord')
-
+          (T.pack resolvedRecord == collapsedRecord')
     -- Cold/warm match after resolution
-    assertColdWarmMatches repo [createdId]
+    assertColdWarmMatches repo ExpectHealthy [createdId]
 
-    -- Verify single record head
-    case collapsed' of
-      Nothing -> assertFailure "could not find collapsed in final snapshot"
-      Just v'' -> do
-        headCount <- case _Object v'' of
-          Nothing -> pure 0
-          Just o -> case o .: "record_heads" of
-            Nothing -> pure 0
-            Just heads -> case heads of
-              Data.Aeson.Array arr -> pure (Vector.length arr)
-              _ -> pure 0
-        assertBool "should have exactly 1 record head after resolution"
-          (headCount == 1)
+    -- The reconciliation operation must retain both divergent parents; the
+    -- resolved collapsed output above proves that this is now one current
+    -- decision rather than a remaining conflict.
+    case _Object resolved >>= (.: "amends") :: Maybe [Text] of
+      Just parents -> assertBool "reconciliation must retain both decision heads as parents" (length parents == 2)
+      Nothing -> assertFailure "ordinary reconciliation result must expose both amended parents"
 
 -- =====================================================================
 -- Test 3: Merge-heavy branch caches are semantically identical
@@ -907,6 +1102,7 @@ testMergeHeavyBranchEquivalence :: IO ()
 testMergeHeavyBranchEquivalence =
   withSystemTempDirectory "adrai equivalence merge-heavy" $ \tmpDir -> do
     repo <- createTestRepo tmpDir
+    initializeConsistencyRepo repo
 
     -- Create fixture ADRs on main
     cache <- createCacheAdr repo
@@ -928,15 +1124,17 @@ testMergeHeavyBranchEquivalence =
 
     -- Change scope on main
     adraiJsonOrThrow repo
-      [ "amend-adr", unpack cacheId,
-        "--add-scope", "src/runtime/cache/**",
+      [ "scope", unpack cacheId,
+        "--add", "src/runtime/cache/**",
+        "--reason", "expand cache scope",
         "--actor", "human:main-architect", "--json"
       ]
 
     -- Change domains on main
     adraiJsonOrThrow repo
-      [ "amend-adr", unpack cacheId,
-        "--change-domain", "compiler.cache=compiler.cache.identity",
+      [ "domain", unpack cacheId,
+        "--refine", "compiler.cache=compiler.cache.identity",
+        "--reason", "refine cache domain",
         "--actor", "human:main-architect", "--json"
       ]
 
@@ -945,17 +1143,16 @@ testMergeHeavyBranchEquivalence =
 
     -- Switch to feature branch from develop
     git repo ["switch", "-c", "feature/api-contract", "develop"]
-    api <- adraiJsonOrThrow repo
-      [ "create-adr",
-        "--title", "Versioned API contracts",
-        "--summary", "Public APIs evolve through explicit versioned contracts.",
-        "--body", "## Decision\nPublish versioned endpoint schemas and compatibility windows.",
-        "--domain", "api.compatibility",
-        "--applies-to", "src/api/**",
-        "--actor", "llm:feature-architect",
-        "--model", "architecture-agent",
-        "--json"
-      ]
+    api <-
+      createConsistencyAdr
+        repo
+        "Versioned API contracts"
+        "Public APIs evolve through explicit versioned contracts."
+        "## Decision\nPublish versioned endpoint schemas and compatibility windows."
+        ["api.compatibility"]
+        ["src/api/**"]
+        "llm:feature-architect"
+        (Just "architecture-agent")
     let apiId = fromMaybe "" (extractAdrId api)
 
     -- Amend jobs on feature
@@ -981,17 +1178,16 @@ testMergeHeavyBranchEquivalence =
       (Just "The release line freezes source-digest cache identity.")
       (Just "## Decision\nUse source digests and freeze the release cache namespace.")
 
-    releasePolicy <- adraiJsonOrThrow repo
-      [ "create-adr",
-        "--title", "Release hotfix policy",
-        "--summary", "Release branches accept narrowly scoped verified hotfixes.",
-        "--body", "## Decision\nRequire focused hotfix commits and release verification.",
-        "--domain", "delivery.release",
-        "--applies-to", "release/**",
-        "--actor", "human:release-manager",
-        "--model", "demo-model",
-        "--json"
-      ]
+    releasePolicy <-
+      createConsistencyAdr
+        repo
+        "Release hotfix policy"
+        "Release branches accept narrowly scoped verified hotfixes."
+        "## Decision\nRequire focused hotfix commits and release verification."
+        ["delivery.release"]
+        ["release/**"]
+        "human:release-manager"
+        (Just "demo-model")
     let releasePolicyId = fromMaybe "" (extractAdrId releasePolicy)
 
     releaseBeforeNoise <- headCommit repo
@@ -1001,14 +1197,10 @@ testMergeHeavyBranchEquivalence =
     git repo ["merge", "--no-ff", "release/2025-08-01", "-m", "merge release architecture"]
 
     -- Verify conflict state after release merge
-    cacheAfterMerge <- adraiJsonOrThrow repo
+    cacheAfterMerge <- publicJsonOrConflict repo
       [ "show", unpack cacheId, "--view", "collapsed", "--json" ]
-    case _Object cacheAfterMerge of
-      Nothing -> pure ()
-      Just o  -> case o .: "decision heads" :: Maybe [Text] of
-        Nothing -> pure ()
-        Just _  -> pure ()  -- conflict state expected
-      _ -> pure ()
+      showConflictFailure
+    getConflict cacheAfterMerge @?= Just True
 
     -- Resolve conflict
     void $ amendAdrViaCli repo cacheId

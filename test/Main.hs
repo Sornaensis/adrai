@@ -8,6 +8,7 @@ import qualified Adrai.CompilerMaterializationProperties
 import qualified Adrai.CompilerMaterializationTest
 import qualified Adrai.CompilerSearchSqliteTest
 import qualified Adrai.CompilerSnapshotTest
+import qualified Adrai.ConsistencyTest
 import qualified Adrai.ColdCompilerTest
 import qualified Adrai.ColdCompilerGoldenTest
 import qualified Adrai.Compiler.CacheSelectionTest
@@ -237,6 +238,7 @@ tests =
       testGroup
           "P4-07"
           [ Adrai.CacheIntegrationTest.tests,
+            Adrai.ConsistencyTest.tests,
             Adrai.QueryIntegrationTest.tests,
             Adrai.EnvironmentTest.tests,
             Adrai.EvolutionCompareAnnTest.tests,

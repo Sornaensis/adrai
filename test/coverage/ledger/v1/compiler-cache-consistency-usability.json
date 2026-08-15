@@ -93,30 +93,30 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_consistency_oracle.py",
                      "pythonMethod":  "test_all_mutation_axes_and_merge_heavy_branch_switches_are_cold_warm_identical",
                      "behaviorContract":  "Across every mutation axis, merges, and repeated branch switches, warm and cold rebuilds produce identical public results and semantic database tables for each revision.",
-                     "haskellTestName":  "all mutation axes and merge heavy branch switches are cold warm identical",
-                     "haskellTestPath":  "test/integration/Adrai/CompilerConsistencyTest.hs",
+                     "haskellTestName":  "all_mutation_axes_and_merge_heavy_branch_switches_are_cold_warm_identical",
+                     "haskellTestPath":  "test/integration/Adrai/ConsistencyTest.hs",
                      "haskellTestType":  "integration",
                      "phaseOwner":  "P5",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"all mutation axes and merge heavy branch switches are cold warm identical\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_consistency_oracle.py:15-104",
-                                      "result":  "ADRAI_1_Source/tests/test_consistency_oracle.py:15-104 | ADRAI_1_Source/tests/test_consistency_oracle.py:106-230"
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/Consistency oracle/\" -j 1'",
+                                      "fixture":  "ConsistencyTest.testAllMutationAxes asserts cold/warm equality for current compile, search, collapsed/exploded projections and typed SQLite rows after amend/domain/scope/status mutations, merges, and repeated main/release switches; scope capsules compile with truthful scope.<change> kinds.",
+                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /Consistency oracle/ -j1 ALL 3 PASS in 3352.03s; all_mutation_axes PASS in 1309.27s"
                                   }
                  },
                  {
                      "pythonPath":  "ADRAI_1_Source/tests/test_consistency_oracle.py",
                      "pythonMethod":  "test_divergent_amendments_conflict_and_reconciliation_are_cold_warm_identical",
                      "behaviorContract":  "Divergent decision amendments and their explicit reconciliation yield identical warm and cold conflict states, heads, doctor health, and final collapsed record.",
-                     "haskellTestName":  "divergent amendment conflict and reconciliation are cold warm identical",
-                     "haskellTestPath":  "test/integration/Adrai/CompilerConsistencyTest.hs",
+                     "haskellTestName":  "divergent_amendments_conflict_and_reconciliation_are_cold_warm_identical",
+                     "haskellTestPath":  "test/integration/Adrai/ConsistencyTest.hs",
                      "haskellTestType":  "integration",
                      "phaseOwner":  "P5",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"divergent amendment conflict and reconciliation are cold warm identical\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_consistency_oracle.py:232-282",
-                                      "result":  "ADRAI_1_Source/tests/test_consistency_oracle.py:232-282"
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/Consistency oracle/\" -j 1'",
+                                      "fixture":  "ConsistencyTest.testDivergentAmendments creates a genuine two-head decision merge, asserts exact conflicted show/search exit-3 outcomes, cold/warm typed database equality with linked ADR_CONFLICT issue evidence, ordinary multiparent amend reconciliation, and final cold/warm equality.",
+                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /Consistency oracle/ -j1 ALL 3 PASS in 3352.03s; divergent_amendments PASS in 348.84s"
                                   }
                  },
                  {
@@ -438,15 +438,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_cache_equivalence.py",
                      "pythonMethod":  "test_merge_heavy_branch_caches_are_semantically_identical_to_cold_rebuilds",
                      "behaviorContract":  "For merge-heavy main, development, release, and feature histories, warmed caches equal cold rebuilds across public reads, search, compare, doctor, and every semantic database table.",
-                     "haskellTestName":  "merge heavy branch caches are semantically identical to cold rebuilds",
-                     "haskellTestPath":  "test/integration/Adrai/CompilerConsistencyTest.hs",
+                     "haskellTestName":  "merge_heavy_branch_caches_are_semantically_identical_to_cold_rebuilds",
+                     "haskellTestPath":  "test/integration/Adrai/ConsistencyTest.hs",
                      "haskellTestType":  "integration",
                      "phaseOwner":  "P5",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"merge heavy branch caches are semantically identical to cold rebuilds\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_cache_equivalence.py:16-139",
-                                      "result":  "ADRAI_1_Source/tests/test_cache_equivalence.py:16-139 | ADRAI_1_Source/tests/test_cache_equivalence.py:141-298"
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/Consistency oracle/\" -j 1'",
+                                      "fixture":  "ConsistencyTest.testMergeHeavyBranchEquivalence asserts exact full public snapshots and every typed semantic SQLite row after main/develop/release/feature merge history, repeated branch switches, warmed caches, and cold rebuilds.",
+                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /Consistency oracle/ -j1 ALL 3 PASS in 3352.03s; merge_heavy_branch PASS in 1693.92s"
                                   }
                  }
              ]
