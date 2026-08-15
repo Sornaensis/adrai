@@ -110,11 +110,40 @@ tests =
           connection <- open ":memory:"
           result <- requireCompiled connection resolved
           coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "conflict"
-          count connection "issue" >>= (@?= 0)
+          coldDatabaseIssueCount (coldCompilerDatabaseStats result) @?= 1
+          coldDatabaseConflictCount (coldCompilerDatabaseStats result) @?= 1
+          count connection "issue" >>= (@?= 1)
           count connection "adr_conflict" >>= (@?= 1)
+          issueRows <- query_ connection "SELECT ordinal,code,severity,origin,adr_id,object_id,operation_id,commit_oid,path,message FROM issue ORDER BY ordinal" :: IO [(Int64, Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Maybe Text, Maybe Text, Text)]
+          conflictRows <- query_ connection "SELECT adr_id,code,candidate_count,state_token,summaries FROM adr_conflict ORDER BY adr_id" :: IO [(Text, Text, Int64, Text, Text)]
+          case (issueRows, conflictRows) of
+            ([(0, "ADR_CONFLICT", "error", "graph", Just issueAdr, Nothing, Nothing, Nothing, Nothing, issueMessage)], [(conflictAdr, "ADR_CONFLICT", candidateCount, stateToken, summaries)]) -> do
+              issueAdr @?= conflictAdr
+              issueMessage @?= Text.intercalate "; " (Text.splitOn "\n" summaries)
+              assertBool "semantic conflict has at least one candidate" (candidateCount >= 1)
+              assertBool "semantic conflict retains its state token" (not (Text.null stateToken))
+            other -> assertFailure ("unexpected linked conflict rows: " <> show other)
+          publishedMeta <- meta connection
+          lookup "issue_count" publishedMeta @?= Just "1"
+          lookup "conflict_count" publishedMeta @?= Just "1"
           count connection "search_document" >>= (@?= 2)
           itemIds <- query_ connection "SELECT item_id FROM search_document ORDER BY item_id" :: IO [Only Text]
           assertBool "both search candidates use ADR@record identities" (all (Text.isInfixOf "@" . fromOnly) itemIds)
+          close connection,
+      testCase "compiler diagnostics precede semantic conflict issues deterministically" $
+        withSystemTempDirectory "adrai conflict issue ordering" $ \temporary -> do
+          let repository = temporary </> "repository"
+              unavailableBasis = requireOid (Text.replicate 40 "f")
+          initTestRepository repository
+          files <- requireFixture (conflictedCompilerFiles unavailableBasis)
+          _ <- commitFiles repository files
+          resolved <- requireResolved repository "HEAD"
+          connection <- open ":memory:"
+          result <- requireCompiled connection resolved
+          coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "conflict"
+          coldDatabaseIssueCount (coldCompilerDatabaseStats result) @?= 2
+          issueOrder <- query_ connection "SELECT ordinal,code,severity,origin FROM issue ORDER BY ordinal" :: IO [(Int64, Text, Text, Text)]
+          issueOrder @?= [(0, "BASIS_COMMIT_UNAVAILABLE", "warning", "basis"), (1, "ADR_CONFLICT", "error", "graph")]
           close connection,
       testCase "invalid committed config creates a diagnostic-only database" $
         withSystemTempDirectory "adrai invalid compiler config" $ \temporary -> do

@@ -427,6 +427,7 @@ writeColdDatabase connection analyzed materialization materializationFingerprint
                       insertManagedSources connection analyzed
                       insertCompilerDiagnostics connection (analyzedDiagnostics analyzed)
                       insertAdrConflicts connection (analyzedConflicts analyzed)
+                      insertAdrConflictIssues connection (length (analyzedDiagnostics analyzed)) (analyzedConflicts analyzed)
                       case materialization of
                         Nothing -> pure ()
                         Just searchMaterialization -> do
@@ -458,7 +459,7 @@ coldStats analyzed materialization =
           Just _ | null (analyzedConflicts analyzed) -> "valid"
           Just _ -> "conflict",
       coldDatabaseManagedSourceCount = length (rawRepositorySnapshotEntries (analyzedRawObservation analyzed)),
-      coldDatabaseIssueCount = length (analyzedDiagnostics analyzed),
+      coldDatabaseIssueCount = length (analyzedDiagnostics analyzed) + length (analyzedConflicts analyzed),
       coldDatabaseConflictCount = length (analyzedConflicts analyzed),
       coldDatabaseOperationCount =
         case materialization of
@@ -544,6 +545,24 @@ insertAdrConflicts connection conflicts =
         SQLInteger (fromIntegral (adrConflictCount conflict)),
         SQLText (stateTokenText (adrConflictStateToken conflict)),
         SQLText (Text.intercalate "\n" (adrConflictSummaries conflict))
+      ]
+
+insertAdrConflictIssues :: Connection -> Int -> [AdrConflict] -> IO ()
+insertAdrConflictIssues connection diagnosticCount conflicts =
+  forM_ (zip [fromIntegral diagnosticCount :: Int64 ..] (sortBy (comparing adrConflictAdr) conflicts)) $ \(ordinal, conflict) ->
+    execute
+      connection
+      "INSERT INTO issue(ordinal,code,severity,origin,adr_id,object_id,operation_id,commit_oid,path,message) VALUES (?,?,?,?,?,?,?,?,?,?)"
+      [ SQLInteger ordinal,
+        SQLText (adrConflictCode conflict),
+        SQLText "error",
+        SQLText "graph",
+        SQLText (adrIdText (adrConflictAdr conflict)),
+        SQLNull,
+        SQLNull,
+        SQLNull,
+        SQLNull,
+        SQLText (Text.intercalate "; " (adrConflictSummaries conflict))
       ]
 
 insertSemanticRows :: Connection -> AnalyzedRepositorySnapshot -> IO ()
