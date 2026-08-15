@@ -449,15 +449,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
                      "pythonMethod":  "test_sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns",
                      "behaviorContract":  "Sparse checkout can create, compile, and query managed ADR files even when their roots are outside the sparse patterns.",
-                     "haskellTestName":  "sparse checkout supports managed roots outside patterns",
-                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns",
+                     "haskellTestPath":  "test/integration/Adrai/EnvironmentTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "partial",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"sparse checkout supports managed roots outside patterns\"",
-                                      "fixture":  "P4-01 GitBatchTest asserts committed tree/blob observation outside sparse patterns. P4-02 RepositoryIsolationTest additionally applies the committed configuration and exact suffix selection outside sparse materialization. ADR creation, compilation, and query behavior remain unimplemented; Python was read statically and not executed.",
-                                      "result":  "P4-01 GitBatchTest asserts committed tree/blob observation outside sparse patterns. P4-02 RepositoryIsolationTest additionally applies the committed configuration and exact suffix selection outside sparse materialization. ADR creation, compilation, and query behavior remain unimplemented; Python was read statically and not executed."
+                                      "command":  "D:\\Projects\\adrai\\.stack-work\\dist\\1a191874\\build\\adrai-test\\adrai-test.exe -p /sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns/ -j 1",
+                                      "fixture":  "EnvironmentTest creates a real cone sparse checkout containing only src, proves exact sparse configuration, source bytes, full refs, full index, tree, and clean status; invokes D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe for current create; requires HEAD's exact changed-path set to equal the generated architecture/adrai paths; reapplies the unchanged cone and proves every generated path is absent from the worktree but retained in HEAD and the full index. It then removes only the test-owned ignored .adrai cache after truthful create indexing to avoid the separate Windows warm ReplaceFileW contract before cold-compiling and positional-FTS-searching the same HEAD, with every read-side Git snapshot unchanged.",
+                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE=D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe; focused sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns PASS 1/1 in 10.18s."
                                   }
                  },
                  {

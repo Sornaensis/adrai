@@ -1074,46 +1074,146 @@ testSparseCheckoutAdrs =
         repo <- createTestRepo tmpDir
         createAdraiInit repo
 
-        -- Add a file and commit
-        let readmePath = repo </> "src" </> "app.txt"
+        -- Establish a real cone checkout which leaves the managed roots out
+        -- of its materialized set, while retaining one unrelated source file.
+        let sourcePath = repo </> "src" </> "app.txt"
+        BS.writeFile (repo </> ".gitignore") ".adrai/\n"
         createDirectoryIfMissing True (repo </> "src")
-        BS.writeFile readmePath "app\n"
-        git repo ["add", "src/app.txt"]
+        BS.writeFile sourcePath "app\n"
+        git repo ["--literal-pathspecs", "add", "--", ".gitignore", "src/app.txt"]
         git repo ["commit", "-m", "add sparse source"]
-
-        -- Initialize sparse checkout
         git repo ["sparse-checkout", "init", "--cone"]
         git repo ["sparse-checkout", "set", "src"]
 
-        -- Create an ADR
-        adr <- createCacheAdr repo
-        let adrId = maybeUnpack (extractAdrId adr)
+        sparseConfigRelative <- decodeUtf8 . LBS.toStrict <$> gitStdout repo ["rev-parse", "--git-path", "info/sparse-checkout"]
+        let sparseConfig = repo </> unpack (strip sparseConfigRelative)
+        sparseConfigBefore <- BS.readFile sparseConfig
+        sparseListBefore <- gitStdout repo ["sparse-checkout", "list"]
+        assertBool "cone patterns exclude the managed ADR root" (not ("architecture/adrai" `BS.isInfixOf` sparseConfigBefore))
+        assertBool "cone checkout materializes only the unrelated source root" ("src" `BS.isInfixOf` LBS.toStrict sparseListBefore)
+        sourceBefore <- BS.readFile sourcePath
+        sourceIndexBefore <- gitStdout repo ["ls-files", "--stage", "--", "src/app.txt"]
+        branchBefore <- gitStdout repo ["symbolic-ref", "-q", "HEAD"]
+        branchNamesBefore <- gitStdout repo ["for-each-ref", "--format=%(refname)", "refs/heads"]
+        refsBefore <- gitStdout repo ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs"]
+        treeBefore <- gitStdout repo ["ls-tree", "-r", "-z", "HEAD"]
+        fullIndexBefore <- gitStdout repo ["ls-files", "--stage", "-z"]
+        headBefore <- headCommit repo
 
-        -- The ADR should be visible
-        shown <-
-          adraiJsonOrThrow repo
-            [ "show", adrId, "--json" ]
-        let foundAdrId = extractAdrId shown :: Maybe Text
-        foundAdrId @?= Just (pack adrId)
-
-        -- Git status should be clean (ADR files committed)
-        (exitCode, stdout, _) <-
-          spawnAdrai repo
-            ["doctor", "--json"]
+        -- The installed executable must publish managed objects through Git's
+        -- sparse-aware index path, not through a materialized managed root.
+        let title = "Sparse cone managed decision"
+            summary = "Managed records remain authoritative outside the cone."
+            body = "## Decision\nPublish managed ADR records through Git even when sparse checkout omits their roots.\n"
+        created <- realCreateAdr repo title summary body ["compiler.sparse"] ["src/**"]
+        headAfter <- headCommit repo
+        assertBool "create advances the checked-out branch" (headAfter /= headBefore)
+        extractCommit created @?= Just headAfter
+        (_Object created >>= (.: "indexed") :: Maybe Bool) @?= Just True
+        (_Object created >>= (.: "index_revision") :: Maybe Text) @?= Just headAfter
+        let adrId = maybeUnpack (extractAdrId created)
+        assertBool "create result contains an ADR identifier" (not (null adrId))
+        createdPaths <-
+          case extractCreated created of
+            Just paths | not (null paths) -> pure paths
+            _ -> assertFailure "create JSON omitted its generated managed paths" >> fail "unreachable"
         assertBool
-          "doctor succeeds"
-          (exitCode == ExitSuccess)
+          "all generated paths are under the configured managed roots"
+          (all ("architecture/adrai/" `T.isPrefixOf`) createdPaths)
+        changedPaths <-
+          filter (not . T.null) . T.splitOn "\NUL" . decodeUtf8 . LBS.toStrict
+            <$> gitStdout repo ["diff", "--name-only", "-z", unpack headBefore, unpack headAfter]
+        sort changedPaths @?= sort createdPaths
+        forM_ createdPaths $ \path -> do
+          let relativePath = unpack path
+          gitSuccess repo ["cat-file", "-e", "HEAD:" <> relativePath]
+          indexed <- gitStdout repo ["ls-files", "--stage", "--", relativePath]
+          assertBool ("generated path is in the real index: " <> relativePath) (not (LBS.null indexed))
 
-        -- Verify the ADR files are tracked
-        case extractCreated adr of
-          Just paths ->
-            forM_ paths $ \p -> do
-              (status, _, _) <-
-                spawnAdrai repo ["rev-parse", "--show-toplevel"]
-              assertBool
-                ("ADR file " ++ unpack p ++ " is tracked")
-                (exitCode == ExitSuccess)
-          Nothing -> pure ()
+        -- The test fixture has one branch and no other refs: establish the
+        -- full ref set exactly, then retain complete tree/index snapshots for
+        -- all later public reads.
+        let branchRef = strip (decodeUtf8 (LBS.toStrict branchBefore))
+            expectedRefs revision = LBS.fromStrict (encodeUtf8 (branchRef <> "\t" <> revision <> "\n"))
+        refsBefore @?= expectedRefs headBefore
+        refsAfter <- gitStdout repo ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs"]
+        refsAfter @?= expectedRefs headAfter
+        treeAfter <- gitStdout repo ["ls-tree", "-r", "-z", "HEAD"]
+        fullIndexAfter <- gitStdout repo ["ls-files", "--stage", "-z"]
+        assertBool "create changes the committed tree" (treeAfter /= treeBefore)
+        assertBool "create changes the full index" (fullIndexAfter /= fullIndexBefore)
+        gitSuccess repo ["diff", "--cached", "--quiet"]
+
+        -- Only the expected branch transition and generated managed objects
+        -- occur; sparse settings and the unrelated materialized source remain
+        -- byte-for-byte stable and the worktree is clean.
+        gitStdout repo ["symbolic-ref", "-q", "HEAD"] >>= (@?= branchBefore)
+        gitStdout repo ["for-each-ref", "--format=%(refname)", "refs/heads"] >>= (@?= branchNamesBefore)
+        BS.readFile sourcePath >>= (@?= sourceBefore)
+        gitStdout repo ["ls-files", "--stage", "--", "src/app.txt"] >>= (@?= sourceIndexBefore)
+        BS.readFile sparseConfig >>= (@?= sparseConfigBefore)
+        gitStdout repo ["sparse-checkout", "list"] >>= (@?= sparseListBefore)
+        gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= "")
+
+        -- Reapplying the unchanged cone removes managed paths from the
+        -- worktree, while Git's full tree and index retain every record.
+        git repo ["sparse-checkout", "reapply"]
+        forM_ createdPaths $ \path ->
+          doesFileExist (repo </> unpack path) >>= (@?= False)
+        headCommit repo >>= (@?= headAfter)
+        gitStdout repo ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs"] >>= (@?= refsAfter)
+        gitStdout repo ["ls-tree", "-r", "-z", "HEAD"] >>= (@?= treeAfter)
+        gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= fullIndexAfter)
+        gitSuccess repo ["diff", "--cached", "--quiet"]
+        BS.readFile sparseConfig >>= (@?= sparseConfigBefore)
+        gitStdout repo ["sparse-checkout", "list"] >>= (@?= sparseListBefore)
+        gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= "")
+
+        -- The create result has already proved post-commit indexing for this
+        -- exact HEAD.  Remove only this test-owned ignored cache to avoid the
+        -- separate Windows warm ReplaceFileW contract; the real CLI compile
+        -- below remains a cold Git/SQLite proof for the same sparse revision.
+        let cacheDirectory = repo </> ".adrai"
+        doesDirectoryExist cacheDirectory >>= (@?= True)
+        removeDirectoryRecursive cacheDirectory
+        doesDirectoryExist cacheDirectory >>= (@?= False)
+
+        -- Compile and FTS search must resolve the committed sparse-excluded
+        -- record from immutable Git/SQLite authority, with truthful public JSON.
+        compileValue <- realAdraiJsonOrThrow repo ["compile", "--json"]
+        compiled <-
+          case parseCompileResult compileValue of
+            Just result -> pure result
+            Nothing -> assertFailure "compile JSON did not match the frozen result schema" >> fail "unreachable"
+        coldCompilerRevision compiled @?= headAfter
+        coldCompilerIssueCount compiled @?= 0
+        database <- canonicalizePath (coldCompilerDatabase compiled)
+        expectedDatabase <- canonicalizePath (repo </> ".adrai" </> "index.sqlite")
+        database @?= expectedDatabase
+        getMeta database "resolved_oid" >>= (@?= Just (unpack headAfter))
+
+        searched <- realAdraiJsonOrThrow repo ["search", "Sparse cone managed decision", "--mode", "fts", "--json"]
+        case parseSearchResults searched of
+          Just (_, asOf, mode, _, results) -> do
+            asOf @?= headAfter
+            mode @?= "fts"
+            case filter ((== Just (pack adrId)) . extractAdrId) results of
+              [hit] -> do
+                (_Object hit >>= (.: "title") :: Maybe Text) @?= Just title
+                (_Object hit >>= (.: "status") :: Maybe Text) @?= Just "active"
+              _ -> assertFailure "FTS search did not expose exactly the sparse-excluded ADR"
+          Nothing -> assertFailure "search JSON did not match the frozen result schema"
+
+        BS.readFile sourcePath >>= (@?= sourceBefore)
+        gitStdout repo ["ls-files", "--stage", "--", "src/app.txt"] >>= (@?= sourceIndexBefore)
+        BS.readFile sparseConfig >>= (@?= sparseConfigBefore)
+        gitStdout repo ["sparse-checkout", "list"] >>= (@?= sparseListBefore)
+        headCommit repo >>= (@?= headAfter)
+        gitStdout repo ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs"] >>= (@?= refsAfter)
+        gitStdout repo ["ls-tree", "-r", "-z", "HEAD"] >>= (@?= treeAfter)
+        gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= fullIndexAfter)
+        gitSuccess repo ["diff", "--cached", "--quiet"]
+        gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= "")
 
 -- =====================================================================
 -- Test 9: Unicode content round-trips through git/sqlite/fts/vector
