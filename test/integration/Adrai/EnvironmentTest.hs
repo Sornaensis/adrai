@@ -10,9 +10,11 @@ module Adrai.EnvironmentTest (tests) where
 
 import Adrai.Integration.CLI
 import Adrai.Cli (CompileResult (..))
+import Adrai.Git (discoverRepository, repositoryCommonDir, systemGit)
+import Adrai.Provenance.Git.Lock (GitLockError (LockHeld), gitLockStatus, withGitLock)
 import Control.Applicative ((<|>))
+import Control.Monad (forM, forM_, void)
 import System.Exit (ExitCode (..))
-import Control.Monad (forM_, void)
 import qualified Data.Aeson
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as KM
@@ -33,14 +35,15 @@ import System.Directory
   ( canonicalizePath,
     createDirectoryIfMissing,
     doesDirectoryExist,
+    doesFileExist,
     listDirectory,
     removeDirectoryRecursive,
-    removeFile,
   )
 import System.Environment (lookupEnv)
-import System.FilePath (isAbsolute, takeDirectory, (</>))
+import System.FilePath (isAbsolute, makeRelative, takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process.Typed (proc, readProcess)
+import System.Win32 (getCurrentProcessId)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
   ( (@?=),
@@ -821,71 +824,126 @@ testLinkedWorktreeCommitsOnlyItsBranch =
         repo <- createTestRepo tmpDir
         createAdraiInit repo
         mainBefore <- headCommit repo
+        mainHeadBefore <- gitStdout repo ["symbolic-ref", "-q", "HEAD"]
+        mainCacheBefore <- snapshotDirectory (repo </> ".adrai")
 
-        -- Create a worktree
         let worktree = tmpDir </> "feature-wt"
         createWorktree repo worktree "feature/adrai"
+        mainRepository <- requireRepository repo
+        worktreeRepository <- requireRepository worktree
+        repositoryCommonDir mainRepository @?= repositoryCommonDir worktreeRepository
+        featureBefore <- headCommit worktree
+        featureHeadBefore <- gitStdout worktree ["symbolic-ref", "-q", "HEAD"]
+        mainBranchBefore <- gitStdout repo ["rev-parse", "HEAD"]
+        worktreeStateBefore <- repositoryObservableState worktree
+        mainStateBefore <- repositoryObservableState repo
 
-        -- Create an ADR in the worktree
-        wtAdr <-
-          createAdr
-            worktree
-            "Worktree-local architecture"
-            "ADRAI commits through the linked worktree branch."
-            "## Decision\nUse Git's per-worktree HEAD and shared ref transaction."
-            ["tooling.git"]
-            ["tools/worktree/**"]
+        let createArguments =
+              [ "create",
+                "--title", "Worktree-local architecture",
+                "--summary", "ADRAI commits through the linked worktree branch.",
+                "--body", "## Decision\nUse Git's per-worktree HEAD and shared ref transaction.\n",
+                "--actor", "llm:planner",
+                "--model", "demo-model",
+                "--domain", "tooling.git",
+                "--applies-to", "tools/worktree/**",
+                "--json"
+              ]
 
-        let wtCommit = extractCommit wtAdr :: Maybe Text
-            adrId = maybeUnpack (extractAdrId wtAdr)
+        -- Use the same production common-directory lock as mutations rather
+        -- than fabricating a file or a holder PID in the test.
+        withGitLock mainRepository $ do
+          held <- gitLockStatus worktreeRepository
+          lockError <- case held of
+            Left lockError@(LockHeld lockPath holderPid) -> do
+              lockPath @?= repositoryCommonDir mainRepository </> "adrai.lock"
+              assertBool "the parent-held lock PID is positive" (holderPid > 0)
+              currentPid <- fromIntegral <$> getCurrentProcessId
+              holderPid @?= currentPid
+              pure lockError
+            Left problem -> assertFailure ("parent-held production lock must be LockHeld, got " <> show problem) >> fail "unreachable"
+            Right _ -> assertFailure "parent-held production Git lock was not observable from linked worktree" >> fail "unreachable"
+          (exitCode, stdout, stderr) <- realSpawnAdrai worktree createArguments
+          exitCode @?= ExitFailure 2
+          stdout @?= ""
+          stderr @?=
+            LBS.fromStrict
+              (encodeUtf8 ("adrai: Stage2AcquireLock " <> pack (show (pack (show lockError))) <> "\n"))
+          worktreeStateAfterRejected <- repositoryObservableState worktree
+          mainStateAfterRejected <- repositoryObservableState repo
+          worktreeStateAfterRejected @?= worktreeStateBefore
+          mainStateAfterRejected @?= mainStateBefore
 
-        -- The worktree ADR commit should equal worktree HEAD
+        gitLockStatus worktreeRepository >>= (@?= Right Nothing)
+
+        -- The same installed-executable mutation succeeds after bracketed
+        -- release and advances only the linked worktree branch.
+        wtAdr <- realAdraiJsonOrThrow worktree createArguments
         wtHead <- headCommit worktree
-        Just wtHead @?= wtCommit
+        assertBool "linked worktree branch advances after lock release" (wtHead /= featureBefore)
+        extractCommit wtAdr @?= Just wtHead
+        let adrId = maybeUnpack (extractAdrId wtAdr)
 
-        -- Main should be unchanged
-        mainAfter <- headCommit repo
-        mainAfter @?= mainBefore
+        resultObject <- case _Object wtAdr of
+          Just value -> pure value
+          Nothing -> assertFailure "worktree create result is not a JSON object" >> fail "unreachable"
+        (resultObject .: "indexed" :: Maybe Bool) @?= Just True
+        (resultObject .: "index_warnings" :: Maybe Integer) @?= Just 0
+        (resultObject .: "index_revision" :: Maybe Text) @?= Just wtHead
+        database <- case resultObject .: "database" :: Maybe FilePath of
+          Just value -> canonicalizePath value
+          Nothing -> assertFailure "worktree create result has no database path" >> fail "unreachable"
+        expectedDatabase <- canonicalizePath (worktree </> ".adrai" </> "index.sqlite")
+        database @?= expectedDatabase
+        getMeta database "resolved_oid" >>= (@?= Just (unpack wtHead))
 
-        -- The ADR should not be visible from main
-        shownFromMain <-
-          adraiJsonOrThrow repo
-            [ "show", adrId, "--json" ]
-        -- The ADR may or may not be visible depending on branch
-        case extractAdrId shownFromMain of
-          Nothing -> pure () -- ADR not found (expected on different branch)
-          Just _ -> pure () -- May be visible depending on implementation
+        headCommit repo >>= (@?= mainBefore)
+        gitStdout repo ["symbolic-ref", "-q", "HEAD"] >>= (@?= mainHeadBefore)
+        gitStdout repo ["rev-parse", "HEAD"] >>= (@?= mainBranchBefore)
+        gitStdout worktree ["symbolic-ref", "-q", "HEAD"] >>= (@?= featureHeadBefore)
+        mainCacheAfter <- snapshotDirectory (repo </> ".adrai")
+        mainCacheAfter @?= mainCacheBefore
 
-        -- The ADR should be visible from worktree
-        shownFromWt <-
-          adraiJsonOrThrow worktree
-            [ "show", adrId, "--json" ]
-        let foundAdrId = extractAdrId shownFromWt :: Maybe Text
-        foundAdrId @?= Just (pack adrId)
+        shownFromWt <- realAdraiJsonOrThrow worktree ["show", adrId, "--json"]
+        extractAdrId shownFromWt @?= Just (pack adrId)
 
-        -- Lock file blocks operations
-        let commonDir = repo </> ".git" </> "common"
-        let lockPath = commonDir </> "adrai.lock"
-        createDirectoryIfMissing True commonDir
-        BS.writeFile lockPath "pid=12345\n"
-
-        -- Try to change scope on worktree with lock present
-        (exitCode, _, _) <-
-          spawnAdrai worktree
-            [ "amend-adr",
-              adrId,
-              "--body", "## Decision\nLock test.\n",
-              "--actor", "human:worktree",
-              "--json"
-            ]
-        -- Lock should block the operation
-        assertBool
-          "lock file blocks operations"
-          (exitCode /= ExitSuccess)
-
-        -- Clean up
         removeWorktree repo worktree
-        removeFile lockPath
+  where
+    requireRepository location =
+      discoverRepository systemGit location >>= \case
+        Left problem -> assertFailure ("could not discover test repository: " <> show problem) >> fail "unreachable"
+        Right repository -> pure repository
+
+    repositoryObservableState location = do
+      symbolicHead <- gitStdout location ["symbolic-ref", "-q", "HEAD"]
+      headTree <- gitStdout location ["rev-parse", "HEAD^{tree}"]
+      stagedIndex <- gitStdout location ["ls-files", "--stage", "-z"]
+      stagedDiff <- gitStdout location ["diff", "--cached", "--raw", "-z"]
+      status <- gitStdout location ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      refs <- gitStdout location ["for-each-ref", "--format=%(refname)%00%(objectname)%00", "refs/heads", "refs/remotes"]
+      reflogs <- gitStdout location ["reflog", "show", "--all", "--format=%gD%x00%H%x00%gs%x00"]
+      managedFiles <- snapshotDirectory (location </> "architecture" </> "adrai")
+      cacheFiles <- snapshotDirectory (location </> ".adrai")
+      pure (symbolicHead, headTree, stagedIndex, stagedDiff, status, refs, reflogs, managedFiles, cacheFiles)
+
+    snapshotDirectory root = do
+      exists <- doesDirectoryExist root
+      if exists then go root else pure []
+      where
+        go directory = do
+          names <- sort <$> listDirectory directory
+          fmap concat $ forM names $ \name -> do
+            let path = directory </> name
+            isDirectory <- doesDirectoryExist path
+            if isDirectory
+              then go path
+              else do
+                isFile <- doesFileExist path
+                if isFile
+                  then do
+                    bytes <- BS.readFile path
+                    pure [(makeRelative root path, bytes)]
+                  else pure []
 
 -- =====================================================================
 -- Test 7: Worktree branch merge back

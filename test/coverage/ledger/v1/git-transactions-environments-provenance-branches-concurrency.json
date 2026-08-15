@@ -419,16 +419,16 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
                      "pythonMethod":  "test_linked_worktree_commits_only_its_branch_and_uses_common_lock",
                      "behaviorContract":  "A linked worktree commits only its checked-out branch and shares the repository-wide mutation lock.",
-                     "haskellTestName":  "linked worktree isolates branch and uses common lock",
-                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "linked_worktree_commits_only_its_branch_and_uses_common_lock",
+                     "haskellTestPath":  "test/integration/Adrai/EnvironmentTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "partial",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"linked worktree isolates branch and uses common lock\"",
-                                      "fixture":  "P4-01 GitDiscoveryTest asserts per-worktree git-dir, shared common-dir, command directory, and ordinary/bare-origin linked classification. P4-02 RepositoryIsolationTest additionally asserts distinct immutable observations in concurrent linked worktrees with a shared canonical common-directory namespace. Branch mutation and repository locking remain unimplemented; Python was read statically and not executed.",
-                                      "result":  "P4-01 GitDiscoveryTest asserts per-worktree git-dir, shared common-dir, command directory, and ordinary/bare-origin linked classification. P4-02 RepositoryIsolationTest additionally asserts distinct immutable observations in concurrent linked worktrees with a shared canonical common-directory namespace. Branch mutation and repository locking remain unimplemented; Python was read statically and not executed."
-                                  }
+                                       "command":  "D:\\Projects\\adrai\\.stack-work\\dist\\1a191874\\build\\adrai-test\\adrai-test.exe -p /linked_worktree_commits_only_its_branch_and_uses_common_lock/ -j 1",
+                                       "fixture":  "EnvironmentTest creates a real initialized main repository and linked worktree, holds the production common-directory lock in the parent, invokes D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe as the child create command, asserts exact ExitFailure 2/empty stdout/typed Stage2AcquireLock stderr and full caller Git/cache preservation, then releases and proves the linked branch alone advances.",
+                                       "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE=D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe; focused linked_worktree_commits_only_its_branch_and_uses_common_lock PASS 1/1 in 11.64s."
+                                     }
                  },
                  {
                      "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
