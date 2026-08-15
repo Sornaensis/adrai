@@ -56,13 +56,20 @@ import Control.Concurrent.Async (async, wait)
 import Adrai.Service.Transaction
   ( GeneratedFile (..),
     AppendOnlyDependencies (..),
+    AppendOnlyTestHooks (..),
+    BootstrapDependencies (..),
     TransactionConfig (..),
     TransactionError (..),
     TransactionResult (..),
     commitAppendOnlyOperation,
     commitAppendOnlyOperationWith,
+    commitAppendOnlyOperationWithHooks,
+    commitBootstrapFiles,
+    commitBootstrapFilesWith,
+    defaultBootstrapDependencies,
     commitTree,
     defaultAppendOnlyDependencies,
+    defaultAppendOnlyTestHooks,
     nullOid,
     parseSingleOidFromOutput,
   )
@@ -88,13 +95,16 @@ import Control.Exception (AsyncException (ThreadKilled), SomeException, throwIO,
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removeFile)
+import System.Directory (createDirectory, createDirectoryLink, doesDirectoryExist, doesFileExist, listDirectory, removeDirectory, removeDirectoryRecursive, removeFile)
 import Data.List (isPrefixOf, sort)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
+import qualified System.Exit as Exit
 import System.FilePath (isAbsolute, (</>), takeDirectory)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Environment (lookupEnv)
-import System.Process.Typed (proc, readProcess)
+import System.Process.Typed (proc, readProcess, runProcess, shell)
+import System.Info (os)
+import System.IO.Error (tryIOError)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -706,6 +716,82 @@ tests =
             assertEqual "the injected HEAD switch took effect" "other" headAfter
             assertEqual "the other branch was not reset or advanced" parentText otherAfter
             assertEqual "the caller index uses the pinned new commit, not mutable HEAD" BS.empty generatedIndexDiff
+      , testCase "append-only transaction rejects a redirected managed parent before touching repository state" $
+          assertRedirectedManagedParent "append-only" commitAppendOnlyOperation
+      , testCase "bootstrap transaction rejects a redirected managed parent before backup or write" $
+          assertRedirectedManagedParent "bootstrap" commitBootstrapFiles
+      , testCase "append-only transaction re-resolves after parent creation before its write" $
+          assertLateRedirectAfterParentCreation
+            "append-only"
+            (\repository config redirect ->
+                commitAppendOnlyOperationWithHooks
+                  defaultAppendOnlyDependencies
+                  defaultAppendOnlyTestHooks {appendOnlyAfterGeneratedParentCreationHook = redirect}
+                  repository config
+            )
+      , testCase "bootstrap transaction re-resolves after parent creation before its write" $
+          assertLateRedirectAfterParentCreation
+            "bootstrap"
+            (\repository config redirect ->
+                commitBootstrapFilesWith
+                  BootstrapDependencies
+                    { bootstrapAfterGeneratedParentCreation = redirect,
+                      bootstrapAfterGeneratedFileWrite = \_ -> pure (),
+                      bootstrapAfterSuccessfulCasBeforeBookkeeping = pure (),
+                      bootstrapInspectCasRef = \_ _ -> pure (Right Nothing),
+                      bootstrapBeforeRefUpdate = pure (),
+                      bootstrapAfterCasCandidateBeforeUpdateRef = pure (),
+                      bootstrapBeforePostCasIndexRefresh = pure (),
+                      bootstrapBeforeRollbackCleanup = pure (),
+                      bootstrapDeleteGeneratedFile = removeFile
+                    }
+                  repository
+                  config
+            )
+      , testCase "append-only async failure retains ThreadKilled precedence over synchronous rollback failure" $
+          assertAppendRollbackPrecedence True
+      , testCase "append-only synchronous rollback failure is typed and preserves caller state" $
+          assertAppendRollbackPrecedence False
+      , testCase "bootstrap rollback reports synchronous generated-file delete failure and retains bytes for retry" $
+          assertBootstrapRollbackDeleteFailure False
+      , testCase "bootstrap rollback delete cancellation propagates ThreadKilled and retains bytes for retry" $
+          assertBootstrapRollbackDeleteFailure True
+      , testCase "append rollback hook cancellation wins over a synchronous restore failure" $
+          assertAppendHookAsyncWinsRestoreFailure
+      , testCase "bootstrap rollback hook cancellation wins over a synchronous delete failure" $
+          assertBootstrapHookAsyncWinsDeleteFailure
+      , testCase "append-only re-resolves managed destinations after temporary index before CAS" $
+          assertPreCasRedirect
+            "append-only"
+            (\repository config redirect ->
+                commitAppendOnlyOperationWithHooks defaultAppendOnlyDependencies defaultAppendOnlyTestHooks {appendOnlyBeforeRefUpdateHook = redirect} repository config
+            )
+      , testCase "bootstrap re-resolves managed destinations after temporary index before CAS" $
+          assertPreCasRedirect
+            "bootstrap"
+            (\repository config redirect ->
+                commitBootstrapFilesWith (bootstrapDependencies redirect (pure ())) repository config
+            )
+      , testCase "append-only preserves authoritative CAS and skips unsafe post-CAS index refresh" $
+          assertPostCasRedirect
+            "append-only"
+            (\repository config redirect ->
+                commitAppendOnlyOperationWithHooks defaultAppendOnlyDependencies defaultAppendOnlyTestHooks {appendOnlyBeforePostCasIndexRefreshHook = redirect} repository config
+            )
+      , testCase "bootstrap preserves authoritative CAS and skips unsafe post-CAS index refresh" $
+          assertPostCasRedirect
+            "bootstrap"
+            (\repository config redirect ->
+                commitBootstrapFilesWith (bootstrapDependencies (pure ()) redirect) repository config
+            )
+      , testCase "bootstrap post-CAS ThreadKilled preserves its authoritative commit and releases the lock" $
+          assertBootstrapPostCasCancellationAuthority
+      , testCase "bootstrap post-update-ref ThreadKilled verifies the candidate ref before rollback" $
+          assertBootstrapPostUpdateRefCancellationAuthority
+      , testCase "unborn bootstrap candidate cancellation confirms missing ref then rolls back" $
+          assertUnbornCandidateCancellation
+      , testCase "unreadable first-commit CAS inspection fails closed without destructive rollback" $
+          assertUnreadableFirstCommitInspection
       ]
 
 gitLockTests :: [TestTree]
@@ -1077,6 +1163,480 @@ snapshotChildCache cacheRoot = do
 adraiTemporaryIndexes :: FilePath -> IO [FilePath]
 adraiTemporaryIndexes repositoryPath =
   filter ("adrai-index-" `isPrefixOf`) <$> listDirectory (repositoryPath </> ".git")
+
+assertRedirectedManagedParent
+  :: String
+  -> (Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult))
+  -> IO ()
+assertRedirectedManagedParent label runTransaction =
+  withSystemTempDirectory ("adrai transaction redirected " <> label) $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+        outsidePath = temporary </> "outside"
+        redirectedParent = repositoryPath </> "architecture" </> "adrai"
+    initTestRepository repositoryPath
+    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+    createDirectory (repositoryPath </> "architecture")
+    createDirectory outsidePath
+    createDirectoryRedirect outsidePath redirectedParent
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    parent <- requireGitOid parentText
+    (operationText, generated) <- transactionGeneratedFile parent
+    let config = TransactionConfig operationText "adrai: redirected managed parent" (Map.fromList [("Objects", "redirected-parent")]) parent [generated]
+    before <- transactionObservableState repositoryPath
+    result <- runTransaction repository config
+    case result of
+      Left (Stage5ValidateGenerated message) ->
+        assertBool (label <> " returns the managed-path typed validation failure") ("ManagedPathRedirected" `Text.isInfixOf` message)
+      other -> assertFailure (label <> " expected Stage5ValidateGenerated ManagedPathRedirected, got " <> show other)
+    after <- transactionObservableState repositoryPath
+    assertEqual (label <> " leaves HEAD, refs, index, status, and reflogs unchanged") before after
+    listDirectory outsidePath >>= assertEqual (label <> " creates no outside generated files or directories") []
+
+-- | Force the managed ancestor to become a link exactly after the transaction
+-- has created its parents, but before it performs its final write-time path
+-- resolution.  The test-owned link is removed before the observable-state
+-- comparison: containment must reject it without writing outside the repo or
+-- mutating Git state.
+assertLateRedirectAfterParentCreation
+  :: String
+  -> (Repository -> TransactionConfig -> (GeneratedFile -> IO ()) -> IO (Either TransactionError TransactionResult))
+  -> IO ()
+assertLateRedirectAfterParentCreation label runTransaction =
+  withSystemTempDirectory ("adrai transaction late redirect " <> label) $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+        outsidePath = temporary </> "outside"
+        managedParent = repositoryPath </> "architecture" </> "adrai"
+        architectureParent = repositoryPath </> "architecture"
+        redirect GeneratedFile{} = do
+          removeDirectoryRecursive managedParent
+          createDirectoryRedirect outsidePath managedParent
+    initTestRepository repositoryPath
+    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+    createDirectory outsidePath
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    parent <- requireGitOid parentText
+    (operationText, generated) <- transactionGeneratedFile parent
+    let config = TransactionConfig operationText "adrai: late managed redirect" (Map.fromList [("Objects", "late-redirect")]) parent [generated]
+    before <- transactionObservableState repositoryPath
+    result <- runTransaction repository config redirect
+    case result of
+      Left problem ->
+        assertBool (label <> " returns a typed containment-aware failure") ("ManagedPathRedirected" `Text.isInfixOf` Text.pack (show problem))
+      Right success -> assertFailure (label <> " unexpectedly committed after a late redirect: " <> show success)
+    listDirectory outsidePath >>= assertEqual (label <> " writes no managed bytes through the redirect") []
+    _ <- tryIOError (removeDirectory managedParent)
+    _ <- tryIOError (removeDirectory architectureParent)
+    after <- transactionObservableState repositoryPath
+    assertEqual (label <> " leaves HEAD, refs, index, status, and reflogs unchanged after link removal") before after
+
+assertAppendRollbackPrecedence :: Bool -> IO ()
+assertAppendRollbackPrecedence originalIsAsync =
+  withSystemTempDirectory "adrai transaction rollback precedence" $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+    initTestRepository repositoryPath
+    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    parent <- requireGitOid parentText
+    (operationText, generated) <- transactionGeneratedFile parent
+    let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+        generatedDirectory = takeDirectory generatedPath
+        actionFailure
+          | originalIsAsync = throwIO ThreadKilled
+          | otherwise = throwIO (Stage7CommitTree "injected synchronous action failure")
+        dependencies =
+          defaultAppendOnlyDependencies
+            { appendOnlyAfterGeneratedWrite = actionFailure,
+              appendOnlyBeforeRollbackCleanup = throwIO (Stage5ValidateGenerated "injected synchronous cleanup failure")
+            }
+        config = TransactionConfig operationText "adrai: rollback precedence" (Map.fromList [("Objects", "rollback-precedence")]) parent [generated]
+    before <- transactionObservableState repositoryPath
+    result <- try @SomeException (commitAppendOnlyOperationWith dependencies repository config)
+    if originalIsAsync
+      then
+        case result of
+          Left exception -> assertBool "original ThreadKilled wins over synchronous rollback failure" ("thread killed" `Text.isInfixOf` Text.pack (show exception))
+          Right _ -> assertFailure "expected ThreadKilled"
+      else
+        case result of
+          Right (Left (RollbackFailed detail)) -> assertBool "synchronous cleanup failure is reported with deterministic precedence" ("cleanup hook failed" `Text.isInfixOf` detail)
+          Right other -> assertFailure ("expected typed rollback failure, got " <> show other)
+          Left exception -> assertFailure ("synchronous cleanup failure escaped the typed API: " <> show exception)
+    exists <- doesFileExist generatedPath
+    directoryExists <- doesDirectoryExist generatedDirectory
+    after <- transactionObservableState repositoryPath
+    assertBool "rollback removes generated bytes despite its synchronous hook failure" (not exists)
+    assertBool "rollback removes generated directories despite its synchronous hook failure" (not directoryExists)
+    assertEqual "rollback precedence leaves caller Git state unchanged" before after
+
+assertBootstrapRollbackDeleteFailure :: Bool -> IO ()
+assertBootstrapRollbackDeleteFailure deleteIsAsync =
+  withSystemTempDirectory "adrai bootstrap rollback delete" $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+    initTestRepository repositoryPath
+    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    parent <- requireGitOid parentText
+    (operationText, generated) <- transactionGeneratedFile parent
+    let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+        deleteGenerated _
+          | deleteIsAsync = throwIO ThreadKilled
+          | otherwise = throwIO (userError "injected bootstrap delete failure")
+        dependencies =
+          BootstrapDependencies
+            { bootstrapAfterGeneratedParentCreation = \_ -> pure (),
+              bootstrapAfterGeneratedFileWrite = \_ -> throwIO (Stage7CommitTree "injected bootstrap action failure"),
+              bootstrapAfterSuccessfulCasBeforeBookkeeping = pure (),
+              bootstrapInspectCasRef = \_ _ -> pure (Right Nothing),
+              bootstrapBeforeRefUpdate = pure (),
+              bootstrapAfterCasCandidateBeforeUpdateRef = pure (),
+              bootstrapBeforePostCasIndexRefresh = pure (),
+              bootstrapBeforeRollbackCleanup = pure (),
+              bootstrapDeleteGeneratedFile = deleteGenerated
+            }
+        config = TransactionConfig operationText "adrai: bootstrap rollback delete" (Map.fromList [("Objects", "bootstrap-rollback-delete")]) parent [generated]
+    before <- transactionObservableState repositoryPath
+    result <- try @SomeException (commitBootstrapFilesWith dependencies repository config)
+    if deleteIsAsync
+      then
+        case result of
+          Left exception -> assertBool "delete cancellation propagates rather than becoming a typed result" ("thread killed" `Text.isInfixOf` Text.pack (show exception))
+          Right other -> assertFailure ("expected delete cancellation, got " <> show other)
+      else
+        case result of
+          Right (Left (RollbackFailed detail)) -> do
+            assertBool "delete failure is reported by the typed API" ("bootstrap rollback delete failed" `Text.isInfixOf` detail)
+            assertBool "original action remains in deterministic rollback context" ("injected bootstrap action failure" `Text.isInfixOf` detail)
+          Right other -> assertFailure ("expected typed bootstrap rollback failure, got " <> show other)
+          Left exception -> assertFailure ("synchronous delete failure escaped the typed API: " <> show exception)
+    retainedBytes <- BS.readFile generatedPath
+    afterFailure <- transactionObservableState repositoryPath
+    let (headBefore, refsBefore, indexBefore, _, reflogsBefore) = before
+        (headAfter, refsAfter, indexAfter, _, reflogsAfter) = afterFailure
+    assertEqual "failed bootstrap delete retains precisely the transaction-created bytes" (genFileBytes generated) retainedBytes
+    assertEqual "failed bootstrap delete leaves HEAD unchanged" headBefore headAfter
+    assertEqual "failed bootstrap delete leaves refs unchanged" refsBefore refsAfter
+    assertEqual "failed bootstrap delete leaves index unchanged" indexBefore indexAfter
+    assertEqual "failed bootstrap delete leaves reflogs unchanged" reflogsBefore reflogsAfter
+    retry <- commitBootstrapFiles repository config
+    case retry of
+      Left problem -> assertFailure ("default cleanup retry should recover the retained bytes: " <> show problem)
+      Right success -> assertEqual "retry creates the requested managed path" [genFilePath generated] (transactionCreatedPaths success)
+
+assertAppendHookAsyncWinsRestoreFailure :: IO ()
+assertAppendHookAsyncWinsRestoreFailure =
+  withSystemTempDirectory "adrai append rollback async ordering" $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+    initTestRepository repositoryPath
+    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    parent <- requireGitOid parentText
+    (operationText, generated) <- transactionGeneratedFile parent
+    let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+        callerBytes = "caller-owned bytes\n"
+        dependencies =
+          defaultAppendOnlyDependencies
+            { appendOnlyAfterGeneratedWrite = BS.writeFile generatedPath callerBytes >> throwIO (Stage7CommitTree "injected append action failure"),
+              appendOnlyBeforeRollbackCleanup = throwIO ThreadKilled
+            }
+        config = TransactionConfig operationText "adrai: append rollback async ordering" (Map.fromList [("Objects", "append-rollback-async-ordering")]) parent [generated]
+    before <- transactionObservableState repositoryPath
+    result <- try @SomeException (commitAppendOnlyOperationWith dependencies repository config)
+    case result of
+      Left exception -> assertBool "hook ThreadKilled wins over synchronous restore failure" ("thread killed" `Text.isInfixOf` Text.pack (show exception))
+      Right other -> assertFailure ("expected ThreadKilled, got " <> show other)
+    retained <- BS.readFile generatedPath
+    afterFailure <- transactionObservableState repositoryPath
+    let (headBefore, refsBefore, indexBefore, _, reflogsBefore) = before
+        (headAfter, refsAfter, indexAfter, _, reflogsAfter) = afterFailure
+    assertEqual "rollback does not delete caller-replaced bytes" callerBytes retained
+    assertEqual "append rollback leaves HEAD unchanged" headBefore headAfter
+    assertEqual "append rollback leaves refs unchanged" refsBefore refsAfter
+    assertEqual "append rollback leaves index unchanged" indexBefore indexAfter
+    assertEqual "append rollback leaves reflogs unchanged" reflogsBefore reflogsAfter
+    removeFile generatedPath
+    retry <- commitAppendOnlyOperation repository config
+    case retry of
+      Left problem -> assertFailure ("retry after removing caller-owned bytes should succeed: " <> show problem)
+      Right success -> assertEqual "retry creates the requested managed path" [genFilePath generated] (transactionCreatedPaths success)
+
+assertBootstrapHookAsyncWinsDeleteFailure :: IO ()
+assertBootstrapHookAsyncWinsDeleteFailure =
+  withSystemTempDirectory "adrai bootstrap rollback async ordering" $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+    initTestRepository repositoryPath
+    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    parent <- requireGitOid parentText
+    (operationText, generated) <- transactionGeneratedFile parent
+    let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+        dependencies =
+          BootstrapDependencies
+            { bootstrapAfterGeneratedParentCreation = \_ -> pure (),
+              bootstrapAfterGeneratedFileWrite = \_ -> throwIO (Stage7CommitTree "injected bootstrap action failure"),
+              bootstrapAfterSuccessfulCasBeforeBookkeeping = pure (),
+              bootstrapInspectCasRef = \_ _ -> pure (Right Nothing),
+              bootstrapBeforeRefUpdate = pure (),
+              bootstrapAfterCasCandidateBeforeUpdateRef = pure (),
+              bootstrapBeforePostCasIndexRefresh = pure (),
+              bootstrapBeforeRollbackCleanup = throwIO ThreadKilled,
+              bootstrapDeleteGeneratedFile = \_ -> throwIO (userError "injected synchronous bootstrap delete failure")
+            }
+        config = TransactionConfig operationText "adrai: bootstrap rollback async ordering" (Map.fromList [("Objects", "bootstrap-rollback-async-ordering")]) parent [generated]
+    before <- transactionObservableState repositoryPath
+    result <- try @SomeException (commitBootstrapFilesWith dependencies repository config)
+    case result of
+      Left exception -> assertBool "hook ThreadKilled wins over synchronous delete failure" ("thread killed" `Text.isInfixOf` Text.pack (show exception))
+      Right other -> assertFailure ("expected ThreadKilled, got " <> show other)
+    retained <- BS.readFile generatedPath
+    afterFailure <- transactionObservableState repositoryPath
+    let (headBefore, refsBefore, indexBefore, _, reflogsBefore) = before
+        (headAfter, refsAfter, indexAfter, _, reflogsAfter) = afterFailure
+    assertEqual "failed delete retains exactly transaction-created bytes" (genFileBytes generated) retained
+    assertEqual "bootstrap rollback leaves HEAD unchanged" headBefore headAfter
+    assertEqual "bootstrap rollback leaves refs unchanged" refsBefore refsAfter
+    assertEqual "bootstrap rollback leaves index unchanged" indexBefore indexAfter
+    assertEqual "bootstrap rollback leaves reflogs unchanged" reflogsBefore reflogsAfter
+    retry <- commitBootstrapFiles repository config
+    case retry of
+      Left problem -> assertFailure ("default bootstrap retry should recover retained bytes: " <> show problem)
+      Right success -> assertEqual "retry creates the requested managed path" [genFilePath generated] (transactionCreatedPaths success)
+
+bootstrapDependencies :: IO () -> IO () -> BootstrapDependencies
+bootstrapDependencies beforeRefUpdate beforeRefresh =
+  defaultBootstrapDependencies
+    { bootstrapBeforeRefUpdate = beforeRefUpdate,
+      bootstrapBeforePostCasIndexRefresh = beforeRefresh
+    }
+
+assertPreCasRedirect
+  :: String
+  -> (Repository -> TransactionConfig -> IO () -> IO (Either TransactionError TransactionResult))
+  -> IO ()
+assertPreCasRedirect label runTransaction =
+  withSystemTempDirectory ("adrai pre-CAS redirect " <> label) $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+        outsidePath = temporary </> "outside"
+        redirectedParent = repositoryPath </> "architecture" </> "adrai"
+        architectureParent = repositoryPath </> "architecture"
+        redirect = do
+          removeDirectoryRecursive redirectedParent
+          createDirectoryRedirect outsidePath redirectedParent
+    initTestRepository repositoryPath
+    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+    createDirectory outsidePath
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    parent <- requireGitOid parentText
+    (operationText, generated) <- transactionGeneratedFile parent
+    let config = TransactionConfig operationText "adrai: pre-CAS containment" (Map.fromList [("Objects", "pre-cas-containment")]) parent [generated]
+    before <- transactionObservableState repositoryPath
+    result <- runTransaction repository config redirect
+    case result of
+      Left problem -> assertBool (label <> " returns a typed containment/rollback failure") ("ManagedPathRedirected" `Text.isInfixOf` Text.pack (show problem))
+      Right success -> assertFailure (label <> " unexpectedly published a ref: " <> show success)
+    listDirectory outsidePath >>= assertEqual (label <> " writes no bytes through the pre-CAS redirect") []
+    _ <- tryIOError (removeDirectory redirectedParent)
+    _ <- tryIOError (removeDirectory architectureParent)
+    after <- transactionObservableState repositoryPath
+    assertEqual (label <> " publishes no ref or index/worktree/reflog mutation before CAS") before after
+
+assertPostCasRedirect
+  :: String
+  -> (Repository -> TransactionConfig -> IO () -> IO (Either TransactionError TransactionResult))
+  -> IO ()
+assertPostCasRedirect label runTransaction =
+  withSystemTempDirectory ("adrai post-CAS redirect " <> label) $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+        outsidePath = temporary </> "outside"
+        redirectedParent = repositoryPath </> "architecture" </> "adrai"
+        architectureParent = repositoryPath </> "architecture"
+        stagedPath = repositoryPath </> "caller-post-cas.bin"
+        stagedBytes = BS.pack [0, 255, 17, 10, 128, 64, 3, 2, 1]
+        redirect = do
+          removeDirectoryRecursive redirectedParent
+          createDirectoryRedirect outsidePath redirectedParent
+    initTestRepository repositoryPath
+    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+    BS.writeFile stagedPath stagedBytes
+    _ <- gitSuccess repositoryPath ["add", "--", "caller-post-cas.bin"] BS.empty
+    createDirectory outsidePath
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    indexPath <- pure (repositoryGitDir repository </> "index")
+    indexBeforeExists <- doesFileExist indexPath
+    indexBefore <- BS.readFile indexPath
+    parent <- requireGitOid parentText
+    (operationText, generated) <- transactionGeneratedFile parent
+    let config = TransactionConfig operationText "adrai: post-CAS containment" (Map.fromList [("Objects", "post-cas-containment")]) parent [generated]
+    result <- runTransaction repository config redirect
+    success <- case result of
+      Left problem -> assertFailure (label <> " must retain its authoritative CAS: " <> show problem) >> fail "unreachable"
+      Right committed -> pure committed
+    headAfter <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+    indexAfterExists <- doesFileExist indexPath
+    indexAfter <- BS.readFile indexPath
+    stagedBytesAfter <- BS.readFile stagedPath
+    assertEqual (label <> " reports skipped unsafe refresh") False (transactionIndexUpdated success)
+    assertEqual (label <> " keeps the published commit authoritative") (gitOidText (transactionCommitOid success)) headAfter
+    assertBool (label <> " advances the ref despite refresh containment failure") (headAfter /= parentText)
+    assertEqual (label <> " retains the caller index file after the post-CAS redirect") indexBeforeExists indexAfterExists
+    assertEqual (label <> " preserves the raw staged caller index after the post-CAS redirect") indexBefore indexAfter
+    assertEqual (label <> " preserves staged binary caller bytes after the post-CAS redirect") stagedBytes stagedBytesAfter
+    listDirectory outsidePath >>= assertEqual (label <> " writes no bytes through the post-CAS redirect") []
+    _ <- tryIOError (removeDirectory redirectedParent)
+    _ <- tryIOError (removeDirectory architectureParent)
+    pure ()
+
+assertBootstrapPostCasCancellationAuthority :: IO ()
+assertBootstrapPostCasCancellationAuthority =
+  assertBootstrapCancellationAuthority
+    "post-CAS"
+    (\dependencies -> dependencies {bootstrapBeforePostCasIndexRefresh = throwIO ThreadKilled})
+
+assertBootstrapPostUpdateRefCancellationAuthority :: IO ()
+assertBootstrapPostUpdateRefCancellationAuthority =
+  assertBootstrapCancellationAuthority
+    "post-update-ref"
+    (\dependencies -> dependencies {bootstrapAfterSuccessfulCasBeforeBookkeeping = throwIO ThreadKilled})
+
+assertBootstrapCancellationAuthority :: String -> (BootstrapDependencies -> BootstrapDependencies) -> IO ()
+assertBootstrapCancellationAuthority label adjustDependencies =
+  withSystemTempDirectory ("adrai bootstrap " <> label <> " cancellation") $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+        stagedPath = repositoryPath </> "caller-bootstrap-cancellation.bin"
+        stagedBytes = BS.pack [255, 0, 13, 10, 128, 64, 9, 8, 7]
+    initTestRepository repositoryPath
+    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+    BS.writeFile stagedPath stagedBytes
+    _ <- gitSuccess repositoryPath ["add", "--", "caller-bootstrap-cancellation.bin"] BS.empty
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    indexPath <- pure (repositoryGitDir repository </> "index")
+    indexBeforeExists <- doesFileExist indexPath
+    indexBefore <- BS.readFile indexPath
+    parent <- requireGitOid parentText
+    (operationText, generated) <- transactionGeneratedFile parent
+    let config = TransactionConfig operationText ("adrai: bootstrap " <> Text.pack label <> " cancellation") (Map.fromList [("Objects", "bootstrap-" <> label <> "-cancellation")]) parent [generated]
+        dependencies = adjustDependencies (bootstrapDependencies (pure ()) (pure ()))
+    result <- try @SomeException (commitBootstrapFilesWith dependencies repository config)
+    case result of
+      Left exception -> assertBool (label <> " cancellation propagates after lock release") ("thread killed" `Text.isInfixOf` Text.pack (show exception))
+      Right other -> assertFailure ("expected " <> label <> " ThreadKilled, got " <> show other)
+    headAfter <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+    indexAfterExists <- doesFileExist indexPath
+    indexAfter <- BS.readFile indexPath
+    stagedBytesAfter <- BS.readFile stagedPath
+    committedBytes <- gitSuccess repositoryPath ["show", Text.unpack headAfter <> ":" <> Text.unpack (repoPathText (genFilePath generated))] BS.empty
+    worktreeBytes <- BS.readFile (repositoryPath </> Text.unpack (repoPathText (genFilePath generated)))
+    assertBool "CAS remains authoritative after cancellation" (headAfter /= parentText)
+    assertEqual "committed managed bytes are preserved" (genFileBytes generated) committedBytes
+    assertEqual "worktree managed bytes are preserved" (genFileBytes generated) worktreeBytes
+    assertEqual "post-CAS cancellation retains the caller index file" indexBeforeExists indexAfterExists
+    assertEqual "post-CAS cancellation preserves the raw staged caller index" indexBefore indexAfter
+    assertEqual "post-CAS cancellation preserves staged binary caller bytes" stagedBytes stagedBytesAfter
+    gitLockStatus repository >>= assertEqual "post-CAS cancellation releases the native lock" (Right Nothing)
+    reacquired <- acquireGitLock repository
+    releaseGitLock reacquired
+    _ <- gitSuccess repositoryPath ["show", "--stat", "HEAD"] BS.empty
+    pure ()
+
+assertUnbornCandidateCancellation :: IO ()
+assertUnbornCandidateCancellation =
+  withSystemTempDirectory "adrai unborn candidate cancellation" $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+    initTestRepository repositoryPath
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    (operationText, generated) <- transactionGeneratedFile nullOid
+    let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+        config = TransactionConfig operationText "adrai: unborn candidate cancellation" (Map.fromList [("Objects", "unborn-candidate-cancellation")]) nullOid [generated]
+        dependencies = (bootstrapDependencies (pure ()) (pure ())) {bootstrapAfterCasCandidateBeforeUpdateRef = throwIO ThreadKilled}
+    result <- try @SomeException (commitBootstrapFilesWith dependencies repository config)
+    case result of
+      Left exception -> assertBool "candidate cancellation propagates after confirmed unborn absence" ("thread killed" `Text.isInfixOf` Text.pack (show exception))
+      Right other -> assertFailure ("expected unborn candidate cancellation, got " <> show other)
+    generatedExists <- doesFileExist generatedPath
+    mainRefExists <- doesFileExist (repositoryGitDir repository </> "refs" </> "heads" </> "main")
+    assertBool "confirmed missing unborn ref publishes no first commit" (not mainRefExists)
+    assertBool "confirmed missing unborn ref rolls back generated bytes" (not generatedExists)
+
+assertUnreadableFirstCommitInspection :: IO ()
+assertUnreadableFirstCommitInspection =
+  withSystemTempDirectory "adrai unreadable first commit inspection" $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+    initTestRepository repositoryPath
+    repository <-
+      discoverRepository systemGit repositoryPath >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right discovered -> pure discovered
+    indexBefore <- doesFileExist (repositoryGitDir repository </> "index")
+    (operationText, generated) <- transactionGeneratedFile nullOid
+    let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+        config = TransactionConfig operationText "adrai: unreadable first commit inspection" (Map.fromList [("Objects", "unreadable-first-commit-inspection")]) nullOid [generated]
+        dependencies =
+          (bootstrapDependencies (pure ()) (pure ()))
+            { bootstrapAfterSuccessfulCasBeforeBookkeeping = throwIO ThreadKilled,
+              bootstrapInspectCasRef = \_ _ -> pure (Left (Stage8UpdateRef "injected unreadable CAS inspection"))
+            }
+    result <- commitBootstrapFilesWith dependencies repository config
+    case result of
+      Left (Stage8UpdateRef detail) -> assertBool "unreadable inspection returns typed fail-closed error" ("unreadable CAS inspection" `Text.isInfixOf` detail)
+      other -> assertFailure ("expected fail-closed Stage8 error, got " <> show other)
+    headAfter <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+    committedBytes <- gitSuccess repositoryPath ["show", Text.unpack headAfter <> ":" <> Text.unpack (repoPathText (genFilePath generated))] BS.empty
+    worktreeBytes <- BS.readFile generatedPath
+    indexAfter <- doesFileExist (repositoryGitDir repository </> "index")
+    assertEqual "uncertain authority preserves first-commit bytes" (genFileBytes generated) committedBytes
+    assertEqual "uncertain authority preserves worktree bytes" (genFileBytes generated) worktreeBytes
+    assertEqual "uncertain authority does not materialize or refresh caller index" indexBefore indexAfter
+
+transactionObservableState :: FilePath -> IO (BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString)
+transactionObservableState repositoryPath = do
+  headOid <- gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+  refs <- gitSuccess repositoryPath ["show-ref", "--head"] BS.empty
+  index <- gitSuccess repositoryPath ["ls-files", "--stage", "-z"] BS.empty
+  status <- gitSuccess repositoryPath ["status", "--porcelain=v1", "--untracked-files=all", "-z"] BS.empty
+  reflogs <- gitSuccess repositoryPath ["reflog", "show", "--all", "--format=%H%x00%gs"] BS.empty
+  pure (headOid, refs, index, status, reflogs)
+
+createDirectoryRedirect :: FilePath -> FilePath -> IO ()
+createDirectoryRedirect target link
+  | os == "mingw32" = do
+      result <- runProcess (shell ("mklink /J \"" <> link <> "\" \"" <> target <> "\""))
+      case result of
+        Exit.ExitSuccess -> pure ()
+        Exit.ExitFailure code -> assertFailure ("failed to create Windows junction, exit " <> show code)
+  | otherwise = do
+      result <- tryIOError (createDirectoryLink target link)
+      case result of
+        Right () -> pure ()
+        Left problem -> assertFailure ("failed to create directory symlink: " <> show problem)
 
 transactionGeneratedFile :: GitOid -> IO (String, GeneratedFile)
 transactionGeneratedFile basis = do
