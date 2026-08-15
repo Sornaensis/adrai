@@ -20,6 +20,7 @@ import Adrai.Git
     systemGit,
   )
 import Adrai.GitTestSupport (commitFile, createWorktree, gitSuccess, initTestRepository, outputText)
+import Adrai.Integration.CLI (createAdraiInit)
 import Adrai.Provenance
   ( ProvenanceCapsuleInput (..),
     ProvenanceObjectId (..),
@@ -27,6 +28,23 @@ import Adrai.Provenance
     mkProvenanceCapsule,
     semanticDigest,
   )
+import Adrai.Provenance.Git.Lock
+  ( GitLockError (..),
+    GitLock (..),
+    GitLockCloseOperation (CloseOwnerRelease, CloseStatusProbe),
+    GitLockDependencies (GitLockDependencies),
+    acquireGitLock,
+    acquireGitLockWith,
+    gitLockPath,
+    gitLockPid,
+    gitLockStatus,
+    gitLockStatusWith,
+    releaseGitLock,
+    withGitLock,
+    withGitLockWith,
+  )
+import Control.Concurrent (newEmptyMVar, putMVar, readMVar, takeMVar)
+import Control.Concurrent.Async (async, wait)
 import Adrai.Service.Transaction
   ( GeneratedFile (..),
     AppendOnlyDependencies (..),
@@ -56,14 +74,19 @@ import Adrai.Types
 import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
+import qualified Data.ByteString.Lazy as LBS
 import Data.Either (isLeft)
 import Control.Exception (AsyncException (ThreadKilled), SomeException, throwIO, try)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
-import Data.List (isPrefixOf)
-import System.FilePath ((</>), takeDirectory)
+import qualified Data.Text.Encoding as TextEncoding
+import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, listDirectory, removeDirectoryRecursive, removeFile)
+import Data.List (isPrefixOf, sort)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
+import System.FilePath (isAbsolute, (</>), takeDirectory)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Environment (lookupEnv)
+import System.Process.Typed (proc, readProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -71,7 +94,8 @@ tests :: TestTree
 tests =
   testGroup
     "Transaction contract"
-    [ testCase "Git plumbing accepts one bare 40- or 64-hex OID with trailing stdout framing" $
+    [ testGroup "repository-common mutation lock" gitLockTests,
+      testCase "Git plumbing accepts one bare 40- or 64-hex OID with trailing stdout framing" $
         mapM_ assertAccepted acceptedOutputs,
       testCase "Git plumbing rejects non-bare or malformed OID output" $
         mapM_ assertRejected rejectedOutputs,
@@ -693,6 +717,363 @@ tests =
             assertEqual "the other branch was not reset or advanced" parentText otherAfter
             assertEqual "the caller index uses the pinned new commit, not mutable HEAD" BS.empty generatedIndexDiff
       ]
+
+gitLockTests :: [TestTree]
+gitLockTests =
+  [ testCase "linked worktrees share one canonical common-directory lock" $
+      withSystemTempDirectory "adrai common Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+            worktreePath = temporary </> "linked-worktree"
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        createWorktree repositoryPath worktreePath "feature/lock-contract"
+        repository <- requireRepository repositoryPath
+        linkedRepository <- requireRepository worktreePath
+        assertEqual "linked worktree uses the repository common directory" (repositoryCommonDir repository) (repositoryCommonDir linkedRepository)
+        lock <- acquireGitLock repository
+        let path = gitLockPath lock
+            expectedBytes = BS8.pack ("pid=" <> show (gitLockPid lock) <> "\n")
+        assertEqual "lock lives directly in the canonical common directory" (repositoryCommonDir repository </> "adrai.lock") path
+        BS.readFile path >>= assertEqual "lock has canonical ASCII contents" expectedBytes
+        gitLockStatus linkedRepository >>= \case
+          Left (LockHeld observedPath observedPid) -> do
+            assertEqual "status reports the common lock path" path observedPath
+            assertEqual "status reports the owning PID" (gitLockPid lock) observedPid
+          other -> assertFailure ("expected live common lock status, got " <> show other)
+        releaseGitLock lock
+        doesFileExist path >>= assertEqual "release retains the persistent canonical lock file" True
+        BS.readFile path >>= assertEqual "release leaves the last canonical owner bytes" expectedBytes
+        gitLockStatus linkedRepository >>= assertEqual "an unheld persistent file has no owner" (Right Nothing)
+        reacquired <- acquireGitLock linkedRepository
+        releaseGitLock reacquired,
+    testCase "live lock contention is typed and preserves the lock bytes" $
+      withSystemTempDirectory "adrai live Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+            worktreePath = temporary </> "linked-worktree"
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        createWorktree repositoryPath worktreePath "feature/lock-contention"
+        repository <- requireRepository repositoryPath
+        linkedRepository <- requireRepository worktreePath
+        lock <- acquireGitLock repository
+        bytesBefore <- BS.readFile (gitLockPath lock)
+        attempted <- try @GitLockError (acquireGitLock linkedRepository)
+        assertEqual
+          "second acquisition reports the existing owner rather than replacing it"
+          (Left (LockHeld (gitLockPath lock) (gitLockPid lock)))
+          attempted
+        BS.readFile (gitLockPath lock) >>= assertEqual "contended acquisition preserves lock bytes" bytesBefore
+        releaseGitLock lock
+        gitLockStatus linkedRepository >>= assertEqual "status reports no owner after release" (Right Nothing),
+    testCase "persistent stale and noncanonical lock contents are recovered under native ownership" $
+      withSystemTempDirectory "adrai stale Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        let path = repositoryCommonDir repository </> "adrai.lock"
+        BS.writeFile path (BS8.pack ("pid=" <> show (maxBound :: Int) <> "\n"))
+        recovered <- acquireGitLock repository
+        assertEqual "stale recovery retains the canonical path" path (gitLockPath recovered)
+        BS.readFile path >>= assertEqual "stale recovery writes the new canonical owner" (BS8.pack ("pid=" <> show (gitLockPid recovered) <> "\n"))
+        releaseGitLock recovered
+        let malformed = "not a canonical lock\n"
+        BS.writeFile path malformed
+        malformedRecovered <- acquireGitLock repository
+        BS.readFile path >>= assertEqual "unheld malformed bytes are rewritten by their native owner" (BS8.pack ("pid=" <> show (gitLockPid malformedRecovered) <> "\n"))
+        releaseGitLock malformedRecovered
+        let leadingZero = "pid=0007\n"
+        BS.writeFile path leadingZero
+        leadingZeroRecovered <- acquireGitLock repository
+        BS.readFile path >>= assertEqual "leading-zero PID is rewritten to canonical bytes" (BS8.pack ("pid=" <> show (gitLockPid leadingZeroRecovered) <> "\n"))
+        releaseGitLock leadingZeroRecovered
+        gitLockStatus repository >>= assertEqual "persistent stale file has no native owner" (Right Nothing),
+    testCase "simultaneous persistent-file contenders yield one native owner" $
+      withSystemTempDirectory "adrai stale contender Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        let path = repositoryCommonDir repository </> "adrai.lock"
+        BS.writeFile path (BS8.pack ("pid=" <> show (maxBound :: Int) <> "\n"))
+        left <- async (try @GitLockError (acquireGitLock repository))
+        right <- async (try @GitLockError (acquireGitLock repository))
+        outcomes <- sequence [wait left, wait right]
+        let acquired = [lock | Right lock <- outcomes]
+        assertEqual "only one stale contender becomes owner" 1 (length acquired)
+        let owners = [pid | Left (LockHeld _ pid) <- outcomes]
+        assertEqual "the non-owner observes the current canonical PID" [gitLockPid (head acquired)] owners
+        mapM_ releaseGitLock acquired
+        gitLockStatus repository >>= assertEqual "released contender leaves no native owner" (Right Nothing),
+    testCase "three-field GitLock values cannot release a newer same-process owner" $
+      withSystemTempDirectory "adrai reservation token Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        first <- acquireGitLock repository
+        releaseGitLock first
+        second <- acquireGitLock repository
+        let reconstructed = GitLock (gitLockPath first) (gitLockFd first) (gitLockPid first)
+        assertEqual "the exported GitLock constructor remains exactly three fields" first reconstructed
+        releaseGitLock reconstructed
+        gitLockStatus repository >>= \case
+          Left (LockHeld observedPath observedPid) -> do
+            assertEqual "the new reservation still owns the canonical path" (gitLockPath second) observedPath
+            assertEqual "the new reservation retains its PID" (gitLockPid second) observedPid
+          other -> assertFailure ("expected newer reservation to remain held, got " <> show other)
+        attempted <- try @GitLockError (acquireGitLock repository)
+        assertEqual "the stale three-field value cannot admit another acquirer" (Left (LockHeld (gitLockPath second) (gitLockPid second))) attempted
+        releaseGitLock second,
+    testCase "concurrent duplicate releases claim one native handle and permit reacquisition" $
+      withSystemTempDirectory "adrai concurrent release Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        lock <- acquireGitLock repository
+        ready <- newEmptyMVar
+        start <- newEmptyMVar
+        workers <-
+          mapM
+            ( \_ ->
+                async $ do
+                  putMVar ready ()
+                  readMVar start
+                  try @SomeException (releaseGitLock lock)
+            )
+            [1 :: Int .. 32]
+        mapM_ (const (takeMVar ready)) [1 :: Int .. 32]
+        putMVar start ()
+        outcomes <- mapM wait workers
+        assertBool "duplicate releasers either claim once or observe an already-closing owner" (all (either (const False) (const True)) outcomes)
+        gitLockStatus repository >>= assertEqual "one completed close leaves no held owner" (Right Nothing)
+        reacquired <- acquireGitLock repository
+        releaseGitLock reacquired,
+    testCase "failed status probe close retains its handle until a later status retry" $
+      withSystemTempDirectory "adrai probe cleanup Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+            failingProbeClose =
+              GitLockDependencies $ \_ operation ->
+                case operation of
+                  CloseStatusProbe -> throwIO (userError "injected Git lock probe close failure")
+                  _ -> pure ()
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        prior <- acquireGitLock repository
+        releaseGitLock prior
+        failedProbe <- gitLockStatusWith failingProbeClose repository
+        case failedProbe of
+          Left (LockFailed _ message) ->
+            assertBool "the simulated inconclusive CloseHandle is typed" ("injected Git lock probe close failure" `Text.isInfixOf` message)
+          other -> assertFailure ("expected typed retained probe failure, got " <> show other)
+        blocked <- try @GitLockError (acquireGitLock repository)
+        assertEqual "the retained probe still excludes acquisition" (Left (LockHeld (gitLockPath prior) (gitLockPid prior))) blocked
+        gitLockStatus repository >>= assertEqual "a later status retry closes the retained probe" (Right Nothing)
+        reacquired <- acquireGitLock repository
+        releaseGitLock reacquired,
+    testCase "async status-probe close retains its reservation and rethrows cancellation" $
+      withSystemTempDirectory "adrai probe cancellation Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+            cancellingProbeClose =
+              GitLockDependencies $ \_ operation ->
+                case operation of
+                  CloseStatusProbe -> throwIO ThreadKilled
+                  _ -> pure ()
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        prior <- acquireGitLock repository
+        releaseGitLock prior
+        cancelled <- try @SomeException (gitLockStatusWith cancellingProbeClose repository)
+        assertBool "status rethrows asynchronous cancellation rather than LockFailed" ("thread killed" `Text.isInfixOf` Text.pack (show cancelled))
+        blocked <- try @GitLockError (acquireGitLock repository)
+        assertEqual "the cancelled probe retains exclusion until a retry closes it" (Left (LockHeld (gitLockPath prior) (gitLockPid prior))) blocked
+        gitLockStatus repository >>= assertEqual "a normal status retry closes the cancelled probe" (Right Nothing)
+        reacquired <- acquireGitLock repository
+        releaseGitLock reacquired,
+    testCase "owner close failure restores exclusion until a successful retry" $
+      withSystemTempDirectory "adrai owner cleanup Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+        firstClose <- newIORef True
+        let failOwnerCloseOnce =
+              GitLockDependencies $ \_ operation ->
+                case operation of
+                  CloseOwnerRelease -> do
+                    shouldFail <- readIORef firstClose
+                    if shouldFail
+                      then writeIORef firstClose False >> throwIO (userError "injected Git lock owner close failure")
+                      else pure ()
+                  _ -> pure ()
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        lock <- acquireGitLockWith failOwnerCloseOnce repository
+        failedRelease <- try @GitLockError (releaseGitLock lock)
+        case failedRelease of
+          Left (LockFailed _ message) ->
+            assertBool "owner cleanup failure is surfaced as typed failure" ("injected Git lock owner close failure" `Text.isInfixOf` message)
+          other -> assertFailure ("expected owner close failure, got " <> show other)
+        blocked <- try @GitLockError (acquireGitLock repository)
+        assertEqual "failed owner cleanup retains the same-process exclusion" (Left (LockHeld (gitLockPath lock) (gitLockPid lock))) blocked
+        releaseGitLock lock
+        gitLockStatus repository >>= assertEqual "successful retry removes the restored owner" (Right Nothing)
+        reacquired <- acquireGitLock repository
+        releaseGitLock reacquired,
+    testCase "withGitLock owner pre-close failure preserves action precedence and permits retry" $
+      withSystemTempDirectory "adrai withGitLock cleanup precedence" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        let runCase label action expected = do
+              failClose <- newIORef True
+              capturedLock <- newIORef Nothing
+              let dependencies =
+                    GitLockDependencies $ \_ operation ->
+                      case operation of
+                        CloseOwnerRelease -> do
+                          shouldFail <- readIORef failClose
+                          if shouldFail
+                            then throwIO (userError ("injected " <> label <> " cleanup failure"))
+                            else pure ()
+                        _ -> pure ()
+              outcome <-
+                try @SomeException $
+                  withGitLockWith dependencies repository $ \lock -> do
+                    writeIORef capturedLock (Just lock)
+                    action
+              assertBool (label <> " has the required visible failure precedence") (expected `Text.isInfixOf` Text.pack (show outcome))
+              lock <- readIORef capturedLock >>= \case
+                Just held -> pure held
+                Nothing -> assertFailure (label <> " did not expose the acquired public lock to its test action") >> fail "unreachable"
+              blocked <- try @GitLockError (acquireGitLock repository)
+              assertEqual (label <> " retains owner exclusion after failed cleanup") (Left (LockHeld (gitLockPath lock) (gitLockPid lock))) blocked
+              writeIORef failClose False
+              releaseGitLock lock
+              gitLockStatus repository >>= assertEqual (label <> " retry closes the retained owner") (Right Nothing)
+              reacquired <- acquireGitLock repository
+              releaseGitLock reacquired
+        runCase "successful action" (pure ()) "injected successful action cleanup failure"
+        runCase "synchronous action" (throwIO (userError "synchronous action failure") :: IO ()) "synchronous action failure"
+        runCase "asynchronous action" (throwIO ThreadKilled :: IO ()) "thread killed",
+    testCase "transaction lock contention preserves refs and generated files" $
+      withSystemTempDirectory "adrai transaction Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+        initTestRepository repositoryPath
+        parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        parent <- requireGitOid parentText
+        (operationText, generated) <- transactionGeneratedFile parent
+        headBefore <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+        let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+            config = TransactionConfig operationText "adrai: held common lock" (Map.fromList [("Objects", "held-lock")]) parent [generated]
+        withGitLock repository $ do
+          result <- commitAppendOnlyOperation repository config
+          case result of
+            Left (Stage2AcquireLock message) ->
+              assertBool "transaction returns the typed lock holder failure" ("LockHeld" `Text.isInfixOf` message)
+            other -> assertFailure ("expected Stage2AcquireLock, got " <> show other)
+          outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty >>= assertEqual "held lock preserves HEAD" headBefore
+          doesFileExist generatedPath >>= assertEqual "held lock creates no managed file" False,
+    testCase "parent-held production lock rejects an absolute executable child without repository mutation" $
+      withSystemTempDirectory "adrai child process Git lock" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+            createArguments =
+              [ "create",
+                "--title", "Locked child mutation",
+                "--summary", "The child must not mutate while the parent owns the common lock.",
+                "--body", "## Decision\nRespect the production Git lock.\n",
+                "--actor", "llm:planner",
+                "--model", "demo-model",
+                "--domain", "tooling.git",
+                "--json"
+              ]
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        createAdraiInit repositoryPath
+        (compileExit, _, compileStderr) <- absoluteAdraiChild repositoryPath ["compile", "--json"]
+        assertEqual "fixture cache compilation succeeds before the held-child baseline" ExitSuccess compileExit
+        assertEqual "fixture cache compilation emits no stderr" LBS.empty compileStderr
+        repository <- requireRepository repositoryPath
+        before <- childLockObservableState repositoryPath
+        withGitLock repository $ do
+          held <- gitLockStatus repository
+          lockError <- case held of
+            Left problem -> pure problem
+            Right _ -> assertFailure "parent-held lock was not observable before child mutation" >> fail "unreachable"
+          (exitCode, stdout, stderr) <- absoluteAdraiChild repositoryPath createArguments
+          assertEqual "the held child mutation exits with ordinary CLI failure" (ExitFailure 2) exitCode
+          assertEqual "the rejected child emits no stdout" LBS.empty stdout
+          assertEqual
+            "the rejected child renders the typed transaction lock error exactly"
+            (LBS.fromStrict (TextEncoding.encodeUtf8 ("adrai: " <> Text.pack (show (Stage2AcquireLock (Text.pack (show lockError)))) <> "\n")))
+            stderr
+          after <- childLockObservableState repositoryPath
+          assertEqual "the rejected cross-process child leaves refs, index, worktree, cache, and reflogs unchanged" before after,
+    testCase "withGitLock cleans up after synchronous and asynchronous actions" $
+      withSystemTempDirectory "adrai Git lock cleanup" $ \temporary -> do
+        let repositoryPath = temporary </> "repository"
+        initTestRepository repositoryPath
+        _ <- commitFile repositoryPath "seed.txt" "seed\n"
+        repository <- requireRepository repositoryPath
+        let path = repositoryCommonDir repository </> "adrai.lock"
+        synchronous <- try @SomeException (withGitLock repository (throwIO (userError "synchronous lock action") :: IO ()))
+        assertBool "synchronous action exception propagates" ("synchronous lock action" `Text.isInfixOf` Text.pack (show synchronous))
+        doesFileExist path >>= assertEqual "synchronous cleanup preserves the canonical lock file" True
+        gitLockStatus repository >>= assertEqual "synchronous cleanup releases native ownership" (Right Nothing)
+        asynchronous <- try @SomeException (withGitLock repository (throwIO ThreadKilled :: IO ()))
+        assertBool "asynchronous cancellation propagates" ("thread killed" `Text.isInfixOf` Text.pack (show asynchronous))
+        doesFileExist path >>= assertEqual "asynchronous cleanup preserves the canonical lock file" True
+        gitLockStatus repository >>= assertEqual "asynchronous cleanup releases native ownership" (Right Nothing)
+  ]
+  where
+    requireRepository location =
+      discoverRepository systemGit location >>= \case
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right repository -> pure repository
+
+absoluteAdraiChild :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
+absoluteAdraiChild repositoryPath arguments = do
+  lookupEnv "ADRAI_EXE" >>= \case
+    Just executable | not (null executable) && isAbsolute executable ->
+      readProcess (proc executable ("--repo" : repositoryPath : arguments))
+    _ -> fail "TransactionTest requires ADRAI_EXE to name an absolute executable under test"
+
+childLockObservableState :: FilePath -> IO (BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString, [(FilePath, BS.ByteString)])
+childLockObservableState repositoryPath = do
+  headOid <- gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+  refs <- gitSuccess repositoryPath ["show-ref", "--head"] BS.empty
+  index <- gitSuccess repositoryPath ["diff", "--cached", "--binary"] BS.empty
+  worktree <- gitSuccess repositoryPath ["status", "--porcelain=v1", "-z", "--untracked-files=all"] BS.empty
+  reflogs <- gitSuccess repositoryPath ["reflog", "show", "--all", "--format=%H%x00%gs"] BS.empty
+  cache <- snapshotChildCache (repositoryPath </> ".adrai")
+  pure (headOid, refs, index, worktree, reflogs, cache)
+
+snapshotChildCache :: FilePath -> IO [(FilePath, BS.ByteString)]
+snapshotChildCache cacheRoot = do
+  exists <- doesDirectoryExist cacheRoot
+  if not exists then pure [] else go ""
+  where
+    go relative = do
+      let directory = cacheRoot </> relative
+      entries <- sort <$> listDirectory directory
+      fmap concat . mapM (snapshotEntry relative) $ entries
+
+    snapshotEntry relative entry = do
+      let childRelative = if null relative then entry else relative </> entry
+          child = cacheRoot </> childRelative
+      isDirectory <- doesDirectoryExist child
+      if isDirectory
+        then go childRelative
+        else do
+          isFile <- doesFileExist child
+          if isFile
+            then do
+              bytes <- BS.readFile child
+              pure [(childRelative, bytes)]
+            else pure []
 
 adraiTemporaryIndexes :: FilePath -> IO [FilePath]
 adraiTemporaryIndexes repositoryPath =
