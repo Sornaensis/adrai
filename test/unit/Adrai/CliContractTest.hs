@@ -891,6 +891,20 @@ mutationCliContractTests =
   testGroup "init/create CLI contracts"
     [ testCase "global repo defaults before init" $ do
         parseCli ["init"] @?= Right (CliInvocation defaultCliConfig (CmdInit (InitCommand False)))
+    , testCase "explore is the one option-free public terminal command" $ do
+        parseCli ["explore"] @?= Right (CliInvocation defaultCliConfig CmdExplore)
+        parseCli ["--repo", "selected repository", "explore"]
+          @?= Right (CliInvocation (defaultCliConfig {configRepo = "selected repository"}) CmdExplore)
+        mapM_ assertParserFailure
+          [ ["explore", "unexpected"],
+            ["explore", "--json"],
+            ["explore", "--revision", "HEAD"],
+            ["explore", "--cache", "cache.sqlite"],
+            ["explore", "--private"],
+            ["trust"],
+            ["vectors"],
+            ["migrate"]
+          ]
     , testCase "compile accepts only frozen revision and JSON options and dispatches the typed request" $ do
         let explicit = CompileCommand "refs/heads/release" True
             defaulted = CompileCommand "HEAD" False

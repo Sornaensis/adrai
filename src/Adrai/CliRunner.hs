@@ -96,6 +96,7 @@ import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import Adrai.Provenance (sha256Digest)
 import Adrai.Repository (resolvedCommitOid, resolveRepositoryRevision, repositorySnapshot, repositorySnapshotManagedPaths)
 import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
+import Adrai.Explorer.Interactive (interactiveSession)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
 import Adrai.Service.Query
   ( CompareRequest (..),
@@ -378,6 +379,7 @@ data CliCommand
   | CmdReactivate ReactivateCommand
   | CmdScope ScopeCommand
   | CmdDomain DomainCommand
+  | CmdExplore
   deriving (Eq, Show)
 
 -- | Top-level CLI parser type alias.
@@ -401,6 +403,7 @@ parser =
        <> command "reactivate" (info (CmdReactivate <$> reactivateParser) (progDesc "reactivate an ADR"))
        <> command "scope" (info (CmdScope <$> scopeParser) (progDesc "change an ADR scope"))
        <> command "domain" (info (CmdDomain <$> domainParser) (progDesc "change an ADR domain"))
+       <> command "explore" (info (pure CmdExplore) (progDesc "open the terminal explorer"))
     )
 
 globalConfigParser :: Parser CliConfig
@@ -771,6 +774,19 @@ dispatchWith dependencies (CliInvocation config (CmdCompare command)) = do
   case result of
     Left failure -> renderFailure failure
     Right projection -> emitRendered (renderCompareOutcome command projection)
+dispatchWith _ (CliInvocation config CmdExplore) = do
+  actorResult <- pure (mkActor HumanActor "terminal-explorer" Nothing)
+  case actorResult of
+    Left problem -> renderFailure (CliUserFailure (Text.pack (show problem)))
+    Right actor -> do
+      outcome <- try (interactiveSession (configRepo config) actor) :: IO (Either SomeException (Either Text ()))
+      case outcome of
+        Left problem ->
+          case fromException problem of
+            Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+            Nothing -> renderFailure (CliUserFailure (Text.pack (displayException problem)))
+        Right (Left problem) -> renderFailure (CliUserFailure problem)
+        Right (Right ()) -> pure ExitSuccess
 
 data CliDispatchDependencies = CliDispatchDependencies
   { cliRunCompile :: ~(CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult))

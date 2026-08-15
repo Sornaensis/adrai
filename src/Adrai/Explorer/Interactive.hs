@@ -21,7 +21,7 @@
 --
 -- After a mutation command (create, amend, status) the explorer shows
 -- a summary and returns 'True' from the handler to signal the REPL
--- loop should exit. This matches the Python reference where these
+-- loop should exit. These mutations
 -- are one-shot commands that produce output and terminate.
 -- For scripted mode, mutations always exit after completion.
 
@@ -101,12 +101,12 @@ import System.IO
 interactiveSession ::
   FilePath ->          -- ^ Repository root
   Actor ->             -- ^ Actor performing mutations
-  IO ()
+  IO (Either Text ())
 interactiveSession repoPath actor = do
   repoResult <- discoverRepository systemGit repoPath
   case repoResult of
-    Left err -> do
-      TIO.putStrLn $ "Error: cannot open repository: " <> T.pack (show err)
+    Left err ->
+      pure (Left ("cannot open repository: " <> T.pack (show err)))
     Right repository -> do
       let session =
             defaultSession
@@ -114,9 +114,12 @@ interactiveSession repoPath actor = do
                 sessionActor = actor
               }
       let state = initialState
+      hSetEncoding stdin utf8
+      hSetEncoding stdout utf8
       hSetBuffering stdout LineBuffering
       TIO.putStrLn "ADRAI Terminal Explorer. Type :help for commands."
       replLoop repository session state
+      pure (Right ())
 
 -- | Main REPL loop. Reads a line, dispatches, and recurses.
 --
@@ -126,28 +129,32 @@ interactiveSession repoPath actor = do
 replLoop ::
   Repository -> ExplorerSession -> ExplorerState -> IO ()
 replLoop repository session state = do
-  hFlush stdout
-  let prompt =
-        "adrai[" <> sessionRevision session <> " "
-          <> viewModeText (sessionView session) <> "/"
-          <> searchModeText (sessionMode session) <> "]> "
-  TIO.putStr prompt
-  line <- TIO.getLine
-  let trimmed = T.strip line
-  if T.null trimmed
-    then replLoop repository session state
+  eof <- hIsEOF stdin
+  if eof
+    then pure ()
     else do
-      case parseCommand trimmed of
-        ExitCommand -> pure ()
-        HelpCommand -> do
-          mapM_ TIO.putStrLn (renderHelp)
-          replLoop repository session state
-        cmd -> do
-          (session', state', exitGate) <- handleCommand repository cmd session state
-          mapM_ TIO.putStrLn (stateOutput state')
-          if exitGate
-            then TIO.putStrLn "" >> TIO.putStrLn "Mutation complete. Exiting."
-            else replLoop repository session' state'
+      hFlush stdout
+      let prompt =
+            "adrai[" <> sessionRevision session <> " "
+              <> viewModeText (sessionView session) <> "/"
+              <> searchModeText (sessionMode session) <> "]> "
+      TIO.putStr prompt
+      line <- TIO.getLine
+      let trimmed = T.strip line
+      if T.null trimmed
+        then replLoop repository session state
+        else do
+          case parseCommand trimmed of
+            ExitCommand -> pure ()
+            HelpCommand -> do
+              mapM_ TIO.putStrLn (renderHelp)
+              replLoop repository session state
+            cmd -> do
+              (session', state', exitGate) <- handleCommand repository cmd session state
+              mapM_ TIO.putStrLn (stateOutput state')
+              if exitGate
+                then TIO.putStrLn "" >> TIO.putStrLn "Mutation complete. Exiting."
+                else replLoop repository session' state'
 
 viewModeText :: ViewMode -> Text
 viewModeText vm = case vm of
@@ -185,6 +192,8 @@ scriptedMode repoPath actor = do
                 sessionActor = actor
               }
       let state = initialState
+      hSetEncoding stdin utf8
+      hSetEncoding stdout utf8
       hSetBuffering stdout LineBuffering
       scriptLoop repository session state
 

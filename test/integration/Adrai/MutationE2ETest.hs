@@ -200,6 +200,18 @@ adraiRequiredRaw repoPath args = do
   let mergedEnv = isolatedGitEnvironment inheritedEnv
   readProcess (setEnv mergedEnv (proc exe ("--repo" : repoPath : args)))
 
+adraiRequiredScriptRaw :: FilePath -> [String] -> LBS.ByteString -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
+adraiRequiredScriptRaw repoPath args input = do
+  maybeExe <- lookupEnv "ADRAI_EXE"
+  exe <-
+    case maybeExe of
+      Nothing -> assertFailure "P6-02M requires ADRAI_EXE to name the executable under test" >> fail "unreachable"
+      Just "" -> assertFailure "P6-02M requires ADRAI_EXE to be non-empty" >> fail "unreachable"
+      Just path -> pure path
+  inheritedEnv <- getEnvironment
+  let mergedEnv = isolatedGitEnvironment inheritedEnv
+  readProcess (setStdin (byteStringInput input) (setEnv mergedEnv (proc exe ("--repo" : repoPath : args))))
+
 -- | Retain only the variables required to launch child processes on Windows,
 -- comparing names case-insensitively, then overlay the deterministic Git test
 -- environment.  This excludes inherited repository/config controls such as
@@ -1030,6 +1042,75 @@ testP602LRealExecutable :: TestTree
 testP602LRealExecutable =
   testGroup "P6-02L real executable doctor"
     [ testCase "doctor binds exact revisions and preserves caller-owned repository state" p602lDoctor ]
+
+testP602MRealExecutable :: TestTree
+testP602MRealExecutable =
+  testGroup "P6-02M real executable explore"
+    [ testCase "explore is a native non-mutating terminal session" p602mExplore ]
+
+p602mExplore :: IO ()
+p602mExplore =
+  withSystemTempDirectory "adrai p6-02m explore" $ \temporary -> do
+    let repo = temporary </> "explore repository"
+        database = repo </> ".adrai" </> "index.sqlite"
+        stagedPath = "caller-staged.bin"
+        dirtyPath = "README.md"
+        stagedBytes = BS.pack [0, 255, 17, 0, 128, 64, 10]
+        script label input = do
+          baseline <- captureBaseline
+          (exitCode, stdout, stderr) <- adraiRequiredScriptRaw repo ["explore"] input
+          case exitCode of
+            ExitSuccess -> pure ()
+            _ ->
+              assertFailure
+                ( label <> " exited " <> show exitCode
+                    <> "\nstdout:\n" <> T.unpack (decodeUtf8 (LBS.toStrict stdout))
+                    <> "\nstderr:\n" <> T.unpack (decodeUtf8 (LBS.toStrict stderr))
+                )
+          stderr @?= ""
+          assertBool (label <> " must show the explorer banner") ("ADRAI Terminal Explorer" `T.isInfixOf` decodeUtf8 (LBS.toStrict stdout))
+          assertExplorePreserved baseline
+          pure stdout
+        captureBaseline = do
+          gitState <- captureDoctorGitBaseline repo [stagedPath, dirtyPath]
+          databaseExists <- doesFileExist database
+          databaseBytes <- if databaseExists then Just <$> BS.readFile database else pure Nothing
+          pure (gitState, databaseExists, databaseBytes)
+        assertExplorePreserved (gitState, databaseExists, databaseBytes) = do
+          assertDoctorGitPreserved repo [stagedPath, dirtyPath] gitState
+          doesFileExist database >>= (@?= databaseExists)
+          (if databaseExists then Just <$> BS.readFile database else pure Nothing) >>= (@?= databaseBytes)
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "README.md") "explore fixture\n"
+    git repo ["add", "README.md"]
+    git repo ["commit", "-m", "explore fixture"]
+    _ <- assertExitSuccess "explore setup init" =<< adraiRequiredRaw repo ["init", "--json"]
+    _ <-
+      assertExitSuccess "explore setup create" =<< adraiRequiredRaw repo
+        [ "create"
+        , "--title", "Explorer fixture"
+        , "--summary", "Prove non-mutating exploration."
+        , "--body", "Explorer fixture body.\n"
+        , "--domain", "compiler"
+        , "--actor", "human:e2e"
+        , "--json"
+        ]
+    removeFile database
+    doesFileExist database >>= (@?= False)
+    BS.writeFile (repo </> stagedPath) stagedBytes
+    git repo ["add", "--", stagedPath]
+    BS.writeFile (repo </> dirtyPath) "caller worktree bytes differ from the index\n"
+    helpOutput <- script "help then exit" ":help\nexit\n"
+    assertBool "help session must render explorer commands" ("Commands:" `T.isInfixOf` decodeUtf8 (LBS.toStrict helpOutput))
+    _ <- script "quit" "quit\n"
+    _ <- script "EOF" ""
+    let missing = temporary </> "missing repository"
+    (invalidExit, invalidStdout, invalidStderr) <- adraiRequiredScriptRaw missing ["explore"] "exit\n"
+    invalidExit @?= ExitFailure 2
+    invalidStdout @?= ""
+    assertBool "invalid explore repository must use frozen CLI stderr" ("adrai: cannot open repository:" `T.isPrefixOf` decodeUtf8 (LBS.toStrict invalidStderr))
 
 p602lDoctor :: IO ()
 p602lDoctor =
@@ -2365,6 +2446,7 @@ tests =
       testP602DRealExecutable,
       testP602ERealExecutable,
       testP602LRealExecutable,
+      testP602MRealExecutable,
       testUnbornRepository,
       testUnrelatedStagedEntry,
       testDetachedHead,
