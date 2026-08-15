@@ -499,7 +499,26 @@ doctorOutputTests =
         case KM.lookup "ok" km of
           Just (Aeson.Bool b) -> b @?= False
           Just v -> assertFailure $ "Expected Bool, got: " <> show v
-          Nothing -> assertFailure "Missing 'ok' key in roundtrip"
+          Nothing -> assertFailure "Missing 'ok' key in roundtrip",
+      testCase "Cli re-export preserves exact canonical doctor bytes" $ do
+        let output =
+              DoctorOutput
+                { doctorOk = True
+                , doctorRevision = "rev ü"
+                , doctorDatabase = Nothing
+                , doctorShallow = False
+                , doctorIssues = []
+                , doctorCacheStatus = []
+                , doctorCounts = DoctorCounts 0 0
+                , doctorCurrentAccess = Nothing
+                , doctorDatabaseBuild = Nothing
+                }
+            expected =
+              BL.fromStrict
+                (Text.Encoding.encodeUtf8
+                  "{\"cache\":[],\"counts\":{\"errors\":0,\"warnings\":0},\"current_access\":null,\"database\":null,\"database_build\":null,\"issues\":[],\"ok\":true,\"revision\":\"rev ü\",\"shallow\":false}")
+        doctorOutputJson output @?= CliTypes.doctorOutputJson output
+        Aeson.encode (doctorOutputJson output) @?= expected
         ]
 
 -- ============================================================
