@@ -236,6 +236,7 @@ tests =
       testP602FRealExecutableIntegrityFailure,
       testP602GRealExecutableCompare,
       testP602HRealExecutableHistory,
+      testP602JRealExecutableSearch,
       testShowCollapsedEvolution,
       testCompareBranchOnly,
       testCompareReverseShowsRemoved,
@@ -1196,6 +1197,252 @@ testP602HRealExecutableHistory =
               assertBool "history operation exposes actor" (KM.member "actor" operationObject)
               assertBool "history operation exposes operation ID" (KM.member "operation" operationObject)
               assertBool "history operation exposes canonical timestamp" (KM.member "claimed_at" operationObject)
+
+testP602JRealExecutableSearch :: TestTree
+testP602JRealExecutableSearch =
+  testGroup "P6-02J real executable search"
+    [ testCase "canonical search is revision-local, filtered, exact, and preserves caller state" $
+        withSystemTempDirectory "adrai p6-02j search ü" $ \tmpDir -> do
+          repo <- createTestRepo tmpDir
+          _ <- p602fJsonOrThrow repo ["init", "--json"]
+          first <- p602fJsonOrThrow repo
+            [ "create"
+            , "--title", "Quasar cache Unicode ü decision"
+            , "--summary", "Search the quasar cache exactly"
+            , "--body", "## Decision\nUse the searchable quasar cache.\n"
+            , "--domain", "platform"
+            , "--applies-to", "src/cache/**"
+            , "--actor", "llm:planner"
+            , "--model", "search-model"
+            , "--json"
+            ]
+          firstAdr <- case extractAdrId first of
+            Just value -> pure value
+            Nothing -> assertFailure "first search create omitted ADR" >> fail "unreachable"
+          firstRevision <- headCommit repo
+          second <- p602fJsonOrThrow repo
+            [ "create"
+            , "--title", "Legacy quasar cache decision"
+            , "--summary", "An obsolete searchable quasar cache"
+            , "--body", "## Decision\nRetire the legacy quasar cache.\n"
+            , "--domain", "legacy"
+            , "--applies-to", "legacy/cache/**"
+            , "--actor", "human:architect"
+            , "--json"
+            ]
+          secondAdr <- case extractAdrId second of
+            Just value -> pure value
+            Nothing -> assertFailure "second search create omitted ADR" >> fail "unreachable"
+          _ <- p602fJsonOrThrow repo
+            [ "obsolete", T.unpack secondAdr
+            , "--reason", "Retire the legacy search fixture"
+            , "--actor", "human:architect"
+            , "--json"
+            ]
+          currentRevision <- headCommit repo
+
+          -- Warm the recoverable provenance cache before taking the exact
+          -- caller-state baseline used by every success and failure below.
+          _ <- p602fJsonOrThrow repo ["search", "--json"]
+          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+          beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+          let managedPaths =
+                filter ("architecture/adrai/" `isPrefixOf`)
+                  (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
+          beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
+          BS.writeFile (repo </> "search staged.bin") "\NUL\SOHsearch staged bytes\255"
+          _ <- gitStdout repo ["add", "--", "search staged.bin"]
+          BS.writeFile (repo </> "README.md") "# Test\nsearch caller dirty bytes\n"
+          BS.writeFile (repo </> "search untracked ü.txt") "keep this untracked file"
+          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+          beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
+          beforeWorktree <- gitStdout repo ["diff", "--binary"]
+
+          defaultValue <- p602fJsonOrThrow repo ["search", "--json"]
+          assertSearchEnvelope defaultValue currentRevision "hybrid" "collapsed" 10 [firstAdr]
+
+          forM_ ["fts", "vector", "hybrid"] $ \mode -> do
+            value <- p602fJsonOrThrow repo ["search", "quasar", "--mode", mode, "--json"]
+            assertSearchEnvelope value currentRevision (T.pack mode) "collapsed" 10 [firstAdr]
+
+          exploded <- p602fJsonOrThrow repo ["search", "quasar", "--view", "exploded", "--json"]
+          assertSearchEnvelope exploded currentRevision "hybrid" "exploded" 10 [firstAdr]
+          case searchResults exploded of
+            [result] -> case _Object result of
+              Just object -> do
+                operations <- case object .: "operations" of
+                  Just value -> pure (value :: [Data.Aeson.Value])
+                  Nothing -> assertFailure "exploded search omitted operations" >> fail "unreachable"
+                assertBool "exploded search uses genuine operation history" (not (null operations))
+                assertBool "exploded search exposes resolution" (KM.member "resolution" object)
+              Nothing -> assertFailure "exploded search result is not an object"
+            _ -> assertFailure "exploded search fixture expected one result"
+
+          included <- p602fJsonOrThrow repo ["search", "--include-obsolete", "--json"]
+          assertSearchEnvelope included currentRevision "hybrid" "collapsed" 10 [firstAdr, secondAdr]
+          laterOnly <- p602fJsonOrThrow repo ["search", "Legacy", "--mode", "fts", "--include-obsolete", "--json"]
+          assertSearchEnvelope laterOnly currentRevision "fts" "collapsed" 10 [secondAdr]
+          domainFiltered <- p602fJsonOrThrow repo ["search", "--domain", "platform", "--json"]
+          assertSearchEnvelope domainFiltered currentRevision "hybrid" "collapsed" 10 [firstAdr]
+          obsoleteDomain <- p602fJsonOrThrow repo ["search", "--domain", "legacy", "--include-obsolete", "--json"]
+          assertSearchEnvelope obsoleteDomain currentRevision "hybrid" "collapsed" 10 [secondAdr]
+          fileFiltered <- p602fJsonOrThrow repo ["search", "--file", "src/cache/Main.hs", "--json"]
+          assertSearchEnvelope fileFiltered currentRevision "hybrid" "collapsed" 10 [firstAdr]
+          actorFiltered <- p602fJsonOrThrow repo ["search", "--actor", "llm:planner", "--json"]
+          assertSearchEnvelope actorFiltered currentRevision "hybrid" "collapsed" 10 [firstAdr]
+          sinceFiltered <- p602fJsonOrThrow repo ["search", "--since", "0", "--json"]
+          assertSearchEnvelope sinceFiltered currentRevision "hybrid" "collapsed" 10 [firstAdr]
+          untilFiltered <- p602fJsonOrThrow repo ["search", "--until", "0", "--json"]
+          assertSearchEnvelope untilFiltered currentRevision "hybrid" "collapsed" 10 []
+          limited <- p602fJsonOrThrow repo ["search", "--include-obsolete", "--limit", "1", "--json"]
+          assertBool "search limit is applied" (length (searchResults limited) == 1)
+          historical <- p602fJsonOrThrow repo ["search", "quasar", "--at", T.unpack firstRevision, "--json"]
+          assertSearchEnvelope historical firstRevision "hybrid" "collapsed" 10 [firstAdr]
+          historicalLaterOnly <- p602fJsonOrThrow repo ["search", "Legacy", "--mode", "fts", "--include-obsolete", "--at", T.unpack firstRevision, "--json"]
+          assertSearchEnvelope historicalLaterOnly firstRevision "fts" "collapsed" 10 []
+
+          (plainExit, plainOut, plainErr) <- p602fRaw repo ["search"]
+          (jsonExit, jsonOut, jsonErr) <- p602fRaw repo ["search", "--json"]
+          plainExit @?= ExitSuccess
+          jsonExit @?= ExitSuccess
+          plainErr @?= ""
+          jsonErr @?= ""
+          plainOut @?= jsonOut
+
+          (limitExit, limitOut, limitErr) <- p602fRaw repo ["search", "--limit", "0", "--json"]
+          limitExit @?= ExitFailure 2
+          limitOut @?= ""
+          limitErr @?= "adrai: SearchInvalidLimit 0\n"
+          (revisionExit, revisionOut, revisionErr) <- p602fRaw repo ["search", "--at", "refs/heads/does-not-exist", "--json"]
+          revisionExit @?= ExitFailure 2
+          revisionOut @?= ""
+          assertBool "invalid search revision is a user error" ("adrai: " `LBS.isPrefixOf` revisionErr)
+          (legacyExit, legacyOut, legacyErr) <- p602fRaw repo ["search", "--query", "quasar", "--json"]
+          legacyExit @?= ExitFailure 2
+          legacyOut @?= ""
+          assertBool "legacy search alias is rejected explicitly" ("--query" `T.isInfixOf` decodeUtf8 (LBS.toStrict legacyErr))
+          (repositoryExit, repositoryOut, repositoryErr) <- p602fRaw (repo </> "missing repository") ["search", "--json"]
+          repositoryExit @?= ExitFailure 2
+          repositoryOut @?= ""
+          assertBool "missing search repository is a user error" ("adrai: " `LBS.isPrefixOf` repositoryErr)
+
+          headCommit repo >>= (@?= currentRevision)
+          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
+          gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
+          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
+          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
+          gitStdout repo ["diff", "--cached", "--binary"] >>= (@?= beforeCached)
+          gitStdout repo ["diff", "--binary"] >>= (@?= beforeWorktree)
+          traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths >>= (@?= beforeManaged)
+    , testCase "semantic conflicts map to exit 3 without mutation" $
+        withSystemTempDirectory "adrai p6-02j search conflict" $ \tmpDir -> do
+          repo <- createTestRepo tmpDir
+          _ <- p602fJsonOrThrow repo ["init", "--json"]
+          created <- p602fJsonOrThrow repo
+            [ "create", "--title", "Search conflict base", "--summary", "Divergent searchable records"
+            , "--body", "## Decision\nCreate two searchable decision heads.\n"
+            , "--domain", "platform", "--applies-to", "src/**"
+            , "--actor", "llm:planner", "--model", "search-model", "--json"
+            ]
+          adr <- case extractAdrId created of
+            Just value -> pure value
+            Nothing -> assertFailure "search conflict create omitted ADR" >> fail "unreachable"
+          base <- headCommit repo
+          _ <- gitStdout repo ["switch", "-c", "search-left", T.unpack base]
+          _ <- p602fJsonOrThrow repo
+            [ "amend", T.unpack adr, "--title", "Left searchable decision", "--change-summary", "Left branch"
+            , "--body", "## Decision\nChoose the left searchable alternative.\n"
+            , "--actor", "llm:planner", "--model", "search-model", "--json"
+            ]
+          _ <- gitStdout repo ["switch", "-c", "search-right", T.unpack base]
+          _ <- p602fJsonOrThrow repo
+            [ "amend", T.unpack adr, "--title", "Right searchable decision", "--change-summary", "Right branch"
+            , "--body", "## Decision\nChoose the right searchable alternative.\n"
+            , "--actor", "llm:planner", "--model", "search-model", "--json"
+            ]
+          _ <- gitStdout repo ["switch", "main"]
+          _ <- gitStdout repo ["merge", "--no-ff", "-m", "merge divergent search fixture", "search-left", "search-right"]
+          beforeHead <- headCommit repo
+          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+          beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+          (conflictExit, conflictOut, conflictErr) <- p602fRaw repo ["search", "--json"]
+          conflictExit @?= ExitFailure 3
+          conflictOut @?= ""
+          conflictErr @?= "adrai: conflict: search results require resolution: 2 decision heads\n"
+          headCommit repo >>= (@?= beforeHead)
+          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
+          gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
+          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
+          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
+    , testCase "repository integrity failures are typed and preserve state" $
+        withSystemTempDirectory "adrai p6-02j search integrity" $ \tmpDir -> do
+          repo <- createTestRepo tmpDir
+          _ <- p602fJsonOrThrow repo ["init", "--json"]
+          created <- p602fJsonOrThrow repo
+            [ "create", "--title", "Search integrity base", "--summary", "Malformed searchable source"
+            , "--body", "## Decision\nFail search closed on invalid source.\n"
+            , "--domain", "platform", "--applies-to", "src/**"
+            , "--actor", "llm:planner", "--model", "search-model", "--json"
+            ]
+          decisionPath <- case _Object created >>= (.: "created") of
+            Just paths -> case find (T.isSuffixOf ".decision.md") (paths :: [Text]) of
+              Just path -> pure path
+              Nothing -> assertFailure "search integrity create omitted decision path" >> fail "unreachable"
+            Nothing -> assertFailure "search integrity create omitted paths" >> fail "unreachable"
+          BS.writeFile (repo </> T.unpack decisionPath) "schema: deliberately-invalid\n"
+          _ <- gitStdout repo ["add", "--", T.unpack decisionPath]
+          _ <- gitStdout repo ["commit", "-m", "commit malformed searchable source"]
+          beforeHead <- headCommit repo
+          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+          beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+          (failureExit, failureOut, failureErr) <- p602fRaw repo ["search", "--json"]
+          failureExit @?= ExitFailure 2
+          failureOut @?= ""
+          assertBool "search integrity failure is explicit" ("adrai: repository integrity failure: " `LBS.isPrefixOf` failureErr)
+          headCommit repo >>= (@?= beforeHead)
+          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
+          gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
+          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
+          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
+    ]
+  where
+    searchResults :: Data.Aeson.Value -> [Data.Aeson.Value]
+    searchResults value =
+      case _Object value >>= (.: "results") of
+        Just results -> results
+        Nothing -> []
+
+    assertSearchEnvelope value expectedRevision expectedMode expectedView expectedLimit expectedAdrs =
+      case _Object value of
+        Nothing -> assertFailure "search output is not an object"
+        Just object -> do
+          sortOn id (map AesonKey.toText (KM.keys object))
+            @?= sortOn id ["as_of", "limit", "mode", "results", "schema", "view"]
+          (object .: "schema" :: Maybe Text) @?= Just "adrai/search/v1"
+          (object .: "as_of" :: Maybe Text) @?= Just expectedRevision
+          (object .: "mode" :: Maybe Text) @?= Just expectedMode
+          (object .: "view" :: Maybe Text) @?= Just expectedView
+          (object .: "limit" :: Maybe Int) @?= Just expectedLimit
+          let results = searchResults value
+              ids = sortOn id
+                [ identifier
+                | result <- results
+                , Just resultObject <- [_Object result]
+                , Just identifier <- [resultObject .: "adr" :: Maybe Text]
+                ]
+          ids @?= sortOn id expectedAdrs
+          forM_ results $ \result -> case _Object result of
+            Nothing -> assertFailure "search result is not an object"
+            Just resultObject -> do
+              (resultObject .: "view" :: Maybe Text) @?= Just expectedView
+              (resultObject .: "as_of" :: Maybe Text) @?= Just expectedRevision
+              assertBool "search result exposes genuine retrieval metadata" (KM.member "retrieval" resultObject)
+              assertBool "search result exposes resolution state" (KM.member "resolution_required" resultObject)
 
 testShowCollapsedEvolution :: TestTree
 testShowCollapsedEvolution =

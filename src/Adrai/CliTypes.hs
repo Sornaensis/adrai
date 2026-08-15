@@ -17,6 +17,7 @@ module Adrai.CliTypes
     HistoryCommand (..),
     historyCommandJson,
     SearchCommand (..),
+    searchCommandRequest,
     searchCommandJson,
     RelevantCommand (..),
     relevantCommandJson,
@@ -73,7 +74,10 @@ import Adrai.Types
   ( ViewMode (..),
     RepoPath (..),
     ActorKind (..),
+    actorId,
+    actorKind,
     RevisionSelector (AtRevision),
+    mkActor,
     mkRepoPath,
     RepoPathViolation (..),
   )
@@ -282,9 +286,10 @@ data SearchCommand = SearchCommand
   , searchView           :: ViewMode
   , searchFile           :: Maybe Text  -- RepoPath as text
   , searchDomains        :: [Text]
-  , searchActor          :: Maybe (Text, Text)  -- (kind, model)
+  , searchActor          :: Maybe Text
   , searchSince          :: Maybe Integer
   , searchUntil          :: Maybe Integer
+  , searchAt             :: Text
   , searchIncludeObsolete :: Bool
   , searchLimit          :: Int
   , searchJson           :: Bool
@@ -294,32 +299,55 @@ data SearchCommand = SearchCommand
 -- 'SearchMaterialization' since the CLI does not materialize
 -- documents inline; FTS-only retrieval still works correctly.
 searchCommandJson :: ReadSnapshot -> Connection -> SearchCommand -> IO Aeson.Value
-searchCommandJson snapshot conn cmd = do
-  let request = SearchRequest
-        { searchRequestQuery = searchQuery cmd
-        , searchRequestMode = searchMode cmd
-        , searchRequestView = searchView cmd
-        , searchRequestIncludeObsolete = searchIncludeObsolete cmd
-        , searchRequestDomains = searchDomains cmd
-        , searchRequestFile = searchFile cmd >>= \p ->
-            case mkRepoPath p of
-              Left _  -> Nothing
-              Right rp -> Just rp
-        , searchRequestActor = searchActor cmd >>= \(kind, model) ->
-            ActorSelector <$> textToActorKind kind <*> pure model
-        , searchRequestSince = searchSince cmd
-        , searchRequestUntil = searchUntil cmd
-        , searchRequestLimit = min (max (searchLimit cmd) 1) 1000
-        , searchRequestShallowHistory = False
-        }
-      materialization = SearchMaterialization [] [] []
-  result <- runCurrentSearch conn snapshot materialization request
-  case result of
-    Left err -> pure $ Aeson.object
-      [ "schema" .= Aeson.String "adrai/search/v1"
-      , "error"  .= Aeson.String (Text.pack (show err))
-      ]
-    Right proj -> pure (toAesonValue (searchProjectionJson proj))
+searchCommandJson snapshot conn cmd =
+  case searchCommandRequest cmd of
+    Left problem -> pure (errorJson problem)
+    Right request -> do
+      let materialization = SearchMaterialization [] [] []
+      result <- runCurrentSearch conn snapshot materialization request
+      case result of
+        Left err -> pure (errorJson (Text.pack (show err)))
+        Right proj -> pure (toAesonValue (searchProjectionJson proj))
+  where
+    errorJson problem =
+      Aeson.object
+        [ "schema" .= Aeson.String "adrai/search/v1"
+        , "error" .= Aeson.String problem
+        ]
+
+searchCommandRequest :: SearchCommand -> Either Text SearchRequest
+searchCommandRequest cmd = do
+  requestedFile <- traverse parseFile (searchFile cmd)
+  requestedActor <- traverse parseActorSelector (searchActor cmd)
+  Right
+    SearchRequest
+      { searchRequestQuery = searchQuery cmd
+      , searchRequestMode = searchMode cmd
+      , searchRequestView = searchView cmd
+      , searchRequestIncludeObsolete = searchIncludeObsolete cmd
+      , searchRequestDomains = searchDomains cmd
+      , searchRequestFile = requestedFile
+      , searchRequestActor = requestedActor
+      , searchRequestSince = searchSince cmd
+      , searchRequestUntil = searchUntil cmd
+      , searchRequestLimit = searchLimit cmd
+      , searchRequestShallowHistory = False
+      }
+  where
+    parseFile value =
+      case mkRepoPath value of
+        Left problem -> Left ("invalid search file path: " <> Text.pack (show problem))
+        Right path -> Right path
+    parseActorSelector value =
+      case Text.splitOn ":" value of
+        [kind, identifier]
+          | not (Text.null identifier) -> do
+              requestedKind <- maybe (Left "search actor kind must be human, llm, or service") Right (textToActorKind kind)
+              actor <- case mkActor requestedKind identifier Nothing of
+                Left problem -> Left ("invalid search actor: " <> Text.pack (show problem))
+                Right value -> Right value
+              Right (ActorSelector (actorKind actor) (actorId actor))
+        _ -> Left "search actor must have the form kind:identifier"
 
 -- | CLI argument representation for the @relevant@ command.
 data RelevantCommand = RelevantCommand

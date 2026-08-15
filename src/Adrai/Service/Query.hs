@@ -15,13 +15,18 @@ module Adrai.Service.Query
     CompareFailure (..),
     HistoryRequest (..),
     HistoryFailure (..),
+    SearchServiceRequest (..),
+    SearchFailure (..),
     runShow,
     runCompare,
     runHistory,
+    runSearch,
     showFailureText,
     showFailureIsConflict,
     compareFailureText,
     historyFailureText,
+    searchFailureText,
+    searchFailureIsConflict,
   )
 where
 
@@ -34,6 +39,10 @@ import Adrai.Compiler.Snapshot
     compilerDiagnosticMessage,
     gateAnalyzedRepositorySnapshot,
     parsedReducedAnalyzed,
+  )
+import Adrai.Compiler
+  ( ColdCompilerResult (..),
+    coldCompileRepository,
   )
 import qualified Adrai.Format.Document as Document
 import Adrai.Git (Repository, RevisionSpec (..), gitOidText, gitTreeOid, gitTreePath)
@@ -69,6 +78,11 @@ import Adrai.Query
     resolutionStateConflicts,
     resolutionStateRequired,
     resolutionSummary,
+    SearchError,
+    SearchProjection (..),
+    SearchRequest,
+    SearchResult (..),
+    runCurrentSearch,
     referenceLookupErrorText,
     resolveAdrReference,
   )
@@ -79,11 +93,14 @@ import Adrai.Repository
     rawRepositorySnapshotEntries,
     repositoryTreeEntry,
     resolveRepositoryRevision,
+    ResolvedRepositoryRevision,
     resolvedCommitOid,
   )
 import Adrai.Types (ViewMode (..))
+import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, fromException, throwIO, try)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Database.SQLite.Simple (close, open)
 
 data ShowRequest = ShowRequest
   { showRequestReference :: Text,
@@ -135,6 +152,21 @@ data HistoryFailure
   | HistoryPlacementFailure PlacementHydrationError
   | HistoryReferenceFailure ReferenceLookupError
   | HistoryProjectionFailure HistoryError
+  deriving (Eq, Show)
+
+data SearchServiceRequest = SearchServiceRequest
+  { searchServiceRevision :: Text,
+    searchServiceQuery :: SearchRequest
+  }
+  deriving (Eq, Show)
+
+data SearchFailure
+  = SearchRepositoryFailure Text
+  | SearchIntegrityFailure [Text]
+  | SearchPlacementFailure PlacementHydrationError
+  | SearchCompilerFailure Text
+  | SearchQueryFailure SearchError
+  | SearchSemanticConflict [Text]
   deriving (Eq, Show)
 
 data SnapshotReadFailure
@@ -202,12 +234,54 @@ runHistory repository request = do
           Just reference -> Just <$> either (Left . HistoryReferenceFailure) Right (resolveAdrReference snapshot reference)
       either (Left . HistoryProjectionFailure) Right (projectHistory snapshot requestedAdr (historyRequestOptions request))
 
+runSearch :: Repository -> SearchServiceRequest -> IO (Either SearchFailure SearchProjection)
+runSearch repository request = do
+  revisionResult <- resolveRepositoryRevision repository (RevisionSpec (searchServiceRevision request))
+  case revisionResult of
+    Left problem -> pure (Left (SearchRepositoryFailure (Text.pack (show problem))))
+    Right revision -> do
+      snapshotResult <- readSnapshotAtResolved repository (searchServiceRevision request) revision
+      case snapshotResult of
+        Left failure -> pure (Left (searchSnapshotFailure failure))
+        Right snapshot -> do
+          captured <- try (bracket (open ":memory:") close (compileAndSearch revision snapshot)) :: IO (Either SomeException (Either SearchFailure SearchProjection))
+          case captured of
+            Left exception ->
+              case fromException exception of
+                Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+                Nothing -> pure (Left (SearchCompilerFailure (Text.pack (displayException exception))))
+            Right result -> pure result
+  where
+    compileAndSearch revision snapshot connection = do
+      compiledResult <- coldCompileRepository connection revision
+      case compiledResult of
+        Left problem -> pure (Left (SearchCompilerFailure (Text.pack (show problem))))
+        Right compiled ->
+          case coldCompilerSearchMaterialization compiled of
+            Nothing -> pure (Left (SearchCompilerFailure "compiler produced no search materialization for an integrity-gated snapshot"))
+            Just materialization -> do
+              searched <- runCurrentSearch connection snapshot materialization (searchServiceQuery request)
+              pure $ case searched of
+                Left problem -> Left (SearchQueryFailure problem)
+                Right projection
+                  | null conflicts -> Right projection
+                  | otherwise -> Left (SearchSemanticConflict conflicts)
+                  where
+                    conflicts =
+                      [ resolutionSummary conflict
+                        | result <- searchProjectionResults projection,
+                          conflict <- resolutionStateConflicts (searchResultResolution result)
+                      ]
+
 readSnapshotAt :: Repository -> Text -> IO (Either SnapshotReadFailure ReadSnapshot)
 readSnapshotAt repository requestedRevision = do
   revisionResult <- resolveRepositoryRevision repository (RevisionSpec requestedRevision)
   case revisionResult of
     Left problem -> pure (Left (SnapshotRepositoryFailure (Text.pack (show problem))))
-    Right revision -> do
+    Right revision -> readSnapshotAtResolved repository requestedRevision revision
+
+readSnapshotAtResolved :: Repository -> Text -> ResolvedRepositoryRevision -> IO (Either SnapshotReadFailure ReadSnapshot)
+readSnapshotAtResolved repository requestedRevision revision = do
       rawResult <- observeRawRepositorySnapshotAt revision
       case rawResult of
         Left problem -> pure (Left (SnapshotRepositoryFailure (Text.pack (show problem))))
@@ -268,6 +342,13 @@ historySnapshotFailure failure =
     SnapshotIntegrityFailure diagnostics -> HistoryIntegrityFailure diagnostics
     SnapshotPlacementFailure problem -> HistoryPlacementFailure problem
 
+searchSnapshotFailure :: SnapshotReadFailure -> SearchFailure
+searchSnapshotFailure failure =
+  case failure of
+    SnapshotRepositoryFailure message -> SearchRepositoryFailure message
+    SnapshotIntegrityFailure diagnostics -> SearchIntegrityFailure diagnostics
+    SnapshotPlacementFailure problem -> SearchPlacementFailure problem
+
 classificationDocuments raw = traverse classify
   where
     entries = map repositoryTreeEntry (rawRepositorySnapshotEntries raw)
@@ -323,3 +404,17 @@ historyFailureText failure =
     HistoryProjectionFailure (HistoryInvalidLimit limit) ->
       "history limit must be between 1 and 1000: " <> Text.pack (show limit)
     HistoryProjectionFailure problem -> Text.pack (show problem)
+
+searchFailureText :: SearchFailure -> Text
+searchFailureText failure =
+  case failure of
+    SearchRepositoryFailure message -> message
+    SearchIntegrityFailure diagnostics -> "repository integrity failure: " <> Text.intercalate "; " diagnostics
+    SearchPlacementFailure problem -> "provenance hydration failure: " <> Text.pack (show problem)
+    SearchCompilerFailure message -> "search materialization failure: " <> message
+    SearchQueryFailure problem -> Text.pack (show problem)
+    SearchSemanticConflict summaries -> "search results require resolution: " <> Text.intercalate "; " summaries
+
+searchFailureIsConflict :: SearchFailure -> Bool
+searchFailureIsConflict (SearchSemanticConflict _) = True
+searchFailureIsConflict _ = False

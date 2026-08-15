@@ -29,7 +29,7 @@ import Adrai.Cli
     CompareCommand (..),
     toAesonValue,
   )
-import Adrai.CliTypes (ViewMode (..), RetrievalMode (..), compileResultValue, textToActorKind)
+import Adrai.CliTypes (ViewMode (..), RetrievalMode (..), compileResultValue, searchCommandRequest, textToActorKind)
 import qualified Adrai.CliTypes as CliTypes
 import Adrai.CliRunner
   ( CliConfig (..),
@@ -75,6 +75,7 @@ import Adrai.CliRunner
      renderShowOutcome,
      renderCompareOutcome,
      renderHistoryOutcome,
+     renderSearchOutcome,
      renderCompileOutcome,
      capturePostCommitIndex,
     renderFailureOutcome,
@@ -95,7 +96,8 @@ import Adrai.Retrieval (SearchMaterialization(..))
 import Adrai.Sqlite (ColdDatabaseStats (..))
 import Adrai.Graph (GraphReduction (..))
 import Adrai.History
-  ( HistoryOptions (..),
+  ( ActorSelector (..),
+    HistoryOptions (..),
     HistoryOrder (..),
     HistoryProjection (..),
     ReadSnapshot (..),
@@ -109,12 +111,16 @@ import Adrai.Query
     ExplodedProjection (..),
     ReferenceLookupError (..),
     ResolutionState (..),
+    SearchProjection (..),
+    SearchRequest (..),
     compareProjectionJson,
     explodedProjectionJson,
     renderCompareProjection,
     renderExplodedProjection,
+    renderSearchProjection,
+    searchProjectionJson,
   )
-import Adrai.Service.Query (ShowFailure (..), ShowResult (..), showFailureIsConflict)
+import Adrai.Service.Query (SearchServiceRequest (..), ShowFailure (..), ShowResult (..), showFailureIsConflict)
 import Adrai.Types (RepoPath (..))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
@@ -626,6 +632,7 @@ cliTypeConstructorTests =
               , searchActor = Nothing
               , searchSince = Nothing
               , searchUntil = Nothing
+              , searchAt = "HEAD"
               , searchIncludeObsolete = False
               , searchLimit = 20
               , searchJson = False
@@ -885,6 +892,84 @@ mutationCliContractTests =
           >>= (@?= ExitSuccess)
         readIORef selectedRepo >>= (@?= Just "compile repo")
         readIORef selectedCommand >>= (@?= Just explicit)
+    , testCase "search accepts only the frozen positional syntax, materializes strictly, renders exactly, and dispatches typed intent" $ do
+        let defaulted = SearchCommand "" HybridRetrieval CollapsedView Nothing [] Nothing Nothing Nothing "HEAD" False 10 False
+            explicit =
+              SearchCommand
+                "cache ü"
+                VectorRetrieval
+                ExplodedView
+                (Just "src/cache ü.hs")
+                ["compiler", "runtime"]
+                (Just "llm:planner")
+                (Just 100)
+                (Just 200)
+                "refs/heads/release"
+                True
+                7
+                True
+            projection =
+              SearchProjection
+                { searchProjectionRevision = RevisionIdentity "refs/heads/release" "0123456789abcdef0123456789abcdef01234567"
+                , searchProjectionMode = VectorRetrieval
+                , searchProjectionView = ExplodedView
+                , searchProjectionLimit = 7
+                , searchProjectionResults = []
+                , searchProjectionExplodedDetails = Map.empty
+                }
+        parseCli ["search"] @?= Right (CliInvocation defaultCliConfig (CmdSearch defaulted))
+        parseCli
+          [ "search", "cache ü", "--mode", "vector", "--view", "exploded"
+          , "--file", "src/cache ü.hs", "--domain", "compiler", "--domain", "runtime"
+          , "--actor", "llm:planner", "--since", "100", "--until", "200"
+          , "--at", "refs/heads/release", "--include-obsolete", "--limit", "7", "--json"
+          ]
+          @?= Right (CliInvocation defaultCliConfig (CmdSearch explicit))
+        for_ [["search", "--query", "cache"], ["search", "cache", "--fts"], ["search", "cache", "--collapsed"], ["search", "cache", "--model", "planner"], ["search", "cache", "--mode", "other"], ["search", "cache", "--view", "other"]] assertParserFailure
+        case searchCommandRequest explicit of
+          Left problem -> assertFailure (T.unpack problem)
+          Right request -> do
+            searchRequestQuery request @?= "cache ü"
+            searchRequestMode request @?= VectorRetrieval
+            searchRequestView request @?= ExplodedView
+            searchRequestFile request @?= Just (RepoPath "src/cache ü.hs")
+            searchRequestDomains request @?= ["compiler", "runtime"]
+            searchRequestActor request @?= Just (ActorSelector LlmActor "planner")
+            searchRequestSince request @?= Just 100
+            searchRequestUntil request @?= Just 200
+            searchRequestIncludeObsolete request @?= True
+            searchRequestLimit request @?= 7
+        assertBool "malformed actor is rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchActor = Just "planner"})))
+        assertBool "actor surrounding whitespace is rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchActor = Just "llm: planner"})))
+        assertBool "actor control characters are rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchActor = Just "llm:plan\tner"})))
+        assertBool "invalid path is rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchFile = Just "../outside"})))
+        let jsonRendered = renderSearchOutcome explicit projection
+            plainRendered = renderSearchOutcome (explicit {searchJson = False}) projection
+        jsonRendered @?= CliRendered (renderCanonicalJson (searchProjectionJson projection)) "" ExitSuccess
+        plainRendered @?= CliRendered (Text.Encoding.decodeUtf8 (renderSearchProjection projection)) "" ExitSuccess
+        selectedRepo <- newIORef Nothing
+        selectedRequest <- newIORef Nothing
+        let dependencies =
+              CliDispatchDependencies
+                { cliRunSearch = \config received -> do
+                    writeIORef selectedRepo (Just (configRepo config))
+                    writeIORef selectedRequest (Just received)
+                    pure (Right projection)
+                , cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+                , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+                , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+                , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+                , cliRunInit = \_ -> error "init service must not be selected"
+                , cliRunCreate = \_ _ -> error "create service must not be selected"
+                , cliRunAmend = \_ _ -> error "amend service must not be selected"
+                , cliRunScope = \_ _ -> error "scope service must not be selected"
+                , cliRunDomain = \_ _ -> error "domain service must not be selected"
+                }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "search repo"}) (CmdSearch explicit))
+          >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "search repo")
+        let expectedRequest = SearchServiceRequest "refs/heads/release" <$> either (const Nothing) Just (searchCommandRequest explicit)
+        readIORef selectedRequest >>= (@?= expectedRequest)
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
         let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True
         parseCli ["show", "R0123456789ABCDEFGHJKMNPQRS", "--view", "exploded", "--at", "refs/heads/release", "--raw", "--json"]

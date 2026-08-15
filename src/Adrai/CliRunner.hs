@@ -51,6 +51,7 @@ module Adrai.CliRunner
     renderShowOutcome,
     renderCompareOutcome,
     renderHistoryOutcome,
+    renderSearchOutcome,
     renderCompileOutcome,
     capturePostCommitIndex,
     renderFailureOutcome,
@@ -65,6 +66,7 @@ import Adrai.CliTypes
     ShowCommand (..),
     HistoryCommand (..),
     SearchCommand (..),
+    searchCommandRequest,
     RelevantCommand (..),
     CompareCommand (..),
   )
@@ -90,13 +92,17 @@ import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChange
 import Adrai.Service.Query
   ( CompareRequest (..),
     HistoryRequest (..),
+    SearchServiceRequest (..),
     ShowRequest (..),
     ShowResult (..),
     compareFailureText,
     historyFailureText,
     runCompare,
     runHistory,
+    runSearch,
     runShow,
+    searchFailureIsConflict,
+    searchFailureText,
     showFailureIsConflict,
     showFailureText,
   )
@@ -127,12 +133,15 @@ import Adrai.Types
   )
 import Adrai.Query
   ( CompareProjection,
+    SearchProjection,
     collapsedProjectionJson,
     compareProjectionJson,
     explodedProjectionJson,
     renderCollapsedProjection,
     renderCompareProjection,
     renderExplodedProjection,
+    renderSearchProjection,
+    searchProjectionJson,
   )
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
@@ -170,6 +179,7 @@ import Options.Applicative
     option,
     switch,
     auto,
+    eitherReader,
     value,
     showDefault,
     showDefaultWith,
@@ -552,28 +562,33 @@ historyParser =
 searchParser :: Parser SearchCommand
 searchParser =
   SearchCommand
-    <$> strOption
-      ( long "query"
-       <> short 'q'
-       <> metavar "QUERY"
-       <> help "search query string"
-      )
-    <*> ( flag' FtsRetrieval (long "fts" <> help "full-text search (default)")
-        <|> flag' VectorRetrieval (long "vector" <> help "semantic/vector search")
-        <|> flag' HybridRetrieval (long "hybrid" <> help "full-text + semantic combined")
-        )
-    <*> ( flag' CollapsedView (long "collapsed" <> help "collapsed view (default)")
-        <|> flag' ExplodedView (long "exploded" <> help "exploded view")
-        )
+    <$> (strArgument (metavar "QUERY" <> help "optional search query") <|> pure "")
+    <*> option (eitherReader parseMode) (long "mode" <> metavar "fts|vector|hybrid" <> value HybridRetrieval <> showDefaultWith retrievalModeText <> help "retrieval mode")
+    <*> option (eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> value CollapsedView <> showDefaultWith searchViewText <> help "result view")
     <*> optional (strOption (long "file" <> metavar "PATH" <> help "filter by file path"))
     <*> many (strOption (long "domain" <> metavar "DOMAIN" <> help "domain filter (repeatable)"))
-    <*> optional (liftA2 (,) (strOption (long "actor" <> metavar "KIND" <> help "actor kind"))
-                              (strOption (long "model" <> metavar "NAME" <> help "actor model")))
-    <*> optional (option auto (long "since" <> help "entries after this timestamp"))
-    <*> optional (option auto (long "until" <> help "entries before this timestamp"))
+    <*> optional (strOption (long "actor" <> metavar "KIND:IDENTIFIER" <> help "filter by actor"))
+    <*> optional (option auto (long "since" <> metavar "MILLISECONDS" <> help "entries at or after this Unix timestamp in milliseconds"))
+    <*> optional (option auto (long "until" <> metavar "MILLISECONDS" <> help "entries at or before this Unix timestamp in milliseconds"))
+    <*> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "immutable revision to query")
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
-    <*> option auto (long "limit" <> value 20 <> showDefault <> help "max results (default 20)")
+    <*> option auto (long "limit" <> value 10 <> showDefault <> help "max results (default 10)")
     <*> switch (long "json" <> help "output JSON")
+  where
+    parseMode value = case value of
+      "fts" -> Right FtsRetrieval
+      "vector" -> Right VectorRetrieval
+      "hybrid" -> Right HybridRetrieval
+      _ -> Left "--mode must be fts, vector, or hybrid"
+    parseView value = case value of
+      "collapsed" -> Right CollapsedView
+      "exploded" -> Right ExplodedView
+      _ -> Left "--view must be collapsed or exploded"
+    retrievalModeText FtsRetrieval = "fts"
+    retrievalModeText VectorRetrieval = "vector"
+    retrievalModeText HybridRetrieval = "hybrid"
+    searchViewText CollapsedView = "collapsed"
+    searchViewText ExplodedView = "exploded"
 
 -- | Relevant command parser.
 relevantParser :: Parser RelevantCommand
@@ -704,9 +719,14 @@ dispatchWith dependencies (CliInvocation config (CmdHistory command)) = do
   case result of
     Left failure -> renderFailure failure
     Right projection -> emitRendered (renderHistoryOutcome command projection)
-dispatchWith _ (CliInvocation _ (CmdSearch SearchCommand { searchQuery })) = do
-  putStrLn $ "[search] querying: " <> Text.unpack searchQuery
-  pure ExitSuccess
+dispatchWith dependencies (CliInvocation config (CmdSearch command)) =
+  case searchCommandRequest command of
+    Left problem -> renderFailure (CliUserFailure problem)
+    Right request -> do
+      result <- cliRunSearch dependencies config (SearchServiceRequest (searchAt command) request)
+      case result of
+        Left failure -> renderFailure failure
+        Right projection -> emitRendered (renderSearchOutcome command projection)
 dispatchWith _ (CliInvocation _ CmdRelevant {}) = do
   putStrLn "[relevant] finding relevant ADRs"
   pure ExitSuccess
@@ -721,6 +741,7 @@ data CliDispatchDependencies = CliDispatchDependencies
   , cliRunShow :: ~(CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult))
   , cliRunCompare :: ~(CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection))
   , cliRunHistory :: ~(CliConfig -> HistoryCommand -> IO (Either CliFailure HistoryProjection))
+  , cliRunSearch :: ~(CliConfig -> SearchServiceRequest -> IO (Either CliFailure SearchProjection))
   , cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
   , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
   , cliMaterializeObsolete :: ~(ObsoleteCommand -> IO (Either Text ObsoleteCliRequest))
@@ -738,7 +759,7 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies runProductionCompile runProductionShow runProductionCompare runProductionHistory materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies runProductionCompile runProductionShow runProductionCompare runProductionHistory runProductionSearch materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
 
 runProductionCompile :: CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult)
 runProductionCompile config command = do
@@ -890,6 +911,19 @@ runProductionHistory config command =
     historyActorSelector value = do
       actor <- parseActor value Nothing
       Right (ActorSelector (actorKind actor) (actorId actor))
+
+runProductionSearch :: CliConfig -> SearchServiceRequest -> IO (Either CliFailure SearchProjection)
+runProductionSearch config request = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      result <- runSearch repository request
+      pure $ case result of
+        Left failure
+          | searchFailureIsConflict failure -> Left (CliConflictFailure (searchFailureText failure))
+          | otherwise -> Left (CliUserFailure (searchFailureText failure))
+        Right projection -> Right projection
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
 runProductionInit config = do
@@ -1591,6 +1625,17 @@ renderHistoryOutcome command projection =
     output
       | historyJson command = renderCanonicalJson (historyProjectionJson projection)
       | otherwise = TextEncoding.decodeUtf8 (renderHistoryProjection projection)
+
+renderSearchOutcome :: SearchCommand -> SearchProjection -> CliRendered
+renderSearchOutcome command projection =
+  CliRendered
+    output
+    ""
+    ExitSuccess
+  where
+    output
+      | searchJson command = renderCanonicalJson (searchProjectionJson projection)
+      | otherwise = TextEncoding.decodeUtf8 (renderSearchProjection projection)
 
 renderInitSuccess :: InitResult -> PostCommitIndexResult -> Bool -> IO ExitCode
 renderInitSuccess result indexResult jsonOutput = emitRendered (renderInitOutcome result indexResult jsonOutput)
