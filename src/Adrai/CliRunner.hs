@@ -52,6 +52,7 @@ module Adrai.CliRunner
     renderCompareOutcome,
     renderHistoryOutcome,
     renderSearchOutcome,
+    renderRelevantOutcome,
     renderCompileOutcome,
     capturePostCommitIndex,
     renderFailureOutcome,
@@ -68,6 +69,7 @@ import Adrai.CliTypes
     SearchCommand (..),
     searchCommandRequest,
     RelevantCommand (..),
+    relevantCommandRequest,
     CompareCommand (..),
   )
 import Adrai.History
@@ -100,9 +102,11 @@ import Adrai.Service.Query
     runCompare,
     runHistory,
     runSearch,
+    runRelevantQuery,
     runShow,
     searchFailureIsConflict,
     searchFailureText,
+    relevantFailureText,
     showFailureIsConflict,
     showFailureText,
   )
@@ -134,6 +138,8 @@ import Adrai.Types
 import Adrai.Query
   ( CompareProjection,
     SearchProjection,
+    RelevantRequest,
+    RelevantProjection,
     collapsedProjectionJson,
     compareProjectionJson,
     explodedProjectionJson,
@@ -142,6 +148,8 @@ import Adrai.Query
     renderExplodedProjection,
     renderSearchProjection,
     searchProjectionJson,
+    renderRelevantProjection,
+    relevantProjectionJson,
   )
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
@@ -595,6 +603,8 @@ relevantParser :: Parser RelevantCommand
 relevantParser =
   RelevantCommand
     <$> strArgument (metavar "FILE" <> help "file path to find relevant ADRs for")
+    <*> optional (strOption (long "at" <> metavar "REVISION" <> help "immutable revision containing FILE (default HEAD)"))
+    <*> switch (long "worktree" <> help "read FILE from the worktree using HEAD as context")
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
     <*> option auto (long "limit" <> value 10 <> showDefault <> help "max results (default 10)")
     <*> switch (long "json" <> help "output JSON")
@@ -727,9 +737,14 @@ dispatchWith dependencies (CliInvocation config (CmdSearch command)) =
       case result of
         Left failure -> renderFailure failure
         Right projection -> emitRendered (renderSearchOutcome command projection)
-dispatchWith _ (CliInvocation _ CmdRelevant {}) = do
-  putStrLn "[relevant] finding relevant ADRs"
-  pure ExitSuccess
+dispatchWith dependencies (CliInvocation config (CmdRelevant command)) =
+  case relevantCommandRequest command of
+    Left problem -> renderFailure (CliUserFailure problem)
+    Right request -> do
+      result <- cliRunRelevant dependencies config request
+      case result of
+        Left failure -> renderFailure failure
+        Right projection -> emitRendered (renderRelevantOutcome command projection)
 dispatchWith dependencies (CliInvocation config (CmdCompare command)) = do
   result <- cliRunCompare dependencies config command
   case result of
@@ -742,6 +757,7 @@ data CliDispatchDependencies = CliDispatchDependencies
   , cliRunCompare :: ~(CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection))
   , cliRunHistory :: ~(CliConfig -> HistoryCommand -> IO (Either CliFailure HistoryProjection))
   , cliRunSearch :: ~(CliConfig -> SearchServiceRequest -> IO (Either CliFailure SearchProjection))
+  , cliRunRelevant :: ~(CliConfig -> RelevantRequest -> IO (Either CliFailure RelevantProjection))
   , cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
   , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
   , cliMaterializeObsolete :: ~(ObsoleteCommand -> IO (Either Text ObsoleteCliRequest))
@@ -759,7 +775,7 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies runProductionCompile runProductionShow runProductionCompare runProductionHistory runProductionSearch materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies runProductionCompile runProductionShow runProductionCompare runProductionHistory runProductionSearch runProductionRelevant materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
 
 runProductionCompile :: CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult)
 runProductionCompile config command = do
@@ -923,6 +939,17 @@ runProductionSearch config request = do
         Left failure
           | searchFailureIsConflict failure -> Left (CliConflictFailure (searchFailureText failure))
           | otherwise -> Left (CliUserFailure (searchFailureText failure))
+        Right projection -> Right projection
+
+runProductionRelevant :: CliConfig -> RelevantRequest -> IO (Either CliFailure RelevantProjection)
+runProductionRelevant config request = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> do
+      result <- runRelevantQuery repository request
+      pure $ case result of
+        Left failure -> Left (CliUserFailure (relevantFailureText failure))
         Right projection -> Right projection
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
@@ -1636,6 +1663,17 @@ renderSearchOutcome command projection =
     output
       | searchJson command = renderCanonicalJson (searchProjectionJson projection)
       | otherwise = TextEncoding.decodeUtf8 (renderSearchProjection projection)
+
+renderRelevantOutcome :: RelevantCommand -> RelevantProjection -> CliRendered
+renderRelevantOutcome command projection =
+  CliRendered
+    output
+    ""
+    ExitSuccess
+  where
+    output
+      | relevantJson command = renderCanonicalJson (relevantProjectionJson projection)
+      | otherwise = TextEncoding.decodeUtf8 (renderRelevantProjection projection)
 
 renderInitSuccess :: InitResult -> PostCommitIndexResult -> Bool -> IO ExitCode
 renderInitSuccess result indexResult jsonOutput = emitRendered (renderInitOutcome result indexResult jsonOutput)

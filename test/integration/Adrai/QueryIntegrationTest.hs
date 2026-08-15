@@ -237,6 +237,7 @@ tests =
       testP602GRealExecutableCompare,
       testP602HRealExecutableHistory,
       testP602JRealExecutableSearch,
+      testP602KRealExecutableRelevant,
       testShowCollapsedEvolution,
       testCompareBranchOnly,
       testCompareReverseShowsRemoved,
@@ -1443,6 +1444,208 @@ testP602JRealExecutableSearch =
               (resultObject .: "as_of" :: Maybe Text) @?= Just expectedRevision
               assertBool "search result exposes genuine retrieval metadata" (KM.member "retrieval" resultObject)
               assertBool "search result exposes resolution state" (KM.member "resolution_required" resultObject)
+
+testP602KRealExecutableRelevant :: TestTree
+testP602KRealExecutableRelevant =
+  testGroup "P6-02K real executable relevant"
+    [ testCase "committed and worktree sources are truthful, revision-local, and preserve caller state" $
+        withSystemTempDirectory "adrai p6-02k relevant ü" $ \tmpDir -> do
+          repo <- createTestRepo tmpDir
+          _ <- p602fJsonOrThrow repo ["init", "--json"]
+          first <- p602fJsonOrThrow repo
+            [ "create", "--title", "Cache lease Unicode ü decision", "--summary", "Coordinate cache lease tokens"
+            , "--body", "## Decision\nUse a cache lease token for coordination.\n"
+            , "--domain", "platform", "--applies-to", "src/**"
+            , "--actor", "llm:planner", "--model", "relevant-model", "--json"
+            ]
+          firstAdr <- case extractAdrId first of
+            Just value -> pure value
+            Nothing -> assertFailure "first relevant create omitted ADR" >> fail "unreachable"
+          let sourcePath = "src/context ü file.txt"
+              historicalBytes = "cache lease token coordination ownership renewal fencing architecture decision\n"
+              currentBytes = "graphics shader texture widget layout animation rendering\n"
+          createDirectoryIfMissing True (repo </> "src")
+          BS.writeFile (repo </> sourcePath) historicalBytes
+          _ <- gitStdout repo ["add", "--", sourcePath]
+          _ <- gitStdout repo ["commit", "-m", "add historical relevance source"]
+          historicalRevision <- headCommit repo
+          historicalBlob <- gitObject repo (T.unpack historicalRevision <> ":" <> sourcePath)
+
+          second <- p602fJsonOrThrow repo
+            [ "create", "--title", "Legacy cache lease decision", "--summary", "Retire the legacy cache lease token"
+            , "--body", "## Decision\nReplace the legacy cache lease token.\n"
+            , "--domain", "legacy", "--applies-to", "src/**"
+            , "--actor", "human:architect", "--json"
+            ]
+          secondAdr <- case extractAdrId second of
+            Just value -> pure value
+            Nothing -> assertFailure "second relevant create omitted ADR" >> fail "unreachable"
+          _ <- p602fJsonOrThrow repo
+            [ "obsolete", T.unpack secondAdr, "--reason", "Retire the relevance fixture"
+            , "--actor", "human:architect", "--json"
+            ]
+          BS.writeFile (repo </> sourcePath) currentBytes
+          _ <- gitStdout repo ["add", "--", sourcePath]
+          _ <- gitStdout repo ["commit", "-m", "change current relevance source"]
+          currentRevision <- headCommit repo
+          currentBlob <- gitObject repo (T.unpack currentRevision <> ":" <> sourcePath)
+
+          -- The explicit worktree source intentionally differs from HEAD.
+          BS.writeFile (repo </> sourcePath) historicalBytes
+          _ <- p602fJsonOrThrow repo ["relevant", sourcePath, "--worktree", "--json"]
+          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+          beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
+          let managedPaths =
+                filter ("architecture/adrai/" `isPrefixOf`)
+                  (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
+          beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
+          BS.writeFile (repo </> "relevant staged.bin") "\NUL\SOHrelevant staged bytes\255"
+          _ <- gitStdout repo ["add", "--", "relevant staged.bin"]
+          BS.writeFile (repo </> "relevant untracked ü.txt") "keep this untracked file"
+          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+          beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
+          beforeWorktree <- gitStdout repo ["diff", "--binary"]
+
+          current <- p602fJsonOrThrow repo ["relevant", sourcePath, "--json"]
+          assertRelevantEnvelope current currentRevision "revision" (Just currentBlob) []
+          historical <- p602fJsonOrThrow repo ["relevant", sourcePath, "--at", T.unpack historicalRevision, "--json"]
+          assertRelevantEnvelope historical historicalRevision "revision" (Just historicalBlob) [firstAdr]
+          worktree <- p602fJsonOrThrow repo ["relevant", sourcePath, "--worktree", "--json"]
+          assertRelevantEnvelope worktree currentRevision "worktree" Nothing [firstAdr]
+          relevantDigest worktree @?= relevantDigest historical
+          included <- p602fJsonOrThrow repo ["relevant", sourcePath, "--worktree", "--include-obsolete", "--json"]
+          assertRelevantEnvelope included currentRevision "worktree" Nothing [firstAdr, secondAdr]
+          limited <- p602fJsonOrThrow repo ["relevant", sourcePath, "--worktree", "--include-obsolete", "--limit", "1", "--json"]
+          assertBool "relevant limit is applied" (length (relevantResults limited) == 1)
+
+          (plainExit, plainOut, plainErr) <- p602fRaw repo ["relevant", sourcePath]
+          (jsonExit, jsonOut, jsonErr) <- p602fRaw repo ["relevant", sourcePath, "--json"]
+          plainExit @?= ExitSuccess
+          jsonExit @?= ExitSuccess
+          plainErr @?= ""
+          jsonErr @?= ""
+          plainOut @?= jsonOut
+
+          (exclusiveExit, exclusiveOut, exclusiveErr) <- p602fRaw repo ["relevant", sourcePath, "--at", "HEAD", "--worktree", "--json"]
+          exclusiveExit @?= ExitFailure 2
+          exclusiveOut @?= ""
+          exclusiveErr @?= "adrai: relevant --at and --worktree are mutually exclusive\n"
+          (limitExit, limitOut, limitErr) <- p602fRaw repo ["relevant", sourcePath, "--limit", "0", "--json"]
+          limitExit @?= ExitFailure 2
+          limitOut @?= ""
+          limitErr @?= "adrai: RelevantInvalidLimit 0\n"
+          (missingExit, missingOut, missingErr) <- p602fRaw repo ["relevant", "src/missing.txt", "--json"]
+          missingExit @?= ExitFailure 2
+          missingOut @?= ""
+          assertBool "missing committed relevance source is explicit" ("adrai: relevance source failure: " `LBS.isPrefixOf` missingErr)
+          (outsideExit, outsideOut, outsideErr) <- p602fRaw repo ["relevant", "../outside", "--worktree", "--json"]
+          outsideExit @?= ExitFailure 2
+          outsideOut @?= ""
+          assertBool "outside relevance path is rejected" ("adrai: invalid relevant file path: " `LBS.isPrefixOf` outsideErr)
+          (revisionExit, revisionOut, revisionErr) <- p602fRaw repo ["relevant", sourcePath, "--at", "refs/heads/does-not-exist", "--json"]
+          revisionExit @?= ExitFailure 2
+          revisionOut @?= ""
+          assertBool "invalid relevant revision is a user error" ("adrai: " `LBS.isPrefixOf` revisionErr)
+          (repositoryExit, repositoryOut, repositoryErr) <- p602fRaw (repo </> "missing repository") ["relevant", sourcePath, "--json"]
+          repositoryExit @?= ExitFailure 2
+          repositoryOut @?= ""
+          assertBool "missing relevant repository is a user error" ("adrai: " `LBS.isPrefixOf` repositoryErr)
+          BS.writeFile (repo </> sourcePath) "text\NULbinary"
+          (decodeExit, decodeOut, decodeErr) <- p602fRaw repo ["relevant", sourcePath, "--worktree", "--json"]
+          decodeExit @?= ExitFailure 2
+          decodeOut @?= ""
+          assertBool "binary relevance source fails explicitly" ("adrai: RelevantDecodeFailure " `LBS.isPrefixOf` decodeErr)
+          BS.writeFile (repo </> sourcePath) historicalBytes
+
+          headCommit repo >>= (@?= currentRevision)
+          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
+          gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
+          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
+          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
+          gitStdout repo ["diff", "--cached", "--binary"] >>= (@?= beforeCached)
+          gitStdout repo ["diff", "--binary"] >>= (@?= beforeWorktree)
+          traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths >>= (@?= beforeManaged)
+    , testCase "repository integrity failures are typed and preserve state" $
+        withSystemTempDirectory "adrai p6-02k relevant integrity" $ \tmpDir -> do
+          repo <- createTestRepo tmpDir
+          _ <- p602fJsonOrThrow repo ["init", "--json"]
+          created <- p602fJsonOrThrow repo
+            [ "create", "--title", "Relevant integrity base", "--summary", "Malformed relevance context"
+            , "--body", "## Decision\nFail relevance closed on invalid source.\n"
+            , "--domain", "platform", "--applies-to", "src/**"
+            , "--actor", "llm:planner", "--model", "relevant-model", "--json"
+            ]
+          decisionPath <- case _Object created >>= (.: "created") of
+            Just paths -> case find (T.isSuffixOf ".decision.md") (paths :: [Text]) of
+              Just path -> pure path
+              Nothing -> assertFailure "relevant integrity create omitted decision path" >> fail "unreachable"
+            Nothing -> assertFailure "relevant integrity create omitted paths" >> fail "unreachable"
+          createDirectoryIfMissing True (repo </> "src")
+          BS.writeFile (repo </> "src/integrity.txt") "cache lease relevance context\n"
+          BS.writeFile (repo </> T.unpack decisionPath) "schema: deliberately-invalid\n"
+          _ <- gitStdout repo ["add", "--", "src/integrity.txt", T.unpack decisionPath]
+          _ <- gitStdout repo ["commit", "-m", "commit malformed relevance fixture"]
+          beforeHead <- headCommit repo
+          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
+          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+          (failureExit, failureOut, failureErr) <- p602fRaw repo ["relevant", "src/integrity.txt", "--json"]
+          failureExit @?= ExitFailure 2
+          failureOut @?= ""
+          assertBool "relevant integrity failure is explicit" ("adrai: repository integrity failure: " `LBS.isPrefixOf` failureErr)
+          headCommit repo >>= (@?= beforeHead)
+          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
+          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
+          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
+    ]
+  where
+    gitObject repo spec =
+      gitStdout repo ["rev-parse", spec]
+        >>= pure . strip . decodeUtf8 . LBS.toStrict
+
+    relevantResults :: Data.Aeson.Value -> [Data.Aeson.Value]
+    relevantResults value =
+      case _Object value >>= (.: "results") of
+        Just results -> results
+        Nothing -> []
+
+    relevantDigest :: Data.Aeson.Value -> Maybe Text
+    relevantDigest value = do
+      object <- _Object value
+      fileValue <- KM.lookup "file" object
+      fileObject <- _Object fileValue
+      fileObject .: "digest"
+
+    assertRelevantEnvelope value expectedRevision expectedSource expectedBlob expectedAdrs =
+      case _Object value of
+        Nothing -> assertFailure "relevant output is not an object"
+        Just object -> do
+          sortOn id (map AesonKey.toText (KM.keys object))
+            @?= sortOn id ["as_of", "file", "results", "retrieval", "schema", "view"]
+          (object .: "schema" :: Maybe Text) @?= Just "adrai/relevant/v1"
+          (object .: "view" :: Maybe Text) @?= Just "relevant"
+          (object .: "as_of" :: Maybe Text) @?= Just expectedRevision
+          fileObject <- case KM.lookup "file" object >>= _Object of
+            Just result -> pure result
+            Nothing -> assertFailure "relevant output omitted file metadata" >> fail "unreachable"
+          (fileObject .: "source" :: Maybe Text) @?= Just expectedSource
+          (fileObject .: "revision" :: Maybe Text) @?= Just expectedRevision
+          (fileObject .: "blob" :: Maybe (Maybe Text)) @?= Just expectedBlob
+          assertBool "relevant file metadata exposes a digest" (KM.member "digest" fileObject)
+          assertBool "relevant output exposes retrieval evidence" (KM.member "retrieval" object)
+          let ids = sortOn id
+                [ identifier
+                | result <- relevantResults value
+                , Just resultObject <- [_Object result]
+                , Just identifier <- [resultObject .: "adr" :: Maybe Text]
+                ]
+          ids @?= sortOn id expectedAdrs
+          forM_ (relevantResults value) $ \result -> case _Object result of
+            Nothing -> assertFailure "relevant result is not an object"
+            Just resultObject -> do
+              assertBool "relevant result exposes confidence" (KM.member "confidence" resultObject)
+              assertBool "relevant result exposes evidence" (KM.member "evidence" resultObject)
 
 testShowCollapsedEvolution :: TestTree
 testShowCollapsedEvolution =

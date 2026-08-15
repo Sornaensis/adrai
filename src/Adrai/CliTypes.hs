@@ -20,6 +20,7 @@ module Adrai.CliTypes
     searchCommandRequest,
     searchCommandJson,
     RelevantCommand (..),
+    relevantCommandRequest,
     relevantCommandJson,
     CompareCommand (..),
     compareCommandJson,
@@ -76,7 +77,7 @@ import Adrai.Types
     ActorKind (..),
     actorId,
     actorKind,
-    RevisionSelector (AtRevision),
+    RevisionSelector (..),
     mkActor,
     mkRepoPath,
     RepoPathViolation (..),
@@ -87,7 +88,8 @@ import qualified Data.Vector as Vector
 import Data.Aeson ( (.=) )
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.SQLite.Simple (Connection, open)
+import Control.Exception (bracket)
+import Database.SQLite.Simple (Connection, close, open)
 import Adrai.Format.Json (JsonValue (..))
 import qualified Adrai.Query as Query
 
@@ -352,6 +354,8 @@ searchCommandRequest cmd = do
 -- | CLI argument representation for the @relevant@ command.
 data RelevantCommand = RelevantCommand
   { relevantFile             :: Text  -- RepoPath as text
+  , relevantAt               :: Maybe Text
+  , relevantWorktree         :: Bool
   , relevantIncludeObsolete :: Bool
   , relevantLimit           :: Int
   , relevantJson            :: Bool
@@ -364,25 +368,14 @@ relevantCommandJson
   -> RelevantCommand
   -> IO Aeson.Value
 relevantCommandJson snapshot source cmd =
-  case mkRepoPath (relevantFile cmd) of
-    Left err ->
+  case relevantCommandRequest commandForSnapshot of
+    Left problem ->
       pure $ Aeson.object
         [ "schema" .= Aeson.String "adrai/relevant/v1"
-        , "error"  .= Aeson.String (Text.pack (show err))
+        , "error"  .= Aeson.String problem
         ]
-    Right repoPath -> do
-      let request = RelevantRequest
-            { relevantRequestFile = repoPath
-            , relevantRequestRevision =
-                case readSnapshotRevision snapshot of
-                  ri
-                    | Text.null (revisionRequested ri) -> AtRevision "HEAD"
-                    | otherwise -> AtRevision (revisionRequested ri)
-            , relevantRequestIncludeObsolete = relevantIncludeObsolete cmd
-            , relevantRequestLimit = min (max (relevantLimit cmd) 1) 1000
-            }
-          materialization = SearchMaterialization [] [] []
-      conn <- open ":memory:"
+    Right request -> bracket (open ":memory:") close $ \conn -> do
+      let materialization = SearchMaterialization [] [] []
       result <- runRelevant conn snapshot materialization request source
       case result of
         Left err ->
@@ -391,6 +384,32 @@ relevantCommandJson snapshot source cmd =
             , "error"  .= Aeson.String (Text.pack (show err))
             ]
         Right proj -> pure (toAesonValue (relevantProjectionJson proj))
+  where
+    commandForSnapshot
+      | relevantAt cmd == Nothing && not (relevantWorktree cmd) =
+          cmd {relevantAt = Just requested}
+      | otherwise = cmd
+    requested
+      | Text.null (revisionRequested (readSnapshotRevision snapshot)) = "HEAD"
+      | otherwise = revisionRequested (readSnapshotRevision snapshot)
+
+relevantCommandRequest :: RelevantCommand -> Either Text RelevantRequest
+relevantCommandRequest command = do
+  path <- case mkRepoPath (relevantFile command) of
+    Left problem -> Left ("invalid relevant file path: " <> Text.pack (show problem))
+    Right value -> Right value
+  revision <- case (relevantAt command, relevantWorktree command) of
+    (Just _, True) -> Left "relevant --at and --worktree are mutually exclusive"
+    (Just requested, False) -> Right (AtRevision requested)
+    (Nothing, True) -> Right WorkingRevision
+    (Nothing, False) -> Right (AtRevision "HEAD")
+  Right
+    RelevantRequest
+      { relevantRequestFile = path,
+        relevantRequestRevision = revision,
+        relevantRequestIncludeObsolete = relevantIncludeObsolete command,
+        relevantRequestLimit = relevantLimit command
+      }
 
 -- | CLI argument representation for the @compare@ command.
 data CompareCommand = CompareCommand

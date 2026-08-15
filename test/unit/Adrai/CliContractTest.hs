@@ -29,7 +29,7 @@ import Adrai.Cli
     CompareCommand (..),
     toAesonValue,
   )
-import Adrai.CliTypes (ViewMode (..), RetrievalMode (..), compileResultValue, searchCommandRequest, textToActorKind)
+import Adrai.CliTypes (ViewMode (..), RetrievalMode (..), compileResultValue, relevantCommandRequest, searchCommandRequest, textToActorKind)
 import qualified Adrai.CliTypes as CliTypes
 import Adrai.CliRunner
   ( CliConfig (..),
@@ -76,6 +76,7 @@ import Adrai.CliRunner
      renderCompareOutcome,
      renderHistoryOutcome,
      renderSearchOutcome,
+     renderRelevantOutcome,
      renderCompileOutcome,
      capturePostCommitIndex,
     renderFailureOutcome,
@@ -86,7 +87,7 @@ import Adrai.Domain (canonicalDomains, mkDomain, parseDomainRefinement)
 import Adrai.Scope (mkScopePattern)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
 import Adrai.Service.PostCommitIndex (IndexWarning (..), PostCommitIndexError (..), PostCommitIndexResult (..))
-import Adrai.Types (ActorKind (..), ProvenanceInputs (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
+import Adrai.Types (ActorKind (..), ProvenanceInputs (..), RevisionSelector (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import qualified Adrai.Format as Format
 import Adrai.Provenance (sha256Digest)
@@ -113,12 +114,18 @@ import Adrai.Query
     ResolutionState (..),
     SearchProjection (..),
     SearchRequest (..),
+    RelevantFileInfo (..),
+    RelevantProjection (..),
+    RelevantRequest (..),
+    RelevantRetrieval (..),
     compareProjectionJson,
     explodedProjectionJson,
     renderCompareProjection,
     renderExplodedProjection,
     renderSearchProjection,
     searchProjectionJson,
+    renderRelevantProjection,
+    relevantProjectionJson,
   )
 import Adrai.Service.Query (SearchServiceRequest (..), ShowFailure (..), ShowResult (..), showFailureIsConflict)
 import Adrai.Types (RepoPath (..))
@@ -644,6 +651,8 @@ cliTypeConstructorTests =
       testCase "RelevantCommand preserves includeObsolete flag" $ do
         let cmd = RelevantCommand
               { relevantFile = "docs/adrs/001.md"
+              , relevantAt = Nothing
+              , relevantWorktree = False
               , relevantIncludeObsolete = True
               , relevantLimit = 15
               , relevantJson = True
@@ -970,6 +979,84 @@ mutationCliContractTests =
         readIORef selectedRepo >>= (@?= Just "search repo")
         let expectedRequest = SearchServiceRequest "refs/heads/release" <$> either (const Nothing) Just (searchCommandRequest explicit)
         readIORef selectedRequest >>= (@?= expectedRequest)
+    , testCase "relevant accepts only revision or explicit worktree sources, renders exactly, and dispatches typed intent" $ do
+        let defaulted = RelevantCommand "src/query ü.txt" Nothing False False 10 False
+            explicit = RelevantCommand "src/query ü.txt" (Just "refs/heads/release") False True 7 True
+            worktree = RelevantCommand "src/query ü.txt" Nothing True False 10 False
+            fileInfo =
+              RelevantFileInfo
+                { relevantFilePath = RepoPath "src/query ü.txt"
+                , relevantFileSource = "revision"
+                , relevantFileRevision = "0123456789abcdef0123456789abcdef01234567"
+                , relevantFileBlob = Just "1111111111111111111111111111111111111111"
+                , relevantFileDigest = "sha256:fixture"
+                , relevantFileBytes = 17
+                , relevantFileChunks = 1
+                , relevantFileQueryChunks = 1
+                }
+            retrieval =
+              RelevantRetrieval
+                { relevantRetrievalImplementation = "structured-raw-text-cross-reference"
+                , relevantRetrievalStrategy = "exact-summary+passage-fts+bounded-section-rerank"
+                , relevantRetrievalSemanticVectorId = Nothing
+                , relevantRetrievalIdentifierVectorId = Nothing
+                , relevantRetrievalSourceChunks = 1
+                , relevantRetrievalSelectedSourceChunks = 1
+                , relevantRetrievalEligibleAdrs = 0
+                , relevantRetrievalEligibleSearchItems = 0
+                , relevantRetrievalSearchSections = 0
+                , relevantRetrievalAdrShortlist = 0
+                , relevantRetrievalCandidateSearchItems = 0
+                , relevantRetrievalSummary = Nothing
+                , relevantRetrievalPassageFts = Nothing
+                , relevantRetrievalSections = Nothing
+                , relevantRetrievalExactRerankCandidates = 0
+                }
+            projection =
+              RelevantProjection
+                { relevantProjectionRevision = RevisionIdentity "refs/heads/release" "0123456789abcdef0123456789abcdef01234567"
+                , relevantProjectionFile = fileInfo
+                , relevantProjectionRetrieval = retrieval
+                , relevantProjectionResults = []
+                }
+        parseCli ["relevant", "src/query ü.txt"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant defaulted))
+        parseCli ["relevant", "src/query ü.txt", "--at", "refs/heads/release", "--include-obsolete", "--limit", "7", "--json"]
+          @?= Right (CliInvocation defaultCliConfig (CmdRelevant explicit))
+        parseCli ["relevant", "src/query ü.txt", "--worktree"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant worktree))
+        for_ [["relevant", "--file", "src/query.txt"], ["relevant", "src/query.txt", "--revision", "HEAD"], ["relevant", "src/query.txt", "--working"]] assertParserFailure
+        relevantCommandRequest defaulted
+          @?= Right (RelevantRequest (RepoPath "src/query ü.txt") (AtRevision "HEAD") False 10)
+        relevantCommandRequest worktree
+          @?= Right (RelevantRequest (RepoPath "src/query ü.txt") WorkingRevision False 10)
+        relevantCommandRequest (explicit {relevantWorktree = True})
+          @?= Left "relevant --at and --worktree are mutually exclusive"
+        assertBool "relevant rejects outside paths" (either (const True) (const False) (relevantCommandRequest (defaulted {relevantFile = "../outside"})))
+        renderRelevantOutcome explicit projection
+          @?= CliRendered (renderCanonicalJson (relevantProjectionJson projection)) "" ExitSuccess
+        renderRelevantOutcome (explicit {relevantJson = False}) projection
+          @?= CliRendered (Text.Encoding.decodeUtf8 (renderRelevantProjection projection)) "" ExitSuccess
+        selectedRepo <- newIORef Nothing
+        selectedRequest <- newIORef Nothing
+        let dependencies =
+              CliDispatchDependencies
+                { cliRunRelevant = \config received -> do
+                    writeIORef selectedRepo (Just (configRepo config))
+                    writeIORef selectedRequest (Just received)
+                    pure (Right projection)
+                , cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+                , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+                , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+                , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+                , cliRunInit = \_ -> error "init service must not be selected"
+                , cliRunCreate = \_ _ -> error "create service must not be selected"
+                , cliRunAmend = \_ _ -> error "amend service must not be selected"
+                , cliRunScope = \_ _ -> error "scope service must not be selected"
+                , cliRunDomain = \_ _ -> error "domain service must not be selected"
+                }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "relevant repo"}) (CmdRelevant explicit))
+          >>= (@?= ExitSuccess)
+        readIORef selectedRepo >>= (@?= Just "relevant repo")
+        readIORef selectedRequest >>= (@?= either (const Nothing) Just (relevantCommandRequest explicit))
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
         let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True
         parseCli ["show", "R0123456789ABCDEFGHJKMNPQRS", "--view", "exploded", "--at", "refs/heads/release", "--raw", "--json"]

@@ -17,16 +17,19 @@ module Adrai.Service.Query
     HistoryFailure (..),
     SearchServiceRequest (..),
     SearchFailure (..),
+    RelevantFailure (..),
     runShow,
     runCompare,
     runHistory,
     runSearch,
+    runRelevantQuery,
     showFailureText,
     showFailureIsConflict,
     compareFailureText,
     historyFailureText,
     searchFailureText,
     searchFailureIsConflict,
+    relevantFailureText,
   )
 where
 
@@ -45,7 +48,7 @@ import Adrai.Compiler
     coldCompileRepository,
   )
 import qualified Adrai.Format.Document as Document
-import Adrai.Git (Repository, RevisionSpec (..), gitOidText, gitTreeOid, gitTreePath)
+import Adrai.Git (GitBlob (..), Repository, RevisionSpec (..), gitOidText, gitTreeOid, gitTreePath, readRegularBlobAt, readWorktreeFileBytes)
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
 import Adrai.History
   ( HistoryError (..),
@@ -82,7 +85,12 @@ import Adrai.Query
     SearchProjection (..),
     SearchRequest,
     SearchResult (..),
+    RelevantError,
+    RelevantProjection,
+    RelevantRequest (..),
+    RelevantSource (..),
     runCurrentSearch,
+    runRelevant,
     referenceLookupErrorText,
     resolveAdrReference,
   )
@@ -96,7 +104,7 @@ import Adrai.Repository
     ResolvedRepositoryRevision,
     resolvedCommitOid,
   )
-import Adrai.Types (ViewMode (..))
+import Adrai.Types (RevisionSelector (..), ViewMode (..))
 import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, fromException, throwIO, try)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -167,6 +175,15 @@ data SearchFailure
   | SearchCompilerFailure Text
   | SearchQueryFailure SearchError
   | SearchSemanticConflict [Text]
+  deriving (Eq, Show)
+
+data RelevantFailure
+  = RelevantRepositoryFailure Text
+  | RelevantIntegrityFailure [Text]
+  | RelevantPlacementFailure PlacementHydrationError
+  | RelevantCompilerFailure Text
+  | RelevantSourceFailure Text
+  | RelevantQueryFailure RelevantError
   deriving (Eq, Show)
 
 data SnapshotReadFailure
@@ -273,6 +290,72 @@ runSearch repository request = do
                           conflict <- resolutionStateConflicts (searchResultResolution result)
                       ]
 
+-- | Rank ADR relevance against one immutable compiled context and exactly one
+-- caller-selected source.  Revision sources are read from the resolved tree;
+-- worktree sources are explicit and retain the resolved HEAD only as context.
+runRelevantQuery :: Repository -> RelevantRequest -> IO (Either RelevantFailure RelevantProjection)
+runRelevantQuery repository request = do
+  let requestedRevision =
+        case relevantRequestRevision request of
+          AtRevision revision -> revision
+          WorkingRevision -> "HEAD"
+  revisionResult <- resolveRepositoryRevision repository (RevisionSpec requestedRevision)
+  case revisionResult of
+    Left problem -> pure (Left (RelevantRepositoryFailure (Text.pack (show problem))))
+    Right revision -> do
+      snapshotResult <- readSnapshotAtResolved repository requestedRevision revision
+      case snapshotResult of
+        Left failure -> pure (Left (relevantSnapshotFailure failure))
+        Right snapshot -> do
+          sourceResult <- readSource revision
+          case sourceResult of
+            Left problem -> pure (Left problem)
+            Right source -> do
+              captured <- try (bracket (open ":memory:") close (compileAndRank revision snapshot source)) :: IO (Either SomeException (Either RelevantFailure RelevantProjection))
+              case captured of
+                Left exception ->
+                  case fromException exception of
+                    Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+                    Nothing -> pure (Left (RelevantCompilerFailure (Text.pack (displayException exception))))
+                Right result -> pure result
+  where
+    readSource revision =
+      case relevantRequestRevision request of
+        AtRevision _ -> do
+          blobResult <- readRegularBlobAt repository (resolvedCommitOid revision) (relevantRequestFile request)
+          pure $ case blobResult of
+            Left problem -> Left (RelevantSourceFailure (Text.pack (show problem)))
+            Right blob ->
+              Right
+                RevisionRelevantSource
+                  { relevantSourcePath = relevantRequestFile request,
+                    relevantSourceResolvedRevision = gitOidText (resolvedCommitOid revision),
+                    relevantSourceBlob = gitOidText (gitBlobOid blob),
+                    relevantSourceBytes = gitBlobBytes blob
+                  }
+        WorkingRevision -> do
+          worktreeResult <- readWorktreeFileBytes repository (relevantRequestFile request)
+          pure $ case worktreeResult of
+            Left problem -> Left (RelevantSourceFailure (Text.pack (show problem)))
+            Right (_, bytes) ->
+              Right
+                WorktreeRelevantSource
+                  { relevantSourcePath = relevantRequestFile request,
+                    relevantSourceHeadRevision = gitOidText (resolvedCommitOid revision),
+                    relevantSourceBytes = bytes
+                  }
+
+    compileAndRank revision snapshot source connection = do
+      compiledResult <- coldCompileRepository connection revision
+      case compiledResult of
+        Left problem -> pure (Left (RelevantCompilerFailure (Text.pack (show problem))))
+        Right compiled ->
+          case coldCompilerSearchMaterialization compiled of
+            Nothing -> pure (Left (RelevantCompilerFailure "compiler produced no search materialization for an integrity-gated snapshot"))
+            Just materialization -> do
+              ranked <- runRelevant connection snapshot materialization request source
+              pure (either (Left . RelevantQueryFailure) Right ranked)
+
 readSnapshotAt :: Repository -> Text -> IO (Either SnapshotReadFailure ReadSnapshot)
 readSnapshotAt repository requestedRevision = do
   revisionResult <- resolveRepositoryRevision repository (RevisionSpec requestedRevision)
@@ -349,6 +432,13 @@ searchSnapshotFailure failure =
     SnapshotIntegrityFailure diagnostics -> SearchIntegrityFailure diagnostics
     SnapshotPlacementFailure problem -> SearchPlacementFailure problem
 
+relevantSnapshotFailure :: SnapshotReadFailure -> RelevantFailure
+relevantSnapshotFailure failure =
+  case failure of
+    SnapshotRepositoryFailure message -> RelevantRepositoryFailure message
+    SnapshotIntegrityFailure diagnostics -> RelevantIntegrityFailure diagnostics
+    SnapshotPlacementFailure problem -> RelevantPlacementFailure problem
+
 classificationDocuments raw = traverse classify
   where
     entries = map repositoryTreeEntry (rawRepositorySnapshotEntries raw)
@@ -418,3 +508,13 @@ searchFailureText failure =
 searchFailureIsConflict :: SearchFailure -> Bool
 searchFailureIsConflict (SearchSemanticConflict _) = True
 searchFailureIsConflict _ = False
+
+relevantFailureText :: RelevantFailure -> Text
+relevantFailureText failure =
+  case failure of
+    RelevantRepositoryFailure message -> message
+    RelevantIntegrityFailure diagnostics -> "repository integrity failure: " <> Text.intercalate "; " diagnostics
+    RelevantPlacementFailure problem -> "provenance hydration failure: " <> Text.pack (show problem)
+    RelevantCompilerFailure message -> "relevance materialization failure: " <> message
+    RelevantSourceFailure message -> "relevance source failure: " <> message
+    RelevantQueryFailure problem -> Text.pack (show problem)
