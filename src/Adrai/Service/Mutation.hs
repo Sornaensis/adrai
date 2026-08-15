@@ -857,7 +857,7 @@ data ScopeChangeRequest
 -- Adds and/or removes scope patterns, builds a new AppliesToPayload,
 -- and commits via the append-only transaction engine.
 --
--- The new capsule carries eventKind @"scope.update"@.
+-- The new capsule carries an event kind derived from its scope change mode.
 changeScopeCommand ::
   Repository ->
   ManagedPaths ->
@@ -1040,7 +1040,10 @@ canonicalScopeDelta current added removed
 sealScopeUpdate :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> [ConnectionId] -> ProvenanceInputs -> ManagedPaths -> ConnectionRecord -> Either TransactionError GeneratedFile
 sealScopeUpdate opId revision branchName actor timestampMs parents inputs paths connection = do
   semantic <- first (Stage5ValidateGenerated . ("scope render: " <>) . T.pack . show) (renderConnectionSemantic connection)
-  eventKind <- first (Stage5ValidateGenerated . ("scope eventKind: " <>) . T.pack . show) (mkEventKind "scope.update")
+  changeKind <- case connectionPayload connection of
+    AppliesToConnection payload -> Right (appliesToChange payload)
+    _ -> Left (Stage5ValidateGenerated "scope eventKind: expected applies_to connection")
+  eventKind <- first (Stage5ValidateGenerated . ("scope eventKind: " <>) . T.pack . show) (mkEventKind ("scope." <> changeKind))
   capsule <- first (Stage5ValidateGenerated . ("scope capsule: " <>) . T.pack . show) $
     mkProvenanceCapsule ProvenanceCapsuleInput
       { capsuleInputOperationId = opId, capsuleInputObjectId = ProvenanceConnection (connectionRecordId connection)

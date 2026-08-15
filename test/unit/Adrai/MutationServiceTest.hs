@@ -985,6 +985,7 @@ scopeUpdatesAreTruthful =
       ) updates
     documents <- mapM (scopeDocumentAt directory) updates
     sequence_ [assertScopeDocument update parent change added removed effective document | (update, parent, change, added, removed, effective, document) <- zip7 updates expectedParents expectedChanges expectedAdded expectedRemoved expectedEffective documents]
+    mapM_ (assertScopeEventCompiles directory repository) updates
     assertBool "scope timestamps are real positive operation timestamps" (all (\document -> let timestamp = provenanceTimestampMs (parsedManagedCapsule document) in timestamp >= beforeMs && timestamp <= afterMs) documents)
     mapM_ (\(update, document) -> do
       scopeChangeAdrId update @?= createAdrId created
@@ -1026,6 +1027,7 @@ scopeReviewedSetReplacesOneHead =
     canonicalManagedPath (configManagedPaths defaultConfig) (parsedManagedRecord document) @?= Right (scopeChangeNewPath update)
     scopeChangeCreatedPaths update @?= [scopeChangeNewPath update]
     assertBool "replace transaction refreshed the index" (scopeChangeIndexUpdated update)
+    assertScopeEventCompiles directory repository update
     after <- currentReducedAdr (createAdrId created) =<< committedManagedDocuments directory
     assertBool "replace changes the checked state token" (reducedStateToken after /= reducedStateToken before)
   where
@@ -1072,6 +1074,7 @@ scopeReviewedSetMergesScopeConflict =
     axisResolutionHeads (reducedScopeAxis resolved) @?= [scopeChangeConnectionId merged]
     axisResolutionEffective (reducedScopeAxis resolved) @?= [finalPattern]
     assertBool "merge changes the checked state token" (reducedStateToken resolved /= reducedStateToken conflicted)
+    assertScopeEventCompiles directory repository merged
   where
     assertRightScope value = case mkScopePattern value of Right scope -> scope; Left err -> error (show err)
     createActorPure = case mkActor HumanActor "mutation-service-test" Nothing of Right actor -> actor; Left err -> error (show err)
@@ -1114,6 +1117,7 @@ scopeReviewedSetMergesUnchangedUnion =
     reducedConflictAxes resolved @?= []
     axisResolutionHeads (reducedScopeAxis resolved) @?= [scopeChangeConnectionId merged]
     axisResolutionEffective (reducedScopeAxis resolved) @?= union
+    assertScopeEventCompiles directory repository merged
   where
     createActorPure = case mkActor HumanActor "mutation-service-test" Nothing of Right actor -> actor; Left err -> error (show err)
 
@@ -1937,8 +1941,12 @@ assertScopeDocumentWithParents update parents change added removed effective doc
     Nothing -> assertFailure "expected parsed scope payload"
   let capsule = parsedManagedCapsule document
   provenanceParents capsule @?= map ProvenanceConnection parents
-  eventKindText (provenanceEventKind capsule) @?= "scope.update"
+  eventKindText (provenanceEventKind capsule) @?= "scope." <> change
   provenanceObjectId capsule @?= ProvenanceConnection (scopeChangeConnectionId update)
+
+assertScopeEventCompiles :: FilePath -> Repository -> ScopeChangeResult -> IO ()
+assertScopeEventCompiles directory repository update =
+  assertIndexed repository (scopeChangeCommitOid update) (directory </> "scope-event-integrity.sqlite")
 
 committedManagedDocuments :: FilePath -> IO [ParsedManagedDocument]
 committedManagedDocuments directory = do

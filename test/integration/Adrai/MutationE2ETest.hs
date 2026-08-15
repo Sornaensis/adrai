@@ -1922,7 +1922,6 @@ p602cScope =
             parsed@(ParsedManagedDocument _ (ManagedConnection connection) capsule _ _) -> do
               connectionIdText (connectionRecordId connection) @?= resultScope
               created @?= ["architecture/adrai/connections/" <> T.take 4 resultScope <> "/" <> resultScope <> "--applies_to.connection.md"]
-              eventKindText (provenanceEventKind capsule) @?= "scope.update"
               provenanceTimestampMs capsule `seq` assertBool "scope timestamp must be positive" (provenanceTimestampMs capsule > 0)
               gitOidText (provenanceBasis capsule) @?= before
               provenanceBranchHint capsule @?= Just branch
@@ -1938,6 +1937,7 @@ p602cScope =
                 AppliesToConnection payload -> do
                   resultParents @?= map connectionIdText (appliesToParentConnections payload)
                   provenanceParents capsule @?= map ProvenanceConnection (appliesToParentConnections payload)
+                  eventKindText (provenanceEventKind capsule) @?= "scope." <> appliesToChange payload
                   connectionRationale connection @?= normalizedReason arguments
                   pure (result, connection, payload)
                 _ -> assertFailure "scope must create an applies_to connection" >> fail "unreachable"
