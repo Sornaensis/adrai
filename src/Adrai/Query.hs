@@ -346,6 +346,7 @@ data SearchError
   | SearchSqlFailure RetrievalSqlError
   | SearchVectorFailure VectorError
   | SearchVectorCorpusFailure SearchVectorCorpusError
+  | SearchExplodedProjectionFailure AdrId QueryError
   deriving (Eq, Show)
 
 data ScopeFilterMatch = ScopeExact | ScopeAmbiguous | ScopeNone
@@ -402,8 +403,10 @@ data SearchResult = SearchResult
 data SearchProjection = SearchProjection
   { searchProjectionRevision :: RevisionIdentity,
     searchProjectionMode :: RetrievalMode,
+    searchProjectionView :: ViewMode,
     searchProjectionLimit :: Int,
-    searchProjectionResults :: [SearchResult]
+    searchProjectionResults :: [SearchResult],
+    searchProjectionExplodedDetails :: Map AdrId ExplodedProjection
   }
   deriving (Eq, Show)
 
@@ -1284,18 +1287,15 @@ runCurrentSearchValidated connection snapshot materialization corpus request =
     Right (requestedDomains, reducedByAdr, documentsById, filterInfo, allowedItems)
       | Text.null (Text.strip (searchRequestQuery request)) ->
           pure
-            ( Right
-                SearchProjection
-                  { searchProjectionRevision = readSnapshotRevision snapshot,
-                    searchProjectionMode = searchRequestMode request,
-                    searchProjectionLimit = searchRequestLimit request,
-                    searchProjectionResults =
-                      take (searchRequestLimit request)
-                        [ blankSearchResult snapshot request reduced info
-                          | (adr, info) <- Map.toAscList filterInfo,
-                            Just reduced <- [Map.lookup adr reducedByAdr]
-                        ]
-                  }
+            ( buildSearchProjection
+                snapshot
+                request
+                ( take (searchRequestLimit request)
+                    [ blankSearchResult snapshot request reduced info
+                      | (adr, info) <- Map.toAscList filterInfo,
+                        Just reduced <- [Map.lookup adr reducedByAdr]
+                    ]
+                )
             )
       | otherwise -> do
           let plan = buildQueryPlan (searchRequestQuery request) (sortOn fst (searchMaterializationAliases materialization))
@@ -1365,13 +1365,28 @@ runCurrentSearchValidated connection snapshot materialization corpus request =
                       Just reduced <- [Map.lookup adr reducedByAdr],
                       Just info <- [Map.lookup adr filterInfo]
                   ]
-            Right
-              SearchProjection
-                { searchProjectionRevision = readSnapshotRevision snapshot,
-                  searchProjectionMode = searchRequestMode request,
-                  searchProjectionLimit = searchRequestLimit request,
-                  searchProjectionResults = results
-                }
+            buildSearchProjection snapshot request results
+
+buildSearchProjection :: ReadSnapshot -> SearchRequest -> [SearchResult] -> Either SearchError SearchProjection
+buildSearchProjection snapshot request results = do
+  explodedDetails <-
+    case searchRequestView request of
+      CollapsedView -> Right Map.empty
+      ExplodedView -> Map.fromList <$> traverse projectResult results
+  Right
+    SearchProjection
+      { searchProjectionRevision = readSnapshotRevision snapshot,
+        searchProjectionMode = searchRequestMode request,
+        searchProjectionView = searchRequestView request,
+        searchProjectionLimit = searchRequestLimit request,
+        searchProjectionResults = results,
+        searchProjectionExplodedDetails = explodedDetails
+      }
+  where
+    projectResult result =
+      case projectExploded (ExplodedOptions False) snapshot (searchResultAdr result) of
+        Left problem -> Left (SearchExplodedProjectionFailure (searchResultAdr result) problem)
+        Right projection -> Right (searchResultAdr result, projection)
 
 data RelevantPrepared = RelevantPrepared
   { preparedRelevantReduced :: Map AdrId ReducedAdr,
@@ -2021,7 +2036,6 @@ prepareSearch snapshot materialization request = do
 
 validateSearchRequest :: SearchRequest -> Either SearchError ()
 validateSearchRequest request
-  | searchRequestView request /= CollapsedView = Left (SearchUnsupportedView (searchRequestView request))
   | searchRequestLimit request < 1 || searchRequestLimit request > 1000 = Left (SearchInvalidLimit (searchRequestLimit request))
   | Just since <- searchRequestSince request,
     Just untilBound <- searchRequestUntil request,
@@ -2727,17 +2741,34 @@ searchProjectionJson projection =
   object
     [ ("schema", JsonString "adrai/search/v1"),
       ("as_of", JsonString (revisionResolved (searchProjectionRevision projection))),
-      ("view", JsonString "collapsed"),
+      ("view", JsonString (searchViewName (searchProjectionView projection))),
       ("mode", JsonString (retrievalModeName (searchProjectionMode projection))),
       ("limit", JsonNumber (fromIntegral (searchProjectionLimit projection))),
-      ("results", JsonArray (map (searchResultJson (revisionResolved (searchProjectionRevision projection))) (searchProjectionResults projection)))
+      ("results", JsonArray (map renderResult (searchProjectionResults projection)))
     ]
+  where
+    revision = revisionResolved (searchProjectionRevision projection)
+    renderResult result =
+      case searchProjectionView projection of
+        CollapsedView -> searchResultJson revision result
+        ExplodedView ->
+          searchExplodedResultJson
+            revision
+            result
+            (Map.lookup (searchResultAdr result) (searchProjectionExplodedDetails projection))
 
 renderSearchProjection :: SearchProjection -> ByteString
 renderSearchProjection = renderCanonicalJsonBytes . searchProjectionJson
 
 searchResultJson :: Text -> SearchResult -> JsonValue
-searchResultJson revision result =
+searchResultJson revision result = searchResultJsonWithDetail revision CollapsedView Nothing result
+
+searchExplodedResultJson :: Text -> SearchResult -> Maybe ExplodedProjection -> JsonValue
+searchExplodedResultJson revision result detail =
+  searchResultJsonWithDetail revision ExplodedView detail result
+
+searchResultJsonWithDetail :: Text -> ViewMode -> Maybe ExplodedProjection -> SearchResult -> JsonValue
+searchResultJsonWithDetail revision view detail result =
   object
     ( [ ("id", JsonString adr),
         ("adr", JsonString adr),
@@ -2768,7 +2799,7 @@ searchResultJson revision result =
                    ("matched_summary", maybeJson JsonString (searchResultMatchedSummary result))
                  ]
            )
-        <> [ ("view", JsonString "collapsed"),
+        <> [ ("view", JsonString (searchViewName view)),
              ("as_of", JsonString revision),
              ("source_paths", textArray (searchResultSourcePaths result)),
              ("matches", searchMatchesJson blank (searchResultMatches result)),
@@ -2781,11 +2812,23 @@ searchResultJson revision result =
                  ]
              )
            ]
+        <> explodedFields
     )
   where
     adr = adrIdText (searchResultAdr result)
     resolution = searchResultResolution result
     blank = searchResultMatchedRecord result == Nothing
+    explodedFields =
+      case view of
+        CollapsedView -> []
+        ExplodedView ->
+          [ ("operations", maybe (JsonArray []) (JsonArray . map explodedOperationJson . explodedOperations) detail),
+            ("resolution", maybe (resolutionStateJson resolution) (resolutionStateJson . explodedResolution) detail)
+          ]
+
+searchViewName :: ViewMode -> Text
+searchViewName CollapsedView = "collapsed"
+searchViewName ExplodedView = "exploded"
 
 searchMatchesJson :: Bool -> SearchMatches -> JsonValue
 searchMatchesJson blank matches =

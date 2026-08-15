@@ -15,6 +15,8 @@ import Adrai.Retrieval
 import Adrai.Sqlite
 import Adrai.Types
 import Control.Exception (bracket)
+import Control.Monad (forM_)
+import qualified Data.ByteString as ByteString
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Database.SQLite.Simple (Connection, close, open)
@@ -32,6 +34,7 @@ tests =
       testCase "obsolete actor time and validation filters are exact" ordinaryFilterValidationContract,
       testCase "scope forks retain matching ambiguity and exclude no-match files" scopeConflictFilterContract,
       testCase "decision heads are retrieved independently then grouped once" conflictGroupingContract,
+      testCase "exploded view preserves ranked search semantics and adds genuine operation detail" explodedViewContract,
       testCase "repeated hybrid runs are byte-stable projections" repeatStabilityContract
     ]
 
@@ -200,6 +203,63 @@ conflictGroupingContract = withSearch p304ConflictSnapshot $ \connection materia
   searchResultMatchedTitle rightResult @?= Just "right"
   assertBool "selected heads retain ADR@RID identity" (maybe False (Text.isInfixOf "@") (searchResultMatchedCandidate leftResult))
   map resolutionConflictKind (resolutionStateConflicts (searchResultResolution leftResult)) @?= [DecisionConflict]
+
+explodedViewContract :: IO ()
+explodedViewContract = do
+  withSearch p303RationaleSnapshot $ \connection materialization -> do
+    let base =
+          (defaultSearchRequest "current decision api")
+            { searchRequestIncludeObsolete = True,
+              searchRequestDomains = ["current"],
+              searchRequestFile = Just (mustRepoPath "src/current/module.hs"),
+              searchRequestActor = Just (ActorSelector HumanActor "p2-06"),
+              searchRequestSince = Just 105,
+              searchRequestUntil = Just 105
+            }
+        requests =
+          (base {searchRequestQuery = ""})
+            : [base {searchRequestMode = mode} | mode <- [FtsRetrieval, VectorRetrieval, HybridRetrieval]]
+    forM_ requests $ \request -> assertViewsEqual connection p303RationaleSnapshot materialization request
+    excluded <- mustSearch =<< runCurrentSearch connection p303RationaleSnapshot materialization (base {searchRequestDomains = ["unrelated"], searchRequestView = ExplodedView})
+    searchProjectionResults excluded @?= []
+    searchProjectionExplodedDetails excluded @?= Map.empty
+  withSearch p304ConflictSnapshot $ \connection materialization -> do
+    let request = (defaultSearchRequest "left") {searchRequestMode = HybridRetrieval}
+    assertViewsEqual connection p304ConflictSnapshot materialization request
+  where
+    assertViewsEqual connection snapshot materialization request = do
+      collapsed <- mustSearch =<< runCurrentSearch connection snapshot materialization (request {searchRequestView = CollapsedView})
+      exploded <- mustSearch =<< runCurrentSearch connection snapshot materialization (request {searchRequestView = ExplodedView})
+      repeated <- mustSearch =<< runCurrentSearch connection snapshot materialization (request {searchRequestView = ExplodedView})
+      searchProjectionView collapsed @?= CollapsedView
+      searchProjectionExplodedDetails collapsed @?= Map.empty
+      searchProjectionView exploded @?= ExplodedView
+      searchProjectionRevision exploded @?= searchProjectionRevision collapsed
+      searchProjectionMode exploded @?= searchProjectionMode collapsed
+      searchProjectionLimit exploded @?= searchProjectionLimit collapsed
+      searchProjectionResults exploded @?= searchProjectionResults collapsed
+      Map.keys (searchProjectionExplodedDetails exploded)
+        @?= map searchResultAdr (searchProjectionResults exploded)
+      forM_ (Map.toAscList (searchProjectionExplodedDetails exploded)) $ \(adr, detail) -> do
+        explodedAdr detail @?= adr
+        explodedRevision detail @?= searchProjectionRevision exploded
+        assertBool "ranked exploded ADR has genuine operation items" (not (null (explodedOperations detail)))
+      lookupJsonPath ["view"] (searchProjectionJson collapsed) @?= Just (JsonString "collapsed")
+      lookupJsonPath ["view"] (searchProjectionJson exploded) @?= Just (JsonString "exploded")
+      resultViews (searchProjectionJson collapsed) @?= replicate (length (searchProjectionResults collapsed)) "collapsed"
+      resultViews (searchProjectionJson exploded) @?= replicate (length (searchProjectionResults exploded)) "exploded"
+      assertBool "exploded canonical bytes retain a final LF" ("\n" `ByteString.isSuffixOf` renderSearchProjection exploded)
+      renderSearchProjection repeated @?= renderSearchProjection exploded
+
+    resultViews (JsonObject members) =
+      case lookup "results" members of
+        Just (JsonArray results) ->
+          [ value
+            | JsonObject result <- results,
+              Just (JsonString value) <- [lookup "view" result]
+          ]
+        _ -> []
+    resultViews _ = []
 
 repeatStabilityContract :: IO ()
 repeatStabilityContract = withSearch p304ConflictSnapshot $ \connection materialization -> do
