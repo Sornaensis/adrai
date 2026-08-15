@@ -166,7 +166,7 @@ import Adrai.Repository
   )
 import Adrai.Graph
   ( AxisResolution (..),
-    GraphAxis (ScopeAxis, DomainAxis, StatusAxis),
+    GraphAxis (DecisionAxis, ScopeAxis, DomainAxis, StatusAxis),
     GraphReduction (..),
     ReducedAdr (..),
     ReducedStatus (..),
@@ -584,7 +584,7 @@ data AmendResult
       { amendOperationId  :: String,
         amendAdrId        :: AdrId,
         amendRecordId     :: RecordId,
-        amendAmends       :: RecordId,
+        amendAmends       :: [RecordId],
         amendConnectionId :: ConnectionId,
         amendCommitOid    :: GitOid,
         amendUpdatedPath  :: RepoPath,
@@ -640,7 +640,7 @@ amendCurrentAdrCommand repository actor adrId expectedState changeSummary newTit
   case normalizeChangeSummary changeSummary of
     Left err -> pure (Left err)
     Right rationale ->
-      amendWithSource repository actor adrId (selectCurrentAmendmentSource adrId expectedState) rationale newTitle newSummary newBody inputs
+      amendWithSource repository actor adrId (selectCurrentAmendmentSource adrId expectedState newTitle newSummary newBody) rationale newTitle newSummary newBody inputs
 
 amendWithSource repository actor adrId selectSource rationale newTitle newSummary newBody inputs =
   requireAttachedHead repository >>= \case
@@ -653,26 +653,34 @@ amendWithSource repository actor adrId selectSource rationale newTitle newSummar
           Left err -> pure (Left err)
           Right documents -> case selectSource documents of
             Left err -> pure (Left err)
-            Right (sourceRecord, sourceHead, currentDomains) -> do
-              let title = inherit newTitle (decisionTitle sourceRecord)
-                  summary = inherit newSummary (decisionSummary sourceRecord)
-                  body = inherit newBody (decisionBody sourceRecord)
-              if title == decisionTitle sourceRecord && summary == decisionSummary sourceRecord && body == decisionBody sourceRecord
+            Right (sourceRecord, sourceHeads, currentDomains) -> do
+              let (title, summary, body, unchanged) =
+                    case sourceRecord of
+                      Just source ->
+                        ( inherit newTitle (decisionTitle source),
+                          inherit newSummary (decisionSummary source),
+                          inherit newBody (decisionBody source),
+                          inherit newTitle (decisionTitle source) == decisionTitle source
+                            && inherit newSummary (decisionSummary source) == decisionSummary source
+                            && inherit newBody (decisionBody source) == decisionBody source
+                        )
+                      Nothing -> (newTitle, newSummary, newBody, False)
+              if unchanged
                 then pure (Left (Stage3ValidateState "amend would not change the current decision"))
-                else createAmendment snapshot branchName sourceHead currentDomains rationale title summary body
+                else createAmendment snapshot branchName sourceHeads currentDomains rationale title summary body
   where
     inherit replacement original = if T.null replacement then original else replacement
-    createAmendment snapshot branchName sourceHead currentDomains rationale title summary body = do
+    createAmendment snapshot branchName sourceHeads currentDomains rationale title summary body = do
       timestampMs <- currentTimestamp
       let timestampBytes = encodeTimestampMs timestampMs
       entropy <- randomEntropy
       case (sortableOperationId timestampBytes entropy, sortableRecordId timestampBytes entropy, sortableConnectionId timestampBytes (createConnectionEntropy "amends" entropy)) of
         (Right opId, Right amendedId, Right connectionId) -> do
           let amendedRecord = DecisionRecord adrId amendedId title summary currentDomains body
-              amendsConnection = ConnectionRecord connectionId (AmendsConnection (AmendsPayload adrId amendedId [sourceHead])) rationale
+              amendsConnection = ConnectionRecord connectionId (AmendsConnection (AmendsPayload adrId amendedId sourceHeads)) rationale
               members = [ManagedDecision amendedRecord, ManagedConnection amendsConnection]
               paths = repositorySnapshotManagedPaths snapshot
-          case traverse (sealAmendMember opId (repositorySnapshotRevision snapshot) branchName actor timestampMs sourceHead inputs paths) members of
+          case traverse (sealAmendMember opId (repositorySnapshotRevision snapshot) branchName actor timestampMs sourceHeads inputs paths) members of
             Left err -> pure (Left err)
             Right generated -> do
               let operationText = T.unpack (operationIdText opId)
@@ -681,12 +689,13 @@ amendWithSource repository actor adrId selectSource rationale newTitle newSummar
                     (resolvedCommitOid (repositorySnapshotRevision snapshot)) generated
               commitAppendOnlyOperation repository config >>= \case
                 Left transactionError -> pure (Left transactionError)
-                Right TransactionResult {..} -> case transactionCreatedPaths of
-                  decisionPath : _ -> pure (Right AmendResult
-                    { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId, amendAmends = sourceHead,
+                Right TransactionResult {..} -> case (sourceHeads, transactionCreatedPaths) of
+                  (_ : _, decisionPath : _) -> pure (Right AmendResult
+                    { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId, amendAmends = sourceHeads,
                       amendConnectionId = connectionId, amendCommitOid = transactionCommitOid, amendUpdatedPath = decisionPath,
                       amendCreatedPaths = transactionCreatedPaths, amendIndexUpdated = transactionIndexUpdated })
-                  [] -> pure (Left (Stage8UpdateRef "amend transaction reported no created paths"))
+                  ([], _) -> pure (Left (Stage3ValidateState "amend target ADR has no current decision"))
+                  (_, []) -> pure (Left (Stage8UpdateRef "amend transaction reported no created paths"))
         _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
 
 -- | Backwards-compatible spelling retained for existing explorer callers.
@@ -724,7 +733,7 @@ committedDocuments paths snapshot =
             validateManagedLocation paths document
           Right document
 
-selectAmendmentSource :: AdrId -> RecordId -> [ParsedManagedDocument] -> Either TransactionError (DecisionRecord, RecordId, [Domain])
+selectAmendmentSource :: AdrId -> RecordId -> [ParsedManagedDocument] -> Either TransactionError (Maybe DecisionRecord, [RecordId], [Domain])
 selectAmendmentSource adr requestedRecord documents = do
   let reduction = reduceManagedGraph (map parsedManagedRecord documents)
   reduced <- maybe (Left (Stage3ValidateState "amend target ADR is unknown")) Right (lookupReducedAdr adr reduction)
@@ -737,12 +746,12 @@ selectAmendmentSource adr requestedRecord documents = do
     else pure ()
   case (axisResolutionHeads (reducedDecisionAxis reduced), axisResolutionEffective (reducedDecisionAxis reduced)) of
     ([head], Just record)
-      | head == requestedRecord -> Right (record, head, axisResolutionEffective (reducedDomainAxis reduced))
+      | head == requestedRecord -> Right (Just record, [head], axisResolutionEffective (reducedDomainAxis reduced))
       | otherwise -> Left (Stage3ValidateState "amend target record is not the current decision head")
     _ -> Left (Stage3ValidateState "amend target ADR has no unambiguous current decision")
 
-selectCurrentAmendmentSource :: AdrId -> Maybe StateToken -> [ParsedManagedDocument] -> Either TransactionError (DecisionRecord, RecordId, [Domain])
-selectCurrentAmendmentSource adr expected documents = do
+selectCurrentAmendmentSource :: AdrId -> Maybe StateToken -> T.Text -> T.Text -> T.Text -> [ParsedManagedDocument] -> Either TransactionError (Maybe DecisionRecord, [RecordId], [Domain])
+selectCurrentAmendmentSource adr expected newTitle newSummary newBody documents = do
   let reduction = reduceManagedGraph (map parsedManagedRecord documents)
   reduced <- maybe (Left (Stage3ValidateState "amend target ADR is unknown")) Right (lookupReducedAdr adr reduction)
   case expected of
@@ -751,9 +760,24 @@ selectCurrentAmendmentSource adr expected documents = do
       | expectedToken == reducedStateToken reduced -> Right ()
       | otherwise ->
           Left (Stage3ValidateState ("stale ADR state: expected " <> stateTokenText expectedToken <> ", current state is " <> stateTokenText (reducedStateToken reduced)))
-  case axisResolutionHeads (reducedDecisionAxis reduced) of
+  let decisionHeads = sort (axisResolutionHeads (reducedDecisionAxis reduced))
+      nonDecisionConflicts = filter (/= DecisionAxis) (reducedConflictAxes reduced)
+  if not (null nonDecisionConflicts)
+    then Left (Stage3ValidateState "amend target ADR is conflicted")
+    else pure ()
+  status <- maybe (Left (Stage3ValidateState "amend target ADR has no current status")) Right (axisResolutionEffective (reducedStatusAxis reduced))
+  if reducedStatusState status /= StatusActive
+    then Left (Stage3ValidateState "amend target ADR is not active")
+    else pure ()
+  case decisionHeads of
     [head] -> selectAmendmentSource adr head documents
-    _ -> Left (Stage3ValidateState "amend target ADR has no unambiguous current decision")
+    heads
+      | null heads -> Left (Stage3ValidateState "amend target ADR has no unambiguous current decision")
+      | null nonDecisionConflicts && not (T.null newTitle || T.null newSummary || T.null newBody) ->
+          Right (Nothing, heads, axisResolutionEffective (reducedDomainAxis reduced))
+      | null nonDecisionConflicts ->
+          Left (Stage3ValidateState "amend decision conflict requires title, summary, and body")
+      | otherwise -> Left (Stage3ValidateState "amend target ADR is conflicted")
 
 normalizeChangeSummary :: T.Text -> Either TransactionError T.Text
 normalizeChangeSummary summary
@@ -762,8 +786,8 @@ normalizeChangeSummary summary
   where
     normalized = T.strip summary
 
-sealAmendMember :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> RecordId -> ProvenanceInputs -> ManagedPaths -> ManagedRecord -> Either TransactionError GeneratedFile
-sealAmendMember opId revision branchName actor timestampMs priorHead inputs paths managed = do
+sealAmendMember :: OperationId -> ResolvedRepositoryRevision -> T.Text -> Actor -> Integer -> [RecordId] -> ProvenanceInputs -> ManagedPaths -> ManagedRecord -> Either TransactionError GeneratedFile
+sealAmendMember opId revision branchName actor timestampMs priorHeads inputs paths managed = do
   semantic <- first (Stage5ValidateGenerated . ("amend render: " <>) . T.pack . show) $
     case managed of
       ManagedDecision decision -> renderDecisionSemantic decision
@@ -783,7 +807,7 @@ sealAmendMember opId revision branchName actor timestampMs priorHead inputs path
           capsuleInputActor = actor,
           capsuleInputTimestampMs = timestampMs,
           capsuleInputBasis = resolvedCommitOid revision,
-          capsuleInputParents = [ProvenanceRecord priorHead],
+          capsuleInputParents = map ProvenanceRecord priorHeads,
           capsuleInputBranchHint = Just branchName,
           capsuleInputUpstreamHint = Nothing,
           capsuleInputLineAnchors = [],

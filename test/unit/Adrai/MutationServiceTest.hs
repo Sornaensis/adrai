@@ -79,6 +79,7 @@ import Adrai.Service.Mutation
     ReactivateResult (..),
     InitResult (..),
     amendAdmCommand,
+    amendCurrentAdrCommand,
     changeDomainCommand,
     changeScopeCommand,
     createAdrCommand,
@@ -163,6 +164,8 @@ tests =
     , testCase "amend commits a truthful append-only decision and amendment edge" amendCommitsTruthfulAppendOnlyOperation
     , testCase "amend rejections do not create a commit" amendRejectionsDoNotCommit
     , testCase "successive amendments chain from the prior current head" successiveAmendmentsChainFromPriorHead
+    , testCase "ordinary complete amend reconciles a decision-only conflict" ordinaryAmendReconcilesDecisionConflict
+    , testCase "ordinary amend rejects a non-decision conflict without mutation" ordinaryAmendRejectsNonDecisionConflict
     , testCase "amend rejects inactive, conflicted, and misplaced committed sources" amendRejectsInvalidCommittedState
         , testCase "amend transaction failure is retry-safe before generated files exist" amendFailurePropagatesTransactionError
         ]
@@ -847,19 +850,72 @@ successiveAmendmentsChainFromPriorHead =
     stale <- runAmend repository (createAdrId created) (createRecordId created) "Stale root" "" "body\n"
     assertBool "known stale prior head must be rejected" (isLeft stale)
 
+ordinaryAmendReconcilesDecisionConflict :: IO ()
+ordinaryAmendReconcilesDecisionConflict =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    first <- assertRight =<< runAmend repository (createAdrId created) (createRecordId created) "First branch" "First summary" "first body\n"
+    _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+    second <- assertRight =<< runAmend repository (createAdrId created) (createRecordId created) "Second branch" "Second summary" "second body\n"
+    _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (amendCommitOid first))] BS.empty
+    conflicted <- reducedAdrAt directory (createAdrId created)
+    let decisionParents = sort [amendRecordId first, amendRecordId second]
+    axisResolutionHeads (reducedDecisionAxis conflicted) @?= decisionParents
+    partialBefore <- repositoryObservableState directory
+    partial <- runCurrentAmend repository (createAdrId created) Nothing "partial" "Reconciled" "" ""
+    partial @?= Left (Stage3ValidateState "amend decision conflict requires title, summary, and body")
+    repositoryObservableState directory >>= (@?= partialBefore)
+    staleToken <- pure (reducedStateToken conflicted)
+    reconciled <- assertRight =<< runCurrentAmend repository (createAdrId created) (Just staleToken) "reconcile branches" "Reconciled" "Reconciled summary" "reconciled body\n"
+    documents <- mapM (amendDocumentAt directory reconciled) (amendCreatedPaths reconciled)
+    let expectedParents = map ProvenanceRecord decisionParents
+    mapM_ (\document -> provenanceParents (parsedManagedCapsule document) @?= expectedParents) documents
+    case [payload | document <- documents, ManagedConnection connection <- [parsedManagedRecord document], AmendsConnection payload <- [connectionPayload connection]] of
+      [payload] -> amendsToRecords payload @?= decisionParents
+      other -> assertFailure ("expected one reconciliation amendment edge, got " <> show other)
+    reduced <- reducedAdrAt directory (createAdrId created)
+    axisResolutionHeads (reducedDecisionAxis reduced) @?= [amendRecordId reconciled]
+    reducedConflictAxes reduced @?= []
+    staleBefore <- repositoryObservableState directory
+    stale <- runCurrentAmend repository (createAdrId created) (Just staleToken) "stale" "Another" "Another summary" "another body\n"
+    assertBool "stale reconciliation token must be rejected" (isLeft stale)
+    repositoryObservableState directory >>= (@?= staleBefore)
+
+ordinaryAmendRejectsNonDecisionConflict :: IO ()
+ordinaryAmendRejectsNonDecisionConflict =
+  withCreateRepository $ \directory repository _ -> do
+    created <- assertRight =<< runCreate repository
+    firstPattern <- assertRight (mkScopePattern "first/**")
+    secondPattern <- assertRight (mkScopePattern "second/**")
+    first <- assertRight =<< runScope repository (createAdrId created) Nothing [firstPattern] []
+    _ <- gitSuccess directory ["reset", "--hard", Text.unpack (gitOidText (createCommitOid created))] BS.empty
+    _ <- assertRight =<< runScope repository (createAdrId created) Nothing [secondPattern] []
+    _ <- gitSuccess directory ["cherry-pick", Text.unpack (gitOidText (scopeChangeCommitOid first))] BS.empty
+    before <- repositoryObservableState directory
+    rejected <- runCurrentAmend repository (createAdrId created) Nothing "unsafe scope conflict" "Rejected" "Rejected summary" "rejected body\n"
+    rejected @?= Left (Stage3ValidateState "amend target ADR is conflicted")
+    repositoryObservableState directory >>= (@?= before)
+
 amendRejectsInvalidCommittedState :: IO ()
 amendRejectsInvalidCommittedState = do
+  rejectUnknown
   rejectInactive
   rejectConflicted
   rejectMisplaced
   where
+    rejectUnknown = withCreateRepository $ \directory repository _ -> do
+      unknown <- assertRight (mkAdrId "A00000000000000000000000002")
+      before <- repositoryObservableState directory
+      result <- runCurrentAmend repository unknown Nothing "unknown" "Unknown" "Unknown summary" "body\n"
+      result @?= Left (Stage3ValidateState "amend target ADR is unknown")
+      repositoryObservableState directory >>= (@?= before)
     rejectInactive = withCreateRepository $ \directory repository _ -> do
       created <- assertRight =<< runCreate repository
       commitInactiveStatus directory created
-      headBefore <- gitText directory ["rev-parse", "HEAD"]
-      result <- runAmend repository (createAdrId created) (createRecordId created) "Inactive" "" "body\n"
+      before <- repositoryObservableState directory
+      result <- runCurrentAmend repository (createAdrId created) Nothing "inactive" "Inactive" "Inactive summary" "body\n"
       assertBool "inactive ADR must be rejected" (isLeft result)
-      gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+      repositoryObservableState directory >>= (@?= before)
     rejectConflicted = withCreateRepository $ \directory repository _ -> do
       created <- assertRight =<< runCreate repository
       firstAmendment <- assertRight =<< runAmend repository (createAdrId created) (createRecordId created) "First branch" "" "body\n"
@@ -881,10 +937,10 @@ amendRejectsInvalidCommittedState = do
       BS.writeFile (directory </> "architecture/adrai/decisions/misplaced.decision.md") bytes
       _ <- gitSuccess directory ["add", "-A"] BS.empty
       _ <- gitSuccess directory ["commit", "-m", "misplace decision"] BS.empty
-      headBefore <- gitText directory ["rev-parse", "HEAD"]
-      result <- runAmend repository (createAdrId created) (createRecordId created) "Misplaced" "" "body\n"
+      before <- repositoryObservableState directory
+      result <- runCurrentAmend repository (createAdrId created) Nothing "misplaced" "Misplaced" "Misplaced summary" "body\n"
       assertBool "misplaced committed record must be rejected" (isLeft result)
-      gitText directory ["rev-parse", "HEAD"] >>= (@?= headBefore)
+      repositoryObservableState directory >>= (@?= before)
 
 scopeUpdatesAreTruthful :: IO ()
 scopeUpdatesAreTruthful =
@@ -2109,6 +2165,20 @@ runAmend repository adr sourceRecord title summary body = do
     actor
     adr
     sourceRecord
+    title
+    summary
+    body
+    (ProvenanceInputs Nothing Nothing Nothing)
+
+runCurrentAmend :: Repository -> AdrId -> Maybe StateToken -> Text.Text -> Text.Text -> Text.Text -> Text.Text -> IO (Either TransactionError AmendResult)
+runCurrentAmend repository adr expected changeSummary title summary body = do
+  actor <- createActor
+  amendCurrentAdrCommand
+    repository
+    actor
+    adr
+    expected
+    changeSummary
     title
     summary
     body

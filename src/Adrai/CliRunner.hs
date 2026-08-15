@@ -1932,16 +1932,21 @@ renderAmendOutcome result indexResult jsonOutput =
     identifiers =
       [ "adr=" <> adrIdText (amendAdrId result)
       , "record=" <> recordIdText (amendRecordId result)
-      , "amends=" <> recordIdText (amendAmends result)
+      , "amends=" <> renderAmendParents (amendAmends result)
       , "connection=" <> connectionIdText (amendConnectionId result)
       ]
     jsonFields =
       mutationJsonFields (amendOperationId result) (amendCommitOid result) (amendCreatedPaths result) (amendIndexUpdated result) indexResult
         <> [ ("adr", JsonString (adrIdText (amendAdrId result)))
            , ("record", JsonString (recordIdText (amendRecordId result)))
-           , ("amends", JsonString (recordIdText (amendAmends result)))
+           , ("amends", amendParentsJson (amendAmends result))
            , ("connection", JsonString (connectionIdText (amendConnectionId result)))
            ]
+    renderAmendParents = Text.intercalate "," . map recordIdText
+    amendParentsJson parents =
+      case parents of
+        [parent] -> JsonString (recordIdText parent)
+        _ -> JsonArray (map (JsonString . recordIdText) parents)
 
 renderScopeOutcome :: ScopeChangeResult -> PostCommitIndexResult -> Bool -> CliRendered
 renderScopeOutcome result indexResult jsonOutput =
@@ -2076,6 +2081,9 @@ transactionConflict problem =
   case problem of
     Stage3ValidateState message -> "expected head mismatch" `Text.isInfixOf` message
       || "stale ADR state:" `Text.isInfixOf` message
+      || "amend target ADR is conflicted" `Text.isInfixOf` message
+      || "amend decision conflict requires title, summary, and body" `Text.isInfixOf` message
+      || "amend target ADR is not active" `Text.isInfixOf` message
       || "scope target ADR is conflicted" `Text.isInfixOf` message
       || "scope target ADR has no unambiguous current scope" `Text.isInfixOf` message
       || "scope target ADR is not active" `Text.isInfixOf` message

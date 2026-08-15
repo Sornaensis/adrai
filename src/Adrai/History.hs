@@ -191,6 +191,10 @@ data HistoryOperation = HistoryOperation
     historyOperationBasis :: Text,
     historyOperationCommit :: Maybe Text,
     historyOperationPlacement :: Maybe Text,
+    -- | Present only when one reconciliation amendment has more than one
+    -- prior decision head.  Keeping the singleton case absent preserves the
+    -- established public history schema and bytes.
+    historyOperationAmends :: Maybe [RecordId],
     historyOperationResolved :: Bool,
     historyOperationConflict :: Maybe Text,
     historyOperationStatus :: Text
@@ -328,6 +332,7 @@ operationFromGroup snapshot reduced group =
       historyOperationBasis = gitOidText (provenanceBasis capsule),
       historyOperationCommit = preferredCommit =<< evidence,
       historyOperationPlacement = preferredClassification =<< evidence,
+      historyOperationAmends = reconciliationParents records,
       historyOperationResolved = null (reducedConflictAxes reduced) && null localIssues,
       historyOperationConflict = currentConflict reduced localIssues,
       historyOperationStatus = currentStatus reduced
@@ -341,6 +346,15 @@ operationFromGroup snapshot reduced group =
     reason = operationReason reduced records label
     details = operationDetails snapshot group
     localIssues = [issue | issue <- graphReductionIssues (readSnapshotReduction snapshot), graphIssueAdr issue == Just (reducedAdrId reduced)]
+
+-- | A history operation exposes the full parent set only for a true
+-- reconciliation.  Ordinary single-parent amendments retain the frozen
+-- history shape, while the projected list is always canonical.
+reconciliationParents :: [ManagedRecord] -> Maybe [RecordId]
+reconciliationParents records =
+  case sortedUnique [parent | ManagedConnection connection <- records, AmendsConnection payload <- [connectionPayload connection], length (amendsToRecords payload) > 1, parent <- amendsToRecords payload] of
+    parents@(_ : _ : _) -> Just parents
+    _ -> Nothing
 
 preferredCommit :: PlacementEvidence -> Maybe Text
 preferredCommit evidence =
@@ -535,6 +549,7 @@ historyOperationJson operation =
       ("model", maybeJson JsonString (actorModel (historyOperationActor operation))),
       ("operation", JsonString (operationIdText (historyOperationId operation))),
       ("placement", maybeJson JsonString (historyOperationPlacement operation)),
+      ("amends", maybeJson (JsonArray . map (JsonString . recordIdText)) (historyOperationAmends operation)),
       ("reason", maybeJson JsonString (historyOperationReason operation)),
       ("resolved", JsonBool (historyOperationResolved operation)),
       ("status", JsonString (historyOperationStatus operation)),

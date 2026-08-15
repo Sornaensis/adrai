@@ -31,6 +31,7 @@ tests =
       testCase "resolution envelope orders axes then unmatched integrity and handles stale obsolete" collapsedConflictContracts,
       testCase "snapshot inconsistency is rejected by collapsed, exploded, history, and compare" snapshotConsistencyContract,
       testCase "ADR and repository histories use topology, exact labels, filters, and optional omission" historyContract,
+      testCase "reconciliation history exposes canonical complete amendment parents only when needed" reconciliationHistoryParentsContract,
       testCase "cyclic history appends the whole residual set in stable claimed-time order" historyCycleContract,
       testCase "exploded operations have exact item fields, grouped provenance, raw opt-in, and real hunks" explodedContract,
       testCase "revision-local A/R/C lookup is deterministic under duplicate ownership and permutations" prefixContract,
@@ -247,6 +248,34 @@ historyContract = do
   let json = TextEncoding.decodeUtf8 (renderHistoryProjection newest)
   assertBool "claimed timestamp ISO" ("1970-01-01T00:00:00.200000Z" `Text.isInfixOf` json)
   assertBool "empty details retained" ("\"details\": {}" `Text.isInfixOf` json)
+
+reconciliationHistoryParentsContract :: IO ()
+reconciliationHistoryParentsContract = do
+  let parallel = exactRecord "R33333333333333333333333333"
+      reconciled = exactRecord "R44444444444444444444444444"
+      reconciliation = ManagedConnection (ConnectionRecord c4 (AmendsConnection (AmendsPayload primaryAdr reconciled [parallel, r1])) "reconcile decision heads\n")
+      records = take 4 fullRecords <> [decisionRecordFor primaryAdr parallel "parallel", decisionRecordFor primaryAdr reconciled "reconciled", reconciliation]
+      docs =
+        [document o1 300 HumanActor "architect" [] record | record <- take 4 records]
+          <> [document o2 100 HumanActor "reconciler" [ProvenanceRecord r1, ProvenanceRecord parallel] record | record <- drop 4 records]
+      projection = must (projectHistory (snapshotFor "reconciliation" records docs) (Just primaryAdr) defaultHistoryOptions)
+      reconciliationOperation =
+        case filter ((== "reconciled amendments") . historyOperationLabel) (historyProjectionOperations projection) of
+          [operation] -> operation
+          other -> error ("expected one reconciliation history operation, got " <> show other)
+      rendered = TextEncoding.decodeUtf8 (renderHistoryProjection projection)
+      expectedParents = Just [r1, parallel]
+  historyOperationAmends reconciliationOperation @?= expectedParents
+  assertBool
+    "history JSON projects the complete canonical parent array"
+    ( "\"amends\": [\n        \"R11111111111111111111111111\",\n        \"R33333333333333333333333333\"\n      ]"
+        `Text.isInfixOf` rendered
+    )
+  let singleton =
+        case filter ((== "created") . historyOperationLabel) (historyProjectionOperations projection) of
+          [operation] -> operation
+          other -> error ("expected one created history operation, got " <> show other)
+  historyOperationAmends singleton @?= Nothing
 
 historyCycleContract :: IO ()
 historyCycleContract = do

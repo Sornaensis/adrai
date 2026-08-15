@@ -38,7 +38,7 @@ import Adrai.Format.Document
   )
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import Adrai.Git (gitOidText)
-import Adrai.Graph (lookupReducedAdr, reduceManagedGraph, reducedStateToken)
+import Adrai.Graph (AxisResolution (..), ReducedAdr (..), lookupReducedAdr, reduceManagedGraph, reducedStateToken)
 import Adrai.Provenance
   ( ProvenanceCapsule,
     ProvenanceObjectId (..),
@@ -77,7 +77,7 @@ import Adrai.Types
      stateTokenText,
   )
 import Control.Exception (bracket)
-import Control.Monad (unless, void)
+import Control.Monad (filterM, unless, void)
 import Data.List (isPrefixOf, sort)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text, strip, unpack)
@@ -1047,6 +1047,194 @@ testP602MRealExecutable :: TestTree
 testP602MRealExecutable =
   testGroup "P6-02M real executable explore"
     [ testCase "explore is a native non-mutating terminal session" p602mExplore ]
+
+testP603A0RealExecutable :: TestTree
+testP603A0RealExecutable =
+  testGroup "P6-03A.0 real executable ordinary amend reconciliation"
+    [ testCase "ordinary amend reconciles merged decision heads" p603a0OrdinaryAmendReconciles
+    , testCase "ordinary amend rejects a domain-axis conflict without mutation" p603a0RejectsDomainConflict
+    , testCase "ordinary amend rejects a status-axis conflict without mutation" p603a0RejectsStatusConflict
+    , testCase "ordinary amend rejects an inactive ADR without mutation" p603a0RejectsInactive
+    ]
+
+p603a0OrdinaryAmendReconciles :: IO ()
+p603a0OrdinaryAmendReconciles =
+  withSystemTempDirectory "adrai p6-03a0 reconcile" $ \temporary -> do
+    let repo = temporary </> "reconcile"
+        database = repo </> ".adrai" </> "index.sqlite"
+        stagedPath = "caller-staged.bin"
+        stagedBytes = BS.pack [7, 0, 255, 19]
+        dirtyPath = "seed.txt"
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> dirtyPath) "seed\n"
+    git repo ["add", "--", dirtyPath]
+    git repo ["commit", "-m", "seed"]
+    _ <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    createStdout <- assertExitSuccess "create" =<< adraiRequiredRaw repo ["create", "--title", "Original", "--summary", "Original summary", "--body", "Original body\n", "--domain", "compiler", "--actor", "human:e2e", "--json"]
+    createResult <- decodeCanonicalJson "create" createStdout
+    adr <- requireJsonField "create" createResult "adr" :: IO Text
+    root <- headCommit repo
+    git repo ["switch", "-c", "reconcile-first"]
+    firstStdout <- assertExitSuccess "first amend" =<< adraiRequiredRaw repo ["amend", unpack adr, "--title", "First branch", "--summary", "First summary", "--change-summary", "first branch", "--body", "first body\n", "--actor", "human:e2e", "--json"]
+    firstResult <- decodeCanonicalJson "first amend" firstStdout
+    firstRecord <- requireJsonField "first amend" firstResult "record" :: IO Text
+    git repo ["switch", "main"]
+    headCommit repo >>= (@?= root)
+    secondStdout <- assertExitSuccess "second amend" =<< adraiRequiredRaw repo ["amend", unpack adr, "--title", "Second branch", "--summary", "Second summary", "--change-summary", "second branch", "--body", "second body\n", "--actor", "human:e2e", "--json"]
+    secondResult <- decodeCanonicalJson "second amend" secondStdout
+    secondRecord <- requireJsonField "second amend" secondResult "record" :: IO Text
+    let parentRecords = sort [firstRecord, secondRecord]
+        parentIds = map (either (error . show) id . mkRecordId) parentRecords
+    git repo ["merge", "--no-ff", "reconcile-first", "-m", "merge decision heads"]
+    (conflictExit, conflictStdout, conflictStderr) <- adraiRequiredRaw repo ["show", unpack adr, "--view", "collapsed", "--json"]
+    conflictExit @?= ExitFailure 3
+    conflictStdout @?= ""
+    conflictStderr @?= "adrai: conflict: ADR requires resolution: 2 decision heads\n"
+    conflictHead <- headCommit repo
+    conflictPaths <- fmap T.lines (gitText repo ["ls-tree", "-r", "--name-only", T.unpack conflictHead, "--", "architecture/adrai"])
+    conflictDocuments <- mapM (parseCommittedAndWorktreeDocument repo conflictHead) conflictPaths
+    conflictToken <- case lookupReducedAdr (either (error . show) id (mkAdrId adr)) (reduceManagedGraph (map parsedManagedRecord conflictDocuments)) of
+      Just reduced -> do
+        axisResolutionHeads (reducedDecisionAxis reduced) @?= parentIds
+        pure (reducedStateToken reduced)
+      Nothing -> assertFailure "merged amendment heads must reduce to their ADR" >> fail "unreachable"
+    incompleteBaseline <- captureMutationFailureBaseline repo database
+    (incompleteExit, incompleteStdout, incompleteStderr) <- adraiRequiredRaw repo ["amend", unpack adr, "--title", "Incomplete", "--summary", "Incomplete summary", "--change-summary", "incomplete reconciliation", "--body", "", "--actor", "human:e2e", "--json"]
+    incompleteExit @?= ExitFailure 3
+    incompleteStdout @?= ""
+    incompleteStderr @?= "adrai: conflict: Stage3ValidateState \"amend decision conflict requires title, summary, and body\"\n"
+    assertMutationFailurePreserved repo database incompleteBaseline
+    BS.writeFile (repo </> stagedPath) stagedBytes
+    git repo ["add", "--", stagedPath]
+    stagedIndexBefore <- gitStdout repo ["ls-files", "-s", "--", stagedPath]
+    BS.writeFile (repo </> dirtyPath) "caller worktree bytes\n"
+    dirtyIndexBefore <- gitStdout repo ["ls-files", "-s", "--", dirtyPath]
+    dirtyWorktreeBefore <- BS.readFile (repo </> dirtyPath)
+    reconcileStdout <- assertExitSuccess "reconcile amend" =<< adraiRequiredRaw repo ["amend", unpack adr, "--title", "Reconciled", "--summary", "Reconciled summary", "--change-summary", "reconcile decision heads", "--body", "reconciled body\n", "--expect", unpack (stateTokenText conflictToken), "--actor", "human:e2e", "--json"]
+    reconcileResult <- decodeCanonicalJson "reconcile amend" reconcileStdout
+    record <- requireJsonField "reconcile amend" reconcileResult "record" :: IO Text
+    operation <- requireJsonField "reconcile amend" reconcileResult "operation" :: IO Text
+    publicParents <- requireJsonField "reconcile amend" reconcileResult "amends" :: IO [Text]
+    publicParents @?= parentRecords
+    created <- requireJsonField "reconcile amend" reconcileResult "created" :: IO [Text]
+    current <- headCommit repo
+    documents <- mapM (parseCommittedAndWorktreeDocument repo current) created
+    case [payload | ParsedManagedDocument _ (ManagedConnection connection) _ _ _ <- documents, AmendsConnection payload <- [connectionPayload connection]] of
+      [payload] -> do
+        map recordIdText (amendsToRecords payload) @?= parentRecords
+        amendsFromRecord payload @?= either (error . show) id (mkRecordId record)
+      other -> assertFailure ("expected one reconciliation edge, got " <> show other)
+    let expectedParents = map ProvenanceRecord parentIds
+    mapM_ (\document -> provenanceParents (parsedManagedCapsule document) @?= expectedParents) documents
+    historyStdout <- assertExitSuccess "history reconciliation" =<< adraiRequiredRaw repo ["history", unpack adr, "--json"]
+    historyResult <- decodeCanonicalJson "history reconciliation" historyStdout
+    historyOperations <- requireJsonField "history reconciliation" historyResult "operations" :: IO [Data.Aeson.Value]
+    matchingOperations <- filterM (matchesOperation operation) historyOperations
+    historyOperation <-
+      case matchingOperations of
+        [value] -> pure value
+        other -> assertFailure ("expected one reconciliation operation in public history, got " <> show other) >> fail "unreachable"
+    historyParents <- requireJsonField "history reconciliation operation" historyOperation "amends" :: IO [Text]
+    historyParents @?= parentRecords
+    resolved <- assertExitSuccess "show resolved" =<< adraiRequiredRaw repo ["show", unpack adr, "--view", "collapsed", "--json"]
+    resolvedResult <- decodeCanonicalJson "show resolved" resolved
+    resolutionRequired <- requireJsonField "show resolved" resolvedResult "resolution_required" :: IO Bool
+    resolvedState <- requireJsonField "show resolved" resolvedResult "resolved" :: IO Bool
+    resolvedRecord <- requireJsonField "show resolved" resolvedResult "record" :: IO Text
+    resolutionRequired @?= False
+    resolvedState @?= True
+    resolvedRecord @?= record
+    assertStagedBinaryPreserved repo stagedPath stagedBytes stagedIndexBefore
+    gitStdout repo ["ls-files", "-s", "--", dirtyPath] >>= (@?= dirtyIndexBefore)
+    BS.readFile (repo </> dirtyPath) >>= (@?= dirtyWorktreeBefore)
+    assertIndexResolvedOid database current
+    staleBaseline <- captureMutationFailureBaseline repo database
+    (staleExit, staleStdout, staleStderr) <- adraiRequiredRaw repo ["amend", unpack adr, "--title", "Stale", "--summary", "Stale summary", "--change-summary", "stale reconcile", "--body", "stale body\n", "--expect", unpack (stateTokenText conflictToken), "--actor", "human:e2e", "--json"]
+    staleExit @?= ExitFailure 3
+    staleStdout @?= ""
+    assertBool "stale reconcile must use the frozen conflict error" ("adrai: conflict: Stage3ValidateState \"stale ADR state:" `LBS.isPrefixOf` staleStderr)
+    assertMutationFailurePreserved repo database staleBaseline
+  where
+    matchesOperation expected value = pure ((_Object value >>= (.: "operation")) == Just expected)
+
+p603a0RejectsDomainConflict :: IO ()
+p603a0RejectsDomainConflict =
+  withSystemTempDirectory "adrai p6-03a0 domain conflict" $ \temporary -> do
+    let repo = temporary </> "domain-conflict"
+        database = repo </> ".adrai" </> "index.sqlite"
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "seed\n"
+    git repo ["add", "--", "seed.txt"]
+    git repo ["commit", "-m", "seed"]
+    _ <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    createStdout <- assertExitSuccess "create" =<< adraiRequiredRaw repo ["create", "--title", "Domain target", "--summary", "Domain target", "--body", "domain target\n", "--domain", "compiler", "--actor", "human:e2e", "--json"]
+    createResult <- decodeCanonicalJson "create" createStdout
+    adr <- requireJsonField "create" createResult "adr" :: IO Text
+    git repo ["switch", "-c", "domain-other"]
+    _ <- assertExitSuccess "domain other" =<< adraiRequiredRaw repo ["domain", unpack adr, "--add", "product", "--reason", "other domain", "--actor", "human:e2e", "--json"]
+    git repo ["switch", "main"]
+    _ <- assertExitSuccess "domain main" =<< adraiRequiredRaw repo ["domain", unpack adr, "--add", "platform", "--reason", "main domain", "--actor", "human:e2e", "--json"]
+    git repo ["merge", "--no-ff", "domain-other", "-m", "merge domain heads"]
+    baseline <- captureMutationFailureBaseline repo database
+    (exitCode, stdout, stderr) <- adraiRequiredRaw repo ["amend", unpack adr, "--title", "Rejected", "--summary", "Rejected summary", "--change-summary", "domain conflict", "--body", "rejected body\n", "--actor", "human:e2e", "--json"]
+    exitCode @?= ExitFailure 3
+    stdout @?= ""
+    stderr @?= "adrai: conflict: Stage3ValidateState \"amend target ADR is conflicted\"\n"
+    assertMutationFailurePreserved repo database baseline
+
+p603a0RejectsStatusConflict :: IO ()
+p603a0RejectsStatusConflict =
+  withSystemTempDirectory "adrai p6-03a0 status conflict" $ \temporary -> do
+    let repo = temporary </> "status-conflict"
+        database = repo </> ".adrai" </> "index.sqlite"
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "seed\n"
+    git repo ["add", "--", "seed.txt"]
+    git repo ["commit", "-m", "seed"]
+    _ <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    createStdout <- assertExitSuccess "create" =<< adraiRequiredRaw repo ["create", "--title", "Status target", "--summary", "Status target", "--body", "status target\n", "--domain", "compiler", "--actor", "human:e2e", "--json"]
+    createResult <- decodeCanonicalJson "create" createStdout
+    adr <- requireJsonField "create" createResult "adr" :: IO Text
+    git repo ["switch", "-c", "status-other"]
+    _ <- assertExitSuccess "status other" =<< adraiRequiredRaw repo ["obsolete", unpack adr, "--reason", "other status", "--actor", "human:e2e", "--json"]
+    git repo ["switch", "main"]
+    _ <- assertExitSuccess "status main" =<< adraiRequiredRaw repo ["obsolete", unpack adr, "--reason", "main status", "--actor", "human:e2e", "--json"]
+    git repo ["merge", "--no-ff", "status-other", "-m", "merge status heads"]
+    baseline <- captureMutationFailureBaseline repo database
+    (exitCode, stdout, stderr) <- adraiRequiredRaw repo ["amend", unpack adr, "--title", "Rejected", "--summary", "Rejected summary", "--change-summary", "status conflict", "--body", "rejected body\n", "--actor", "human:e2e", "--json"]
+    exitCode @?= ExitFailure 3
+    stdout @?= ""
+    stderr @?= "adrai: conflict: Stage3ValidateState \"amend target ADR is conflicted\"\n"
+    assertMutationFailurePreserved repo database baseline
+
+p603a0RejectsInactive :: IO ()
+p603a0RejectsInactive =
+  withSystemTempDirectory "adrai p6-03a0 inactive amend" $ \temporary -> do
+    let repo = temporary </> "inactive-amend"
+        database = repo </> ".adrai" </> "index.sqlite"
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "seed\n"
+    git repo ["add", "--", "seed.txt"]
+    git repo ["commit", "-m", "seed"]
+    _ <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    createStdout <- assertExitSuccess "create" =<< adraiRequiredRaw repo ["create", "--title", "Inactive target", "--summary", "Inactive target", "--body", "inactive target\n", "--domain", "compiler", "--actor", "human:e2e", "--json"]
+    createResult <- decodeCanonicalJson "create" createStdout
+    adr <- requireJsonField "create" createResult "adr" :: IO Text
+    _ <- assertExitSuccess "obsolete" =<< adraiRequiredRaw repo ["obsolete", unpack adr, "--reason", "retire target", "--actor", "human:e2e", "--json"]
+    baseline <- captureMutationFailureBaseline repo database
+    (exitCode, stdout, stderr) <- adraiRequiredRaw repo ["amend", unpack adr, "--title", "Rejected", "--summary", "Rejected summary", "--change-summary", "inactive target", "--body", "rejected body\n", "--actor", "human:e2e", "--json"]
+    exitCode @?= ExitFailure 3
+    stdout @?= ""
+    stderr @?= "adrai: conflict: Stage3ValidateState \"amend target ADR is not active\"\n"
+    assertMutationFailurePreserved repo database baseline
 
 p602mExplore :: IO ()
 p602mExplore =
@@ -2447,6 +2635,7 @@ tests =
       testP602ERealExecutable,
       testP602LRealExecutable,
       testP602MRealExecutable,
+      testP603A0RealExecutable,
       testUnbornRepository,
       testUnrelatedStagedEntry,
       testDetachedHead,

@@ -1558,6 +1558,13 @@ mutationCliContractTests =
         let rendered = renderAmendOutcome amendResult indexFailureResult False
         renderedExitCode rendered @?= ExitSuccess
         renderedStdout rendered @?= "Committed operation-43 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  record=R0123456789ABCDEFGHJKMNPQRS  amends=R1123456789ABCDEFGHJKMNPQRS  connection=C3123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
+    , testCase "multi-parent amend exposes every canonical parent without changing singleton bytes" $ do
+        let secondParent = requireRight (mkRecordId "R2123456789ABCDEFGHJKMNPQRS")
+            reconciled = amendResult {amendAmends = [requireRight (mkRecordId "R1123456789ABCDEFGHJKMNPQRS"), secondParent]}
+        renderedStdout (renderAmendOutcome reconciled indexedResult True) @?=
+          "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"amends\": [\n    \"R1123456789ABCDEFGHJKMNPQRS\",\n    \"R2123456789ABCDEFGHJKMNPQRS\"\n  ],\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"connection\": \"C3123456789ABCDEFGHJKMNPQRS\",\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"operation\": \"operation-43\",\n  \"record\": \"R0123456789ABCDEFGHJKMNPQRS\"\n}\n"
+        renderedStdout (renderAmendOutcome reconciled indexFailureResult False) @?=
+          "Committed operation-43 as 0123456789012345678901234567890123456789\nadr=A0123456789ABCDEFGHJKMNPQRS  record=R0123456789ABCDEFGHJKMNPQRS  amends=R1123456789ABCDEFGHJKMNPQRS,R2123456789ABCDEFGHJKMNPQRS  connection=C3123456789ABCDEFGHJKMNPQRS\nSQLite indexing failed: PostCommitIndexOpenFailure \"readonly\"\n"
     , testCase "scope output is exact and keeps disposable indexing durable" $ do
         renderedStdout (renderScopeOutcome scopeResult indexedResult True) @?=
           "{\n  \"adr\": \"A0123456789ABCDEFGHJKMNPQRS\",\n  \"applies_to\": [\n    \"src/**\",\n    \"test/**\"\n  ],\n  \"commit\": \"0123456789012345678901234567890123456789\",\n  \"committed\": true,\n  \"created\": [\n    \"architecture/adrai/decisions/fixture.md\"\n  ],\n  \"database\": \"fixture.sqlite\",\n  \"index_revision\": \"0123456789012345678901234567890123456789\",\n  \"index_updated\": true,\n  \"index_warnings\": 0,\n  \"indexed\": true,\n  \"mode\": \"mixed\",\n  \"operation\": \"operation-44\",\n  \"scope\": \"C4123456789ABCDEFGHJKMNPQRS\",\n  \"scope_parents\": [\n    \"C3123456789ABCDEFGHJKMNPQRS\"\n  ]\n}\n"
@@ -1877,7 +1884,7 @@ mutationCliContractTests =
         "operation-43"
         (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
         (requireRight (mkRecordId "R0123456789ABCDEFGHJKMNPQRS"))
-        (requireRight (mkRecordId "R1123456789ABCDEFGHJKMNPQRS"))
+        [requireRight (mkRecordId "R1123456789ABCDEFGHJKMNPQRS")]
         (requireRight (mkConnectionId "C3123456789ABCDEFGHJKMNPQRS"))
         oid path [path] True
     scopeResult =

@@ -74,15 +74,15 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_graph_lifecycle.py",
                      "pythonMethod":  "test_parallel_amendments_are_visible_then_reconciled_by_ordinary_amend",
                      "behaviorContract":  "Parallel decision heads remain visible as a semantic conflict until an ordinary amendment explicitly reconciles them into one head.",
-                     "haskellTestName":  "parallel amendments remain visible until reconciled",
-                     "haskellTestPath":  "test/integration/Adrai/GraphLifecycleTest.hs",
+                     "haskellTestName":  "P6-03A.0 ordinary amend reconciles merged decision heads",
+                     "haskellTestPath":  "test/integration/Adrai/MutationE2ETest.hs",
                      "haskellTestType":  "integration",
                      "phaseOwner":  "P4",
-                     "state":  "planned",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"parallel amendments remain visible until reconciled\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:77 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:77 (static prototype test)"
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /P6-03A.0/&&/real/ -j 1'; stack test adrai:adrai-test --test-arguments='-p /P6-02A/&&!/real/ -j 1'; stack test adrai:adrai-test --test-arguments='-p /reconciliation/&&/history/&&/exposes/ -j 1'; stack test adrai:adrai-test --test-arguments='-p /multi-parent/&&/amend/&&/exposes/ -j 1'",
+                                      "fixture":  "MutationE2ETest.p603a0OrdinaryAmendReconciles creates independent decision heads, merges them, proves exact conflict exit and reduced head IDs, rejects incomplete reconciliation with exact conflict bytes/full preservation, reconciles through ordinary amend with the exact conflicted state token, and asserts the complete parent set through public amend JSON, public history, sealed edge, provenance, stale retry, and caller-state preservation; companion real tests reject native domain/status conflicts and an inactive ADR with exact conflict exits/full preservation; MutationServiceTest covers partial, correct/stale CAS, unknown, inactive, misplaced, and non-decision-conflict rejection; CliContractTest preserves singleton bytes while projecting canonical multiparent output.",
+                                      "result":  "Standard D:\\Projects\\adrai\\.stack-work current source based on HEAD 2512c21: no-run test+exe build PASS; P6-03A.0 real executable 4/4 PASS in 42.06s; P6-02A mutation service 23/23 PASS in 102.87s; P6-02B real amend regression 1/1 PASS in 16.26s; focused history and multiparent renderer contracts each 1/1 PASS"
                                   }
                  },
                  {
