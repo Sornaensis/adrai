@@ -389,13 +389,13 @@ clearSearchMaterializationAction connection = do
 
 insertSearchMaterializationAction :: Connection -> SearchMaterialization -> IO ()
 insertSearchMaterializationAction connection materialization = do
-  forM_ sortedDocuments (insertSearchDocument connection)
-  forM_ sortedAliases (insertLocalAlias connection)
-  forM_ numberedPassages (uncurry (insertSearchPassage connection))
-  forM_ sortedDocuments $ \document ->
+  forM_ sortedDocuments $ \document -> do
+    insertSearchDocument connection document
     forM_ [SearchExactTarget, SearchStemmedTarget, SearchIdentifierTarget] $ \target ->
       insertSummaryFts connection target document
-  forM_ numberedPassages $ \(rowId, passage) ->
+  forM_ sortedAliases (insertLocalAlias connection)
+  forM_ numberedPassages $ \(rowId, passage) -> do
+    insertSearchPassage connection rowId passage
     forM_ [PassageExactTarget, PassageStemmedTarget, PassageIdentifierTarget] $ \target ->
       insertPassageFts connection target rowId passage
   where
