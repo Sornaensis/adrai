@@ -44,6 +44,7 @@ import Adrai.Types
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import Data.Foldable (foldr')
 import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
@@ -228,25 +229,13 @@ observeHistory raw paths targetEntries = do
     (Left problem, _) -> pure (Left (RepositorySnapshotGitError problem))
     (_, Left problem) -> pure (Left (RepositorySnapshotGitError problem))
     (Right shallow, Right nodes) -> do
-      let targetNonblobs =
-            [ observation
-              | observation <- rawRepositorySnapshotEntries raw,
-                repositoryTreeBlob observation == Nothing
-            ]
-      treeResult <- observeCommitTrees revision paths targetOid targetEntries targetNonblobs nodes
+      let targetPaths =
+            Set.fromList
+              (map (gitTreePath . repositoryTreeEntry) (rawRepositorySnapshotEntries raw))
+      treeResult <- observeCommitTrees revision paths targetOid targetPaths targetEntries nodes
       pure $ do
-        trees <- treeResult
-        let targetPaths =
-              Set.fromList
-                (map (gitTreePath . repositoryTreeEntry) (rawRepositorySnapshotEntries raw))
-            edgeDiagnostics = concatMap (edgeIssues targetPaths trees) nodes
-            nonblobDiagnostics =
-              concat
-                [ map (nonblobDiagnostic CompilerHistoryOrigin (Just oid)) nonblobs
-                  | (oid, (_, nonblobs)) <- Map.toAscList trees
-                  , oid /= targetOid
-                ]
-            coverageDiagnostics =
+        historyDiagnostics <- treeResult
+        let coverageDiagnostics =
               [ diagnostic
                   CompilerDiagnosticWarning
                   CompilerHistoryOrigin
@@ -259,29 +248,70 @@ observeHistory raw paths targetEntries = do
                   "reachable history is shallow; append-only coverage is incomplete"
                 | shallow
               ]
-        Right (not shallow, edgeDiagnostics <> nonblobDiagnostics <> coverageDiagnostics)
+        Right (not shallow, coverageDiagnostics <> historyDiagnostics)
 
-observeCommitTrees :: ResolvedRepositoryRevision -> ManagedPaths -> GitOid -> [ManagedSnapshotEntry] -> [RepositoryTreeObservation] -> [GitCommitNode] -> IO (Either RepositorySnapshotError (Map GitOid ([ManagedSnapshotEntry], [RepositoryTreeObservation])))
-observeCommitTrees revision paths targetOid targetEntries targetNonblobs = go Map.empty
+-- | Walk the reachable commit list in rev-list --topo-order --reverse order
+-- (parents always precede children).  Each commit's tree is inserted just
+-- before the commit itself is validated, and it is evicted as soon as no
+-- remaining commit references it as a parent, so retained tree data scales
+-- with the fan-in window rather than the whole reachable history.  The
+-- accumulated diagnostics later pass through canonicalDiagnostics, whose
+-- key-ordered output makes the final result independent of this traversal
+-- order.
+observeCommitTrees :: ResolvedRepositoryRevision -> ManagedPaths -> GitOid -> Set RepoPath -> [ManagedSnapshotEntry] -> [GitCommitNode] -> IO (Either RepositorySnapshotError [CompilerDiagnostic])
+observeCommitTrees revision paths targetOid targetPaths targetEntries nodes =
+  go Map.empty remainingChildren [] nodes
   where
-    go trees [] = pure (Right trees)
-    go trees (node : remaining)
-      | gitCommitNodeOid node == targetOid = go (Map.insert targetOid (targetEntries, targetNonblobs) trees) remaining
+    -- Remaining-children refcount per parent oid over the whole node list:
+    -- how many reachable commits still reference this parent's tree.
+    remainingChildren :: Map GitOid Int
+    remainingChildren =
+      Map.fromListWith (+)
+        [ (parentOid, 1)
+          | node <- nodes,
+            parentOid <- gitCommitNodeParents node
+        ]
+    go _ _ diagnostics [] = pure (Right diagnostics)
+    go trees refcounts diagnostics (node : remaining)
+      | gitCommitNodeOid node == targetOid = do
+          let trees' = Map.insert targetOid targetEntries trees
+          retireNode trees' refcounts diagnostics node [] remaining
       | otherwise = do
           observed <- observeManagedTreeAt revision (gitCommitNodeOid node) paths
           case observed of
             Left problem -> pure (Left problem)
-            Right observations ->
+            Right observations -> do
               let (entries, nonblobs) = partitionObservations observations
-               in go (Map.insert (gitCommitNodeOid node) (entries, nonblobs) trees) remaining
+              let trees' = Map.insert (gitCommitNodeOid node) entries trees
+              retireNode trees' refcounts diagnostics node nonblobs remaining
+    -- Validate this node against the live tree map (its own tree is already
+    -- inserted), accumulate its diagnostics, then decrement the remaining
+    -- refcounts of its parents and evict any parent whose count reached zero.
+    retireNode trees refcounts diagnostics node nonblobs remaining =
+      go trees' refcounts' (diagnostics <> nodeDiagnostics) remaining
+      where
+        nodeOid = gitCommitNodeOid node
+        nodeDiagnostics =
+          edgeIssues targetPaths trees node
+            <> map (nonblobDiagnostic CompilerHistoryOrigin (Just nodeOid)) nonblobs
+        (refcounts', trees') =
+          foldr'
+            ( \parentOid (counts, current) ->
+                case Map.lookup parentOid counts of
+                  Nothing -> (counts, current)
+                  Just 1 -> (Map.delete parentOid counts, Map.delete parentOid current)
+                  Just count -> (Map.insert parentOid (count - 1) counts, current)
+            )
+            (refcounts, trees)
+            (gitCommitNodeParents node)
 
-edgeIssues :: Set RepoPath -> Map GitOid ([ManagedSnapshotEntry], [RepositoryTreeObservation]) -> GitCommitNode -> [CompilerDiagnostic]
+edgeIssues :: Set RepoPath -> Map GitOid [ManagedSnapshotEntry] -> GitCommitNode -> [CompilerDiagnostic]
 edgeIssues targetPaths trees child =
   concatMap validateParent (gitCommitNodeParents child)
   where
     validateParent parentOid =
       case (Map.lookup parentOid trees, Map.lookup (gitCommitNodeOid child) trees) of
-        (Just (parentEntries, _), Just (childEntries, _)) ->
+        (Just parentEntries, Just childEntries) ->
           map
             (integrityDiagnostic CompilerHistoryOrigin (Just (gitCommitNodeOid child)) . remapDeletion targetPaths)
             (validateAppendOnlyDelta parentEntries childEntries)
