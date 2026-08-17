@@ -75,7 +75,7 @@ import Adrai.Provenance
     provenanceTimestampMs,
     provenanceToolVersion,
     provenanceUpstreamHint,
-    sha256Digest,
+    sha256DigestFrames,
   )
 import Adrai.Repository
   ( RepositorySnapshotError,
@@ -192,18 +192,18 @@ coldCompileRepository connection revision = do
 
 coldMaterializationFingerprint :: AnalyzedRepositorySnapshot -> Maybe SearchMaterialization -> Digest
 coldMaterializationFingerprint analyzed materialization =
-  sha256Digest
-    ( BS.concat
-        ( "adrai-cold-materialization/1\NUL"
-            : framedText "adrai-cache/1"
-            : framedText materializationImplementationFingerprint
-            : framedBytes (digestBytes (analyzedSourceFingerprint analyzed))
-            : map (framedText . diagnosticFingerprint) (analyzedDiagnostics analyzed)
-              <> map (framedText . conflictFingerprint) (analyzedConflicts analyzed)
-              <> map (framedText . operationDocumentFingerprint) (sortOn operationDocumentKey (analyzedDocuments analyzed))
-              <> map (framedText . reducedFingerprint) (sortOn reducedAdrId (graphReductionAdrs (analyzedReduction analyzed)))
-              <> maybe [] searchFingerprint materialization
-        )
+  -- Incremental SHA-256 over the same framed sequence as before (no
+  -- corpus-sized BS.concat transient): identical persisted fingerprint bytes.
+  sha256DigestFrames
+    ( "adrai-cold-materialization/1\NUL"
+        : framedText "adrai-cache/1"
+        : framedText materializationImplementationFingerprint
+        : framedBytes (digestBytes (analyzedSourceFingerprint analyzed))
+        : map (framedText . diagnosticFingerprint) (analyzedDiagnostics analyzed)
+          <> map (framedText . conflictFingerprint) (analyzedConflicts analyzed)
+          <> map (framedText . operationDocumentFingerprint) (sortOn operationDocumentKey (analyzedDocuments analyzed))
+          <> map (framedText . reducedFingerprint) (sortOn reducedAdrId (graphReductionAdrs (analyzedReduction analyzed)))
+          <> maybe [] searchFingerprint materialization
     )
 
 diagnosticFingerprint :: CompilerDiagnostic -> Text

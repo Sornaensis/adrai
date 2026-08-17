@@ -39,6 +39,7 @@ module Adrai.Provenance
     encodeBase64Url,
     decodeBase64Url,
     sha256Digest,
+    sha256DigestFrames,
     normalizeLineEndings,
     normalizeSemantic,
     semanticDigest,
@@ -76,12 +77,14 @@ import Adrai.Types
     recordIdText,
   )
 import qualified Crypto.Hash as Crypto
+import Data.ByteArray (convert)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Bits ((.&.), (.|.), shiftL, shiftR)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BL
 import Data.Char (digitToInt, isAsciiLower, isDigit, isSpace, ord)
 import Data.List (sort, sortOn)
 import qualified Data.Set as Set
@@ -362,13 +365,27 @@ decodeBase64Url input = BS.pack <$> decodeWords (T.unpack input)
         (T.findIndex (== character) base64UrlAlphabet)
 
 sha256Digest :: ByteString -> Digest
-sha256Digest bytes =
-  case hexToBytes (T.pack (show (Crypto.hash bytes :: Crypto.Digest Crypto.SHA256))) of
+sha256Digest bytes = digestFromHash (Crypto.hash bytes :: Crypto.Digest Crypto.SHA256)
+
+-- | SHA-256 of a sequence of frames without building one concatenated
+-- ByteString.
+--
+-- Produces exactly the same digest as @sha256Digest (BS.concat frames)@ while
+-- keeping transient memory to a single frame (a lazy chain of chunks rather
+-- than a corpus-sized strict ByteString), so persisted fingerprints fed from
+-- an unchanged frame sequence stay byte-stable.
+sha256DigestFrames :: [ByteString] -> Digest
+sha256DigestFrames frames =
+  digestFromHash
+    ( Crypto.hashlazy (BL.concat (map BL.fromStrict frames))
+        :: Crypto.Digest Crypto.SHA256
+    )
+
+digestFromHash :: Crypto.Digest Crypto.SHA256 -> Digest
+digestFromHash digest =
+  case mkDigest (convert digest) of
+    Right value -> value
     Left _ -> error "crypton returned a non-SHA-256 digest"
-    Right digestBytesValue ->
-      case mkDigest digestBytesValue of
-        Right digest -> digest
-        Left _ -> error "crypton returned a non-SHA-256 digest"
 
 hexToBytes :: Text -> Either String ByteString
 hexToBytes value

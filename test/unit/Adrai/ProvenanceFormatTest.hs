@@ -67,7 +67,15 @@ digestTests =
         renderDigest (sha256Digest (TextEncoding.encodeUtf8 semanticDecision))
           @?= goldenSemanticDigest
         renderDigest (sha256Digest expectedSealedDecision)
-          @?= "sha256:SPU81dXKlP3NUGt2a_qjv01vINGcvnssW9937wAnyuw"
+          @?= "sha256:SPU81dXKlP3NUGt2a_qjv01vINGcvnssW9937wAnyuw",
+      testCase "incremental frame digest equals the concatenated reference digest" $ do
+        -- sha256DigestFrames must feed SHA-256 the exact same framed byte
+        -- sequence as sha256Digest (BS.concat frames), so persisted
+        -- fingerprints stay byte-stable when callers drop BS.concat.
+        let frames = [BS.pack [0 .. 255], BS.replicate 300 0x7f, "adrai-frame/1\NUL", BS.empty]
+        sha256DigestFrames frames @?= sha256Digest (BS.concat frames)
+        renderDigest (sha256DigestFrames [])
+          @?= "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
     ]
   where
     digestText = renderDigest . sha256Digest . TextEncoding.encodeUtf8

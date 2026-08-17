@@ -653,7 +653,9 @@ allSame [] = True
 allSame (firstValue : remaining) = all (== firstValue) remaining
 
 sourceFingerprint :: RawRepositorySnapshotObservation -> Digest
-sourceFingerprint raw = sha256Digest (BS.concat ("adrai-source/1\NUL" : configFields <> entryFields))
+-- Incremental SHA-256 over the same framed sequence as before (no corpus-sized
+-- BS.concat transient over full blob bytes): identical persisted fingerprint.
+sourceFingerprint raw = sha256DigestFrames ("adrai-source/1\NUL" : configFields <> entryFields)
   where
     config = rawRepositorySnapshotConfig raw
     configFields =
