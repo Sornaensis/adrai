@@ -465,14 +465,14 @@
                      "pythonMethod":  "test_symlinked_managed_parent_cannot_escape_repository",
                      "behaviorContract":  "A symlinked managed parent cannot redirect ADRAI writes outside the repository boundary.",
                      "haskellTestName":  "symlinked managed parent cannot escape repository",
-                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestPath":  "test/integration/Adrai/EnvironmentTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
-                     "state":  "partial",
+                     "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"symlinked managed parent cannot escape repository\"",
-                                      "fixture":  "P4-01 GitBatchTest always asserts regular/non-file read containment and, when the platform permits test link creation, in-root link acceptance plus outside/dangling link rejection; the portable ManagedPath suite independently asserts write-side redirection rejection. Mutation E2E behavior and cross-platform reparse coverage remain unimplemented; Python was read statically and not executed.",
-                                      "result":  "P4-01 GitBatchTest always asserts regular/non-file read containment and, when the platform permits test link creation, in-root link acceptance plus outside/dangling link rejection; the portable ManagedPath suite independently asserts write-side redirection rejection. Mutation E2E behavior and cross-platform reparse coverage remain unimplemented; Python was read statically and not executed."
+                                      "command":  "D:\\Projects\\adrai\\.stack-work\\dist\\1a191874\\build\\adrai-test\\adrai-test.exe -p /symlinked managed parent cannot escape repository/ -j 1",
+                                      "fixture":  "EnvironmentTest creates a test-owned native Windows junction at architecture/adrai pointing to an outside temporary directory, then invokes the installed absolute ADRAI_EXE with public create --json. It requires ExitFailure 2, empty stdout, and the typed Stage5ValidateGenerated/ManagedPathRedirected stderr channel; snapshots symbolic HEAD, HEAD/tree, raw index bytes, staged entries/diff, status, refs, reflogs, committed managed paths, managed-parent entries, cache bytes, and outside bytes unchanged. It removes only the junction, then proves a control installed-executable create returns truthful indexed JSON while preserving the unrelated staged binary caller entry and outside bytes.",
+                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE=D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe; focused symlinked managed parent cannot escape repository PASS 1/1 in 5.62s."
                                   }
                  },
                  {

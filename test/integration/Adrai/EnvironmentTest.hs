@@ -10,9 +10,10 @@ module Adrai.EnvironmentTest (tests) where
 
 import Adrai.Integration.CLI
 import Adrai.Cli (CompileResult (..))
-import Adrai.Git (discoverRepository, repositoryCommonDir, systemGit)
+import Adrai.Git (discoverRepository, repositoryCommonDir, repositoryGitDir, systemGit)
 import Adrai.Provenance.Git.Lock (GitLockError (LockHeld), gitLockStatus, withGitLock)
 import Control.Applicative ((<|>))
+import Control.Exception (finally)
 import Control.Monad (forM, forM_, void)
 import System.Exit (ExitCode (..))
 import qualified Data.Aeson
@@ -37,12 +38,15 @@ import System.Directory
     doesDirectoryExist,
     doesFileExist,
     listDirectory,
+    pathIsSymbolicLink,
+    removeDirectory,
     removeDirectoryRecursive,
   )
 import System.Environment (lookupEnv)
 import System.FilePath (isAbsolute, makeRelative, takeDirectory, (</>))
+import System.Info (os)
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process.Typed (proc, readProcess)
+import System.Process.Typed (proc, readProcess, runProcess, shell)
 import System.Win32 (getCurrentProcessId)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
@@ -1216,7 +1220,156 @@ testSparseCheckoutAdrs =
         gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= "")
 
 -- =====================================================================
--- Test 9: Unicode content round-trips through git/sqlite/fts/vector
+-- Test 9: A junction beneath a managed root cannot escape the repository
+-- =====================================================================
+
+testSymlinkedManagedParentCannotEscapeRepository :: TestTree
+testSymlinkedManagedParentCannotEscapeRepository =
+  testCase
+    "symlinked managed parent cannot escape repository"
+    $ withSystemTempDirectory "adrai managed junction containment" $ \tmpDir -> do
+        repo <- createTestRepo tmpDir
+        createAdraiInit repo
+        repository <-
+          discoverRepository systemGit repo >>= \case
+            Left problem -> assertFailure ("could not discover containment fixture repository: " <> show problem) >> fail "unreachable"
+            Right discovered -> pure discovered
+        let outside = tmpDir </> "outside"
+            managedParent = repo </> "architecture" </> "adrai"
+            architectureParent = takeDirectory managedParent
+            callerPath = repo </> "caller-index.bin"
+            callerBytes = BS.pack [0, 255, 13, 10, 128, 64, 9, 7, 3]
+            createArguments =
+              [ "create",
+                "--title", "Junction containment decision",
+                "--summary", "Managed records must never escape the repository root.",
+                "--body", "## Decision\nReject every reparse-point managed parent before mutation.\n",
+                "--actor", "llm:planner",
+                "--model", "demo-model",
+                "--domain", "testing.containment",
+                "--applies-to", "src/**",
+                "--json"
+              ]
+        BS.writeFile callerPath callerBytes
+        git repo ["add", "--", "caller-index.bin"]
+        callerStageBefore <- gitStdout repo ["ls-files", "--stage", "--", "caller-index.bin"]
+        callerCachedDiffBefore <- gitStdout repo ["diff", "--cached", "--raw", "-z"]
+        createDirectoryIfMissing True architectureParent
+        createDirectoryIfMissing True outside
+        createManagedParentJunction outside managedParent
+        let removeFixtureJunction = removeManagedParentJunction managedParent
+        (do
+            before <- observableState repository repo architectureParent managedParent outside
+            (exitCode, stdout, stderr) <- realSpawnAdrai repo createArguments
+            exitCode @?= ExitFailure 2
+            stdout @?= ""
+            let stderrText = decodeUtf8 (LBS.toStrict stderr)
+                stagePrefix = "adrai: Stage5ValidateGenerated \"managed destination rejected for architecture/adrai/"
+                escapedManagedParent = T.replace "\\" "\\\\\\\\" (pack managedParent)
+            assertBool "junction rejection uses the Stage5 user-failure channel" (stagePrefix `T.isPrefixOf` stderrText)
+            assertBool "junction rejection retains the ManagedPathRedirected constructor" ("ManagedPathRedirected " `T.isInfixOf` stderrText)
+            assertBool "junction rejection names the redirected managed parent" (escapedManagedParent `T.isInfixOf` stderrText)
+            assertBool "junction rejection has exactly the CLI failure newline framing" ("\n" `T.isSuffixOf` stderrText)
+            afterRejected <- observableState repository repo architectureParent managedParent outside
+            afterRejected @?= before
+            sort <$> listDirectory outside >>= (@?= [])
+            doesDirectoryExist managedParent >>= (@?= True)
+
+            -- Remove only the fixture's junction, never its target; the exact
+            -- same installed executable must then publish normally.
+            removeFixtureJunction
+            doesDirectoryExist managedParent >>= (@?= False)
+            control <-
+              realCreateAdr
+                repo
+                "Control containment decision"
+                "A regular managed parent permits the same public mutation."
+                "## Decision\nPublish only after containment succeeds.\n"
+                ["testing.containment"]
+                ["src/**"]
+            controlHead <- headCommit repo
+            extractCommit control @?= Just controlHead
+            controlObject <-
+              case _Object control of
+                Just objectValue -> pure objectValue
+                Nothing -> assertFailure "control create result is not a JSON object" >> fail "unreachable"
+            (controlObject .: "indexed" :: Maybe Bool) @?= Just True
+            (controlObject .: "index_warnings" :: Maybe Integer) @?= Just 0
+            (controlObject .: "index_revision" :: Maybe Text) @?= Just controlHead
+            database <-
+              case controlObject .: "database" :: Maybe FilePath of
+                Just value -> canonicalizePath value
+                Nothing -> assertFailure "control create JSON omits database" >> fail "unreachable"
+            expectedDatabase <- canonicalizePath (repo </> ".adrai" </> "index.sqlite")
+            database @?= expectedDatabase
+            getMeta database "resolved_oid" >>= (@?= Just (unpack controlHead))
+            created <-
+              case extractCreated control of
+                Just paths | not (null paths) -> pure paths
+                _ -> assertFailure "control create JSON omits generated managed paths" >> fail "unreachable"
+            forM_ created $ \path ->
+              gitSuccess repo ["cat-file", "-e", "HEAD:" <> unpack path]
+            callerStageAfter <- gitStdout repo ["ls-files", "--stage", "--", "caller-index.bin"]
+            callerCachedDiffAfter <- gitStdout repo ["diff", "--cached", "--raw", "-z"]
+            BS.readFile callerPath >>= (@?= callerBytes)
+            callerStageAfter @?= callerStageBefore
+            callerCachedDiffAfter @?= callerCachedDiffBefore
+            sort <$> listDirectory outside >>= (@?= [])
+          ) `finally` removeFixtureJunction
+  where
+    observableState repository repo architectureParent managedParent outside = do
+      symbolicHead <- gitStdout repo ["symbolic-ref", "-q", "HEAD"]
+      headOid <- gitStdout repo ["rev-parse", "HEAD"]
+      headTree <- gitStdout repo ["rev-parse", "HEAD^{tree}"]
+      rawIndex <- BS.readFile (repositoryGitDir repository </> "index")
+      stagedIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
+      stagedDiff <- gitStdout repo ["diff", "--cached", "--raw", "-z"]
+      status <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
+      refs <- gitStdout repo ["for-each-ref", "--format=%(refname)%00%(objectname)%00", "refs/heads", "refs/remotes"]
+      reflogs <- gitStdout repo ["reflog", "show", "--all", "--format=%gD%x00%H%x00%gs%x00"]
+      committedManaged <- gitStdout repo ["ls-tree", "-r", "-z", "HEAD", "--", "architecture/adrai"]
+      managedParentEntries <- sort <$> listDirectory architectureParent
+      cache <- snapshotDirectory (repo </> ".adrai")
+      outsideBytes <- snapshotDirectory outside
+      managedParentExists <- doesDirectoryExist managedParent
+      pure (symbolicHead, headOid, headTree, rawIndex, stagedIndex, stagedDiff, status, refs, reflogs, committedManaged, managedParentEntries, cache, outsideBytes, managedParentExists)
+
+    snapshotDirectory root = do
+      exists <- doesDirectoryExist root
+      if not exists
+        then pure []
+        else go root
+      where
+        go directory = do
+          names <- sort <$> listDirectory directory
+          fmap concat $ forM names $ \name -> do
+            let path = directory </> name
+            isDirectory <- doesDirectoryExist path
+            if isDirectory
+              then go path
+              else do
+                isFile <- doesFileExist path
+                if isFile
+                  then do
+                    bytes <- BS.readFile path
+                    pure [(makeRelative root path, bytes)]
+                  else pure []
+
+    createManagedParentJunction target link
+      | os == "mingw32" = do
+          let command = "mklink /J \"" <> link <> "\" \"" <> target <> "\""
+          result <- runProcess (shell command)
+          case result of
+            ExitSuccess -> pure ()
+            ExitFailure code -> assertFailure ("failed to create Windows junction, exit " <> show code)
+      | otherwise = assertFailure "this Windows-only junction containment proof requires mingw32"
+
+    removeManagedParentJunction link = do
+      isLink <- pathIsSymbolicLink link
+      if isLink then removeDirectory link else pure ()
+
+-- =====================================================================
+-- Test 10: Unicode content round-trips through git/sqlite/fts/vector
 -- =====================================================================
 
 testUnicodeRoundTrip :: TestTree
@@ -1433,6 +1586,7 @@ tests =
       testLinkedWorktreeCommitsOnlyItsBranch,
       testWorktreeBranchMergeBack,
       testSparseCheckoutAdrs,
+      testSymlinkedManagedParentCannotEscapeRepository,
       testUnicodeRoundTrip,
       testUpstreamHintSurvives,
       testForceResetHidesAdr
