@@ -425,9 +425,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                       "command":  "D:\\Projects\\adrai\\.stack-work\\dist\\1a191874\\build\\adrai-test\\adrai-test.exe -p /linked_worktree_commits_only_its_branch_and_uses_common_lock/ -j 1",
-                                       "fixture":  "EnvironmentTest creates a real initialized main repository and linked worktree, holds the production common-directory lock in the parent, invokes D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe as the child create command, asserts exact ExitFailure 2/empty stdout/typed Stage2AcquireLock stderr and full caller Git/cache preservation, then releases and proves the linked branch alone advances.",
-                                       "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE=D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe; focused linked_worktree_commits_only_its_branch_and_uses_common_lock PASS 1/1 in 11.64s."
+                                       "command":  "stack test adrai:adrai-test --test-arguments='-p /linked_worktree_commits_only_its_branch_and_uses_common_lock/ -j 1'",
+                                       "fixture":  "EnvironmentTest creates a real initialized main repository and linked worktree, holds the production common-directory lock in the parent, invokes adrai.exe as the child create command, asserts exact ExitFailure 2/empty stdout/typed Stage2AcquireLock stderr and full caller Git/cache preservation, then releases and proves the linked branch alone advances.",
+                                       "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /linked_worktree_commits_only_its_branch_and_uses_common_lock/ -j1 ALL 1 PASS"
                                      }
                  },
                  {
@@ -455,9 +455,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "D:\\Projects\\adrai\\.stack-work\\dist\\1a191874\\build\\adrai-test\\adrai-test.exe -p /sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns/ -j 1",
-                                      "fixture":  "EnvironmentTest creates a real cone sparse checkout containing only src, proves exact sparse configuration, source bytes, full refs, full index, tree, and clean status; invokes D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe for current create; requires HEAD's exact changed-path set to equal the generated architecture/adrai paths; reapplies the unchanged cone and proves every generated path is absent from the worktree but retained in HEAD and the full index. It then removes only the test-owned ignored .adrai cache after truthful create indexing to avoid the separate Windows warm ReplaceFileW contract before cold-compiling and positional-FTS-searching the same HEAD, with every read-side Git snapshot unchanged.",
-                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE=D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe; focused sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns PASS 1/1 in 10.18s."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns/ -j 1'",
+                                      "fixture":  "EnvironmentTest creates a real cone sparse checkout containing only src, proves exact sparse configuration, source bytes, full refs, full index, tree, and clean status; invokes adrai.exe for current create; requires HEAD's exact changed-path set to equal the generated architecture/adrai paths; reapplies the unchanged cone and proves every generated path is absent from the worktree but retained in HEAD and the full index. It then removes only the test-owned ignored .adrai cache after truthful create indexing to avoid the separate Windows warm ReplaceFileW contract before cold-compiling and positional-FTS-searching the same HEAD, with every read-side Git snapshot unchanged.",
+                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns/ -j1 ALL 1 PASS"
                                   }
                  },
                  {
@@ -470,9 +470,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "D:\\Projects\\adrai\\.stack-work\\dist\\1a191874\\build\\adrai-test\\adrai-test.exe -p /symlinked managed parent cannot escape repository/ -j 1",
-                                      "fixture":  "EnvironmentTest creates a test-owned native Windows junction at architecture/adrai pointing to an outside temporary directory, then invokes the installed absolute ADRAI_EXE with public create --json. It requires ExitFailure 2, empty stdout, and the typed Stage5ValidateGenerated/ManagedPathRedirected stderr channel; snapshots symbolic HEAD, HEAD/tree, raw index bytes, staged entries/diff, status, refs, reflogs, committed managed paths, managed-parent entries, cache bytes, and outside bytes unchanged. It removes only the junction, then proves a control installed-executable create returns truthful indexed JSON while preserving the unrelated staged binary caller entry and outside bytes.",
-                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE=D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe; focused symlinked managed parent cannot escape repository PASS 1/1 in 5.62s."
+                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /symlinked managed parent cannot escape repository/ -j 1'",
+                                      "fixture":  "EnvironmentTest creates a test-owned native Windows junction at architecture/adrai pointing to an outside temporary directory, then invokes adrai.exe with public create --json. It requires ExitFailure 2, empty stdout, and the typed Stage5ValidateGenerated/ManagedPathRedirected stderr channel; snapshots symbolic HEAD, HEAD/tree, raw index bytes, staged entries/diff, status, refs, reflogs, committed managed paths, managed-parent entries, cache bytes, and outside bytes unchanged. It removes only the junction, then proves a control installed-executable create returns truthful indexed JSON while preserving the unrelated staged binary caller entry and outside bytes.",
+                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /symlinked managed parent cannot escape repository/ -j1 ALL 1 PASS"
                                   }
                  },
                  {
