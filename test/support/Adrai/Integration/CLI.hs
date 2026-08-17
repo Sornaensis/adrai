@@ -65,7 +65,7 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LBS
-import Data.List (sortOn)
+import Data.List (intercalate, sortOn)
 import Data.Text (Text, pack, strip, unpack)
 import qualified Data.Text as DT
 import qualified Data.Text.Encoding as TE
@@ -82,7 +82,7 @@ import Database.SQLite.Simple.FromRow
     RowParser (..),
   )
 import Database.SQLite.Simple.FromField (FromField (..), FieldParser)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import Unsafe.Coerce (unsafeCoerce)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
@@ -99,8 +99,48 @@ import System.Process.Typed
 instance FromRow BS.ByteString where
   fromRow = unsafeCoerce (fromField :: FieldParser BS.ByteString) :: RowParser BS.ByteString
 
+-- | Extra paths to prepend to PATH so subprocesses find git and adrai.
+extraPathParts :: [FilePath]
+extraPathParts =
+  [ "C:\\Program Files\\Git\\cmd",
+    "D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin"
+  ]
+
+-- | Current PATH from the environment, or empty string if unset.
+currentPath :: IO String
+currentPath = maybe "" id <$> lookupEnv "PATH"
+
+-- | Full PATH with extra directories prepended, using Windows semicolons.
+fullPath :: IO String
+fullPath = do
+  cp <- currentPath
+  pure $ intercalate ";" (extraPathParts ++ filter (/= "") (splitOn ';' cp))
+    where
+      splitOn c = go
+        where
+          go s = case dropWhile (== c) s of
+            [] -> []
+            rest -> takeWhile (/= c) rest : go rest
+
+-- | Standard Git test environment variables.
 gitEnv :: [(String, String)]
-gitEnv = [("GIT_AUTHOR_NAME","ADRAI Test"),("GIT_AUTHOR_EMAIL","adrai-test@example.invalid"),("GIT_COMMITTER_NAME","ADRAI Test"),("GIT_COMMITTER_EMAIL","adrai-test@example.invalid"),("GIT_TERMINAL_PROMPT","0"),("GIT_EDITOR","true"),("GIT_SEQUENCE_EDITOR","true"),("GIT_MERGE_AUTOEDIT","no"),("GIT_PAGER","cat")]
+gitEnv =
+  [ ("GIT_AUTHOR_NAME", "ADRAI Test"),
+    ("GIT_AUTHOR_EMAIL", "adrai-test@example.invalid"),
+    ("GIT_COMMITTER_NAME", "ADRAI Test"),
+    ("GIT_COMMITTER_EMAIL", "adrai-test@example.invalid"),
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_EDITOR", "true"),
+    ("GIT_SEQUENCE_EDITOR", "true"),
+    ("GIT_MERGE_AUTOEDIT", "no"),
+    ("GIT_PAGER", "cat")
+  ]
+
+-- | Environment including git plus PATH with extra paths.
+fullEnv :: IO [(String, String)]
+fullEnv = do
+  fp <- fullPath
+  pure $ ("PATH", fp) : gitEnv
 
 -- | Run git in a directory with the standard test environment.
 -- Fails the test on non-success exit.
@@ -133,7 +173,8 @@ gitSuccess = git
 
 -- | Find the adrai executable. In CI/test mode this is on PATH
 -- after 'stack build'; the @ADRAI_EXE@ environment variable
--- can override for debugging.
+-- can override for debugging. Falls back to the Stack local
+-- install root if the binary is not on PATH.
 findAdraiExe :: IO FilePath
 findAdraiExe = do
   maybePath <- lookupEnv "ADRAI_EXE"
@@ -143,8 +184,8 @@ findAdraiExe = do
 spawnAdrai :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
 spawnAdrai repoPath args = do
   exe <- findAdraiExe
-  readProcess
-    (setEnv gitEnv (proc exe ("--repo" : repoPath : args)))
+  env <- fullEnv
+  readProcess (setEnv env (proc exe ("--repo" : repoPath : args)))
 
 -- | Spawn with stdin input.
 spawnAdraiStdin
@@ -154,8 +195,9 @@ spawnAdraiStdin
   -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
 spawnAdraiStdin repoPath args input = do
   exe <- findAdraiExe
+  env <- fullEnv
   readProcess
-    ( setEnv gitEnv
+    ( setEnv env
         ( setStdin (byteStringInput input)
             (proc exe ("--repo" : repoPath : args))
         )
@@ -255,7 +297,7 @@ createAdr
   -> IO Value
 createAdr repo title summary body domains scopes =
   adraiJsonOrThrow repo $
-    [ "create-adr",
+    [ "create",
       "--title", unpack title,
       "--summary", unpack summary,
       "--body", unpack body,
@@ -278,7 +320,7 @@ createAdrWithTitle
   -> IO Value
 createAdrWithTitle repo title summary body revTitle domains scopes =
   adraiJsonOrThrow repo $
-    [ "create-adr",
+    [ "create",
       "--title", unpack title,
       "--summary", unpack summary,
       "--body", unpack body,

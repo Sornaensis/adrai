@@ -265,8 +265,7 @@ testSearchIncludeObsoleteFlag =
 
         -- Create an ADR and make it obsolete
         createResult <- adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Obsolete Search ADR",
+          [ "create",
             "--summary", "Obsolete",
             "--body", "## Decision\nThis will be obsolete.\n",
             "--domain", "compiler",

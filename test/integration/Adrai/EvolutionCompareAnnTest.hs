@@ -94,8 +94,7 @@ testCompareShowsAddedChangedObsolete =
         -- Get ADR 1 ID from create
         adr1Result <-
           adraiJsonOrThrow repo
-            [ "create-adr",
-              "--title", "ADR 1 Changed",
+            [ "create",
               "--summary", "Changed",
               "--body", "Body 1 changed.",
               "--domain", "compiler",
@@ -113,8 +112,7 @@ testCompareShowsAddedChangedObsolete =
         -- Obsolete one ADR
         adr2Result <-
           adraiJsonOrThrow repo
-            [ "create-adr",
-              "--title", "ADR 2 Obsolete",
+            [ "create",
               "--summary", "Obsolete",
               "--body", "Body 2 obsolete.",
               "--domain", "runtime",
@@ -319,8 +317,7 @@ testEvolutionFullLifecycle =
         -- Create initial ADR
         createResult <-
           adraiJsonOrThrow repo
-            [ "create-adr",
-              "--title", "Lifecycle ADR",
+            [ "create",
               "--summary", "Lifecycle",
               "--body", "## Decision\nInitial body.\n",
               "--domain", "compiler",
@@ -383,8 +380,7 @@ testEvolutionExplodedView =
         -- Create ADR with multiple amendments
         createResult <-
           adraiJsonOrThrow repo
-            [ "create-adr",
-              "--title", "Evolution ADR",
+            [ "create",
               "--summary", "Evolution",
               "--body", "## Decision\nFirst body.\n",
               "--domain", "compiler",
@@ -447,8 +443,7 @@ testEvolutionConflictResolution =
         -- Create ADR
         createResult <-
           adraiJsonOrThrow repo
-            [ "create-adr",
-              "--title", "Conflict ADR",
+            [ "create",
               "--summary", "Conflict",
               "--body", "## Decision\nOriginal body.\n",
               "--domain", "compiler",

@@ -92,13 +92,20 @@ import Control.Exception (bracket)
 import qualified Data.ByteString.Char8 as BS8
 import Database.SQLite.Simple (close, execute_, open)
 import Hedgehog (property, success)
-import System.Environment (getArgs, getProgName, lookupEnv)
+import System.Environment
+  ( getArgs,
+    getProgName,
+    lookupEnv,
+    setEnv,
+  )
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
 import System.FilePath (takeFileName)
 import System.IO (appendFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.Hedgehog (testProperty)
 import Test.Tasty.HUnit (testCase)
+import Data.List (intercalate)
+import Data.Maybe (catMaybes)
 
 main :: IO ()
 main = do
@@ -111,7 +118,24 @@ main = do
     _ -> normalMain arguments
 
 normalMain :: [String] -> IO ()
-normalMain arguments =
+normalMain arguments = do
+  -- Ensure git and adrai are discoverable on PATH for subprocesses.
+  -- Stack test subprocesses may have a minimal PATH.
+  let extraPaths =
+        [ "C:\\Program Files\\Git\\cmd",
+          "D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin"
+        ]
+  currentPath <- lookupEnv "PATH"
+  let newPath = intercalate ";" (catMaybes [currentPath] ++ extraPaths)
+  setEnv "PATH" newPath
+  -- Provide absolute path to adrai for tests that require ADRAI_EXE.
+  setEnv
+    "ADRAI_EXE"
+    "D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe"
+  normalMain' arguments
+
+normalMain' :: [String] -> IO ()
+normalMain' arguments =
   case arguments of
     ["--write-p3-01-goldens"] -> Adrai.VectorQualityTest.writeP301Goldens
     ["--write-p3-02-goldens"] -> Adrai.RetrievalPlanGoldenTest.writeP302Goldens

@@ -362,8 +362,7 @@ testHistoryOmitsObsoleteByDefault =
 
         -- Get the ADR ID from create result
         createResult <- adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Obsolete ADR",
+          [ "create",
             "--summary", "Obsolete",
             "--body", "## Decision\nThis is obsolete.",
             "--domain", "compiler",
@@ -424,8 +423,7 @@ testHistoryRevealsDivergentAmendments =
 
         -- Create ADR
         createResult <- adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Divergent ADR",
+          [ "create",
             "--summary", "Divergent",
             "--body", "## Decision\nOriginal body.",
             "--domain", "compiler",

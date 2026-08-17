@@ -354,8 +354,7 @@ testUnbornRepository =
 
       -- Now run create-adr (which calls initCommand internally if needed).
       result <- adraiJson repo
-        [ "create-adr",
-          "--title", "Unborn Repo ADR",
+        [ "create",
           "--summary", "First ADR on freshly initialised repo",
           "--body", "## Decision\nFirst decision.\n",
           "--domain", "compiler",
@@ -395,9 +394,7 @@ testUnrelatedStagedEntry =
       git repo ["switch", "-c", "feature"]
       _ <-
         adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Feature ADR",
-            "--summary", "Feature decision",
+          [ "create",
             "--body", "## Decision\nFeature.\n",
             "--domain", "compiler",
             "--applies-to", "src/**",
@@ -423,8 +420,7 @@ testUnrelatedStagedEntry =
       -- Now create a new ADR (which should not disturb the staged file).
       _ <-
         adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "After Staged ADR",
+          [ "create",
             "--summary", "Created after staged file",
             "--body", "## Decision\nSecond.\n",
             "--domain", "compiler",
@@ -470,8 +466,7 @@ testDetachedHead =
       -- Mutation (create-adr) in detached HEAD should still work,
       -- but the branch hint will reflect that.
       result <- adraiJson repo
-        [ "create-adr",
-          "--title", "Detached ADR",
+        [ "create",
           "--summary", "Created in detached HEAD",
           "--body", "## Decision\nDetached.\n",
           "--domain", "compiler",
@@ -515,8 +510,7 @@ testActiveGitOperations =
       git repo ["switch", "-c", "feature"]
       _ <-
         adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Merge Feature ADR",
+          [ "create",
             "--summary", "Feature for merge test",
             "--body", "## Decision\nFeature.\n",
             "--domain", "compiler",
@@ -539,8 +533,7 @@ testActiveGitOperations =
       -- Create ADR after merge.
       _ <-
         adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Post-Merge ADR",
+          [ "create",
             "--summary", "After merge",
             "--body", "## Decision\nPost-merge.\n",
             "--domain", "compiler",
@@ -554,8 +547,7 @@ testActiveGitOperations =
       git repo ["switch", "-c", "cherry-source"]
       _ <-
         adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Cherry Source ADR",
+          [ "create",
             "--summary", "For cherry-pick",
             "--body", "## Decision\nCherry.\n",
             "--domain", "compiler",
@@ -579,8 +571,7 @@ testActiveGitOperations =
       git repo ["switch", "-c", "rebase-source"]
       _ <-
         adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Rebase Source ADR",
+          [ "create",
             "--summary", "For rebase",
             "--body", "## Decision\nRebase.\n",
             "--domain", "compiler",
@@ -626,8 +617,7 @@ testDirtyManagedPath =
       -- The file is now modified but not staged.
       -- Run create-adr.
       result <- adraiJson repo
-        [ "create-adr",
-          "--title", "Dirty ADR",
+        [ "create",
           "--summary", "Dirty managed path",
           "--body", "## Decision\nDirty.\n",
           "--domain", "compiler",
@@ -682,8 +672,7 @@ testCustomManagedPaths =
 
       -- Create an ADR using the custom paths.
       result <- adraiJson repo
-        [ "create-adr",
-          "--title", "Custom Paths ADR",
+        [ "create",
           "--summary", "Uses custom managed paths",
           "--body", "## Decision\nCustom.\n",
           "--domain", "compiler",
@@ -734,8 +723,7 @@ testSpacesUnicodePaths =
 
       -- Create an ADR in a repo with spaces/Unicode in its path.
       result <- adraiJson repo
-        [ "create-adr",
-          "--title", "Unicode Repo ADR",
+        [ "create",
           "--summary", "Repo with Unicode path",
           "--body", "## Decision\nUnicode.\n",
           "--domain", "compiler",
@@ -776,8 +764,7 @@ testSymlinkEscape =
       -- Try to create an ADR in a repo that has a file outside it.
       -- The key invariant is that mutations do not escape the repo root.
       result <- adraiJson repo
-        [ "create-adr",
-          "--title", "Symlink ADR",
+        [ "create",
           "--summary", "Symlink handling",
           "--body", "## Decision\nSymlink.\n",
           "--domain", "compiler",
@@ -822,8 +809,7 @@ testBranchSwitch =
       -- Create an ADR on main.
       _ <-
         adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Main ADR",
+          [ "create",
             "--summary", "On main branch",
             "--body", "## Decision\nMain.\n",
             "--domain", "compiler",
@@ -841,9 +827,7 @@ testBranchSwitch =
       featureBranch <- currentBranch repo
       _ <-
         adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Feature ADR",
-            "--summary", "On feature branch",
+          [ "create",
             "--body", "## Decision\nFeature.\n",
             "--domain", "compiler",
             "--applies-to", "src/**",
@@ -917,8 +901,7 @@ testShallowRepository =
 
       -- Try to create an ADR in the shallow repo.
       result <- adraiJson shallowRepo
-        [ "create-adr",
-          "--title", "Shallow ADR",
+        [ "create",
           "--summary", "In shallow repo",
           "--body", "## Decision\nShallow.\n",
           "--domain", "compiler",
@@ -959,8 +942,7 @@ testAmendAcrossEnvironments =
       -- Create an ADR on main.
       createResult <-
         adraiJsonOrThrow repo
-          [ "create-adr",
-            "--title", "Amendable ADR",
+          [ "create",
             "--summary", "Will be amended",
             "--body", "## Decision\nOriginal.\n",
             "--domain", "compiler",

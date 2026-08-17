@@ -24,7 +24,7 @@ import Data.Text (Text, strip, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Text.Encoding (decodeUtf8)
-import Data.Time.Clock (DiffTime, UTCTime)
+import Data.Time.Clock (DiffTime, UTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Data.Vector qualified as Vector
 import System.Directory
@@ -38,6 +38,7 @@ import System.Directory
   )
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
+import System.IO (Handle, hFlush, hPutStrLn, stdout, stderr)
 import Database.SQLite.Simple
   ( Connection,
     Only (..),
@@ -150,7 +151,7 @@ createJobsAdr repo =
 createReleaseAdr :: FilePath -> IO Data.Aeson.Value
 createReleaseAdr repo =
   adraiJsonOrThrow repo
-    [ "create-adr",
+    [ "create",
       "--title", "Release-only compatibility shim",
       "--summary", "The old release retains its compatibility shim.",
       "--body", "## Decision\nKeep the compatibility shim on the old release line.",
@@ -255,9 +256,13 @@ tests =
 testColdCompileThenExact :: IO ()
 testColdCompileThenExact =
   withSystemTempDirectory "adrai cold exact" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
+    dbg "enter test"
+    repo <- do dbg "before createTestRepo"; createTestRepo tmpDir
+    dbg "after createTestRepo"
     createCacheAdr repo >>= \_ -> pure ()
+    dbg "after createCacheAdr"
     createAdraiInit repo
+    dbg "after createAdraiInit"
     -- Delete all cache files
     let adraiDir = repo </> ".adrai"
         mainDb = adraiDir </> "adrai.sqlite"
@@ -266,7 +271,9 @@ testColdCompileThenExact =
     cacheFiles <- getCacheFiles cacheDir
     mapM_ removeIfExists cacheFiles
     -- Cold compile
+    dbg "before cold compile"
     coldResult <- adraiJsonOrThrow repo ["compile", "--json"]
+    dbg "after cold compile"
     let coldRes = parseCompileResult coldResult
     case coldRes of
       Nothing -> assertFailure "could not parse cold compile result"
@@ -277,7 +284,9 @@ testColdCompileThenExact =
     before <- getFileStat mainDb
 
     -- Exact compile (should reuse cache)
+    dbg "before exact compile"
     exactResult <- adraiJsonOrThrow repo ["compile", "--json"]
+    dbg "after exact compile"
     let exactRes = parseCompileResult exactResult
     case exactRes of
       Nothing -> assertFailure "could not parse exact compile result"
@@ -289,6 +298,7 @@ testColdCompileThenExact =
     after <- getFileStat mainDb
     -- Database should not have changed between cold and exact
     assertBool "DB file changed between cold and exact" (before == after)
+    dbg "TEST PASSED"
 
 -- =====================================================================
 -- Test 2: Exact cache skips document deserialization
@@ -836,6 +846,17 @@ getFileStat path = do
   exists <- doesFileExist path
   size <- if exists then getFileModTime path else pure 0
   pure FileStat {fileStatExists = exists, fileStatSize = size}
+
+dbg :: Text -> IO ()
+dbg msg = do
+  now <- getCurrentTime
+  let secs = utcTimeToPOSIXSeconds now
+  let line = "DBG-EXACT-CACHE t=" <> show secs <> " " <> T.unpack msg
+  appendFile "D:\\Projects\\adrai\\exact_cache_debug.log" (line ++ "\n")
+  hPutStrLn stdout line
+  hFlush stdout
+  hPutStrLn stderr line
+  hFlush stderr
 
 getFileModTime :: FilePath -> IO Integer
 getFileModTime path = do

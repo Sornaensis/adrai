@@ -123,6 +123,7 @@ import Adrai.Service.PostCommitIndex
     PostCommitIndexResult (..),
     compilePostCommitIndex,
   )
+import Adrai.Compiler.CacheSelection (loadCacheMeta)
 import Adrai.Service.Transaction (TransactionError (..))
 import Adrai.Types
   ( Actor,
@@ -164,7 +165,7 @@ import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as ByteString
 import Data.Bifunctor (first)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Scientific as Scientific
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -829,14 +830,19 @@ runProductionCompile config command = do
           case databaseResult of
             Left problem -> pure (Left (CliUserFailure problem))
             Right database -> do
-              indexed <- indexCommitted database repository (resolvedCommitOid revision)
-              case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
-                (True, Just published, Just indexedRevision, Nothing)
-                  | published /= database -> pure (Left (CliUserFailure "compile published an unexpected database path"))
-                  | indexedRevision /= resolvedCommitOid revision -> pure (Left (CliUserFailure "compile published an unexpected revision"))
-                  | otherwise -> loadPublishedCompileResult published indexedRevision
-                (_, _, _, Just problem) -> pure (Left (CliUserFailure ("compile failed: " <> Text.pack (show problem))))
-                _ -> pure (Left (CliUserFailure "compile returned an incomplete result"))
+              let requestedRevision = resolvedCommitOid revision
+              exactHit <- exactCompileCacheHit database requestedRevision
+              if exactHit
+                then loadExactCompileResult database requestedRevision
+                else do
+                  indexed <- indexCommitted database repository requestedRevision
+                  case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
+                    (True, Just published, Just indexedRevision, Nothing)
+                      | published /= database -> pure (Left (CliUserFailure "compile published an unexpected database path"))
+                      | indexedRevision /= requestedRevision -> pure (Left (CliUserFailure "compile published an unexpected revision"))
+                      | otherwise -> loadPublishedCompileResult published indexedRevision
+                    (_, _, _, Just problem) -> pure (Left (CliUserFailure ("compile failed: " <> Text.pack (show problem))))
+                    _ -> pure (Left (CliUserFailure "compile returned an incomplete result"))
 
 runProductionDoctor :: CliConfig -> DoctorCommand -> IO (Either CliFailure DoctorOutput)
 runProductionDoctor config command = do
@@ -952,18 +958,50 @@ doctorOutputFromRows database expectedRevision shallow metadata issueRows confli
 
 loadPublishedCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
 loadPublishedCompileResult database expectedRevision = do
-  captured <- try (bracket (open database) close readRows) :: IO (Either SomeException [(Text, Text)])
-  case captured of
-    Left exception ->
-      case fromException exception of
-        Just cancellation -> throwIO (cancellation :: SomeAsyncException)
-        Nothing -> pure (Left (CliUserFailure ("unable to read compiled database metadata: " <> Text.pack (displayException exception))))
-    Right rows -> pure (first CliUserFailure (compileResultFromMeta database expectedRevision rows))
+  rows <- readCompiledMetaRows database
+  pure (first CliUserFailure (compileResultFromMeta database expectedRevision rows))
+
+-- | Load the compile projection from an exact cache hit, reporting reuse of
+-- every document instead of parsing and leaving the published database file
+-- untouched.
+loadExactCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
+loadExactCompileResult database expectedRevision = do
+  rows <- readCompiledMetaRows database
+  pure (first CliUserFailure (compileResultFromMetaMode CompileCacheExact database expectedRevision rows))
+
+-- | Read the published database's meta table, translating IO problems into a
+-- user-facing failure.
+readCompiledMetaRows :: FilePath -> IO [(Text, Text)]
+readCompiledMetaRows database = do
+  bracket (open database) close readRows
   where
     readRows connection = query_ connection "SELECT key,value FROM meta ORDER BY key"
 
+-- | Whether the published database is already an exact compile of the requested
+-- revision: its resolved OID matches and it carries a full materialization
+-- fingerprint. When true, recompiling would only rewrite identical bytes, so
+-- the compile reports cache reuse and leaves the database file untouched.
+exactCompileCacheHit :: FilePath -> GitOid -> IO Bool
+exactCompileCacheHit database expectedRevision = do
+  meta <- loadCacheMeta database
+  case meta of
+    Nothing -> pure False
+    Just rows ->
+      pure
+        ( Map.lookup "resolved_oid" rows == Just (gitOidText expectedRevision)
+          && isJust (Map.lookup "materialization_fingerprint" rows)
+        )
+
+-- | Whether compile counters describe a fresh full compile or reuse of an exact
+-- cache hit.
+data CompileCacheResultMode = CompileCacheFull | CompileCacheExact
+  deriving (Eq, Show)
+
 compileResultFromMeta :: FilePath -> GitOid -> [(Text, Text)] -> Either Text CompileResult
-compileResultFromMeta database expectedRevision rows = do
+compileResultFromMeta = compileResultFromMetaMode CompileCacheFull
+
+compileResultFromMetaMode :: CompileCacheResultMode -> FilePath -> GitOid -> [(Text, Text)] -> Either Text CompileResult
+compileResultFromMetaMode mode database expectedRevision rows = do
   resolved <- one "resolved_oid"
   if resolved == gitOidText expectedRevision
     then pure ()
@@ -974,6 +1012,11 @@ compileResultFromMeta database expectedRevision rows = do
   operationCount <- count "operation_count"
   searchDocuments <- count "search_document_count"
   cacheKey <- one "materialization_fingerprint"
+  let
+    (cacheMode, documentsParsed, documentsReused, adrsRebuilt, adrsReused) =
+      case mode of
+        CompileCacheFull  -> ("full", managedSources, 0, operationCount, 0)
+        CompileCacheExact -> ("exact", 0, managedSources, 0, operationCount)
   if conflictCount <= issueCount
     then
       Right
@@ -985,13 +1028,13 @@ compileResultFromMeta database expectedRevision rows = do
           , coldCompilerWarningCount = issueCount - conflictCount
           , coldCompilerEmbeddingComputed = 0
           , coldCompilerEmbeddingReused = 0
-          , coldCompilerCacheMode = "full"
-          , coldCompilerDocumentsParsed = managedSources
-          , coldCompilerDocumentsReused = 0
+          , coldCompilerCacheMode = cacheMode
+          , coldCompilerDocumentsParsed = documentsParsed
+          , coldCompilerDocumentsReused = documentsReused
           , coldCompilerHistoryCommitsScanned = 0
-          , coldCompilerIncrementalKind = "full"
-          , coldCompilerAdrsRebuilt = operationCount
-          , coldCompilerAdrsReused = 0
+          , coldCompilerIncrementalKind = cacheMode
+          , coldCompilerAdrsRebuilt = adrsRebuilt
+          , coldCompilerAdrsReused = adrsReused
           , coldCompilerAnnBuckets = searchDocuments
           , coldCompilerCacheKey = cacheKey
           , coldCompilerCacheRetainRevisions = 12
