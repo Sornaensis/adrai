@@ -40,6 +40,10 @@ module Adrai.Provenance
     decodeBase64Url,
     sha256Digest,
     sha256DigestFrames,
+    Sha256FrameState,
+    sha256FrameStateInit,
+    sha256FrameStateFeed,
+    sha256FrameStateFinalize,
     normalizeLineEndings,
     normalizeSemantic,
     semanticDigest,
@@ -380,6 +384,22 @@ sha256DigestFrames frames =
     ( Crypto.hashlazy (BL.concat (map BL.fromStrict frames))
         :: Crypto.Digest Crypto.SHA256
     )
+
+-- | Streaming counterpart of 'sha256DigestFrames': feed frames one at a time
+-- (e.g. as blob bytes stream straight out of cat-file --batch) and finalize
+-- to exactly the digest sha256DigestFrames would produce over the fed frame
+-- sequence, without ever retaining the frame list or concatenating into a
+-- strict ByteString.
+type Sha256FrameState = BL.ByteString
+
+sha256FrameStateInit :: Sha256FrameState
+sha256FrameStateInit = BL.empty
+
+sha256FrameStateFeed :: Sha256FrameState -> ByteString -> Sha256FrameState
+sha256FrameStateFeed state frame = state `BL.append` BL.fromStrict frame
+
+sha256FrameStateFinalize :: Sha256FrameState -> Digest
+sha256FrameStateFinalize state = digestFromHash (Crypto.hashlazy state :: Crypto.Digest Crypto.SHA256)
 
 digestFromHash :: Crypto.Digest Crypto.SHA256 -> Digest
 digestFromHash digest =

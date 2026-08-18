@@ -44,6 +44,7 @@ module Adrai.Git
     GitProcessResult (..),
     batchObjectInfo,
     foldBlobBatch,
+    foldBlobBatchInOrder,
     readBlobBatch,
     decodeGitBlobUtf8,
     readUtf8BlobBatch,
@@ -733,6 +734,22 @@ foldBlobBatch repository objectIds initial step = go initial (canonicalObjectChu
 readBlobBatch :: Repository -> [GitOid] -> IO (Either GitError (Map GitOid GitBlob))
 readBlobBatch repository objectIds =
   foldBlobBatch repository objectIds Map.empty (\values blob -> pure (Map.insert (gitBlobOid blob) blob values))
+
+-- | Stream blob payloads for the given object ids in request order (no
+-- sorting or de-duplication), invoking the step once per blob as it arrives.
+-- The step folds each blob incrementally and may release it before the rest
+-- arrive, so callers can avoid materializing whole-corpus blob maps.
+foldBlobBatchInOrder :: Repository -> [GitOid] -> accumulator -> (accumulator -> GitBlob -> IO accumulator) -> IO (Either GitError accumulator)
+foldBlobBatchInOrder repository objectIds initial step = go initial (chunksOf 256 objectIds)
+  where
+    go accumulator [] = pure (Right accumulator)
+    go accumulator (chunk : remaining) = do
+      chunkResult <-
+        withGitPipes repository "cat-file batch" ["cat-file", "--batch"] $ \stdinHandle stdoutHandle ->
+          streamBlobResponses stdinHandle stdoutHandle chunk accumulator step
+      case chunkResult of
+        Left problem -> pure (Left problem)
+        Right next -> go next remaining
 
 streamBlobResponses :: Handle -> Handle -> [GitOid] -> accumulator -> (accumulator -> GitBlob -> IO accumulator) -> IO (Either GitError accumulator)
 streamBlobResponses stdinHandle stdoutHandle requested accumulated step =

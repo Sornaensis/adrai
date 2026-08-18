@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Adrai.Sqlite
   ( FtsTarget (..),
@@ -488,33 +489,67 @@ insertRepositoryConfig connection analyzed =
     entry = rawRepositoryConfigEntry config
     managedPaths = rawRepositoryConfigManagedPaths config
 
+-- | Write the managed_source rows while streaming blob bytes straight out of
+-- git cat-file --batch: each blob arrives in request order and feeds its row
+-- immediately, so the row writes retain no whole-corpus blob set. Row order
+-- and row content are byte-identical to the previous observation scan (rows in
+-- path-text order, blob rows carrying the streamed bytes, parse_state still
+-- from the parsedByPath lookup).
 insertManagedSources :: Connection -> AnalyzedRepositorySnapshot -> IO ()
 insertManagedSources connection analyzed =
-  forM_ observations $ \observation -> do
-    let entry = repositoryTreeEntry observation
-        path = gitTreePath entry
-        bytes = maybe SQLNull (SQLBlob . gitBlobBytes) (repositoryTreeBlob observation)
-        parseState =
-          case Map.lookup path parsedByPath of
-            Nothing -> "nonblob"
-            Just (Left _) -> "invalid"
-            Just (Right _) -> "valid"
-    execute
-      connection
-      "INSERT INTO managed_source(path,oid,object_type,mode,bytes,parse_state) VALUES (?,?,?,?,?,?)"
-      [ SQLText (repoPathText path),
-        SQLText (gitOidText (gitTreeOid entry)),
-        SQLText (gitObjectTypeValue (gitTreeObjectType entry)),
-        SQLText (gitFileModeValue (gitTreeMode entry)),
-        bytes,
-        SQLText parseState
-      ]
+  foldBlobBatchInOrder
+    (resolvedRepository revision)
+    blobObjectIds
+    observations
+    writeObservationRow
+    >>= \case
+      Left problem -> ioError (userError (show problem))
+      Right trailingObservations -> forM_ trailingObservations (insertSourceRow Nothing)
   where
+    rawObservation = analyzedRawObservation analyzed
+    revision = rawRepositorySnapshotRevision rawObservation
     observations =
       sortBy
         (comparing (repoPathText . gitTreePath . repositoryTreeEntry))
-        (rawRepositorySnapshotEntries (analyzedRawObservation analyzed))
+        (rawRepositorySnapshotEntries rawObservation)
+    blobObjectIds =
+      [ gitTreeOid (repositoryTreeEntry observation)
+        | observation <- observations,
+          gitTreeObjectType (repositoryTreeEntry observation) == GitBlobObject
+      ]
     parsedByPath = Map.fromList [(snapshotEntryPath entry, snapshotEntryDocument entry) | entry <- analyzedManagedEntries analyzed]
+    -- Blob object ids are requested in exactly this row order, so the k-th blob
+    -- arriving from cat-file --batch belongs to the k-th blob observation; the
+    -- cursor advances by writing any leading non-blob rows first, then the row
+    -- fed by this blob.
+    writeObservationRow pending blob = writeLeadingNonblobRows pending >>= \case
+      [] -> pure []
+      observation : rest -> insertSourceRow (Just blob) observation *> pure rest
+    writeLeadingNonblobRows pending =
+      case pending of
+        [] -> pure []
+        observation : rest
+          | gitTreeObjectType (repositoryTreeEntry observation) == GitBlobObject -> pure pending
+          | otherwise -> insertSourceRow Nothing observation *> writeLeadingNonblobRows rest
+    insertSourceRow maybeBlob observation = do
+      let entry = repositoryTreeEntry observation
+          path = gitTreePath entry
+          bytes = maybe SQLNull (SQLBlob . gitBlobBytes) maybeBlob
+          parseState =
+            case Map.lookup path parsedByPath of
+              Nothing -> "nonblob"
+              Just (Left _) -> "invalid"
+              Just (Right _) -> "valid"
+      execute
+        connection
+        "INSERT INTO managed_source(path,oid,object_type,mode,bytes,parse_state) VALUES (?,?,?,?,?,?)"
+        [ SQLText (repoPathText path),
+          SQLText (gitOidText (gitTreeOid entry)),
+          SQLText (gitObjectTypeValue (gitTreeObjectType entry)),
+          SQLText (gitFileModeValue (gitTreeMode entry)),
+          bytes,
+          SQLText parseState
+        ]
 
 insertCompilerDiagnostics :: Connection -> [CompilerDiagnostic] -> IO ()
 insertCompilerDiagnostics connection diagnostics =

@@ -180,7 +180,7 @@ analyzeRepositorySnapshot raw =
 assembleAnalysis :: RawRepositorySnapshotObservation -> [ManagedSnapshotEntry] -> [RepositoryTreeObservation] -> [CompilerDiagnostic] -> [ParsedManagedDocument] -> GraphReduction -> [AdrConflict] -> Bool -> AnalyzedRepositorySnapshot
 assembleAnalysis raw entries nonblobs diagnostics documents reduction conflicts historyComplete =
   AnalyzedRepositorySnapshot
-    { analyzedRawObservation = raw,
+    { analyzedRawObservation = rawWithoutBlobs,
       analyzedManagedEntries = entries,
       analyzedNonblobObservations = nonblobs,
       analyzedDiagnostics = canonicalDiagnostics diagnostics,
@@ -190,6 +190,13 @@ assembleAnalysis raw entries nonblobs diagnostics documents reduction conflicts 
       analyzedHistoryComplete = historyComplete,
       analyzedSourceFingerprint = sourceFingerprint raw
     }
+  where
+    -- Blob bytes are consumed by the time analysis assembles (document parsing
+    -- and the streaming source fingerprint); the managed_source row writer
+    -- re-streams them from git, so the analyzed snapshot retains no
+    -- whole-corpus blob bytes alongside the search materialization.
+    rawWithoutBlobs = raw { rawRepositorySnapshotEntries = map dropBlob (rawRepositorySnapshotEntries raw) }
+    dropBlob observation = observation { repositoryTreeBlob = Nothing }
 
 partitionObservations :: [RepositoryTreeObservation] -> ([ManagedSnapshotEntry], [RepositoryTreeObservation])
 partitionObservations observations =
@@ -683,25 +690,31 @@ allSame [] = True
 allSame (firstValue : remaining) = all (== firstValue) remaining
 
 sourceFingerprint :: RawRepositorySnapshotObservation -> Digest
--- Incremental SHA-256 over the same framed sequence as before (no corpus-sized
--- BS.concat transient over full blob bytes): identical persisted fingerprint.
-sourceFingerprint raw = sha256DigestFrames ("adrai-source/1\NUL" : configFields <> entryFields)
+-- Streaming SHA-256 over the exact framed sequence the entryFields-based call
+-- produced (header frame, config frames, then per-observation entry + blob
+-- frames in repoPathText order): identical persisted fingerprint without ever
+-- retaining a whole-corpus frame list or concatenating blob bytes.
+sourceFingerprint raw = sha256FrameStateFinalize stateAfterEntries
   where
     config = rawRepositorySnapshotConfig raw
+    stateAfterHeader = sha256FrameStateFeed sha256FrameStateInit "adrai-source/1\NUL"
+    stateAfterConfig = foldl' sha256FrameStateFeed stateAfterHeader configFields
+    stateAfterEntries = foldl' feedEntryState stateAfterConfig sortedObservations
     configFields =
       [ framed (TextEncoding.encodeUtf8 (configOriginText (rawRepositoryConfigOrigin config))),
         maybe (framed "default") (framed . treeEntryText) (rawRepositoryConfigEntry config),
         maybe (framed "") (framed . gitBlobBytes) (rawRepositoryConfigBlob config),
         maybe (framed "unavailable") (framed . managedPathsText) (rawRepositoryConfigManagedPaths config)
       ]
-    entryFields =
-      concatMap
-        ( \observation ->
-            [ framed (treeEntryText (repositoryTreeEntry observation)),
-              maybe (framed "") (framed . gitBlobBytes) (repositoryTreeBlob observation)
-            ]
-        )
-        (sortOn (repoPathText . gitTreePath . repositoryTreeEntry) (rawRepositorySnapshotEntries raw))
+    sortedObservations =
+      sortOn (repoPathText . gitTreePath . repositoryTreeEntry) (rawRepositorySnapshotEntries raw)
+    feedEntryState state observation =
+      let stateAfterEntry = sha256FrameStateFeed state (framed (treeEntryText (repositoryTreeEntry observation)))
+          stateAfterBlob =
+            case repositoryTreeBlob observation of
+              Nothing -> sha256FrameStateFeed stateAfterEntry (framed "")
+              Just blob -> sha256FrameStateFeed stateAfterEntry (framed (gitBlobBytes blob))
+      in stateAfterBlob
 
 framed :: ByteString -> ByteString
 framed bytes = TextEncoding.encodeUtf8 (Text.pack (show (BS.length bytes)) <> ":") <> bytes <> "\NUL"

@@ -66,9 +66,7 @@ import Adrai.Types
   )
 import Data.Bifunctor (first)
 import qualified Data.Map.Strict as Map
-import Data.Map.Strict (Map)
 import Data.List (sortOn)
-import qualified Data.Set as Set
 import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -257,16 +255,16 @@ observeManagedTreeAt revision commitOid paths = do
   case first RepositorySnapshotGitError listed >>= validateSelectedEntries . filter (isSelectedManagedPath paths . gitTreePath) of
     Left problem -> pure (Left problem)
     Right selected -> do
-      let blobIds =
-            Set.fromList
-              [ gitTreeOid entry
-                | entry <- selected,
-                  gitTreeObjectType entry == GitBlobObject
-              ]
-      blobsResult <- readBlobBatch repository (Set.toList blobIds)
-      pure $ do
-        blobs <- first RepositorySnapshotGitError blobsResult
-        traverse (assembleObservation blobs) selected
+      let blobEntries =
+            [ entry
+              | entry <- selected,
+                gitTreeObjectType entry == GitBlobObject
+            ]
+      folded <- foldBlobBatchInOrder repository (map gitTreeOid blobEntries) (blobEntries, []) assembleBlobObservation
+      case first RepositorySnapshotGitError folded of
+        Left problem -> pure (Left problem)
+        Right (_, reversedObservations) ->
+          pure (assembleOrderedObservations selected (reverse reversedObservations))
   where
     repository = resolvedRepository revision
     roots = [managedDecisionPath paths, managedConnectionPath paths]
@@ -294,12 +292,31 @@ eitherToMaybe :: Either left right -> Maybe right
 eitherToMaybe (Left _) = Nothing
 eitherToMaybe (Right value) = Just value
 
-assembleObservation :: Map GitOid GitBlob -> GitTreeEntry -> Either RepositorySnapshotError RepositoryTreeObservation
-assembleObservation blobs entry
-  | gitTreeObjectType entry == GitBlobObject = do
-      blob <- maybe (Left (RepositorySnapshotMissingBatchBlob (gitTreeOid entry))) Right (Map.lookup (gitTreeOid entry) blobs)
-      Right (RepositoryTreeObservation entry (Just blob))
-  | otherwise = Right (RepositoryTreeObservation entry Nothing)
+-- | Consume one streamed blob and record an observation for the corresponding
+-- selected entry. Blob entries are requested in selection (sorted) order, so the
+-- k-th blob arriving from cat-file --batch corresponds to the k-th blob entry;
+-- the accumulator carries the not-yet-consumed blob entries to keep that
+-- alignment without materializing a whole-corpus object id -> blob map.
+assembleBlobObservation :: ([GitTreeEntry], [RepositoryTreeObservation]) -> GitBlob -> IO ([GitTreeEntry], [RepositoryTreeObservation])
+assembleBlobObservation (entry : remainingEntries, observations) blob =
+  pure (remainingEntries, RepositoryTreeObservation entry (Just blob) : observations)
+assembleBlobObservation accumulator _ = pure accumulator
+
+-- | Fold the streamed blob observations back into the selected entry order.
+-- Blob entries consume the streamed observations in order (each carrying its own
+-- entry and bytes); non-blob entries contribute an observation with no blob.
+assembleOrderedObservations :: [GitTreeEntry] -> [RepositoryTreeObservation] -> Either RepositorySnapshotError [RepositoryTreeObservation]
+assembleOrderedObservations selected streamedObservations =
+  go streamedObservations selected []
+  where
+    go _ [] observations = Right (reverse observations)
+    go remainingObservations (entry : restSelected) observations
+      | gitTreeObjectType entry == GitBlobObject =
+          case remainingObservations of
+            [] -> Left (RepositorySnapshotMissingBatchBlob (gitTreeOid entry))
+            observation : restObservations -> go restObservations restSelected (observation : observations)
+      | otherwise =
+          go remainingObservations restSelected (RepositoryTreeObservation entry Nothing : observations)
 
 validateSelectedEntries :: [GitTreeEntry] -> Either RepositorySnapshotError [GitTreeEntry]
 validateSelectedEntries entries = do
