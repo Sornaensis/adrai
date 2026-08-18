@@ -13,7 +13,7 @@ module Adrai.Compiler.Snapshot
     CompilerDiagnosticCode (..),
     compilerDiagnosticCodeText,
     CompilerDiagnostic (..),
-    AnalyzedRepositorySnapshot,
+    AnalyzedRepositorySnapshot (..),
     analyzedRawObservation,
     analyzedManagedEntries,
     analyzedNonblobObservations,
@@ -30,6 +30,7 @@ module Adrai.Compiler.Snapshot
     parsedReducedConflicts,
     analyzeRepositorySnapshot,
     gateAnalyzedRepositorySnapshot,
+    sourceFingerprint,
     validateManagedOperations,
   )
 where

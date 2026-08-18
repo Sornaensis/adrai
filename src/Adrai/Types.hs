@@ -45,7 +45,7 @@ module Adrai.Types
     mkDigest,
     digestBytes,
     DigestViolation (..),
-    StateToken,
+    StateToken (..),
     mkStateToken,
     stateTokenText,
     StateTokenViolation (..),

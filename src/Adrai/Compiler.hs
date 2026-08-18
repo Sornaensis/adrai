@@ -8,6 +8,8 @@ module Adrai.Compiler
     ColdCompilerError (..),
     ColdCompilerResult (..),
     coldCompileRepository,
+    coldMaterializationFingerprint,
+    coldMaterializationFingerprintFrames,
     materializeReducedSearch,
     materializeParsedReducedSearch,
     materializeCurrentSearch,
@@ -194,17 +196,24 @@ coldMaterializationFingerprint :: AnalyzedRepositorySnapshot -> Maybe SearchMate
 coldMaterializationFingerprint analyzed materialization =
   -- Incremental SHA-256 over the same framed sequence as before (no
   -- corpus-sized BS.concat transient): identical persisted fingerprint bytes.
-  sha256DigestFrames
-    ( "adrai-cold-materialization/1\NUL"
-        : framedText "adrai-cache/1"
-        : framedText materializationImplementationFingerprint
-        : framedBytes (digestBytes (analyzedSourceFingerprint analyzed))
-        : map (framedText . diagnosticFingerprint) (analyzedDiagnostics analyzed)
-          <> map (framedText . conflictFingerprint) (analyzedConflicts analyzed)
-          <> map (framedText . operationDocumentFingerprint) (sortOn operationDocumentKey (analyzedDocuments analyzed))
-          <> map (framedText . reducedFingerprint) (sortOn reducedAdrId (graphReductionAdrs (analyzedReduction analyzed)))
-          <> maybe [] searchFingerprint materialization
-    )
+  sha256DigestFrames (coldMaterializationFingerprintFrames analyzed materialization)
+
+-- | The exact frame sequence 'coldMaterializationFingerprint' feeds into
+-- 'sha256DigestFrames'.  Exposed so guard tests can pin the framed byte
+-- sequence to a golden digest: any edit to frame content, framing, list
+-- order, or sort key changes the persisted materialization fingerprint, and
+-- the guard test fails instead of persisted meta mutating silently.
+coldMaterializationFingerprintFrames :: AnalyzedRepositorySnapshot -> Maybe SearchMaterialization -> [ByteString]
+coldMaterializationFingerprintFrames analyzed materialization =
+  "adrai-cold-materialization/1\NUL"
+    : framedText "adrai-cache/1"
+    : framedText materializationImplementationFingerprint
+    : framedBytes (digestBytes (analyzedSourceFingerprint analyzed))
+    : map (framedText . diagnosticFingerprint) (analyzedDiagnostics analyzed)
+      <> map (framedText . conflictFingerprint) (analyzedConflicts analyzed)
+      <> map (framedText . operationDocumentFingerprint) (sortOn operationDocumentKey (analyzedDocuments analyzed))
+      <> map (framedText . reducedFingerprint) (sortOn reducedAdrId (graphReductionAdrs (analyzedReduction analyzed)))
+      <> maybe [] searchFingerprint materialization
 
 diagnosticFingerprint :: CompilerDiagnostic -> Text
 diagnosticFingerprint problem =

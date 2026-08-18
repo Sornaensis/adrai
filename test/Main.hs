@@ -33,6 +33,7 @@ import qualified Adrai.FixturePrngTest
 import qualified Adrai.FixtureProperties
 import qualified Adrai.FixtureQueryMaterializationTest
 import qualified Adrai.FixtureRelevanceTest
+import qualified Adrai.FingerprintGuardTest
 import qualified Adrai.FormatFoundationTest
 import qualified Adrai.FormatProperties
 import qualified Adrai.GoldenFixturesTest
@@ -297,7 +298,8 @@ tests =
             Adrai.CompilerSnapshotTest.tests,
             Adrai.ColdCompilerTest.tests,
             Adrai.IntegrityAdversarialTest.tests,
-            Adrai.Compiler.CacheSelectionTest.tests
+            Adrai.Compiler.CacheSelectionTest.tests,
+            Adrai.FingerprintGuardTest.tests
           ],
       testGroup
           "P4-05"
