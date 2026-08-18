@@ -151,8 +151,8 @@ data ColdCompilerError
   deriving (Eq, Show)
 
 data ColdCompilerResult = ColdCompilerResult
-  { coldCompilerAnalyzed :: AnalyzedRepositorySnapshot,
-    coldCompilerParsedReduced :: Maybe ParsedReducedRepositorySnapshot,
+  { coldCompilerDiagnostics :: [CompilerDiagnostic],
+    coldCompilerCompiledRevision :: ResolvedRepositoryRevision,
     coldCompilerSearchMaterialization :: Maybe SearchMaterialization,
     coldCompilerMaterializationFingerprint :: Digest,
     coldCompilerDatabaseStats :: ColdDatabaseStats
@@ -170,21 +170,21 @@ coldCompileRepository connection revision = do
         Left problem -> pure (Left (ColdCompilerRepositoryError problem))
         Right analyzed ->
           case gateAnalyzedRepositorySnapshot analyzed of
-            Left _ -> store analyzed Nothing Nothing
+            Left _ -> store analyzed Nothing
             Right parsed ->
               case materializeParsedReducedSearch parsed of
                 Left problem -> pure (Left (ColdCompilerSearchError problem))
-                Right materialization -> store analyzed (Just parsed) (Just materialization)
+                Right materialization -> store analyzed (Just materialization)
   where
-    store analyzed parsed materialization = do
+    store analyzed materialization = do
       let fingerprint = coldMaterializationFingerprint analyzed materialization
       stored <- writeColdDatabase connection analyzed materialization fingerprint
       pure $ do
         stats <- mapLeft ColdCompilerDatabaseError stored
         Right
           ColdCompilerResult
-            { coldCompilerAnalyzed = analyzed,
-              coldCompilerParsedReduced = parsed,
+            { coldCompilerDiagnostics = analyzedDiagnostics analyzed,
+              coldCompilerCompiledRevision = revision,
               coldCompilerSearchMaterialization = materialization,
               coldCompilerMaterializationFingerprint = fingerprint,
               coldCompilerDatabaseStats = stats

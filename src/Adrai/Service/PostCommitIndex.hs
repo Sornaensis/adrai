@@ -32,7 +32,6 @@ import Adrai.Compiler
 import Adrai.Compiler.Snapshot
   ( CompilerDiagnostic (..),
     CompilerDiagnosticSeverity (CompilerDiagnosticWarning),
-    analyzedDiagnostics,
     compilerDiagnosticCodeText,
   )
 import Adrai.Git
@@ -581,6 +580,6 @@ compilerWarnings result =
         { indexWarningCode = compilerDiagnosticCodeText (compilerDiagnosticCode diagnostic),
           indexWarningMessage = compilerDiagnosticMessage diagnostic
         }
-    | diagnostic <- analyzedDiagnostics (coldCompilerAnalyzed result),
+    | diagnostic <- coldCompilerDiagnostics result,
       compilerDiagnosticSeverity diagnostic == CompilerDiagnosticWarning
     ]

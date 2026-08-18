@@ -4,6 +4,7 @@
 module Adrai.ColdCompilerTest (tests) where
 
 import Adrai.Compiler
+import Adrai.Compiler.Snapshot (AnalyzedRepositorySnapshot, analyzeRepositorySnapshot)
 import Adrai.Fixture.CompilerRepository
 import Adrai.Git
 import Adrai.GitTestSupport
@@ -154,7 +155,7 @@ tests =
           connection <- open ":memory:"
           result <- requireCompiled connection resolved
           coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "invalid"
-          coldCompilerParsedReduced result @?= Nothing
+          coldCompilerSearchMaterialization result @?= Nothing
           count connection "issue" >>= (@?= 1)
           count connection "managed_source" >>= (@?= 0)
           count connection "search_document" >>= (@?= 0)
@@ -256,13 +257,14 @@ tests =
           sourceConnection <- open ":memory:"
           compiled <- requireCompiled sourceConnection resolved
           close sourceConnection
+          analyzed <- requireAnalyzed resolved
           materialization <-
             maybe (assertFailure "healthy compile omitted search materialization") pure (coldCompilerSearchMaterialization compiled)
           broken <- breakFirstPassage materialization
           targetConnection <- open ":memory:"
           writeColdDatabase
             targetConnection
-            (coldCompilerAnalyzed compiled)
+            analyzed
             (Just broken)
             (coldCompilerMaterializationFingerprint compiled)
             >>= \case
@@ -362,6 +364,18 @@ requireCompiled connection resolved =
   coldCompileRepository connection resolved >>= \case
     Left problem -> assertFailure (show problem)
     Right result -> pure result
+
+requireAnalyzed :: ResolvedRepositoryRevision -> IO AnalyzedRepositorySnapshot
+requireAnalyzed resolved = do
+  raw <-
+    observeRawRepositorySnapshotAt resolved
+      >>= \case
+        Left problem -> assertFailure (show problem)
+        Right value -> pure value
+  analyzeRepositorySnapshot raw
+    >>= \case
+      Left problem -> assertFailure (show problem)
+      Right value -> pure value
 
 count :: Connection -> Text -> IO Int64
 count connection table = do
