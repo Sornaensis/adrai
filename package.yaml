@@ -64,3 +64,20 @@ tests:
       - tasty-hedgehog
       - tasty-hunit
       - temporary
+
+  adrai-stress-test:
+    main: Main.hs
+    source-dirs:
+      - test/stress
+      - test/e2e
+      - test/support
+    # The large-repository gate invokes the package-built CLI directly.  This
+    # keeps its cache/search assertions at the public executable boundary.
+    build-tools: [adrai:adrai]
+    dependencies:
+      - adrai
+      - hedgehog
+      - tasty
+      - tasty-hedgehog
+      - tasty-hunit
+      - temporary

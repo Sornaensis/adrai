@@ -20,7 +20,10 @@ module Adrai.Service.PostCommitIndex
     PostCommitIndexDependencies (..),
     postCommitIndexDependencies,
     compilePostCommitIndex,
+    compilePostCommitIndexWithAttribution,
     compilePostCommitIndexWith,
+    clonePostCommitIndex,
+    clonePostCommitIndexWithHistoryCount,
   )
 where
 
@@ -28,7 +31,15 @@ import Adrai.Compiler
   ( ColdCompilerError,
     ColdCompilerResult (..),
     coldCompileRepository,
+    coldCompileRepositoryWithAttribution,
   )
+import Adrai.Compiler.Attribution
+  ( AttributionPhase (DatabaseClose, ImmutablePublication),
+    ColdCompileAttribution,
+    inertColdCompileAttribution,
+    withAttributionPhase,
+  )
+import Adrai.Compiler.CacheSelection (validateCachePublicationContract)
 import Adrai.Compiler.Snapshot
   ( CompilerDiagnostic (..),
     CompilerDiagnosticSeverity (CompilerDiagnosticWarning),
@@ -47,17 +58,17 @@ import Adrai.Repository
     resolvedCommitOid,
   )
 import Control.Exception (SomeAsyncException, SomeException, displayException, fromException, mask, throwIO, try)
+import Data.Bits ((.|.))
 import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.SQLite.Simple (Connection, close, open)
-import System.Directory (doesFileExist, removeFile, renameFile)
+import Database.SQLite.Simple (Connection, close, execute, open, query_)
+import System.Directory (copyFile, doesFileExist, removeFile, renameFile)
 import System.FilePath (takeDirectory, takeFileName)
 import System.IO (Handle, hClose, openTempFile)
 import System.Win32.Types (BOOL, DWORD, LPTSTR, failIfFalse_, withTString)
-import Foreign.Ptr (Ptr, nullPtr)
 
-foreign import ccall unsafe "ReplaceFileW" c_ReplaceFileW :: LPTSTR -> LPTSTR -> LPTSTR -> DWORD -> Ptr () -> Ptr () -> IO BOOL
+foreign import ccall unsafe "MoveFileExW" c_MoveFileExW :: LPTSTR -> LPTSTR -> DWORD -> IO BOOL
 
 -- | A stable public projection of a compiler warning.  Compiler diagnostics
 -- retain their richer internal provenance; callers of this result only need a
@@ -77,6 +88,7 @@ data PostCommitIndexError
   | PostCommitIndexOpenFailure Text
   | PostCommitIndexCompileFailure ColdCompilerError
   | PostCommitIndexCompileException Text
+  | PostCommitIndexCloneFailure Text
   | PostCommitIndexCloseFailure Text
   | PostCommitIndexTemporaryCloseFailure Text
   | PostCommitIndexCleanupFailure FilePath Text
@@ -142,10 +154,103 @@ postCommitIndexDependencies =
 compilePostCommitIndex :: Repository -> GitOid -> FilePath -> IO PostCommitIndexResult
 compilePostCommitIndex = compilePostCommitIndexWith postCommitIndexDependencies
 
+-- | Explicit profiling entry point.  No public mutation or ordinary compile
+-- path calls this variant; it exists solely for the test-owned cold compiler
+-- observer injected by 'Adrai.CliRunner'.
+compilePostCommitIndexWithAttribution :: ColdCompileAttribution -> Repository -> GitOid -> FilePath -> IO PostCommitIndexResult
+compilePostCommitIndexWithAttribution attribution =
+  compilePostCommitIndexWithAttributionDependencies attribution
+    postCommitIndexDependencies {postCommitColdCompile = coldCompileRepositoryWithAttribution attribution}
+
+-- | Publish a selected immutable cache under the mutable current-alias path.
+-- The caller has already established that @sourcePath@ is the authoritative
+-- immutable snapshot for @targetRevision@: either this same process just
+-- published it, or cache selection already accepted it as an exact archive.
+-- Re-validating that source here is therefore redundant and can spuriously
+-- reject a fresh alias repair while the archived snapshot remains the source of
+-- truth.  Cross-revision reuse keeps its stricter validation below.
+clonePostCommitIndex :: FilePath -> GitOid -> FilePath -> IO PostCommitIndexResult
+clonePostCommitIndex sourcePath targetRevision databasePath =
+  clonePostCommitIndexInternal False sourcePath targetRevision databasePath Nothing
+
+-- | Tree-identical reuse has already performed a bounded history proof.  Carry
+-- its observed commit count into the derived snapshot instead of claiming the
+-- reused result scanned no history.  Alias publication passes 'Nothing' and
+-- preserves the archive's existing count.
+clonePostCommitIndexWithHistoryCount :: FilePath -> GitOid -> FilePath -> Maybe Int -> IO PostCommitIndexResult
+clonePostCommitIndexWithHistoryCount sourcePath targetRevision databasePath historyCommitsScanned =
+  clonePostCommitIndexInternal True sourcePath targetRevision databasePath historyCommitsScanned
+
+clonePostCommitIndexInternal :: Bool -> FilePath -> GitOid -> FilePath -> Maybe Int -> IO PostCommitIndexResult
+clonePostCommitIndexInternal requireValidatedSource sourcePath targetRevision databasePath historyCommitsScanned = do
+  sourceValid <-
+    if requireValidatedSource
+      then validateCachePublicationContract sourcePath
+      else pure True
+  if not sourceValid
+    then pure (failure (PostCommitIndexCloneFailure "cache clone source failed the canonical metadata or integrity contract"))
+    else mask $ \restore -> do
+      candidate <- createCandidate postCommitIndexDependencies databasePath
+      case candidate of
+        Left problems -> pure (failure (combineFailures problems))
+        Right temporaryPath -> do
+          copied <- trySynchronous (restore (copyFile sourcePath temporaryPath))
+          case copied of
+            Left exception -> failAndCleanup temporaryPath (PostCommitIndexCloneFailure (exceptionText exception))
+            Right () -> do
+              opened <- trySynchronous (restore (open temporaryPath))
+              case opened of
+                Left exception -> failAndCleanup temporaryPath (PostCommitIndexOpenFailure (exceptionText exception))
+                Right connection -> do
+                  retargeted <- trySynchronous (restore (retargetCachedRevision connection targetRevision historyCommitsScanned))
+                  closed <- trySynchronous (postCommitCloseDatabase postCommitIndexDependencies connection)
+                  case (retargeted, closed) of
+                    (Left updateFailure, Left closeFailure) ->
+                      failAndCleanup temporaryPath (combineFailures [PostCommitIndexCloneFailure (exceptionText updateFailure), PostCommitIndexCloseFailure (exceptionText closeFailure)])
+                    (Left updateFailure, Right ()) ->
+                      failAndCleanup temporaryPath (PostCommitIndexCloneFailure (exceptionText updateFailure))
+                    (Right (), Left closeFailure) ->
+                      failAndCleanup temporaryPath (PostCommitIndexCloseFailure (exceptionText closeFailure))
+                    (Right (), Right ()) -> do
+                      published <- publishCandidate postCommitIndexDependencies databasePath temporaryPath
+                      case published of
+                        PublicationSucceeded ->
+                          pure (PostCommitIndexResult True (Just databasePath) (Just targetRevision) [] Nothing)
+                        PublicationFailed problems -> do
+                          cleanupProblems <- cleanupOwnedTemporary postCommitIndexDependencies temporaryPath
+                          pure (failure (combineFailures (problems <> cleanupProblems)))
+                        PublicationFailStop problems -> pure (failure (combineFailures problems))
+  where
+    failure problem = PostCommitIndexResult False Nothing Nothing [] (Just problem)
+    exceptionText = Text.pack . displayException
+    failAndCleanup temporaryPath problem = do
+      cleanupProblems <- cleanupOwnedTemporary postCommitIndexDependencies temporaryPath
+      pure (failure (combineFailures (problem : cleanupProblems)))
+
+retargetCachedRevision :: Connection -> GitOid -> Maybe Int -> IO ()
+retargetCachedRevision connection revision historyCommitsScanned = do
+  metadata <- query_ connection "SELECT key,value FROM meta ORDER BY key" :: IO [(Text, Text)]
+  case (lookup "schema" metadata, lookup "compiler_abi" metadata, lookup "materializer" metadata, lookup "materialization_fingerprint" metadata, lookup "source_fingerprint" metadata, lookup "resolved_oid" metadata, lookup "requested_revision" metadata) of
+    (Just "adrai-cache/1", Just "adrai-cold-compiler/1", Just _, Just _, Just _, Just _, Just _) -> do
+      -- The caller may reach this point only after proving a bounded,
+      -- compiler-irrelevant delta.  The source was integrity-validated before
+      -- copying, and only revision labels change; source/materialization
+      -- fingerprints remain intact and are never fabricated or replaced.
+      execute connection "UPDATE meta SET value=? WHERE key=?" (gitOidText revision, "resolved_oid" :: Text)
+      execute connection "UPDATE meta SET value=? WHERE key=?" (gitOidText revision, "requested_revision" :: Text)
+      case historyCommitsScanned of
+        Nothing -> pure ()
+        Just count | count > 0 -> execute connection "UPDATE meta SET value=? WHERE key=?" (Text.pack (show count), "history_commits_scanned" :: Text)
+        _ -> ioError (userError "tree-identical cache clone requires a positive bounded history count")
+    _ -> ioError (userError "cache clone source does not contain a complete canonical compiler metadata set")
+
 -- | Parameterized form with deterministic failure composition.  If compilation
 -- and close both fail, errors are retained in lifecycle order: compile, close.
 compilePostCommitIndexWith :: PostCommitIndexDependencies -> Repository -> GitOid -> FilePath -> IO PostCommitIndexResult
-compilePostCommitIndexWith dependencies repository commitOid databasePath = do
+compilePostCommitIndexWith = compilePostCommitIndexWithAttributionDependencies inertColdCompileAttribution
+
+compilePostCommitIndexWithAttributionDependencies :: ColdCompileAttribution -> PostCommitIndexDependencies -> Repository -> GitOid -> FilePath -> IO PostCommitIndexResult
+compilePostCommitIndexWithAttributionDependencies attribution dependencies repository commitOid databasePath = do
   resolved <- postCommitResolveRevision dependencies repository commitOid
   case resolved of
     Left problem -> pure (failure (PostCommitIndexResolveFailure problem))
@@ -173,7 +278,7 @@ compilePostCommitIndexWith dependencies repository commitOid databasePath = do
                 Left exception
                   | isAsyncException exception -> cleanupAfterCancellation (Just connection) temporaryPath exception
                 _ -> do
-                  closed <- tryAny (restore (postCommitCloseDatabase dependencies connection))
+                  closed <- tryAny (restore (withAttributionPhase attribution DatabaseClose (postCommitCloseDatabase dependencies connection)))
                   case closed of
                     Left exception
                       | isAsyncException exception -> cleanupAfterCancellation (Just connection) temporaryPath exception
@@ -205,7 +310,7 @@ compilePostCommitIndexWith dependencies repository commitOid databasePath = do
           cleanupProblems <- cleanupOwnedTemporary dependencies temporaryPath
           pure (failure (combineFailures (closeError : cleanupProblems)))
         (Right result, Right ()) -> do
-          published <- publishCandidate dependencies databasePath temporaryPath
+          published <- withAttributionPhase attribution ImmutablePublication (publishCandidate dependencies databasePath temporaryPath)
           case published of
             PublicationFailed publishProblems -> do
               cleanupProblems <- cleanupOwnedTemporary dependencies temporaryPath
@@ -278,10 +383,12 @@ createOwnedTemporary dependencies databasePath marker = do
     exceptionText = Text.pack . displayException
 
 -- | Publish a closed same-directory candidate under an exception mask.  For an
--- existing target, ReplaceFileW receives an absent task-owned backup pathname.
--- Its documented partial failure can leave the prior target at that backup;
--- reconciliation therefore observes all three owned paths and either restores
--- the prior target or fails stop with the remaining recovery artifacts intact.
+-- existing target, the dependency seam receives an absent task-owned backup
+-- pathname so narrow tests can model a replace-style partial failure.  The
+-- production primitive is a same-volume atomic rename and does not create that
+-- backup, but reconciliation still observes all three owned paths and either
+-- retains the prior target or fails stop with the remaining recovery artifacts
+-- intact.
 publishCandidate :: PostCommitIndexDependencies -> FilePath -> FilePath -> IO PublicationOutcome
 publishCandidate dependencies databasePath temporaryPath = mask $ \_ -> do
   observedTarget <- observeFile databasePath
@@ -364,7 +471,7 @@ publishCandidate dependencies databasePath temporaryPath = mask $ \_ -> do
 
     exceptionText = Text.pack . displayException
 
--- | Reserve an absent same-directory path for ReplaceFileW's backup argument.
+-- | Reserve an absent same-directory backup path for the replacement seam.
 -- The reservation handle is closed before the empty placeholder is removed.
 reserveBackupPath :: PostCommitIndexDependencies -> FilePath -> IO (Either [PostCommitIndexError] FilePath)
 reserveBackupPath dependencies databasePath = do
@@ -404,12 +511,12 @@ data PriorTargetRecovery
   | PriorTargetUnavailable [Text] Text PublicationState
   | PriorTargetObservationFailed [Text] Text
 
--- | Recover the prior target after a failed ReplaceFileW.  If a backup exists,
--- it is authoritative even when the target also exists: that covers a failure
--- reported after the replacement reached the target pathname.  Restoration is
--- bounded to two attempts under the publication mask.  The synchronous
--- ReplaceFileW contract guarantees that on failure the prior file is at either
--- the target or the supplied backup path; an exhausted or impossible state is
+-- | Recover the prior target after a failed replacement.  If a backup exists,
+-- it is authoritative even when the target also exists: that covers a seam
+-- failure reported after the replacement reached the target pathname.
+-- Restoration is bounded to two attempts under the publication mask.  The
+-- seam contract guarantees that on failure the prior file is at either the
+-- target or the supplied backup path; an exhausted or impossible state is
 -- returned as fail-stop typed data while its remaining artifacts are retained.
 restorePriorTarget :: PostCommitIndexDependencies -> FilePath -> FilePath -> FilePath -> IO PriorTargetRecovery
 restorePriorTarget dependencies databasePath temporaryPath backupPath = go 0 []
@@ -445,7 +552,7 @@ restorePriorTarget dependencies databasePath temporaryPath backupPath = go 0 []
               pure
                 ( PriorTargetUnavailable
                     restoreProblems
-                    "documented ReplaceFileW invariant violated: target and supplied backup are both absent"
+                    "replacement invariant violated: target and supplied backup are both absent"
                     state
                 )
 
@@ -489,16 +596,25 @@ installCandidate databasePath temporaryPath backupPath = do
     Left exception -> Left (PostCommitIndexInstallFailure (Text.pack (displayException exception)))
     Right () -> Right ()
 
--- ReplaceFileW is the Windows API designed to replace an existing file while
--- preserving the old file at a caller-supplied same-volume backup pathname.
+-- | Atomically replace a same-directory target on Windows.  'ReplaceFileW'
+-- opens its replacement argument without a sharing mode, which conflicts with
+-- SQLite's deferred Windows handle release even after a connection has been
+-- closed.  'MoveFileExW' with @MOVEFILE_REPLACE_EXISTING@ performs the
+-- same-volume namespace replacement without that incompatible open.  The
+-- candidate is always a sibling of the target, so omitting COPY_ALLOWED keeps
+-- this a rename rather than a copy/delete sequence.  WRITE_THROUGH is retained
+-- for the API's strongest completion request, while same-volume publication
+-- remains a single namespace operation.
 atomicReplaceFile :: FilePath -> FilePath -> FilePath -> IO ()
-atomicReplaceFile databasePath temporaryPath backupPath =
-  withTString databasePath $ \databasePointer ->
-    withTString temporaryPath $ \temporaryPointer ->
-      withTString backupPath $ \backupPointer ->
-        failIfFalse_
-          "ReplaceFileW"
-          (c_ReplaceFileW databasePointer temporaryPointer backupPointer 0 nullPtr nullPtr)
+atomicReplaceFile databasePath temporaryPath _backupPath =
+  withTString temporaryPath $ \temporaryPointer ->
+    withTString databasePath $ \databasePointer ->
+      failIfFalse_
+        "MoveFileExW"
+        (c_MoveFileExW temporaryPointer databasePointer moveFileReplaceExistingAndWriteThrough)
+
+moveFileReplaceExistingAndWriteThrough :: DWORD
+moveFileReplaceExistingAndWriteThrough = 0x00000001 .|. 0x00000008
 
 -- | Cleanup is limited to the candidate and SQLite sidecars derived from its
 -- task-owned name.  Every path is attempted in deterministic order and every

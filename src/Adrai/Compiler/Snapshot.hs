@@ -22,6 +22,7 @@ module Adrai.Compiler.Snapshot
     analyzedReduction,
     analyzedConflicts,
     analyzedHistoryComplete,
+    analyzedHistoryCommitsScanned,
     analyzedSourceFingerprint,
     ParsedReducedRepositorySnapshot,
     parsedReducedAnalyzed,
@@ -29,13 +30,26 @@ module Adrai.Compiler.Snapshot
     parsedReducedReduction,
     parsedReducedConflicts,
     analyzeRepositorySnapshot,
+    analyzeRepositorySnapshotWithAttribution,
     gateAnalyzedRepositorySnapshot,
     sourceFingerprint,
     validateManagedOperations,
+    analyzeRepositorySnapshotWithHistoryParseCount,
+    analyzeRepositorySnapshotWithHistoryCounts,
+    historyConvergencePairs,
   )
 where
 
 import Adrai.Format.Document
+import Adrai.Compiler.Attribution
+  ( AttributionCounter (CounterBlobRequests, CounterChanges, CounterEdges, CounterNodes, CounterParsedBlobs, CounterSelectedNodes),
+    AttributionPhase (BasisChecks, HistoryGraphEnumeration, HistoryPathSelectionDiff, HistoryReplayParse),
+    ColdCompileAttribution,
+    attributionEnabled,
+    inertColdCompileAttribution,
+    recordAttributionCounter,
+    withAttributionEitherPhase,
+  )
 import Adrai.Git
 import Adrai.Graph
 import Adrai.Integrity
@@ -46,6 +60,7 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Foldable (foldr')
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
@@ -103,6 +118,7 @@ data AnalyzedRepositorySnapshot = AnalyzedRepositorySnapshot
     analyzedReduction :: GraphReduction,
     analyzedConflicts :: [AdrConflict],
     analyzedHistoryComplete :: Bool,
+    analyzedHistoryCommitsScanned :: Int,
     analyzedSourceFingerprint :: Digest
   }
   deriving (Eq, Show)
@@ -129,7 +145,44 @@ gateAnalyzedRepositorySnapshot analyzed =
     problems -> Left problems
 
 analyzeRepositorySnapshot :: RawRepositorySnapshotObservation -> IO (Either RepositorySnapshotError AnalyzedRepositorySnapshot)
-analyzeRepositorySnapshot raw =
+analyzeRepositorySnapshot = analyzeRepositorySnapshotWithAttribution inertColdCompileAttribution
+
+analyzeRepositorySnapshotWithAttribution :: ColdCompileAttribution -> RawRepositorySnapshotObservation -> IO (Either RepositorySnapshotError AnalyzedRepositorySnapshot)
+analyzeRepositorySnapshotWithAttribution attribution raw
+  | attributionEnabled attribution = do
+      parseCount <- newIORef 0
+      requestCount <- newIORef 0
+      analyzeRepositorySnapshotWithHistoryCounter attribution (Just parseCount) (Just requestCount) raw
+  -- Ordinary compilation must not allocate observer counters.  The explicit
+  -- history-count test seam below supplies its own counters when it needs
+  -- them, while this inert path has no profiling bookkeeping at all.
+  | otherwise = analyzeRepositorySnapshotWithHistoryCounter attribution Nothing Nothing raw
+
+-- | Analyze a snapshot and return the number of managed historical blobs that
+-- were parsed while applying reachable-tree deltas.  The production compiler
+-- intentionally ignores this observation; it exists so the cold compiler
+-- regression suite can prove that a noise-only suffix does not make parsing
+-- proportional to the number of commits.
+analyzeRepositorySnapshotWithHistoryParseCount :: RawRepositorySnapshotObservation -> IO (Either RepositorySnapshotError AnalyzedRepositorySnapshot, Int)
+analyzeRepositorySnapshotWithHistoryParseCount raw = do
+  (analyzed, parsed, _requested) <- analyzeRepositorySnapshotWithHistoryCounts raw
+  pure (analyzed, parsed)
+
+-- | Test-only observation for the history streaming seam.  The final count is
+-- the number of unique blob OIDs sent to @git cat-file@ across bounded reads;
+-- it makes accidental re-requesting of a prefetched ordinary batch visible
+-- without retaining blob bytes in the production snapshot.
+analyzeRepositorySnapshotWithHistoryCounts :: RawRepositorySnapshotObservation -> IO (Either RepositorySnapshotError AnalyzedRepositorySnapshot, Int, Int)
+analyzeRepositorySnapshotWithHistoryCounts raw = do
+  parseCount <- newIORef 0
+  requestCount <- newIORef 0
+  analyzed <- analyzeRepositorySnapshotWithHistoryCounter inertColdCompileAttribution (Just parseCount) (Just requestCount) raw
+  parsed <- readIORef parseCount
+  requested <- readIORef requestCount
+  pure (analyzed, parsed, requested)
+
+analyzeRepositorySnapshotWithHistoryCounter :: ColdCompileAttribution -> Maybe (IORef Int) -> Maybe (IORef Int) -> RawRepositorySnapshotObservation -> IO (Either RepositorySnapshotError AnalyzedRepositorySnapshot)
+analyzeRepositorySnapshotWithHistoryCounter attribution parseCount requestCount raw =
   case rawRepositorySnapshotManagedPaths raw of
     Nothing ->
       pure
@@ -140,9 +193,10 @@ analyzeRepositorySnapshot raw =
                 []
                 (configDiagnostics (rawRepositorySnapshotConfig raw))
                 []
-                (GraphReduction [] [])
-                []
-                False
+                 (GraphReduction [] [])
+                 []
+                 False
+                 0
             )
         )
     Just paths -> do
@@ -159,11 +213,11 @@ analyzeRepositorySnapshot raw =
               <> map (nonblobDiagnostic CompilerPathDocumentOrigin Nothing) nonblobs
               <> validateManagedOperations uniqueDocuments
               <> graphDiagnostics
-      historyResult <- observeHistory raw paths entries
+      historyResult <- observeHistory attribution parseCount requestCount raw paths entries
       case historyResult of
         Left problem -> pure (Left problem)
-        Right (historyComplete, historyDiagnostics) -> do
-          basisResult <- observeBasisDiagnostics raw uniqueDocuments
+        Right (historyComplete, historyCommitsScanned, historyDiagnostics) -> do
+          basisResult <- withAttributionEitherPhase attribution BasisChecks (observeBasisDiagnostics raw uniqueDocuments)
           pure $ do
             basisDiagnostics <- basisResult
             Right
@@ -174,12 +228,13 @@ analyzeRepositorySnapshot raw =
                   (currentDiagnostics <> historyDiagnostics <> basisDiagnostics)
                   uniqueDocuments
                   reduction
-                  conflicts
-                  historyComplete
-              )
+                   conflicts
+                   historyComplete
+                   historyCommitsScanned
+               )
 
-assembleAnalysis :: RawRepositorySnapshotObservation -> [ManagedSnapshotEntry] -> [RepositoryTreeObservation] -> [CompilerDiagnostic] -> [ParsedManagedDocument] -> GraphReduction -> [AdrConflict] -> Bool -> AnalyzedRepositorySnapshot
-assembleAnalysis raw entries nonblobs diagnostics documents reduction conflicts historyComplete =
+assembleAnalysis :: RawRepositorySnapshotObservation -> [ManagedSnapshotEntry] -> [RepositoryTreeObservation] -> [CompilerDiagnostic] -> [ParsedManagedDocument] -> GraphReduction -> [AdrConflict] -> Bool -> Int -> AnalyzedRepositorySnapshot
+assembleAnalysis raw entries nonblobs diagnostics documents reduction conflicts historyComplete historyCommitsScanned =
   AnalyzedRepositorySnapshot
     { analyzedRawObservation = rawWithoutBlobs,
       analyzedManagedEntries = entries,
@@ -189,6 +244,7 @@ assembleAnalysis raw entries nonblobs diagnostics documents reduction conflicts 
       analyzedReduction = reduction,
       analyzedConflicts = conflicts,
       analyzedHistoryComplete = historyComplete,
+      analyzedHistoryCommitsScanned = historyCommitsScanned,
       analyzedSourceFingerprint = sourceFingerprint raw
     }
   where
@@ -226,13 +282,21 @@ uniqueValidDocuments entries =
         Map.empty
         (sortOn (repoPathText . snapshotEntryPath) entries)
 
-observeHistory :: RawRepositorySnapshotObservation -> ManagedPaths -> [ManagedSnapshotEntry] -> IO (Either RepositorySnapshotError (Bool, [CompilerDiagnostic]))
-observeHistory raw paths targetEntries = do
+observeHistory :: ColdCompileAttribution -> Maybe (IORef Int) -> Maybe (IORef Int) -> RawRepositorySnapshotObservation -> ManagedPaths -> [ManagedSnapshotEntry] -> IO (Either RepositorySnapshotError (Bool, Int, [CompilerDiagnostic]))
+observeHistory attribution parseCount requestCount raw paths _targetEntries = do
   let revision = rawRepositorySnapshotRevision raw
       repository = resolvedRepository revision
       targetOid = resolvedCommitOid revision
   shallowResult <- isShallowRepository repository
-  graphResult <- reachableCommitGraphAt repository targetOid
+  graphResult <-
+    withAttributionEitherPhase attribution HistoryGraphEnumeration $ do
+      result <- reachableCommitGraphAt repository targetOid
+      case result of
+        Right nodes | attributionEnabled attribution -> do
+          recordAttributionCounter attribution CounterNodes (fromIntegral (length nodes))
+          recordAttributionCounter attribution CounterEdges (fromIntegral (sum (map (length . gitCommitNodeParents) nodes)))
+        _ -> pure ()
+      pure result
   case (shallowResult, graphResult) of
     (Left problem, _) -> pure (Left (RepositorySnapshotGitError problem))
     (_, Left problem) -> pure (Left (RepositorySnapshotGitError problem))
@@ -240,7 +304,7 @@ observeHistory raw paths targetEntries = do
       let targetPaths =
             Set.fromList
               (map (gitTreePath . repositoryTreeEntry) (rawRepositorySnapshotEntries raw))
-      treeResult <- observeCommitTrees revision paths targetOid targetPaths targetEntries nodes
+      treeResult <- observeCommitTrees attribution parseCount requestCount revision paths targetOid targetPaths shallow nodes
       pure $ do
         historyDiagnostics <- treeResult
         let coverageDiagnostics =
@@ -256,22 +320,67 @@ observeHistory raw paths targetEntries = do
                   "reachable history is shallow; append-only coverage is incomplete"
                 | shallow
               ]
-        Right (not shallow, coverageDiagnostics <> historyDiagnostics)
+        Right (not shallow, length nodes, coverageDiagnostics <> historyDiagnostics)
+
+-- | Compact immutable state for one live parent tree.  Blob bytes never enter
+-- this state: Git object ids are byte-exact identities, while only the parsed
+-- operation/object pair is retained for append-only membership checks.
+data HistoryState = HistoryState
+  { historyStatePaths :: !(Map RepoPath HistoryPathState),
+    historyStateMembers :: !(Map OperationId (Map ObjectRef Int)),
+    -- Only nonblobs participate in the per-commit historical diagnostic.  A
+    -- separate strict index avoids traversing every live managed blob on each
+    -- otherwise empty historical edge.
+    historyStateNonblobs :: !(Map RepoPath GitTreeEntry)
+  }
+  deriving (Eq)
+
+data HistoryPathState
+  = HistoryBlob !GitTreeEntry !(Maybe (OperationId, ObjectRef))
+  | HistoryNonblob !GitTreeEntry
+  deriving (Eq)
+
+emptyHistoryState :: HistoryState
+emptyHistoryState = HistoryState Map.empty Map.empty Map.empty
 
 -- | Walk the reachable commit list in rev-list --topo-order --reverse order
--- (parents always precede children).  Each commit's tree is inserted just
--- before the commit itself is validated, and it is evicted as soon as no
--- remaining commit references it as a parent, so retained tree data scales
--- with the fan-in window rather than the whole reachable history.  The
--- accumulated diagnostics later pass through canonicalDiagnostics, whose
--- key-ordered output makes the final result independent of this traversal
--- order.
-observeCommitTrees :: ResolvedRepositoryRevision -> ManagedPaths -> GitOid -> Set RepoPath -> [ManagedSnapshotEntry] -> [GitCommitNode] -> IO (Either RepositorySnapshotError [CompilerDiagnostic])
-observeCommitTrees revision paths targetOid targetPaths targetEntries nodes =
-  go Map.empty remainingChildren [] nodes
+-- (parents always precede children).  Git supplies only the changed paths on
+-- each parent edge; a persistent compact state is retained only while a
+-- remaining child still needs it.  This keeps cold validation proportional to
+-- commit edges and managed changes rather than historical whole-tree size.
+observeCommitTrees :: ColdCompileAttribution -> Maybe (IORef Int) -> Maybe (IORef Int) -> ResolvedRepositoryRevision -> ManagedPaths -> GitOid -> Set RepoPath -> Bool -> [GitCommitNode] -> IO (Either RepositorySnapshotError [CompilerDiagnostic])
+observeCommitTrees attribution parseCount requestCount revision paths targetOid targetPaths shallow nodes = do
+  deltasResult <- withAttributionEitherPhase attribution HistoryPathSelectionDiff $ do
+    result <- historyTreeDeltasAt repository (not shallow) nodes configRepositoryPath roots
+    case result of
+      Left _ -> pure ()
+      Right deltas | attributionEnabled attribution -> do
+        let selected = map selectedChanges deltas
+        recordAttributionCounter attribution CounterSelectedNodes (fromIntegral (length (filter (not . null) selected)))
+        recordAttributionCounter attribution CounterChanges (fromIntegral (sum (map length selected)))
+      _ -> pure ()
+    pure result
+  case first RepositorySnapshotGitError deltasResult of
+    Left problem -> pure (Left problem)
+    Right deltas ->
+      withAttributionEitherPhase attribution HistoryReplayParse $ do
+        result <- go Map.empty remainingChildren [] nodes (groupDeltas deltas)
+        if attributionEnabled attribution
+          then do
+            parsed <- maybe (pure 0) readIORef parseCount
+            requested <- maybe (pure 0) readIORef requestCount
+            recordAttributionCounter attribution CounterParsedBlobs (fromIntegral parsed)
+            recordAttributionCounter attribution CounterBlobRequests (fromIntegral requested)
+          else pure ()
+        pure result
   where
+    repository = resolvedRepository revision
+    -- The committed config is a semantic input: selection must observe it as
+    -- well as the currently configured managed roots.  Git falls back to the
+    -- full graph if it changed after the root boundary.
+    roots = [configRepositoryPath, managedDecisionPath paths, managedConnectionPath paths]
     -- Remaining-children refcount per parent oid over the whole node list:
-    -- how many reachable commits still reference this parent's tree.
+    -- how many reachable commits still reference this parent's compact state.
     remainingChildren :: Map GitOid Int
     remainingChildren =
       Map.fromListWith (+)
@@ -279,51 +388,354 @@ observeCommitTrees revision paths targetOid targetPaths targetEntries nodes =
           | node <- nodes,
             parentOid <- gitCommitNodeParents node
         ]
-    go _ _ diagnostics [] = pure (Right diagnostics)
-    go trees refcounts diagnostics (node : remaining)
-      | gitCommitNodeOid node == targetOid = do
-          let trees' = Map.insert targetOid targetEntries trees
-          retireNode trees' refcounts diagnostics node [] remaining
-      | otherwise = do
-          observed <- observeManagedTreeAt revision (gitCommitNodeOid node) paths
-          case observed of
+    go :: Map GitOid HistoryState -> Map GitOid Int -> [CompilerDiagnostic] -> [GitCommitNode] -> Map GitOid [GitHistoryTreeDelta] -> IO (Either RepositorySnapshotError [CompilerDiagnostic])
+    go _ _ diagnostics [] _ = pure (Right (reverse diagnostics))
+    go states refcounts diagnostics remaining deltaGroups = do
+      -- A single commit is allowed to touch more than the ordinary batch
+      -- budget.  It must not, however, turn that budget into an unbounded
+      -- retention exception: process its edges in bounded chunks before
+      -- continuing with the normal multi-node batch path.
+      case remaining of
+        node : laterNodes | nodeBlobCount deltaGroups node > historyBlobBatchLimit ->
+          case Map.lookup (gitCommitNodeOid node) deltaGroups of
+            Nothing -> pure (Left (missingDelta node))
+            Just nodeDeltas -> do
+              advanced <- advanceNode states refcounts diagnostics node (observeNodeStreaming parseCount requestCount repository states nodeDeltas)
+              case advanced of
+                Left problem -> pure (Left problem)
+                Right (states', refcounts', diagnostics') ->
+                  go states' refcounts' diagnostics' laterNodes deltaGroups
+        _ -> do
+          let (batchNodes, laterNodes) = takeHistoryBlobBatch deltaGroups remaining
+              batchChanges = concatMap (nodeChanges deltaGroups) batchNodes
+          blobsResult <- readChangedBlobs requestCount repository batchChanges
+          case first RepositorySnapshotGitError blobsResult of
             Left problem -> pure (Left problem)
-            Right observations -> do
-              let (entries, nonblobs) = partitionObservations observations
-              let trees' = Map.insert (gitCommitNodeOid node) entries trees
-              retireNode trees' refcounts diagnostics node nonblobs remaining
-    -- Validate this node against the live tree map (its own tree is already
-    -- inserted), accumulate its diagnostics, then decrement the remaining
-    -- refcounts of its parents and evict any parent whose count reached zero.
-    retireNode trees refcounts diagnostics node nonblobs remaining =
-      go trees' refcounts' (diagnostics <> nodeDiagnostics) remaining
-      where
-        nodeOid = gitCommitNodeOid node
-        nodeDiagnostics =
-          edgeIssues targetPaths trees node
-            <> map (nonblobDiagnostic CompilerHistoryOrigin (Just nodeOid)) nonblobs
-        (refcounts', trees') =
-          foldr'
-            ( \parentOid (counts, current) ->
-                case Map.lookup parentOid counts of
-                  Nothing -> (counts, current)
-                  Just 1 -> (Map.delete parentOid counts, Map.delete parentOid current)
-                  Just count -> (Map.insert parentOid (count - 1) counts, current)
-            )
-            (refcounts, trees)
-            (gitCommitNodeParents node)
+            Right blobs -> processBatch states refcounts diagnostics batchNodes laterNodes deltaGroups blobs
 
-edgeIssues :: Set RepoPath -> Map GitOid [ManagedSnapshotEntry] -> GitCommitNode -> [CompilerDiagnostic]
-edgeIssues targetPaths trees child =
-  concatMap validateParent (gitCommitNodeParents child)
+    -- Every history read is a finite buffered Git window.  The compact parent
+    -- state still advances one commit at a time, preserving edge order while
+    -- each window retains at most 'historyBlobBatchLimit' blobs.
+    processBatch states refcounts diagnostics [] laterNodes deltaGroups _ =
+      go states refcounts diagnostics laterNodes deltaGroups
+    processBatch states refcounts diagnostics (node : pendingNodes) laterNodes deltaGroups blobs =
+      case Map.lookup (gitCommitNodeOid node) deltaGroups of
+        Nothing -> pure (Left (missingDelta node))
+        Just nodeDeltas -> do
+          advanced <- advanceNode states refcounts diagnostics node (observeNode parseCount states nodeDeltas blobs)
+          case advanced of
+            Left problem -> pure (Left problem)
+            Right (states', refcounts', diagnostics') ->
+              -- Do not look ahead again until every node whose blobs were
+              -- preloaded into this map has consumed them.  Besides avoiding
+              -- duplicate cat-file requests, this keeps the retained blob
+              -- map bounded to this one ordinary batch.
+              processBatch states' refcounts' diagnostics' pendingNodes laterNodes deltaGroups blobs
+
+    advanceNode states refcounts diagnostics node observed = do
+      result <- observed
+      case result of
+        Left problem -> pure (Left problem)
+        Right (childState, nodeDiagnostics) -> do
+          let nodeOid = gitCommitNodeOid node
+              statesWithChild = Map.insert nodeOid childState states
+              (refcounts', states') =
+                foldr'
+                  ( \parentOid (counts, current) ->
+                      case Map.lookup parentOid counts of
+                        Nothing -> (counts, current)
+                        Just 1 -> (Map.delete parentOid counts, Map.delete parentOid current)
+                        Just count -> (Map.insert parentOid (count - 1) counts, current)
+                  )
+                  (refcounts, statesWithChild)
+                  (gitCommitNodeParents node)
+          pure (Right (states', refcounts', foldl' (flip (:)) diagnostics nodeDiagnostics))
+
+    selectedChanges :: GitHistoryTreeDelta -> [GitTreeChange]
+    selectedChanges edge = filter (isSelectedManagedPath paths . gitTreeChangePath) (gitHistoryTreeDeltaChanges edge)
+
+    nodeChanges deltaGroups node =
+      maybe [] (concatMap selectedChanges) (Map.lookup (gitCommitNodeOid node) deltaGroups)
+
+    -- A fixed OID budget bounds the blob map and still collapses the 12k/2k
+    -- stress history to a small number of cat-file sessions.  An oversized
+    -- node is deliberately left for the streaming branch above, rather than
+    -- being admitted to an unbounded ordinary batch.
+    takeHistoryBlobBatch deltaGroups nodesToBatch =
+      case nodesToBatch of
+        [] -> ([], [])
+        firstNode : rest -> collect (nodeBlobCount deltaGroups firstNode) [firstNode] rest
+      where
+        collect _count reversedNodes [] = (reverse reversedNodes, [])
+        collect count reversedNodes remaining@(node : rest)
+          | nodeBlobCount deltaGroups node > historyBlobBatchLimit = (reverse reversedNodes, remaining)
+          | count > 0 && count + nodeBlobCount deltaGroups node > historyBlobBatchLimit = (reverse reversedNodes, remaining)
+          | otherwise = collect (count + nodeBlobCount deltaGroups node) (node : reversedNodes) rest
+
+    observeNode counter states nodeDeltas blobs = do
+      edgeStates <- traverse (observeEdge counter states blobs) nodeDeltas
+      pure (sequence edgeStates >>= finishObservedNode nodeDeltas)
+
+    -- Process each edge of an oversized node with a bounded blob map.  The
+    -- mutable state retains only parsed identities, never the blob bytes.
+    observeNodeStreaming counter blobRequests gitRepository states nodeDeltas = do
+      edgeStates <- traverse (observeEdgeStreaming counter blobRequests gitRepository states) nodeDeltas
+      pure (finishObservedNode nodeDeltas =<< sequence edgeStates)
+
+    finishObservedNode nodeDeltas edgeStates = do
+      (primary, convergencePairs) <-
+        maybe
+          (Left (missingDeltaForOid (gitHistoryTreeDeltaCommit (head nodeDeltas))))
+          Right
+          (historyConvergencePairs (map edgeChildState edgeStates))
+      -- Ordinary history nodes produce no pairs, avoiding an O(live managed
+      -- state) self-comparison.  Genuine merges remain fail-closed by
+      -- comparing every independently reconstructed child to the first edge.
+      if all (uncurry (==)) convergencePairs
+        then Right ()
+        else Left (divergentMergeState (gitHistoryTreeDeltaCommit (head nodeDeltas)))
+      let nodeOid = gitHistoryTreeDeltaCommit (head nodeDeltas)
+          edgeDiagnostics = concatMap (edgeIssues nodeOid) edgeStates
+          historicalNonblobs =
+            [ nonblobDiagnostic CompilerHistoryOrigin (Just nodeOid) (RepositoryTreeObservation entry Nothing)
+              | nodeOid /= targetOid,
+                entry <- Map.elems (historyStateNonblobs primary)
+            ]
+      Right (primary, edgeDiagnostics <> historicalNonblobs)
+
+    edgeChildState (_, _, state) = state
+
+    observeEdge counter states blobs edge =
+      case
+          case gitHistoryTreeDeltaParent edge of
+            Nothing -> Right emptyHistoryState
+            Just parentOid -> maybe (Left (missingParent parentOid)) Right (Map.lookup parentOid states)
+        of
+          Left problem -> pure (Left problem)
+          Right parentState -> do
+            childState <- applyChangesAtParseSeam counter blobs parentState (selectedChanges edge)
+            pure (fmap (\child -> (edge, parentState, child)) childState)
+
+    observeEdgeStreaming counter blobRequests gitRepository states edge = do
+      let parentState =
+            case gitHistoryTreeDeltaParent edge of
+              Nothing -> Right emptyHistoryState
+              Just parentOid -> maybe (Left (missingParent parentOid)) Right (Map.lookup parentOid states)
+      case parentState of
+        Left problem -> pure (Left problem)
+        Right state -> do
+          childState <- applyChangesStreaming counter blobRequests gitRepository state (selectedChanges edge)
+          pure (fmap (\child -> (edge, state, child)) childState)
+
+    edgeIssues nodeOid (edge, parentState, childState) =
+      map (integrityDiagnostic CompilerHistoryOrigin (Just nodeOid) . remapDeletion targetPaths)
+        (validateHistoryDelta parentState childState (selectedChanges edge))
+
+    nodeBlobCount deltaGroups node =
+      length
+        [ ()
+          | edge <- maybe [] id (Map.lookup (gitCommitNodeOid node) deltaGroups),
+            change <- selectedChanges edge,
+            Just entry <- [gitTreeChangeNewEntry change],
+            gitTreeObjectType entry == GitBlobObject
+        ]
+
+    historyBlobBatchLimit = 256
+
+    groupDeltas = foldl' (\groups delta -> Map.insertWith (flip (<>)) (gitHistoryTreeDeltaCommit delta) [delta] groups) Map.empty
+    missingDelta node = RepositorySnapshotGitError (GitInvalidOutput "history tree deltas" (GitMalformedTreeRecord (TextEncoding.encodeUtf8 ("missing delta for " <> gitOidText (gitCommitNodeOid node)))))
+    missingDeltaForOid oid = RepositorySnapshotGitError (GitInvalidOutput "history tree deltas" (GitMalformedTreeRecord (TextEncoding.encodeUtf8 ("empty delta group for " <> gitOidText oid))))
+    missingParent oid = RepositorySnapshotGitError (GitInvalidOutput "history tree deltas" (GitMalformedTreeRecord (TextEncoding.encodeUtf8 ("missing live parent state for " <> gitOidText oid))))
+    divergentMergeState oid = RepositorySnapshotGitError (GitInvalidOutput "history tree deltas" (GitMalformedTreeRecord (TextEncoding.encodeUtf8 ("merge parent deltas reconstruct different child trees for " <> gitOidText oid))))
+
+readChangedBlobs :: Maybe (IORef Int) -> Repository -> [GitTreeChange] -> IO (Either GitError (Map GitOid GitBlob))
+readChangedBlobs requestCount repository changes = do
+  let objectIds =
+        [ gitTreeOid entry
+          | change <- changes,
+            Just entry <- [gitTreeChangeNewEntry change],
+            gitTreeObjectType entry == GitBlobObject
+        ]
+      requested = Map.keys (Map.fromList [(objectId, ()) | objectId <- objectIds])
+  incrementHistoryCounter requestCount (length requested)
+  readBlobBatch repository requested
+
+-- | Stream one oversized edge in fixed OID batches.  Each map becomes
+-- unreachable before the next batch is requested, including when the edge is
+-- a single large root commit.
+applyChangesStreaming :: Maybe (IORef Int) -> Maybe (IORef Int) -> Repository -> HistoryState -> [GitTreeChange] -> IO (Either RepositorySnapshotError HistoryState)
+applyChangesStreaming parseCount requestCount repository initial changes = go initial (chunkChanges historyBlobBatchLimit changes)
   where
-    validateParent parentOid =
-      case (Map.lookup parentOid trees, Map.lookup (gitCommitNodeOid child) trees) of
-        (Just parentEntries, Just childEntries) ->
-          map
-            (integrityDiagnostic CompilerHistoryOrigin (Just (gitCommitNodeOid child)) . remapDeletion targetPaths)
-            (validateAppendOnlyDelta parentEntries childEntries)
-        _ -> []
+    go state [] = pure (Right state)
+    go state (chunk : remaining) = do
+      blobs <- readChangedBlobs requestCount repository chunk
+      case first RepositorySnapshotGitError blobs of
+        Left problem -> pure (Left problem)
+        Right available -> do
+          next <- applyChangesAtParseSeam parseCount available state chunk
+          case next of
+            Left problem -> pure (Left problem)
+            Right updated -> go updated remaining
+    historyBlobBatchLimit = 256
+    chunkChanges _ [] = []
+    chunkChanges limit values = let (next, remaining) = splitAt limit values in next : chunkChanges limit remaining
+
+-- | This is the only historical parse seam.  Count immediately before the
+-- parser is invoked so the regression metric represents actual parse attempts
+-- (rather than changed paths or requested OIDs).
+applyChangesAtParseSeam :: Maybe (IORef Int) -> Map GitOid GitBlob -> HistoryState -> [GitTreeChange] -> IO (Either RepositorySnapshotError HistoryState)
+applyChangesAtParseSeam parseCount blobs initial = go initial
+  where
+    go current [] = pure (Right current)
+    go current (change : remaining) = do
+      next <- applyOne current change
+      case next of
+        Left problem -> pure (Left problem)
+        Right updated -> go updated remaining
+    applyOne current change = do
+      let path = gitTreeChangePath change
+          previous = Map.lookup path (historyStatePaths current)
+      next <- pathStateFromChangeAtParseSeam parseCount blobs previous change
+      pure $ do
+        replacement <- next
+        Right (replaceHistoryPath path replacement current)
+
+pathStateFromChangeAtParseSeam :: Maybe (IORef Int) -> Map GitOid GitBlob -> Maybe HistoryPathState -> GitTreeChange -> IO (Either RepositorySnapshotError (Maybe HistoryPathState))
+incrementHistoryCounter :: Maybe (IORef Int) -> Int -> IO ()
+incrementHistoryCounter counter amount =
+  case counter of
+    Nothing -> pure ()
+    Just reference -> modifyIORef' reference (+ amount)
+
+pathStateFromChangeAtParseSeam parseCount blobs _previous change =
+  case gitTreeChangeNewEntry change of
+    Nothing -> pure (Right Nothing)
+    Just entry
+      | gitTreeObjectType entry /= GitBlobObject -> pure (Right (Just (HistoryNonblob entry)))
+      | otherwise -> do
+          case Map.lookup (gitTreeOid entry) blobs of
+            Nothing -> pure (Left (RepositorySnapshotMissingBatchBlob (gitTreeOid entry)))
+            Just blob -> do
+              incrementHistoryCounter parseCount 1
+              let parsed = parseSnapshotEntry (gitTreePath entry) (gitBlobBytes blob)
+                  identity = maybe Nothing documentIdentity (either (const Nothing) Just (snapshotEntryDocument parsed))
+              pure (Right (Just (HistoryBlob entry identity)))
+
+replaceHistoryPath :: RepoPath -> Maybe HistoryPathState -> HistoryState -> HistoryState
+replaceHistoryPath path replacement state =
+  HistoryState nextPaths nextMembers nextNonblobs
+  where
+    previous = Map.lookup path (historyStatePaths state)
+    pathsWithoutPrevious = Map.delete path (historyStatePaths state)
+    membersWithoutPrevious = maybe (historyStateMembers state) (\value -> removeIdentity (historyIdentity value) (historyStateMembers state)) previous
+    nonblobsWithoutPrevious = Map.delete path (historyStateNonblobs state)
+    nextPaths = maybe pathsWithoutPrevious (\value -> Map.insert path value pathsWithoutPrevious) replacement
+    nextMembers = maybe membersWithoutPrevious (\value -> addIdentity (historyIdentity value) membersWithoutPrevious) replacement
+    nextNonblobs =
+      case replacement of
+        Just (HistoryNonblob entry) -> Map.insert path entry nonblobsWithoutPrevious
+        _ -> nonblobsWithoutPrevious
+    removeIdentity :: Maybe (OperationId, ObjectRef) -> Map OperationId (Map ObjectRef Int) -> Map OperationId (Map ObjectRef Int)
+    removeIdentity Nothing members = members
+    removeIdentity (Just (operation, objectId)) members =
+      case Map.lookup operation members of
+        Nothing -> members
+        Just objects ->
+          case Map.lookup objectId objects of
+            Nothing -> members
+            Just 1 ->
+              let remainingObjects = Map.delete objectId objects
+               in if Map.null remainingObjects
+                    then Map.delete operation members
+                    else Map.insert operation remainingObjects members
+            Just count -> Map.insert operation (Map.insert objectId (count - 1) objects) members
+    addIdentity :: Maybe (OperationId, ObjectRef) -> Map OperationId (Map ObjectRef Int) -> Map OperationId (Map ObjectRef Int)
+    addIdentity Nothing members = members
+    addIdentity (Just (operation, objectId)) members = Map.insertWith (Map.unionWith (+)) operation (Map.singleton objectId 1) members
+
+historyIdentity :: HistoryPathState -> Maybe (OperationId, ObjectRef)
+historyIdentity value = case value of
+  HistoryBlob _ identity -> identity
+  HistoryNonblob _ -> Nothing
+
+documentIdentity :: ParsedManagedDocument -> Maybe (OperationId, ObjectRef)
+documentIdentity document = Just (provenanceOperationId (parsedManagedCapsule document), managedDocumentObject document)
+
+validateHistoryDelta :: HistoryState -> HistoryState -> [GitTreeChange] -> [IntegrityIssue]
+validateHistoryDelta previous current changes =
+  missingIssues <> rewriteIssues <> incompleteIssues
+  where
+    changedPaths = Set.fromList (map gitTreeChangePath changes)
+    previousBlob path = case Map.lookup path (historyStatePaths previous) of Just value@(HistoryBlob _ _) -> Just value; _ -> Nothing
+    currentBlob path = case Map.lookup path (historyStatePaths current) of Just value@(HistoryBlob _ _) -> Just value; _ -> Nothing
+    missingIssues =
+      [ historyIssue MissingHistoricalObject (historyObject oldEntry) (historyOperation oldEntry) (Just path) "immutable managed object is missing from the current snapshot"
+        | path <- Set.toAscList changedPaths,
+          Just oldEntry <- [previousBlob path],
+          Nothing <- [currentBlob path]
+      ]
+    rewriteIssues =
+      [ historyIssue AppendOnlyRewrite (historyObject oldEntry) (historyOperation oldEntry) (Just path) "immutable managed object bytes changed at an existing path"
+        | path <- Set.toAscList changedPaths,
+          Just oldEntry@(HistoryBlob oldTreeEntry _) <- [previousBlob path],
+          Just (HistoryBlob newTreeEntry _) <- [currentBlob path],
+          gitTreeOid oldTreeEntry /= gitTreeOid newTreeEntry
+      ]
+    affectedOperations =
+      Set.toAscList
+        ( previousChangedOperations
+            `Set.union` currentReusedOperations
+        )
+    previousChangedOperations =
+      Set.fromList
+        [ operation
+          | path <- Set.toAscList changedPaths,
+            Just value <- [Map.lookup path (historyStatePaths previous)],
+            Just (operation, _) <- [historyIdentity value]
+        ]
+    -- A changed path can introduce a member under an operation that was
+    -- already live elsewhere.  The old path might be malformed (and therefore
+    -- have no identity), so attribution must include this current operation
+    -- when it has a previous membership to compare against.
+    currentReusedOperations =
+      Set.fromList
+        [ operation
+          | path <- Set.toAscList changedPaths,
+            Just value <- [Map.lookup path (historyStatePaths current)],
+            Just (operation, _) <- [historyIdentity value],
+            Map.member operation (historyStateMembers previous)
+        ]
+    -- A malformed replacement has no durable semantic identity.  For the
+    -- immediately adjacent valid-to-malformed comparison only, retain the old
+    -- identity in the comparison member set so that the byte rewrite is not
+    -- also reported as an incomplete operation.  Never write that fallback to
+    -- the child state: a later delete or rewrite must not be attributed to the
+    -- earlier valid document.
+    comparisonCurrentMembers =
+      foldl'
+        addMalformedFallback
+        (historyStateMembers current)
+        (Set.toAscList changedPaths)
+    addMalformedFallback members path =
+      case (Map.lookup path (historyStatePaths previous), Map.lookup path (historyStatePaths current)) of
+        (Just (HistoryBlob _ (Just identity)), Just (HistoryBlob _ Nothing)) -> addIdentity identity members
+        _ -> members
+    addIdentity (operation, objectId) members = Map.insertWith (Map.unionWith (+)) operation (Map.singleton objectId 1) members
+    incompleteIssues =
+      [ historyIssue IncompleteOperation Nothing (Just operation) Nothing ("operation " <> operationIdText operation <> " is missing or has changed immutable members")
+        | operation <- affectedOperations,
+          Map.lookup operation (historyStateMembers previous) /= Map.lookup operation comparisonCurrentMembers
+      ]
+
+historyObject :: HistoryPathState -> Maybe ObjectRef
+historyObject value = snd <$> historyIdentity value
+
+historyOperation :: HistoryPathState -> Maybe OperationId
+historyOperation value = fst <$> historyIdentity value
+
+historyIssue :: IntegrityIssueCode -> Maybe ObjectRef -> Maybe OperationId -> Maybe RepoPath -> Text -> IntegrityIssue
+historyIssue code objectId operation path message =
+  IntegrityIssue IntegrityError code objectId operation path message
 
 remapDeletion :: Set RepoPath -> IntegrityIssue -> IntegrityIssue
 remapDeletion targetPaths issueValue
@@ -689,6 +1101,13 @@ managedRecordAdr record =
 allSame :: (Eq value) => [value] -> Bool
 allSame [] = True
 allSame (firstValue : remaining) = all (== firstValue) remaining
+
+-- | Preserve the first observed edge as the node's published state, while
+-- exposing only the comparisons needed to prove that further parent edges
+-- reconstruct the same child.  An empty delta group has no primary state.
+historyConvergencePairs :: [value] -> Maybe (value, [(value, value)])
+historyConvergencePairs [] = Nothing
+historyConvergencePairs (primary : additional) = Just (primary, map (\additionalState -> (primary, additionalState)) additional)
 
 sourceFingerprint :: RawRepositorySnapshotObservation -> Digest
 -- Streaming SHA-256 over the exact framed sequence the entryFields-based call

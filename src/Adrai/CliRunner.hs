@@ -89,12 +89,12 @@ import Adrai.History
 import Adrai.Retrieval (RetrievalMode (FtsRetrieval, HybridRetrieval, VectorRetrieval))
 import Adrai.Types (ViewMode (CollapsedView, ExplodedView))
 import Adrai.Domain (Domain, DomainRefinement, canonicalDomains, domainErrorText, domainText, domainRefinementText, mkDomain, parseDomainRefinement)
-import Adrai.Git (GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitOidText, isShallowRepository, repositoryWorktreeRoot, systemGit)
+import Adrai.Git (GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitBlobBytes, gitOidText, isShallowRepository, repositoryWorktreeRoot, systemGit)
 import Adrai.Identity (sortableAdrId, sortableRecordId)
 import qualified Adrai.Format as Format
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import Adrai.Provenance (sha256Digest)
-import Adrai.Repository (resolvedCommitOid, resolveRepositoryRevision, repositorySnapshot, repositorySnapshotManagedPaths)
+import Adrai.Repository (RepositorySnapshot, repositorySnapshotEntries, repositorySnapshotManagedPaths, repositoryTreeBlob, resolvedCommitOid, resolveRepositoryRevision, repositorySnapshot)
 import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
 import Adrai.Explorer.Interactive (interactiveSession)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
@@ -121,9 +121,32 @@ import Adrai.Service.PostCommitIndex
   ( IndexWarning (..),
     PostCommitIndexError (..),
     PostCommitIndexResult (..),
+    clonePostCommitIndex,
+    clonePostCommitIndexWithHistoryCount,
     compilePostCommitIndex,
+    compilePostCommitIndexWithAttribution,
   )
-import Adrai.Compiler.CacheSelection (loadCacheMeta)
+import Adrai.Compiler.Attribution
+  ( AttributionCounter (CounterBytes, CounterChanges, CounterCurrentEntries, CounterSelectedNodes),
+    AttributionPhase (CacheReuseProof, CacheSelection, CliPreflight, CliRevisionResolution, CurrentAliasCopy, PreflightCurrentObservation),
+    ColdCompileAttribution,
+    attributionEnabled,
+    closeColdCompileAttribution,
+    inertColdCompileAttribution,
+    newFileColdCompileAttribution,
+    recordAttributionCounter,
+    withAttributionEitherPhase,
+    withAttributionPhase,
+  )
+import Adrai.Compiler.CacheSelection
+  ( CacheMode (..),
+    IncrementalKind (..),
+    ReuseCacheInfo (..),
+    cachePathSelection,
+    boundedHistoryIrrelevantCount,
+    loadCacheMeta,
+    validateCachePublicationContract,
+  )
 import Adrai.Service.Transaction (TransactionError (..))
 import Adrai.Types
   ( Actor,
@@ -132,6 +155,7 @@ import Adrai.Types
      AdrId,
      RecordId,
      StateToken,
+     ManagedPaths (..),
      ProvenanceInputs (..),
      actorId,
      actorKind,
@@ -165,21 +189,21 @@ import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as ByteString
 import Data.Bifunctor (first)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe)
 import qualified Data.Scientific as Scientific
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Read as TextRead
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, getFileSize)
 import System.Environment (getArgs, lookupEnv)
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeDirectory)
 import System.IO (Handle, hGetContents, stderr, stdin, stdout)
 import System.Random (randomRIO)
 import Control.Monad (replicateM)
-import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, fromException, throwIO, try)
-import Database.SQLite.Simple (close, open, query, query_)
+import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, finally, fromException, throwIO, try)
+import Database.SQLite.Simple (Only (..), close, open, query, query_)
 import qualified Options.Applicative as Opt
 import Options.Applicative
   ( Parser,
@@ -818,11 +842,19 @@ productionCliDependencies =
 
 runProductionCompile :: CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult)
 runProductionCompile config command = do
-  repositoryResult <- discoverRepository systemGit (configRepo config)
+  attribution <- testOnlyColdCompileAttribution
+  runProductionCompileWithAttribution attribution config command `finally` closeColdCompileAttribution attribution
+
+-- The observer is supplied only by the private stress hook above.  Keeping
+-- the normal implementation parameterised prevents this test instrumentation
+-- from becoming a CLI-visible compile mode.
+runProductionCompileWithAttribution :: ColdCompileAttribution -> CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult)
+runProductionCompileWithAttribution attribution config command = do
+  repositoryResult <- withAttributionPhase attribution CliPreflight (discoverRepository systemGit (configRepo config))
   case repositoryResult of
     Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
     Right repository -> do
-      revisionResult <- resolveRepositoryRevision repository (RevisionSpec (compileAt command))
+      revisionResult <- withAttributionEitherPhase attribution CliRevisionResolution (resolveRepositoryRevision repository (RevisionSpec (compileAt command)))
       case revisionResult of
         Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
         Right revision -> do
@@ -831,18 +863,183 @@ runProductionCompile config command = do
             Left problem -> pure (Left (CliUserFailure problem))
             Right database -> do
               let requestedRevision = resolvedCommitOid revision
-              exactHit <- exactCompileCacheHit database requestedRevision
-              if exactHit
-                then loadExactCompileResult database requestedRevision
-                else do
-                  indexed <- indexCommitted database repository requestedRevision
-                  case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
-                    (True, Just published, Just indexedRevision, Nothing)
-                      | published /= database -> pure (Left (CliUserFailure "compile published an unexpected database path"))
-                      | indexedRevision /= requestedRevision -> pure (Left (CliUserFailure "compile published an unexpected revision"))
-                      | otherwise -> loadPublishedCompileResult published indexedRevision
-                    (_, _, _, Just problem) -> pure (Left (CliUserFailure ("compile failed: " <> Text.pack (show problem))))
-                    _ -> pure (Left (CliUserFailure "compile returned an incomplete result"))
+              cacheResult <- prepareCacheSnapshotPath repository requestedRevision
+              case cacheResult of
+                Left problem -> pure (Left (CliUserFailure problem))
+                Right cacheSnapshot -> do
+                  snapshotResult <-
+                    withAttributionEitherPhase attribution PreflightCurrentObservation $ do
+                      result <- repositorySnapshot repository (RevisionSpec (gitOidText requestedRevision))
+                      case result of
+                        Right snapshot -> recordCurrentObservationCounters attribution snapshot
+                        Left _ -> pure ()
+                      pure result
+                  case snapshotResult of
+                    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+                    Right snapshot -> do
+                      -- The committed configuration changes the compiler's
+                      -- input contract, including which paths are managed.
+                      -- It must therefore participate in tree identity: a
+                      -- cache built using earlier configured roots cannot be
+                      -- cloned for a revision with different configuration.
+                      let managedRoots =
+                            ".adrai.toml"
+                              : map
+                                  (Text.unpack . repoPathText)
+                                  [ managedDecisionPath (repositorySnapshotManagedPaths snapshot)
+                                  , managedConnectionPath (repositorySnapshotManagedPaths snapshot)
+                                  ]
+                      -- The immutable revision archive is the sole authority for
+                      -- exact classification.  The mutable alias can only be a
+                      -- matching copy of that archive, never exact evidence in
+                      -- its own right.
+                      selection <-
+                        withAttributionPhase attribution CacheSelection $ do
+                          result <-
+                            cachePathSelection
+                              repository
+                              (takeDirectory cacheSnapshot)
+                              "index.sqlite"
+                              "adrai-cache/1"
+                              (gitOidText requestedRevision)
+                              (Just cacheSnapshot)
+                              managedRoots
+                          recordCacheSelectionCounters attribution cacheSnapshot result
+                          pure result
+                      case selection of
+                        (Exact, _, _) -> do
+                          aliasMatchesArchive <- exactAliasMatchesArchive database cacheSnapshot requestedRevision
+                          if aliasMatchesArchive
+                            then loadExactCompileResult database requestedRevision
+                            else do
+                              recovered <- publishCurrentAlias cacheSnapshot requestedRevision database
+                              case recovered of
+                                Left problem -> pure (Left problem)
+                                Right () -> loadExactCompileResult database requestedRevision
+                        (Incremental TreeIdentical, _, Just candidate) -> do
+                          historyCount <-
+                            withAttributionPhase attribution CacheReuseProof $ do
+                              result <- boundedHistoryIrrelevantCount repository managedRoots (rcSourceRev candidate) (gitOidText requestedRevision)
+                              case result of
+                                Just count -> recordAttributionCounter attribution CounterChanges (fromIntegral count)
+                                Nothing -> pure ()
+                              pure result
+                          case historyCount of
+                            Nothing -> do
+                              indexed <- indexCommittedWithAttribution attribution cacheSnapshot repository requestedRevision
+                              consumeFreshIndex attribution database cacheSnapshot requestedRevision indexed
+                            Just count -> do
+                              reused <- capturePostCommitIndex (clonePostCommitIndexWithHistoryCount (rcPath candidate) requestedRevision cacheSnapshot (Just count))
+                              consumeTreeIdenticalSnapshot attribution database cacheSnapshot requestedRevision reused
+                        _ -> do
+                          -- Publish the revision-addressed snapshot first.  The
+                          -- shared index alias is a disposable convenience copy,
+                          -- never a source for archive recovery.
+                          indexed <- indexCommittedWithAttribution attribution cacheSnapshot repository requestedRevision
+                          consumeFreshIndex attribution database cacheSnapshot requestedRevision indexed
+
+-- | The preflight snapshot is already needed to establish managed roots.  Only
+-- an explicit observer derives its cardinality and blob-byte evidence, keeping
+-- an ordinary CLI invocation free of profiling-only traversal work.
+recordCurrentObservationCounters :: ColdCompileAttribution -> RepositorySnapshot -> IO ()
+recordCurrentObservationCounters attribution snapshot
+  | attributionEnabled attribution = do
+      let entries = repositorySnapshotEntries snapshot
+      recordAttributionCounter attribution CounterCurrentEntries (fromIntegral (length entries))
+      recordAttributionCounter
+        attribution
+        CounterBytes
+        ( fromIntegral
+            (sum [maybe 0 (ByteString.length . gitBlobBytes) (repositoryTreeBlob entry) | entry <- entries])
+        )
+  | otherwise = pure ()
+
+-- | Selection chooses at most one archive for an exact hit or reuse proof.
+-- The selected byte count is taken only after the selection succeeds and only
+-- in opt-in mode, so it is an exact caller-owned diagnostic rather than a new
+-- cache-path dependency of normal compilation.
+recordCacheSelectionCounters :: ColdCompileAttribution -> FilePath -> (CacheMode, IncrementalKind, Maybe ReuseCacheInfo) -> IO ()
+recordCacheSelectionCounters attribution exactPath (mode, _, candidate)
+  | attributionEnabled attribution = do
+      let selectedPath =
+            case (mode, candidate) of
+              (Exact, _) -> Just exactPath
+              (_, Just info) -> Just (rcPath info)
+              _ -> Nothing
+      recordAttributionCounter attribution CounterSelectedNodes (maybe 0 (const 1) selectedPath)
+      bytes <- traverse getFileSize selectedPath
+      recordAttributionCounter attribution CounterBytes (maybe 0 fromIntegral bytes)
+  | otherwise = pure ()
+
+-- | Check publication integrity independently of reuse eligibility.  The
+-- mutable alias is expendable; an archived snapshot for this exact resolved
+-- revision remains a valid recovery source even when its semantic state is a
+-- conflict or history is incomplete.
+isExactPublishedSnapshot :: FilePath -> GitOid -> IO Bool
+isExactPublishedSnapshot path revision = do
+  valid <- validateCachePublicationContract path
+  if not valid
+    then pure False
+    else do
+      metadata <- loadCacheMeta path
+      pure $ case metadata of
+        Just rows -> Map.lookup "resolved_oid" rows == Just (gitOidText revision)
+        Nothing -> False
+
+-- | The alias may serve an exact result only when it is a complete copy of the
+-- authoritative archive, including all canonical metadata.  Comparing the full
+-- maps avoids accepting a readable alias whose reporting counters diverged.
+exactAliasMatchesArchive :: FilePath -> FilePath -> GitOid -> IO Bool
+exactAliasMatchesArchive alias archive revision = do
+  aliasExact <- isExactPublishedSnapshot alias revision
+  archiveExact <- isExactPublishedSnapshot archive revision
+  if aliasExact && archiveExact
+    then do
+      aliasMetadata <- loadCacheMeta alias
+      archiveMetadata <- loadCacheMeta archive
+      pure (aliasMetadata == archiveMetadata)
+    else pure False
+
+consumeFreshIndex :: ColdCompileAttribution -> FilePath -> FilePath -> GitOid -> PostCommitIndexResult -> IO (Either CliFailure CompileResult)
+consumeFreshIndex attribution database cacheSnapshot requestedRevision indexed =
+  case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
+    (True, Just published, Just indexedRevision, Nothing)
+      | published /= cacheSnapshot -> pure (Left (CliUserFailure "compile published an unexpected cache snapshot path"))
+      | indexedRevision /= requestedRevision -> pure (Left (CliUserFailure "compile published an unexpected revision"))
+      | otherwise -> do
+          aliased <- withAttributionEitherPhase attribution CurrentAliasCopy (publishCurrentAlias published requestedRevision database)
+          case aliased of
+            Left problem -> pure (Left problem)
+            Right () -> loadPublishedCompileResult published indexedRevision
+    (_, _, _, Just problem) -> pure (Left (CliUserFailure ("compile failed: " <> Text.pack (show problem))))
+    _ -> pure (Left (CliUserFailure "compile returned an incomplete result"))
+
+consumeTreeIdenticalSnapshot :: ColdCompileAttribution -> FilePath -> FilePath -> GitOid -> PostCommitIndexResult -> IO (Either CliFailure CompileResult)
+consumeTreeIdenticalSnapshot attribution database cacheSnapshot requestedRevision indexed =
+  case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
+    (True, Just published, Just indexedRevision, Nothing)
+      | published /= cacheSnapshot -> pure (Left (CliUserFailure "tree-identical reuse published an unexpected cache snapshot path"))
+      | indexedRevision /= requestedRevision -> pure (Left (CliUserFailure "tree-identical reuse published an unexpected revision"))
+      | otherwise -> do
+          aliased <- withAttributionEitherPhase attribution CurrentAliasCopy (publishCurrentAlias published requestedRevision database)
+          case aliased of
+            Left problem -> pure (Left problem)
+            Right () -> loadTreeIdenticalCompileResult published indexedRevision
+    (_, _, _, Just problem) -> pure (Left (CliUserFailure ("tree-identical reuse failed: " <> Text.pack (show problem))))
+    _ -> pure (Left (CliUserFailure "tree-identical reuse returned an incomplete index"))
+
+-- | Refresh the mutable current-index alias from an already published,
+-- revision-addressed snapshot.  The immutable snapshot is complete before the
+-- alias is exposed, so concurrent revisions cannot archive a moving target.
+publishCurrentAlias :: FilePath -> GitOid -> FilePath -> IO (Either CliFailure ())
+publishCurrentAlias cacheSnapshot revision database = do
+  archived <- capturePostCommitIndex (clonePostCommitIndex cacheSnapshot revision database)
+  pure $
+    case (postCommitIndexed archived, postCommitDatabase archived, postCommitIndexRevision archived, postCommitIndexError archived) of
+      (True, Just published, Just indexedRevision, Nothing)
+        | published == database && indexedRevision == revision -> Right ()
+      (_, _, _, Just problem) -> Left (CliUserFailure ("compile succeeded but current cache alias publish failed: " <> Text.pack (show problem)))
+      _ -> Left (CliUserFailure "compile succeeded but current cache alias publication returned an incomplete result")
 
 runProductionDoctor :: CliConfig -> DoctorCommand -> IO (Either CliFailure DoctorOutput)
 runProductionDoctor config command = do
@@ -958,16 +1155,21 @@ doctorOutputFromRows database expectedRevision shallow metadata issueRows confli
 
 loadPublishedCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
 loadPublishedCompileResult database expectedRevision = do
-  rows <- readCompiledMetaRows database
-  pure (first CliUserFailure (compileResultFromMeta database expectedRevision rows))
+  facts <- readCompiledDatabaseFacts database
+  pure (first CliUserFailure (compileResultFromFacts CompileCacheFull database expectedRevision facts))
 
 -- | Load the compile projection from an exact cache hit, reporting reuse of
 -- every document instead of parsing and leaving the published database file
 -- untouched.
 loadExactCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
 loadExactCompileResult database expectedRevision = do
-  rows <- readCompiledMetaRows database
-  pure (first CliUserFailure (compileResultFromMetaMode CompileCacheExact database expectedRevision rows))
+  facts <- readCompiledDatabaseFacts database
+  pure (first CliUserFailure (compileResultFromFacts CompileCacheExact database expectedRevision facts))
+
+loadTreeIdenticalCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
+loadTreeIdenticalCompileResult database expectedRevision = do
+  facts <- readCompiledDatabaseFacts database
+  pure (first CliUserFailure (compileResultFromFacts CompileCacheTreeIdentical database expectedRevision facts))
 
 -- | Read the published database's meta table, translating IO problems into a
 -- user-facing failure.
@@ -977,28 +1179,77 @@ readCompiledMetaRows database = do
   where
     readRows connection = query_ connection "SELECT key,value FROM meta ORDER BY key"
 
--- | Whether the published database is already an exact compile of the requested
--- revision: its resolved OID matches and it carries a full materialization
--- fingerprint. When true, recompiling would only rewrite identical bytes, so
--- the compile reports cache reuse and leaves the database file untouched.
-exactCompileCacheHit :: FilePath -> GitOid -> IO Bool
-exactCompileCacheHit database expectedRevision = do
-  meta <- loadCacheMeta database
-  case meta of
-    Nothing -> pure False
-    Just rows ->
-      pure
-        ( Map.lookup "resolved_oid" rows == Just (gitOidText expectedRevision)
-          && isJust (Map.lookup "materialization_fingerprint" rows)
-        )
+data CompiledDatabaseFacts = CompiledDatabaseFacts
+  { compiledMetaRows :: [(Text, Text)]
+  , compiledManagedSources :: Int
+  , compiledIssues :: Int
+  , compiledErrors :: Int
+  , compiledWarnings :: Int
+  , compiledOperations :: Int
+  , compiledReducedAdrs :: Int
+  , compiledSearchDocuments :: Int
+  , compiledSearchSections :: Int
+  }
+
+-- | Read counters from the published rows rather than deriving them from
+-- metadata relationships.  This makes corrupt/stale metadata fail visibly
+-- instead of producing a plausible but fabricated CLI result.
+readCompiledDatabaseFacts :: FilePath -> IO CompiledDatabaseFacts
+readCompiledDatabaseFacts database = bracket (open database) close $ \connection -> do
+  compiledMetaRows <- query_ connection "SELECT key,value FROM meta ORDER BY key"
+  compiledManagedSources <- scalarCount connection "SELECT count(*) FROM managed_source"
+  compiledIssues <- scalarCount connection "SELECT count(*) FROM issue"
+  compiledErrors <- scalarCount connection "SELECT count(*) FROM issue WHERE severity='error'"
+  compiledWarnings <- scalarCount connection "SELECT count(*) FROM issue WHERE severity='warning'"
+  compiledOperations <- scalarCount connection "SELECT count(*) FROM operation"
+  compiledReducedAdrs <- scalarCount connection "SELECT count(*) FROM reduced_adr"
+  compiledSearchDocuments <- scalarCount connection "SELECT count(*) FROM search_document"
+  compiledSearchSections <- scalarCount connection "SELECT count(*) FROM search_section"
+  pure CompiledDatabaseFacts {..}
+  where
+    scalarCount connection sql = do
+      rows <- query_ connection sql :: IO [Only Int]
+      case rows of
+        [Only count] -> pure count
+        _ -> fail "compiled database count query returned an invalid result"
 
 -- | Whether compile counters describe a fresh full compile or reuse of an exact
 -- cache hit.
-data CompileCacheResultMode = CompileCacheFull | CompileCacheExact
+data CompileCacheResultMode = CompileCacheFull | CompileCacheExact | CompileCacheTreeIdentical
   deriving (Eq, Show)
 
 compileResultFromMeta :: FilePath -> GitOid -> [(Text, Text)] -> Either Text CompileResult
 compileResultFromMeta = compileResultFromMetaMode CompileCacheFull
+
+compileResultFromFacts :: CompileCacheResultMode -> FilePath -> GitOid -> CompiledDatabaseFacts -> Either Text CompileResult
+compileResultFromFacts mode database expectedRevision facts = do
+  result <- compileResultFromMetaMode mode database expectedRevision (compiledMetaRows facts)
+  let (documentsParsed, documentsReused, adrsRebuilt, adrsReused) =
+        case mode of
+          CompileCacheFull -> (compiledManagedSources facts, 0, compiledReducedAdrs facts, 0)
+          CompileCacheExact -> (0, compiledManagedSources facts, 0, compiledReducedAdrs facts)
+          CompileCacheTreeIdentical -> (0, compiledManagedSources facts, 0, compiledReducedAdrs facts)
+  if compiledIssues facts == compiledErrors facts + compiledWarnings facts
+    then
+      Right result
+        { coldCompilerIssueCount = compiledIssues facts
+        , coldCompilerErrorCount = compiledErrors facts
+        , coldCompilerWarningCount = compiledWarnings facts
+        , coldCompilerDocumentsParsed = documentsParsed
+        , coldCompilerDocumentsReused = documentsReused
+        , coldCompilerAdrsRebuilt = adrsRebuilt
+        , coldCompilerAdrsReused = adrsReused
+        -- This cache contains SQLite FTS rows only.  Search vectors are a
+        -- process-local corpus, so no persistent vector or ANN bucket may be
+        -- reported as reused merely because search documents exist.
+        , coldCompilerEmbeddingComputed = 0
+        , coldCompilerEmbeddingReused = 0
+        , coldCompilerAnnBuckets = 0
+        -- Force these physical counts while reading the fully validated
+        -- materialization; they deliberately make stale meta relationships
+        -- impossible to turn into plausible output.
+        }
+    else Left "compiled database has issue severities outside the canonical error/warning set"
 
 compileResultFromMetaMode :: CompileCacheResultMode -> FilePath -> GitOid -> [(Text, Text)] -> Either Text CompileResult
 compileResultFromMetaMode mode database expectedRevision rows = do
@@ -1009,14 +1260,16 @@ compileResultFromMetaMode mode database expectedRevision rows = do
   managedSources <- count "managed_source_count"
   issueCount <- count "issue_count"
   conflictCount <- count "conflict_count"
-  operationCount <- count "operation_count"
-  searchDocuments <- count "search_document_count"
+  historyCommitsScanned <- count "history_commits_scanned"
+  _operationCount <- count "operation_count"
+  _searchDocuments <- count "search_document_count"
   cacheKey <- one "materialization_fingerprint"
   let
-    (cacheMode, documentsParsed, documentsReused, adrsRebuilt, adrsReused) =
+    (cacheMode, documentsParsed, documentsReused) =
       case mode of
-        CompileCacheFull  -> ("full", managedSources, 0, operationCount, 0)
-        CompileCacheExact -> ("exact", 0, managedSources, 0, operationCount)
+        CompileCacheFull  -> ("full", managedSources, 0)
+        CompileCacheExact -> ("exact", 0, managedSources)
+        CompileCacheTreeIdentical -> ("incremental", 0, managedSources)
   if conflictCount <= issueCount
     then
       Right
@@ -1031,13 +1284,19 @@ compileResultFromMetaMode mode database expectedRevision rows = do
           , coldCompilerCacheMode = cacheMode
           , coldCompilerDocumentsParsed = documentsParsed
           , coldCompilerDocumentsReused = documentsReused
-          , coldCompilerHistoryCommitsScanned = 0
-          , coldCompilerIncrementalKind = cacheMode
-          , coldCompilerAdrsRebuilt = adrsRebuilt
-          , coldCompilerAdrsReused = adrsReused
-          , coldCompilerAnnBuckets = searchDocuments
+          , coldCompilerHistoryCommitsScanned = historyCommitsScanned
+          , coldCompilerIncrementalKind =
+              case mode of
+                CompileCacheTreeIdentical -> "tree-identical"
+                _ -> cacheMode
+          -- The row-backed loader above replaces these provisional values
+          -- with real reduced-ADR counts.  There is no stored vector/ANN
+          -- index and no implemented cache-retention pass in this compiler.
+          , coldCompilerAdrsRebuilt = 0
+          , coldCompilerAdrsReused = 0
+          , coldCompilerAnnBuckets = 0
           , coldCompilerCacheKey = cacheKey
-          , coldCompilerCacheRetainRevisions = 12
+          , coldCompilerCacheRetainRevisions = 0
           }
     else Left "compiled database conflict count exceeds issue count"
   where
@@ -1768,9 +2027,38 @@ prepareIndexPath repository =
         Left exception -> pure (Left ("unable to prepare index path: " <> Text.pack (displayException exception)))
         Right () -> pure (Right database)
 
+prepareCacheSnapshotPath :: Repository -> GitOid -> IO (Either Text FilePath)
+prepareCacheSnapshotPath repository revision =
+  case repositoryWorktreeRoot repository of
+    Nothing -> pure (Left "worktree root is missing")
+    Just root -> do
+      let directory = root </> ".adrai" </> "cache"
+          snapshot = directory </> Text.unpack (gitOidText revision) <> ".sqlite"
+      prepared <- try (createDirectoryIfMissing True directory) :: IO (Either SomeException ())
+      pure $
+        case prepared of
+          Left exception -> Left ("unable to prepare cache snapshot path: " <> Text.pack (displayException exception))
+          Right () -> Right snapshot
+
 indexCommitted :: FilePath -> Repository -> GitOid -> IO PostCommitIndexResult
 indexCommitted database repository commit =
   capturePostCommitIndex (compilePostCommitIndex repository commit database)
+
+indexCommittedWithAttribution :: ColdCompileAttribution -> FilePath -> Repository -> GitOid -> IO PostCommitIndexResult
+indexCommittedWithAttribution attribution database repository commit =
+  capturePostCommitIndex (compilePostCommitIndexWithAttribution attribution repository commit database)
+
+-- | This is intentionally not a public CLI option.  The stress harness passes
+-- an exact, caller-owned path only to its spawned package-built child.  The
+-- ordinary process remains completely inert once this hook is absent.
+testOnlyColdCompileAttribution :: IO ColdCompileAttribution
+testOnlyColdCompileAttribution = do
+  output <- lookupEnv "ADRAI_TEST_COLD_COMPILE_ATTRIBUTION"
+  case output of
+    Nothing -> pure inertColdCompileAttribution
+    Just path
+      | null path -> ioError (userError "ADRAI_TEST_COLD_COMPILE_ATTRIBUTION must name a non-empty output path")
+      | otherwise -> newFileColdCompileAttribution path
 
 capturePostCommitIndex :: IO PostCommitIndexResult -> IO PostCommitIndexResult
 capturePostCommitIndex action = do

@@ -8,6 +8,7 @@ module Adrai.Compiler
     ColdCompilerError (..),
     ColdCompilerResult (..),
     coldCompileRepository,
+    coldCompileRepositoryWithAttribution,
     coldMaterializationFingerprint,
     coldMaterializationFingerprintFrames,
     materializeReducedSearch,
@@ -19,16 +20,28 @@ module Adrai.Compiler
 where
 
 import Adrai.Domain (domainText)
+import Adrai.Compiler.Attribution
+  ( AttributionCounter (CounterBytes, CounterCurrentEntries),
+    AttributionPhase (..),
+    ColdCompileAttribution,
+    attributionEnabled,
+    forceAttributionValue,
+    inertColdCompileAttribution,
+    recordAttributionCounter,
+    withAttributionEitherPhase,
+    withAttributionPhase,
+  )
 import Adrai.Compiler.Snapshot
   ( AnalyzedRepositorySnapshot,
     CompilerDiagnostic (..),
     CompilerDiagnosticOrigin (..),
     CompilerDiagnosticSeverity (..),
     ParsedReducedRepositorySnapshot,
-    analyzeRepositorySnapshot,
+    analyzeRepositorySnapshotWithAttribution,
     analyzedConflicts,
     analyzedDiagnostics,
     analyzedDocuments,
+    analyzedHistoryCommitsScanned,
     analyzedReduction,
     analyzedSourceFingerprint,
     compilerDiagnosticCodeText,
@@ -45,6 +58,7 @@ import Adrai.Format.Document
     StatusState (StatusObsolete),
   )
 import Adrai.Format (renderDigest)
+import Adrai.Git (GitBlob (..))
 import Adrai.Graph
   ( AdrConflict (..),
     AxisResolution (..),
@@ -81,6 +95,8 @@ import Adrai.Provenance
   )
 import Adrai.Repository
   ( RepositorySnapshotError,
+    RawRepositorySnapshotObservation (..),
+    RepositoryTreeObservation (..),
     ResolvedRepositoryRevision,
     observeRawRepositorySnapshotAt,
   )
@@ -91,6 +107,7 @@ import Adrai.Sqlite
     SearchStorageError,
     replaceSearchMaterialization,
     writeColdDatabase,
+    writeColdDatabaseWithAttribution,
   )
 import Adrai.Types
   ( ConnectionId,
@@ -157,30 +174,65 @@ data ColdCompilerResult = ColdCompilerResult
     coldCompilerCompiledRevision :: ResolvedRepositoryRevision,
     coldCompilerSearchMaterialization :: Maybe SearchMaterialization,
     coldCompilerMaterializationFingerprint :: Digest,
+    coldCompiledHistoryCommitsScanned :: Int,
     coldCompilerDatabaseStats :: ColdDatabaseStats
   }
   deriving (Eq, Show)
 
 coldCompileRepository :: Connection -> ResolvedRepositoryRevision -> IO (Either ColdCompilerError ColdCompilerResult)
-coldCompileRepository connection revision = do
-  rawResult <- observeRawRepositorySnapshotAt revision
+coldCompileRepository = coldCompileRepositoryWithAttribution inertColdCompileAttribution
+
+-- | The observed path is deliberately caller-injected.  Production entry
+-- points call the inert wrapper above, so no normal compile gains timing,
+-- filesystem, or environment work.
+coldCompileRepositoryWithAttribution :: ColdCompileAttribution -> Connection -> ResolvedRepositoryRevision -> IO (Either ColdCompilerError ColdCompilerResult)
+coldCompileRepositoryWithAttribution attribution connection revision = do
+  rawResult <-
+    withAttributionEitherPhase attribution CurrentTreeBlobObservation $ do
+      result <- observeRawRepositorySnapshotAt revision
+      case result of
+        Right raw | attributionEnabled attribution -> do
+          recordAttributionCounter attribution CounterCurrentEntries (fromIntegral (length (rawRepositorySnapshotEntries raw)))
+          recordAttributionCounter
+            attribution
+            CounterBytes
+            ( fromIntegral
+                ( sum
+                    [ maybe 0 (BS.length . gitBlobBytes) (repositoryTreeBlob entry)
+                      | entry <- rawRepositorySnapshotEntries raw
+                    ]
+                )
+            )
+        Left _ -> pure ()
+        _ -> pure ()
+      pure result
   case rawResult of
     Left problem -> pure (Left (ColdCompilerRepositoryError problem))
     Right raw -> do
-      analyzedResult <- analyzeRepositorySnapshot raw
+      analyzedResult <- analyzeRepositorySnapshotWithAttribution attribution raw
       case analyzedResult of
         Left problem -> pure (Left (ColdCompilerRepositoryError problem))
-        Right analyzed ->
-          case gateAnalyzedRepositorySnapshot analyzed of
+        Right analyzed -> do
+          gated <- withAttributionEitherPhase attribution AnalysisGate (pure (gateAnalyzedRepositorySnapshot analyzed))
+          case gated of
             Left _ -> store analyzed Nothing
-            Right parsed ->
-              case materializeParsedReducedSearch parsed of
+            Right parsed -> do
+              materializedResult <- withAttributionEitherPhase attribution SearchMaterializationPhase $ do
+                result <- pure (materializeParsedReducedSearch parsed)
+                case result of
+                  Left _ -> pure result
+                  Right materialization -> do
+                    forced <- forceAttributionValue attribution forceMaterialization materialization
+                    pure (Right forced)
+              case materializedResult of
                 Left problem -> pure (Left (ColdCompilerSearchError problem))
                 Right materialization -> store analyzed (Just materialization)
   where
     store analyzed materialization = do
-      let fingerprint = coldMaterializationFingerprint analyzed materialization
-      stored <- writeColdDatabase connection analyzed materialization fingerprint
+      fingerprint <- withAttributionPhase attribution Fingerprinting $ do
+        result <- pure (coldMaterializationFingerprint analyzed materialization)
+        forceAttributionValue attribution (\digest -> digestBytes digest `seq` ()) result
+      stored <- writeColdDatabaseWithAttribution attribution connection analyzed materialization fingerprint
       pure $ do
         stats <- mapLeft ColdCompilerDatabaseError stored
         Right
@@ -189,8 +241,14 @@ coldCompileRepository connection revision = do
               coldCompilerCompiledRevision = revision,
               coldCompilerSearchMaterialization = materialization,
               coldCompilerMaterializationFingerprint = fingerprint,
+              coldCompiledHistoryCommitsScanned = analyzedHistoryCommitsScanned analyzed,
               coldCompilerDatabaseStats = stats
             }
+    forceMaterialization materialization =
+      length (searchMaterializationDocuments materialization)
+        `seq` length (searchMaterializationPassages materialization)
+        `seq` length (searchMaterializationAliases materialization)
+        `seq` ()
 
 coldMaterializationFingerprint :: AnalyzedRepositorySnapshot -> Maybe SearchMaterialization -> Digest
 coldMaterializationFingerprint analyzed materialization =
@@ -211,9 +269,18 @@ coldMaterializationFingerprintFrames analyzed materialization =
     : framedBytes (digestBytes (analyzedSourceFingerprint analyzed))
     : map (framedText . diagnosticFingerprint) (analyzedDiagnostics analyzed)
       <> map (framedText . conflictFingerprint) (analyzedConflicts analyzed)
-      <> map (framedText . operationDocumentFingerprint) (sortOn operationDocumentKey (analyzedDocuments analyzed))
-      <> map (framedText . reducedFingerprint) (sortOn reducedAdrId (graphReductionAdrs (analyzedReduction analyzed)))
-      <> maybe [] searchFingerprint materialization
+      -- An invalid cold result deliberately persists no semantic rows.  Its
+      -- fingerprint must therefore commit only to the rows actually stored:
+      -- source observation plus diagnostics/conflicts.  Including parsed
+      -- operations or reductions here would make the metadata unverifiable
+      -- from the immutable SQLite snapshot, since 'writeColdDatabase' omits
+      -- those tables when materialization is absent.
+      <> maybe [] semanticFingerprint materialization
+  where
+    semanticFingerprint searchMaterialization =
+      map (framedText . operationDocumentFingerprint) (sortOn operationDocumentKey (analyzedDocuments analyzed))
+        <> map (framedText . reducedFingerprint) (sortOn reducedAdrId (graphReductionAdrs (analyzedReduction analyzed)))
+        <> searchFingerprint searchMaterialization
 
 diagnosticFingerprint :: CompilerDiagnostic -> Text
 diagnosticFingerprint problem =

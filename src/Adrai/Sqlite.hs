@@ -32,6 +32,7 @@ module Adrai.Sqlite
     ColdDatabaseError (..),
     ColdDatabaseStats (..),
     writeColdDatabase,
+    writeColdDatabaseWithAttribution,
     loadLocalAliases,
     runFtsTarget,
     runSummaryFtsChannels,
@@ -47,6 +48,15 @@ import Adrai.Retrieval
     SearchPassage (..),
     sectionKindName,
     materializationImplementationFingerprint,
+  )
+import Adrai.Compiler.Attribution
+  ( AttributionCounter (CounterRows),
+    AttributionPhase (..),
+    ColdCompileAttribution,
+    attributionEnabled,
+    inertColdCompileAttribution,
+    recordAttributionCounter,
+    withAttributionPhase,
   )
 import Adrai.Compiler.Snapshot
 import Adrai.Domain (domainRefinementText, domainText)
@@ -79,6 +89,7 @@ import Database.SQLite.Simple
     SQLData (SQLBlob, SQLFloat, SQLInteger, SQLNull, SQLText),
     Only (..),
     execute,
+    executeMany,
     execute_,
     field,
     query,
@@ -349,7 +360,9 @@ data ColdDatabaseStats = ColdDatabaseStats
     coldDatabaseIssueCount :: Int,
     coldDatabaseConflictCount :: Int,
     coldDatabaseOperationCount :: Int,
-    coldDatabaseSearchDocumentCount :: Int
+    coldDatabaseSearchDocumentCount :: Int,
+    coldDatabaseReducedAdrCount :: Int,
+    coldDatabaseSearchSectionCount :: Int
   }
   deriving (Eq, Show)
 
@@ -389,16 +402,21 @@ clearSearchMaterializationAction connection = do
   runStorage SearchDocumentStorage (execute_ connection "DELETE FROM search_document")
 
 insertSearchMaterializationAction :: Connection -> SearchMaterialization -> IO ()
-insertSearchMaterializationAction connection materialization = do
-  forM_ sortedDocuments $ \document -> do
-    insertSearchDocument connection document
+insertSearchMaterializationAction = insertSearchMaterializationActionWithAttribution inertColdCompileAttribution
+
+insertSearchMaterializationActionWithAttribution :: ColdCompileAttribution -> Connection -> SearchMaterialization -> IO ()
+insertSearchMaterializationActionWithAttribution attribution connection materialization = do
+  withAttributionPhase attribution SearchInserts $ do
+    executeSearchChunks connection SearchDocumentStorage searchDocumentStatement searchDocumentParameters sortedDocuments
+    executeSearchChunks connection SearchAliasStorage localAliasStatement localAliasParameters sortedAliases
+    executeSearchChunks connection SearchPassageStorage searchPassageStatement searchPassageParameters numberedPassages
+    recordRowsWhenEnabled attribution connection ["search_document", "local_alias", "search_section"]
+  withAttributionPhase attribution FtsInserts $ do
     forM_ [SearchExactTarget, SearchStemmedTarget, SearchIdentifierTarget] $ \target ->
-      insertSummaryFts connection target document
-  forM_ sortedAliases (insertLocalAlias connection)
-  forM_ numberedPassages $ \(rowId, passage) -> do
-    insertSearchPassage connection rowId passage
+      executeSearchChunks connection (SearchFtsStorage target) (summaryFtsStatement target) (summaryFtsParameters target) sortedDocuments
     forM_ [PassageExactTarget, PassageStemmedTarget, PassageIdentifierTarget] $ \target ->
-      insertPassageFts connection target rowId passage
+      executeSearchChunks connection (SearchFtsStorage target) (passageFtsStatement target) (passageFtsParameters target) numberedPassages
+    recordRowsWhenEnabled attribution connection (map ftsTargetTable allFtsTargets)
   where
     sortedDocuments = sortBy (comparing searchDocumentItemId) (searchMaterializationDocuments materialization)
     sortedAliases = sortBy (comparing fst) (searchMaterializationAliases materialization)
@@ -406,7 +424,10 @@ insertSearchMaterializationAction connection materialization = do
     numberedPassages = zip [1 :: Int64 ..] sortedPassages
 
 writeColdDatabase :: Connection -> AnalyzedRepositorySnapshot -> Maybe SearchMaterialization -> Digest -> IO (Either ColdDatabaseError ColdDatabaseStats)
-writeColdDatabase connection analyzed materialization materializationFingerprint = do
+writeColdDatabase = writeColdDatabaseWithAttribution inertColdCompileAttribution
+
+writeColdDatabaseWithAttribution :: ColdCompileAttribution -> Connection -> AnalyzedRepositorySnapshot -> Maybe SearchMaterialization -> Digest -> IO (Either ColdDatabaseError ColdDatabaseStats)
+writeColdDatabaseWithAttribution attribution connection analyzed materialization materializationFingerprint = do
   freshness <- tryColdDatabase (existingSchemaObjects connection)
   case freshness of
     Left problem -> pure (Left problem)
@@ -422,22 +443,61 @@ writeColdDatabase connection analyzed materialization materializationFingerprint
               stored <-
                 tryColdDatabase
                   ( withTransaction connection $ do
-                      forM_ coldSchemaDdl $ \(_, ddl) -> execute_ connection (asQuery ddl)
-                      createSearchSchemaAction connection
-                      insertRepositoryConfig connection analyzed
-                      insertManagedSources connection analyzed
-                      insertCompilerDiagnostics connection (analyzedDiagnostics analyzed)
-                      insertAdrConflicts connection (analyzedConflicts analyzed)
-                      insertAdrConflictIssues connection (length (analyzedDiagnostics analyzed)) (analyzedConflicts analyzed)
+                      withAttributionPhase attribution SqliteSchema $ do
+                        forM_ coldSchemaDdl $ \(_, ddl) -> execute_ connection (asQuery ddl)
+                        createSearchSchemaAction connection
+                      withAttributionPhase attribution SqliteMetadataInitial $ do
+                        insertRepositoryConfig connection analyzed
+                        insertCompilerDiagnostics connection (analyzedDiagnostics analyzed)
+                        insertAdrConflicts connection (analyzedConflicts analyzed)
+                        insertAdrConflictIssues connection (length (analyzedDiagnostics analyzed)) (analyzedConflicts analyzed)
+                        recordRowsWhenEnabled attribution connection ["repository_config", "issue", "adr_conflict"]
+                      withAttributionPhase attribution ManagedSourceRestream $ do
+                        insertManagedSources connection analyzed
+                        recordRowsWhenEnabled attribution connection ["managed_source"]
                       case materialization of
                         Nothing -> pure ()
                         Just searchMaterialization -> do
-                          insertSemanticRows connection analyzed
-                          insertSearchMaterializationAction connection searchMaterialization
-                      insertColdMeta connection analyzed materializationFingerprint stats
-                      verifyColdDatabase connection analyzed materialization materializationFingerprint stats
+                          withAttributionPhase attribution SemanticInserts $ do
+                            insertSemanticRows connection analyzed
+                            recordRowsWhenEnabled attribution connection semanticTables
+                          insertSearchMaterializationActionWithAttribution attribution connection searchMaterialization
+                      withAttributionPhase attribution SqliteMetadataFinal $ do
+                        insertColdMeta connection analyzed materializationFingerprint stats
+                        recordRowsWhenEnabled attribution connection ["meta"]
+                      withAttributionPhase attribution Verification $ do
+                        verifyColdDatabase connection analyzed materialization materializationFingerprint stats
                   )
               pure (stats <$ stored)
+
+semanticTables :: [Text]
+semanticTables =
+  [ "operation",
+    "operation_member",
+    "operation_member_parent",
+    "decision_record",
+    "connection_record",
+    "reduced_adr",
+    "axis_head",
+    "current_connection"
+  ]
+
+-- | A fresh cold database has no pre-existing user rows, so the post-insert
+-- table counts are the exact successfully inserted rows for that named phase.
+-- Disabled compilation must not issue these diagnostic reads.
+recordRowsWhenEnabled :: ColdCompileAttribution -> Connection -> [Text] -> IO ()
+recordRowsWhenEnabled attribution connection tables
+  | attributionEnabled attribution = do
+      counts <- traverse (tableRowCount connection) tables
+      recordAttributionCounter attribution CounterRows (sum counts)
+  | otherwise = pure ()
+
+tableRowCount :: Connection -> Text -> IO Integer
+tableRowCount connection table = do
+  rows <- query_ connection (asQuery ("SELECT count(*) FROM " <> table)) :: IO [Only Int64]
+  case rows of
+    [Only count] | count >= 0 -> pure (fromIntegral count)
+    _ -> ioError (userError "cold compile attribution could not count inserted SQLite rows")
 
 existingSchemaObjects :: Connection -> IO [(Text, Text)]
 existingSchemaObjects connection =
@@ -466,7 +526,12 @@ coldStats analyzed materialization =
         case materialization of
           Nothing -> 0
           Just _ -> Set.size (Set.fromList (map (provenanceOperationId . parsedManagedCapsule) (analyzedDocuments analyzed))),
-      coldDatabaseSearchDocumentCount = maybe 0 (length . searchMaterializationDocuments) materialization
+      coldDatabaseSearchDocumentCount = maybe 0 (length . searchMaterializationDocuments) materialization,
+      coldDatabaseReducedAdrCount =
+        case materialization of
+          Nothing -> 0
+          Just _ -> length (graphReductionAdrs (analyzedReduction analyzed)),
+      coldDatabaseSearchSectionCount = maybe 0 (length . searchMaterializationPassages) materialization
     }
 
 insertRepositoryConfig :: Connection -> AnalyzedRepositorySnapshot -> IO ()
@@ -753,6 +818,7 @@ coldMetaValues analyzed materializationFingerprint stats =
     ("materialization_fingerprint", digestValue materializationFingerprint),
     ("semantic_state", coldDatabaseSemanticState stats),
     ("history_complete", if analyzedHistoryComplete analyzed then "true" else "false"),
+    ("history_commits_scanned", decimalInt (analyzedHistoryCommitsScanned analyzed)),
     ("managed_source_count", decimalInt (coldDatabaseManagedSourceCount stats)),
     ("issue_count", decimalInt (coldDatabaseIssueCount stats)),
     ("conflict_count", decimalInt (coldDatabaseConflictCount stats)),
@@ -1071,117 +1137,128 @@ loadLocalAliases connection = do
     Left _ -> Left (SearchStorageError SearchAliasStorage)
     Right aliases -> Right aliases
 
-insertSearchDocument :: Connection -> SearchDocument -> IO ()
-insertSearchDocument connection document =
-  runStorage SearchDocumentStorage $
-    execute
-      connection
-      "INSERT INTO search_document(item_id,adr_id,candidate_record_id,title,summary,context,decision,consequences,domains,rationale,identifiers,other,scope,source_paths,obsolete,conflicted,state_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-      [ SQLText (searchDocumentItemId document),
-        SQLText (adrIdText (searchDocumentAdrId document)),
-        SQLText (recordIdText (searchDocumentCandidateRecordId document)),
-        SQLText (searchDocumentTitle document),
-        SQLText (searchDocumentSummary document),
-        SQLText (searchDocumentContext document),
-        SQLText (searchDocumentDecision document),
-        SQLText (searchDocumentConsequences document),
-        SQLText (Text.intercalate "\n" (searchDocumentDomains document)),
-        SQLText (searchDocumentRationale document),
-        SQLText (searchDocumentIdentifiers document),
-        SQLText (searchDocumentOther document),
-        SQLText (Text.intercalate "\n" (searchDocumentScope document)),
-        SQLText (Text.intercalate "\n" (searchDocumentSourcePaths document)),
-        SQLInteger (boolInteger (searchDocumentObsolete document)),
-        SQLInteger (boolInteger (searchDocumentConflicted document)),
-        SQLText (stateTokenText (searchDocumentStateToken document))
-      ]
+-- | Bounds temporary SQL parameter rows while reusing each statement for a
+-- deterministic chunk.  Materialization already owns the source lists, so
+-- never construct a second corpus-sized matrix of SQLData values.
+searchStorageWriteChunkSize :: Int
+searchStorageWriteChunkSize = 256
 
-insertLocalAlias :: Connection -> LocalAlias -> IO ()
-insertLocalAlias connection (alias, expansion) =
-  runStorage SearchAliasStorage $
-    execute connection "INSERT INTO local_alias(alias,expansion) VALUES (?,?)" [SQLText alias, SQLText expansion]
+executeSearchChunks :: Connection -> SearchStorageComponent -> Query -> (value -> [SQLData]) -> [value] -> IO ()
+executeSearchChunks connection component statement parameters values =
+  forM_ (boundedChunks searchStorageWriteChunkSize values) $ \chunk ->
+    runStorage component (executeMany connection statement (map parameters chunk))
 
-insertSearchPassage :: Connection -> Int64 -> SearchPassage -> IO ()
-insertSearchPassage connection rowId passage =
-  runStorage SearchPassageStorage $
-    execute
-      connection
-      "INSERT INTO search_section(passage_rowid,item_id,search_item_id,adr_id,candidate_record_id,section_kind,ordinal,line_start,line_end,text,weight,source_paths,identifiers) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
-      [ SQLInteger rowId,
-        SQLText (searchPassageId passage),
-        SQLText (searchPassageDocumentItemId passage),
-        SQLText (adrIdText (searchPassageAdrId passage)),
-        SQLText (recordIdText (searchPassageCandidateRecordId passage)),
-        SQLText (sectionKindName (searchPassageSectionKind passage)),
-        SQLInteger (fromIntegral (searchPassageOrdinal passage)),
-        SQLInteger (fromIntegral (searchPassageLineStart passage)),
-        SQLInteger (fromIntegral (searchPassageLineEnd passage)),
-        SQLText (searchPassageText passage),
-        SQLFloat (searchPassageWeight passage),
-        SQLText (Text.intercalate "\n" (searchPassageSourcePaths passage)),
-        SQLText (searchPassageIdentifiers passage)
-      ]
+boundedChunks :: Int -> [value] -> [[value]]
+boundedChunks _ [] = []
+boundedChunks amount values =
+  let (chunk, remaining) = splitAt amount values
+   in chunk : boundedChunks amount remaining
 
-insertSummaryFts :: Connection -> FtsTarget -> SearchDocument -> IO ()
-insertSummaryFts connection target document =
-  runStorage (SearchFtsStorage target) $
-    execute connection statement parameters
+searchDocumentStatement :: Query
+searchDocumentStatement =
+  "INSERT INTO search_document(item_id,adr_id,candidate_record_id,title,summary,context,decision,consequences,domains,rationale,identifiers,other,scope,source_paths,obsolete,conflicted,state_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+
+searchDocumentParameters :: SearchDocument -> [SQLData]
+searchDocumentParameters document =
+  [ SQLText (searchDocumentItemId document),
+    SQLText (adrIdText (searchDocumentAdrId document)),
+    SQLText (recordIdText (searchDocumentCandidateRecordId document)),
+    SQLText (searchDocumentTitle document),
+    SQLText (searchDocumentSummary document),
+    SQLText (searchDocumentContext document),
+    SQLText (searchDocumentDecision document),
+    SQLText (searchDocumentConsequences document),
+    SQLText (Text.intercalate "\n" (searchDocumentDomains document)),
+    SQLText (searchDocumentRationale document),
+    SQLText (searchDocumentIdentifiers document),
+    SQLText (searchDocumentOther document),
+    SQLText (Text.intercalate "\n" (searchDocumentScope document)),
+    SQLText (Text.intercalate "\n" (searchDocumentSourcePaths document)),
+    SQLInteger (boolInteger (searchDocumentObsolete document)),
+    SQLInteger (boolInteger (searchDocumentConflicted document)),
+    SQLText (stateTokenText (searchDocumentStateToken document))
+  ]
+
+localAliasStatement :: Query
+localAliasStatement = "INSERT INTO local_alias(alias,expansion) VALUES (?,?)"
+
+localAliasParameters :: LocalAlias -> [SQLData]
+localAliasParameters (alias, expansion) = [SQLText alias, SQLText expansion]
+
+searchPassageStatement :: Query
+searchPassageStatement =
+  "INSERT INTO search_section(passage_rowid,item_id,search_item_id,adr_id,candidate_record_id,section_kind,ordinal,line_start,line_end,text,weight,source_paths,identifiers) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+
+searchPassageParameters :: (Int64, SearchPassage) -> [SQLData]
+searchPassageParameters (rowId, passage) =
+  [ SQLInteger rowId,
+    SQLText (searchPassageId passage),
+    SQLText (searchPassageDocumentItemId passage),
+    SQLText (adrIdText (searchPassageAdrId passage)),
+    SQLText (recordIdText (searchPassageCandidateRecordId passage)),
+    SQLText (sectionKindName (searchPassageSectionKind passage)),
+    SQLInteger (fromIntegral (searchPassageOrdinal passage)),
+    SQLInteger (fromIntegral (searchPassageLineStart passage)),
+    SQLInteger (fromIntegral (searchPassageLineEnd passage)),
+    SQLText (searchPassageText passage),
+    SQLFloat (searchPassageWeight passage),
+    SQLText (Text.intercalate "\n" (searchPassageSourcePaths passage)),
+    SQLText (searchPassageIdentifiers passage)
+  ]
+
+summaryFtsStatement :: FtsTarget -> Query
+summaryFtsStatement target =
+  insertStatement (ftsTargetTable target) (map fst (ftsTargetColumns target))
+
+summaryFtsParameters :: FtsTarget -> SearchDocument -> [SQLData]
+summaryFtsParameters target document =
+  [ SQLText (searchDocumentItemId document),
+    SQLText (adrIdText (searchDocumentAdrId document)),
+    SQLText (recordIdText (searchDocumentCandidateRecordId document))
+  ]
+    <> map SQLText values
   where
-    table = ftsTargetTable target
-    base =
-      [ SQLText (searchDocumentItemId document),
-        SQLText (adrIdText (searchDocumentAdrId document)),
-        SQLText (recordIdText (searchDocumentCandidateRecordId document))
-      ]
-    (columns, values) = case target of
+    values = case target of
       SearchExactTarget ->
-        ( ["title", "summary", "decision", "domains", "rationale", "context", "consequences", "identifiers"],
-          [ searchDocumentTitle document,
-            searchDocumentSummary document,
-            searchDocumentDecision document,
-            Text.intercalate "\n" (searchDocumentDomains document),
-            searchDocumentRationale document,
-            searchDocumentContext document,
-            searchDocumentConsequences document,
-            searchDocumentIdentifiers document
-          ]
-        )
+        [ searchDocumentTitle document,
+          searchDocumentSummary document,
+          searchDocumentDecision document,
+          Text.intercalate "\n" (searchDocumentDomains document),
+          searchDocumentRationale document,
+          searchDocumentContext document,
+          searchDocumentConsequences document,
+          searchDocumentIdentifiers document
+        ]
       SearchStemmedTarget ->
-        ( ["title", "summary", "decision", "rationale", "context", "consequences"],
-          [ searchDocumentTitle document,
-            searchDocumentSummary document,
-            searchDocumentDecision document,
-            searchDocumentRationale document,
-            searchDocumentContext document,
-            searchDocumentConsequences document
-          ]
-        )
-      SearchIdentifierTarget -> (["identifiers"], [searchDocumentIdentifiers document])
+        [ searchDocumentTitle document,
+          searchDocumentSummary document,
+          searchDocumentDecision document,
+          searchDocumentRationale document,
+          searchDocumentContext document,
+          searchDocumentConsequences document
+        ]
+      SearchIdentifierTarget -> [searchDocumentIdentifiers document]
       _ -> error "internal error: passage target used for summary insertion"
-    allColumns = ["item_id", "adr_id", "candidate_record_id"] <> columns
-    statement = insertStatement table allColumns
-    parameters = base <> map SQLText values
 
-insertPassageFts :: Connection -> FtsTarget -> Int64 -> SearchPassage -> IO ()
-insertPassageFts connection target rowId passage =
-  runStorage (SearchFtsStorage target) $
-    execute connection statement parameters
+passageFtsStatement :: FtsTarget -> Query
+passageFtsStatement target =
+  insertStatementWithRowId (ftsTargetTable target) (map fst (ftsTargetColumns target))
+
+passageFtsParameters :: FtsTarget -> (Int64, SearchPassage) -> [SQLData]
+passageFtsParameters target (rowId, passage) =
+  [ SQLInteger rowId,
+    SQLText (searchPassageId passage),
+    SQLText (adrIdText (searchPassageAdrId passage)),
+    SQLText (recordIdText (searchPassageCandidateRecordId passage)),
+    SQLText (sectionKindName (searchPassageSectionKind passage))
+  ]
+    <> map SQLText values
   where
-    table = ftsTargetTable target
-    base =
-      [ SQLInteger rowId,
-        SQLText (searchPassageId passage),
-        SQLText (adrIdText (searchPassageAdrId passage)),
-        SQLText (recordIdText (searchPassageCandidateRecordId passage)),
-        SQLText (sectionKindName (searchPassageSectionKind passage))
-      ]
-    (columns, values) = case target of
-      PassageExactTarget -> (["text", "identifiers"], [searchPassageText passage, searchPassageIdentifiers passage])
-      PassageStemmedTarget -> (["text"], [searchPassageText passage])
-      PassageIdentifierTarget -> (["identifiers"], [searchPassageIdentifiers passage])
+    values = case target of
+      PassageExactTarget -> [searchPassageText passage, searchPassageIdentifiers passage]
+      PassageStemmedTarget -> [searchPassageText passage]
+      PassageIdentifierTarget -> [searchPassageIdentifiers passage]
       _ -> error "internal error: summary target used for passage insertion"
-    statement = insertStatementWithRowId table (["item_id", "adr_id", "candidate_record_id", "section_kind"] <> columns)
-    parameters = base <> map SQLText values
 
 insertStatement :: Text -> [Text] -> Query
 insertStatement table columns =

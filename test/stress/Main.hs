@@ -6,6 +6,7 @@ import qualified Adrai.FixtureContractTest
 import qualified Adrai.FixturePlanTest
 import qualified Adrai.FixtureProperties
 import qualified Adrai.FixtureQueryMaterializationScaleTest
+import qualified Adrai.LargeRepositoryStressTest
 import qualified Adrai.RetrievalScaleTest
 import System.Environment (getArgs, withArgs)
 import System.Exit (ExitCode (ExitFailure), exitWith)
@@ -19,7 +20,21 @@ main = do
     (_, []) -> do
       hPutStrLn stderr "adrai-stress-test requires the explicit --run-stress opt-in before running stress fixtures"
       exitWith (ExitFailure 64)
-    (before, _ : after) -> normalMain (before <> after)
+    (before, _ : after) ->
+      case Adrai.LargeRepositoryStressTest.parsePhaseProfileArguments (before <> after) of
+        Left problem -> do
+          hPutStrLn stderr problem
+          exitWith (ExitFailure 64)
+        Right (profileOutput, tastyArguments) -> do
+          Adrai.LargeRepositoryStressTest.setPhaseProfileOutput profileOutput
+          normalMain $
+            case profileOutput of
+              Nothing -> tastyArguments
+              Just _ ->
+                [ "--pattern",
+                  "$3 == \"opt-in 2,000-commit phase profile\""
+                ]
+                  <> tastyArguments
 
 normalMain :: [String] -> IO ()
 normalMain arguments =
@@ -44,6 +59,7 @@ tests =
   testGroup
     "ADRAI stress"
     [ Adrai.RetrievalScaleTest.tests,
+      Adrai.LargeRepositoryStressTest.tests,
       Adrai.FixtureQueryMaterializationScaleTest.tests,
       Adrai.FixtureProperties.tests,
       Adrai.FixturePlanTest.tests,
