@@ -106,7 +106,6 @@ import Adrai.Sqlite
     ColdDatabaseStats,
     SearchStorageError,
     replaceSearchMaterialization,
-    writeColdDatabase,
     writeColdDatabaseWithAttribution,
   )
 import Adrai.Types
@@ -362,7 +361,7 @@ reducedFingerprint reduced =
       Text.intercalate "," (map connectionIdText (axisResolutionHeads (reducedScopeAxis reduced))),
       Text.intercalate "," (map connectionIdText (axisResolutionHeads (reducedDomainAxis reduced))),
       Text.intercalate "," (map connectionIdText (axisResolutionHeads (reducedStatusAxis reduced))),
-      Text.intercalate "," (map (connectionIdText . currentConnectionId) (reducedCurrentConnections reduced))
+      Text.intercalate "," (map (connectionIdText . currentConnectionId) (sortOn currentConnectionId (reducedCurrentConnections reduced)))
     ]
 
 searchFingerprint :: SearchMaterialization -> [ByteString]

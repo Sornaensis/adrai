@@ -35,6 +35,7 @@ module Adrai.Compiler.CacheSelection
     loadCacheMeta,
     validateCacheContract,
     validateCachePublicationContract,
+    cachePublicationMaterializationFingerprintEvidence,
     computeAncestorRank,
     treeIdenticalCheck,
     boundedHistoryIrrelevantCheck,
@@ -160,6 +161,28 @@ validateCacheContract = validateCacheWith True
 -- an exact revision snapshot.
 validateCachePublicationContract :: FilePath -> IO Bool
 validateCachePublicationContract = validateCacheWith False
+
+-- | Test-visible decomposition of the materialization commitment checked by
+-- 'validateCachePublicationContract'.  The public compiler path consumes only
+-- the boolean validator; this seam lets bounded regressions distinguish a
+-- metadata/fingerprint disagreement from the other fail-closed checks.
+-- The pair is @(written, recomputed)@.
+cachePublicationMaterializationFingerprintEvidence :: FilePath -> IO (Maybe (Text, Text))
+cachePublicationMaterializationFingerprintEvidence path = do
+  exists <- doesFileExist path
+  if not exists
+    then pure Nothing
+    else do
+      result <- try @SomeException $
+        bracket (open path) close $ \conn -> do
+          metadata <- Map.fromList <$> (query_ conn "SELECT key, value FROM meta ORDER BY key" :: IO [(Text, Text)])
+          sourceFingerprint <- persistedSourceFingerprint conn
+          recomputed <- persistedMaterializationFingerprint conn sourceFingerprint
+          pure $ do
+            written <- Map.lookup "materialization_fingerprint" metadata
+            actual <- recomputed
+            pure (written, actual)
+      pure (either (const Nothing) id result)
 
 validateCacheWith :: Bool -> FilePath -> IO Bool
 validateCacheWith requireValidSemantics path = do
@@ -291,7 +314,8 @@ canonicalProjectionChecks connection = do
     , ("fts_passage_stemmed", "search_section")
     , ("fts_passage_identifier", "search_section")
     ]
-  pure (and membershipResults && and cardinalityResults)
+  currentConnections <- canonicalCurrentConnectionRows connection
+  pure (and membershipResults && and cardinalityResults && currentConnections)
   where
     checkMembership (leftSide, rightSide) = do
       leftOnly <- differenceIsEmpty leftSide rightSide
@@ -304,6 +328,32 @@ canonicalProjectionChecks connection = do
       leftRows <- query_ connection (fromString ("SELECT count(*) FROM " <> leftTable)) :: IO [Only Int64]
       rightRows <- query_ connection (fromString ("SELECT count(*) FROM " <> rightTable)) :: IO [Only Int64]
       pure (leftRows == rightRows)
+
+-- | The current-connection table is a canonical graph projection rather than
+-- merely an ID list.  Its writer emits connection-ID order and records the
+-- relation-derived axis and the source ADR on every row; verify all three so
+-- an edit to fields outside the materialization fingerprint still fails closed.
+canonicalCurrentConnectionRows :: Connection -> IO Bool
+canonicalCurrentConnectionRows connection = do
+  rows <- query_ connection
+    "SELECT current.adr_id,current.axis,current.ordinal,current.connection_id,record.adr_id,record.relation_kind FROM current_connection AS current JOIN connection_record AS record ON record.connection_id=current.connection_id ORDER BY current.adr_id,current.ordinal" :: IO [(Text, Text, Int64, Text, Text, Text)]
+  let grouped = Map.fromListWith (flip (<>)) [(adr, [(axis, ordinal, connectionId, recordAdr, relationKind)]) | (adr, axis, ordinal, connectionId, recordAdr, relationKind) <- rows]
+  pure $ all (uncurry canonicalGroup) (Map.toList grouped)
+  where
+    canonicalGroup adr entries =
+      and
+        [ recordAdr == adr
+            && expectedAxis relationKind == Just axis
+            && ordinal == fromIntegral position
+        | (position, (axis, ordinal, _connectionId, recordAdr, relationKind)) <- zip [0 :: Int ..] (sortBy (comparing (\(_, _, connectionId, _, _) -> connectionId)) entries)
+        ]
+    expectedAxis relationKind =
+      case relationKind of
+        "amends" -> Just "decision"
+        "applies_to" -> Just "scope"
+        "domains" -> Just "domain"
+        "status" -> Just "status"
+        _ -> Nothing
 
 -- | Reconstruct the writer's source digest directly from immutable persisted
 -- rows.  Metadata alone is not evidence: every framing byte is recovered from

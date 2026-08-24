@@ -7,7 +7,7 @@
 module Main (main) where
 
 import Adrai.Provenance (GitOid, gitOidText, mkGitOid)
-import Adrai.Compiler.CacheSelection (loadCacheMeta, validateCachePublicationContract)
+import Adrai.Compiler.CacheSelection (cachePublicationMaterializationFingerprintEvidence, loadCacheMeta, validateCachePublicationContract)
 import CacheFixture (healthyCompilerFiles)
 import qualified Data.ByteString as BS
 import Data.List (isInfixOf)
@@ -61,6 +61,20 @@ realExecutableCacheContract =
       assertAbsent "cold compile must not claim document reuse" "\"documents_parsed\":0" cold
       coldRevision <- repositoryHead repository
       coldSnapshot <- assertSnapshot repository coldRevision
+      -- The fixture deliberately assigns current-connection IDs out of graph
+      -- axis order.  The persisted table is ordered by connection ID, so this
+      -- bounded production shape pins the writer/validator fingerprint order.
+      fingerprintEvidence <- cachePublicationMaterializationFingerprintEvidence coldSnapshot
+      case fingerprintEvidence of
+        Just (writtenFingerprint, recomputedFingerprint) ->
+          assertBool
+            ( "the persisted materialization fingerprint must equal its canonical reconstruction; written="
+                <> Text.unpack writtenFingerprint
+                <> ", recomputed="
+                <> Text.unpack recomputedFingerprint
+            )
+            (writtenFingerprint == recomputedFingerprint)
+        Nothing -> assertFailure "the cold archive did not provide materialization fingerprint evidence"
       healthySnapshot <- validateCachePublicationContract coldSnapshot
       assertBool "the real complete compiler fixture validates for publication" healthySnapshot
 
@@ -73,7 +87,7 @@ realExecutableCacheContract =
         , "\"incremental_kind\":\"exact\""
         , "\"documents_parsed\":0"
         , "\"adrs_rebuilt\":0"
-        , "\"documents_reused\":4"
+        , "\"documents_reused\":6"
         , "\"adrs_reused\":1"
         ] firstExact
       secondExact <- compile "second immediate exact reuse" repository
@@ -82,9 +96,34 @@ realExecutableCacheContract =
         , "\"incremental_kind\":\"exact\""
         , "\"documents_parsed\":0"
         , "\"adrs_rebuilt\":0"
-        , "\"documents_reused\":4"
+        , "\"documents_reused\":6"
         , "\"adrs_reused\":1"
         ] secondExact
+
+      -- current_connection is a relation-derived projection.  Its axis and
+      -- connection-ID ordinal are structural commitments even though the
+      -- materialization digest only needs the canonically ordered IDs.
+      axisCorruptionConnection <- open coldSnapshot
+      execute_ axisCorruptionConnection "UPDATE current_connection SET axis='domain' WHERE axis='scope'"
+      close axisCorruptionConnection
+      axisCorruptionArchive <- validateCachePublicationContract coldSnapshot
+      assertBool "a current-connection axis corruption is not publishable" (not axisCorruptionArchive)
+      axisCorruptionFallback <- compile "current connection axis corruption falls back cold" repository
+      assertFields "current connection axis corruption falls back cold"
+        [ "\"cache_mode\":\"full\""
+        , "\"incremental_kind\":\"full\""
+        ] axisCorruptionFallback
+
+      ordinalCorruptionConnection <- open coldSnapshot
+      execute_ ordinalCorruptionConnection "UPDATE current_connection SET ordinal=63 WHERE axis='scope'"
+      close ordinalCorruptionConnection
+      ordinalCorruptionArchive <- validateCachePublicationContract coldSnapshot
+      assertBool "a current-connection ordinal corruption is not publishable" (not ordinalCorruptionArchive)
+      ordinalCorruptionFallback <- compile "current connection ordinal corruption falls back cold" repository
+      assertFields "current connection ordinal corruption falls back cold"
+        [ "\"cache_mode\":\"full\""
+        , "\"incremental_kind\":\"full\""
+        ] ordinalCorruptionFallback
 
       -- Corruption at the authoritative revision path must never be hidden by
       -- the mutable alias.  Selection must fail closed, cold compile, and
@@ -221,7 +260,7 @@ realExecutableCacheContract =
         [ "\"cache_mode\":\"incremental\"",
           "\"incremental_kind\":\"tree-identical\"",
           "\"documents_parsed\":0",
-          "\"documents_reused\":4",
+          "\"documents_reused\":6",
           "\"adrs_reused\":1",
           "\"history_commits_scanned\":1",
           "\"ann_buckets\":0",
@@ -260,7 +299,7 @@ realExecutableCacheContract =
         [ "\"cache_mode\":\"exact\"",
           "\"incremental_kind\":\"exact\"",
           "\"documents_parsed\":0",
-          "\"documents_reused\":4",
+          "\"documents_reused\":6",
           "\"adrs_reused\":1",
           "\"ann_buckets\":0",
           "\"embedding_computed\":0",

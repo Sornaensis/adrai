@@ -18,10 +18,16 @@ healthyCompilerFiles :: GitOid -> Either Text.Text [(FilePath, ByteString)]
 healthyCompilerFiles basis = do
   adr <- checked "ADR" (mkAdrId (fixtureId 'A' '0'))
   record <- checked "record" (mkRecordId (fixtureId 'R' '0'))
-  scopeConnection <- checked "scope connection" (mkConnectionId (fixtureId 'C' '0'))
-  domainConnection <- checked "domain connection" (mkConnectionId (fixtureId 'C' '1'))
-  statusConnection <- checked "status connection" (mkConnectionId (fixtureId 'C' '2'))
+  amendedRecord <- checked "amended record" (mkRecordId (fixtureId 'R' '1'))
+  -- Deliberately invert the graph-axis and canonical storage ID orders.  The
+  -- bounded cache-selection executable needs this production row shape to
+  -- guard writer/validator fingerprint reconstruction.
+  scopeConnection <- checked "scope connection" (mkConnectionId (fixtureId 'C' '2'))
+  domainConnection <- checked "domain connection" (mkConnectionId (fixtureId 'C' '0'))
+  statusConnection <- checked "status connection" (mkConnectionId (fixtureId 'C' '1'))
+  amendmentConnection <- checked "amendment connection" (mkConnectionId (fixtureId 'C' '3'))
   operation <- checked "operation" (mkOperationId (fixtureId 'O' '0'))
+  amendmentOperation <- checked "amendment operation" (mkOperationId (fixtureId 'O' '1'))
   actor <- checked "actor" (mkActor ServiceActor "adrai-compiler-fixture" Nothing)
   domain <- checked "domain" (mkDomain "platform")
   scope <- checked "scope" (mkScopePattern "src/a,b/**")
@@ -34,6 +40,23 @@ healthyCompilerFiles basis = do
               decisionSummary = "Compile immutable repository observations into disposable SQLite.",
               decisionDomains = [domain],
               decisionBody = "# Context\nRepository state is immutable.\n\n# Decision\nCompile by exact OID.\n\n# Consequences\nCold rebuilds are deterministic.\n"
+            }
+      amendedDecision =
+        ManagedDecision
+          DecisionRecord
+            { decisionAdr = adr,
+              decisionRecord = amendedRecord,
+              decisionTitle = "Use a canonical cold compiler",
+              decisionSummary = "Canonical SQLite rows survive exact archive validation.",
+              decisionDomains = [domain],
+              decisionBody = "# Context\nRepository state is immutable.\n\n# Decision\nCompile by exact OID using canonical rows.\n\n# Consequences\nCold rebuilds are deterministic.\n"
+            }
+      amendmentRecord =
+        ManagedConnection
+          ConnectionRecord
+            { connectionRecordId = amendmentConnection,
+              connectionPayload = AmendsConnection (AmendsPayload adr amendedRecord [record]),
+              connectionRationale = "Canonical amendment.\n"
             }
       scopeRecord =
         ManagedConnection
@@ -56,12 +79,17 @@ healthyCompilerFiles basis = do
               connectionPayload = StatusConnection (StatusPayload adr [] StatusActive [record] Nothing),
               connectionRationale = "Initial active status.\n"
             }
-  traverse (sealMember actor basis operation)
+  initial <- traverse (sealMember actor basis operation)
     [ (decision, "decision.create", []),
       (scopeRecord, "scope.initial", [ProvenanceRecord record]),
       (domainRecord, "domain.initial", [ProvenanceRecord record]),
       (statusRecord, "status.initial", [ProvenanceRecord record])
     ]
+  amendment <- traverse (sealMember actor basis amendmentOperation)
+    [ (amendedDecision, "decision.amend", [ProvenanceRecord record]),
+      (amendmentRecord, "connection.amends", [ProvenanceRecord record])
+    ]
+  pure (initial <> amendment)
 
 sealMember :: Actor -> GitOid -> OperationId -> (ManagedRecord, Text.Text, [ProvenanceObjectId]) -> Either Text.Text (FilePath, ByteString)
 sealMember actor basis operation (record, eventText, parents) = do
