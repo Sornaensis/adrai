@@ -81,3 +81,22 @@ tests:
       - tasty-hedgehog
       - tasty-hunit
       - temporary
+
+  # Keep real-executable cache coverage outside the large-fixture test tree:
+  # selecting it must never construct the 2,000-ADR stress corpus.
+  adrai-cache-selection-test:
+    main: Main.hs
+    source-dirs: test/cache-selection
+    # The contract invokes the production CLI; declare that internal executable
+    # so Stack builds the current component and exposes it to the test process.
+    build-tools: [adrai:adrai]
+    dependencies:
+      - adrai
+      - process
+      - sqlite-simple
+      - tasty
+      - tasty-hunit
+      - temporary
+    # Both the harness and the real CLI child run with one capability.  The
+    # component is intentionally isolated from the large support tree.
+    ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1]
