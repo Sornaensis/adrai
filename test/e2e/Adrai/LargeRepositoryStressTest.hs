@@ -568,7 +568,7 @@ largeRepositoryContract = withSystemTempDirectory "adrai-large-repository" $ \ro
   mapM_ (assertContains "exact compile" "\"cache_mode\":\"exact\"") [exactOne, exactTwo]
 
   let representative = representativeAdr
-  search <- timed "hybrid-search" (runAdrai repository ["search", "--query", representativeSearchQuery, "--mode", "hybrid", "--limit", "10", "--json"])
+  search <- timed "hybrid-search" (runAdrai repository ["search", representativeSearchQuery, "--mode", "hybrid", "--limit", "10", "--json"])
   assertContains "hybrid search" "\"mode\":\"hybrid\"" search
   assertNonEmptyResults "hybrid search" search
   assertContains "hybrid search" representative search
@@ -607,7 +607,7 @@ largeRepositoryContract = withSystemTempDirectory "adrai-large-repository" $ \ro
   feature <- timed "feature-compile" (runAdrai repository ["compile", "--json"])
   assertContains "feature compile" "\"errors\":0" feature
   assertContains "feature compile revision" (Text.unpack (Text.strip (Text.pack featureRevision))) feature
-  featureSearch <- timed "feature-branch-search" (runAdrai repository ["search", "--query", "feature branch only decision", "--mode", "hybrid", "--limit", "10", "--json"])
+  featureSearch <- timed "feature-branch-search" (runAdrai repository ["search", "feature branch only decision", "--mode", "hybrid", "--limit", "10", "--json"])
   assertContains "feature branch ADR" featureAdr featureSearch
   git repository ["switch", "main"]
   mainRevision <- gitStdout repository ["rev-parse", "HEAD"]
@@ -615,7 +615,7 @@ largeRepositoryContract = withSystemTempDirectory "adrai-large-repository" $ \ro
   assertContains "main branch compile" "\"errors\":0" mainAgain
   assertContains "main branch revision" (Text.unpack (Text.strip (Text.pack mainRevision))) mainAgain
   assertContains "main branch exact cache" "\"cache_mode\":\"exact\"" mainAgain
-  mainSearch <- timed "main-branch-search" (runAdrai repository ["search", "--query", "feature branch only decision", "--mode", "hybrid", "--limit", "10", "--json"])
+  mainSearch <- timed "main-branch-search" (runAdrai repository ["search", "feature branch only decision", "--mode", "hybrid", "--limit", "10", "--json"])
   assertAbsent "main branch must not expose feature ADR" featureAdr mainSearch
   -- Timings are reporting-only until an isolated completed baseline exists.
   pure ()
