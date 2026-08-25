@@ -71,6 +71,7 @@ tests =
   testGroup
     "P6-06G large repository stress"
     ( [ testCase "12,000-commit repository with 2,000 ADR operations" largeRepositoryContract,
+        testCase "bounded fast-import transition preserves imported managed trees" boundedPostImportTransitionContract,
         testCase "phase profile option and sidecar parsing are strict" phaseProfileParsingContract,
         testCase "phase profile sidecar is absent by default" phaseProfileAbsentByDefaultContract,
         testCase "pinned GHC RTS pair-list maximum residency parsing is strict" rtsPairListParsingContract,
@@ -774,8 +775,60 @@ materializePlan repository plan relevanceText = do
   withImporter repository $ \importer -> do
     states <- newIORef []
     forM_ (repositorySteps plan) (emitPlanned relevanceText importer states)
+  synchronizeImportedWorktree repository
   count <- readIntGit repository ["rev-list", "--count", "HEAD"]
   assertEqual count (Fixture.repositoryCommitCount (Fixture.repositoryPlanSpec plan)) "fixture must have its planned commit count"
+
+-- | Fast-import updates refs directly, so reset both ordinary Git views before
+-- subsequent fixture commits use the index or worktree.
+synchronizeImportedWorktree :: FilePath -> IO ()
+synchronizeImportedWorktree repository = git repository ["reset", "--hard", "HEAD"]
+
+-- | Keep the transition regression small while exercising the same fast-import
+-- to ordinary-Git handoff used by the large fixture.
+boundedPostImportTransitionContract :: IO ()
+boundedPostImportTransitionContract = withSystemTempDirectory "adrai-post-import-transition" $ \root -> do
+  let repository = root </> "repository"
+      managedRoots = ["architecture/adrai/decisions", "architecture/adrai/connections"]
+  initialise repository
+  withImporter repository $ \importer -> do
+    fastCommit importer [(".adrai.toml", TextEncoding.encodeUtf8 defaultConfigText)] "seed configuration"
+    states <- newIORef []
+    createState importer states 0 representativeTemplate
+  synchronizeImportedWorktree repository
+  importedRevision <- gitRevision repository "HEAD"
+  importedConfig <- gitStdout repository ["show", "HEAD:.adrai.toml"]
+  assertEqual importedConfig (Text.unpack defaultConfigText) "synchronized worktree retains imported configuration"
+  managedEntries <- traverse (\rootPath -> lines <$> gitStdout repository ["ls-tree", "-r", "--name-only", "HEAD", "--", rootPath]) managedRoots
+  assertBool "synchronized worktree retains entries under every configured managed root" (all (not . null) managedEntries)
+
+  cold <- runAdrai repository ["compile", "--json"]
+  assertContains "bounded cold compile" "\"errors\":0" cold
+  exact <- runAdrai repository ["compile", "--json"]
+  assertContains "bounded exact compile" "\"errors\":0" exact
+  assertContains "bounded exact compile" "\"cache_mode\":\"exact\"" exact
+
+  addNoiseCommit repository "bounded-transition"
+  noiseRevision <- gitRevision repository "HEAD"
+  noiseParent <- gitRevision repository "HEAD^"
+  assertEqual noiseParent importedRevision "noise commit must parent the imported head"
+  git repository (["diff", "--quiet", noiseParent, noiseRevision, "--", ".adrai.toml"] <> managedRoots)
+  noiseDiff <- gitStdout repository ["diff", "--name-status", noiseParent, noiseRevision]
+  assertEqual (Text.strip (Text.pack noiseDiff)) ("A\tsrc/post/bounded-transition.txt" :: Text.Text) "noise commit must add exactly its unmanaged path"
+  treeIdentical <- runAdrai repository ["compile", "--json"]
+  assertContains "bounded tree-identical compile" "\"errors\":0" treeIdentical
+  assertContains "bounded tree-identical compile" "\"incremental_kind\":\"tree-identical\"" treeIdentical
+  assertContains "bounded tree-identical compile" "\"documents_parsed\":0" treeIdentical
+  treeHistory <- jsonIntegerAt ["history_commits_scanned"] treeIdentical
+  assertEqual treeHistory 1 "bounded tree-identical history proof must scan exactly the noise commit"
+
+  git repository ["switch", "-c", "bounded/post-import-transition"]
+  _ <- createFeatureAdr repository
+  featureRevision <- gitRevision repository "HEAD"
+  forM_ (concat managedEntries) $ \path -> do
+    importedEntry <- gitStdout repository ["show", importedRevision <> ":" <> path]
+    featureEntry <- gitStdout repository ["show", featureRevision <> ":" <> path]
+    assertEqual featureEntry importedEntry ("ordinary feature setup must preserve imported managed entry " <> path)
 
 initialise :: FilePath -> IO ()
 initialise repository = do
@@ -1088,6 +1141,9 @@ repositoryHead repository = do
   raw <- gitStdout repository ["rev-parse", "HEAD"]
   checked "repository HEAD" (mkGitOid (Text.strip (Text.pack raw)))
 
+gitRevision :: FilePath -> String -> IO String
+gitRevision repository revision = Text.unpack . Text.strip . Text.pack <$> gitStdout repository ["rev-parse", revision]
+
 readIntGit :: FilePath -> [String] -> IO Int
 readIntGit repository args = do
   value <- gitStdout repository args
@@ -1104,7 +1160,7 @@ addNoiseCommit repository label = do
   let path = "src/post/" <> label <> ".txt"
   createDirectoryIfMissing True (repository </> "src" </> "post")
   BS.writeFile (repository </> path) (BS8.pack (label <> "\n"))
-  git repository ["add", path]
+  git repository ["add", "--", path]
   git repository ["commit", "-m", label]
 
 data CompleteProcessTreeSamplePolicy
