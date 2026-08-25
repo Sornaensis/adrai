@@ -75,6 +75,7 @@ tests =
         testCase "phase profile sidecar is absent by default" phaseProfileAbsentByDefaultContract,
         testCase "pinned GHC RTS pair-list maximum residency parsing is strict" rtsPairListParsingContract,
         testCase "process-tree sampler distinguishes failures, zero working sets, and descendants" processTreeSamplerContract,
+        testCase "process-tree complete-sample policy requires cold evidence but permits fast exits" processTreeSamplePolicyContract,
         testCase "taskkill failure accepts only a verified terminated process tree" taskkillFailureContract
       ]
         <> optInPhaseProfileTests
@@ -636,6 +637,7 @@ productionShapeProfileContract = do
       materializePlan repository productionShapeV1 "Production-shaped phase profile fixture.\n"
       cold <-
         runAdraiWithRuntimeEnvironment
+          RequireCompleteProcessTreeSample
           repository
           ["compile", "--json"]
           ["-t", "--machine-readable"]
@@ -1105,11 +1107,16 @@ addNoiseCommit repository label = do
   git repository ["add", path]
   git repository ["commit", "-m", label]
 
+data CompleteProcessTreeSamplePolicy
+  = RequireCompleteProcessTreeSample
+  | PermitNoCompleteProcessTreeSample
+  deriving (Eq, Show)
+
 runAdrai :: FilePath -> [String] -> IO String
-runAdrai repository arguments = adraiProcessStdout <$> runAdraiWithRuntime repository arguments [] Nothing
+runAdrai repository arguments = adraiProcessStdout <$> runAdraiWithRuntime PermitNoCompleteProcessTreeSample repository arguments [] Nothing
 
 runAdraiWithRtsStats :: FilePath -> [String] -> IO AdraiProcessResult
-runAdraiWithRtsStats repository arguments = runAdraiWithRuntime repository arguments ["-t", "--machine-readable"] (Just coldCompileTimeoutMicros)
+runAdraiWithRtsStats repository arguments = runAdraiWithRuntime RequireCompleteProcessTreeSample repository arguments ["-t", "--machine-readable"] (Just coldCompileTimeoutMicros)
 
 data AdraiProcessResult = AdraiProcessResult
   { adraiProcessStdout :: String,
@@ -1121,12 +1128,12 @@ data AdraiProcessResult = AdraiProcessResult
 -- | Run the package-built executable while retaining structured RTS output and
 -- an OS process-tree working-set high-water mark. Both supported samplers
 -- include the root and all observed descendants, and are acceptance evidence.
-runAdraiWithRuntime :: FilePath -> [String] -> [String] -> Maybe Int -> IO AdraiProcessResult
-runAdraiWithRuntime repository arguments rtsStatistics timeoutMicros =
-  runAdraiWithRuntimeEnvironment repository arguments rtsStatistics timeoutMicros []
+runAdraiWithRuntime :: CompleteProcessTreeSamplePolicy -> FilePath -> [String] -> [String] -> Maybe Int -> IO AdraiProcessResult
+runAdraiWithRuntime samplePolicy repository arguments rtsStatistics timeoutMicros =
+  runAdraiWithRuntimeEnvironment samplePolicy repository arguments rtsStatistics timeoutMicros []
 
-runAdraiWithRuntimeEnvironment :: FilePath -> [String] -> [String] -> Maybe Int -> [(String, String)] -> IO AdraiProcessResult
-runAdraiWithRuntimeEnvironment repository arguments rtsStatistics timeoutMicros suppliedEnvironment = do
+runAdraiWithRuntimeEnvironment :: CompleteProcessTreeSamplePolicy -> FilePath -> [String] -> [String] -> Maybe Int -> [(String, String)] -> IO AdraiProcessResult
+runAdraiWithRuntimeEnvironment samplePolicy repository arguments rtsStatistics timeoutMicros suppliedEnvironment = do
   binDirectory <- getBinDir
   let executable = binDirectory </> ("adrai" <> executableSuffix)
   exists <- doesFileExist executable
@@ -1166,7 +1173,7 @@ runAdraiWithRuntimeEnvironment repository arguments rtsStatistics timeoutMicros 
       Just (Right exitCode) -> pure exitCode
       Just (Left samplingFailure) -> do
         cleanup
-        assertFailure ("cold compile process-tree sampler failed: " <> samplingFailure) >> fail "unreachable"
+        assertFailure ("adrai process-tree sampler failed: " <> samplingFailure) >> fail "unreachable"
       Nothing -> do
         cleanup
         peakBytes <- readIORef peakBytesRef
@@ -1174,7 +1181,9 @@ runAdraiWithRuntimeEnvironment repository arguments rtsStatistics timeoutMicros 
         assertFailure ("cold compile exceeded the 5-minute safety timeout under +RTS -N1 -M2G; diagnostic process-tree peak bytes=" <> show peakBytes) >> fail "unreachable"
   (forcedOutput, forcedProblem) <- awaitWorkers `onException` cleanup
   successfulSamples <- readIORef successfulSamplesRef
-  assertBool "cold compile requires at least one successful complete process-tree sample" (successfulSamples > 0)
+  assertBool
+    "cold compile requires at least one successful complete process-tree sample"
+    (completeProcessTreeSamplesAccepted samplePolicy successfulSamples)
   peakBytes <- readIORef peakBytesRef
   case status of
     ExitSuccess -> pure (AdraiProcessResult forcedOutput forcedProblem peakBytes successfulSamples)
@@ -1226,6 +1235,10 @@ recordProcessTreeSample peakBytesRef successfulSamplesRef (Right bytes) = do
   modifyIORef' peakBytesRef (max bytes)
   modifyIORef' successfulSamplesRef (+ 1)
   pure (Right ())
+
+completeProcessTreeSamplesAccepted :: CompleteProcessTreeSamplePolicy -> Int -> Bool
+completeProcessTreeSamplesAccepted RequireCompleteProcessTreeSample successfulSamples = successfulSamples > 0
+completeProcessTreeSamplesAccepted PermitNoCompleteProcessTreeSample _ = True
 
 processTreeWorkingSet :: ProcessHandle -> IO (Either String Integer)
 processTreeWorkingSet processHandle = do
@@ -1473,6 +1486,12 @@ posixDescendants root = do
         (Just pid, Just parent) -> Right (pid, parent)
         _ -> Left ()
     parseRow _ = Left ()
+
+processTreeSamplePolicyContract :: IO ()
+processTreeSamplePolicyContract = do
+  completeProcessTreeSamplesAccepted RequireCompleteProcessTreeSample 0 @?= False
+  completeProcessTreeSamplesAccepted PermitNoCompleteProcessTreeSample 0 @?= True
+  completeProcessTreeSamplesAccepted RequireCompleteProcessTreeSample 1 @?= True
 
 processTreeSamplerContract :: IO ()
 processTreeSamplerContract = do
