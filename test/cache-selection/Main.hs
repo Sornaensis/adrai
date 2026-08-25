@@ -14,7 +14,7 @@ import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.SQLite.Simple (close, execute_, open)
+import Database.SQLite.Simple (Only (..), close, execute, execute_, open)
 import System.Directory (copyFile, createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
@@ -66,7 +66,7 @@ realExecutableCacheContract =
       -- bounded production shape pins the writer/validator fingerprint order.
       fingerprintEvidence <- cachePublicationMaterializationFingerprintEvidence coldSnapshot
       case fingerprintEvidence of
-        Just (writtenFingerprint, recomputedFingerprint) ->
+        Just (writtenFingerprint, recomputedFingerprint, legacyFingerprint) -> do
           assertBool
             ( "the persisted materialization fingerprint must equal its canonical reconstruction; written="
                 <> Text.unpack writtenFingerprint
@@ -74,9 +74,19 @@ realExecutableCacheContract =
                 <> Text.unpack recomputedFingerprint
             )
             (writtenFingerprint == recomputedFingerprint)
+          -- Archives produced before P6-06G.7 committed current connections
+          -- in graph-axis order.  Substitute only that independently
+          -- reconstructed historical digest: exact reuse must retain archive
+          -- authority while the normal row and projection checks remain live.
+          case legacyFingerprint of
+            Just legacy | legacy /= recomputedFingerprint -> do
+              legacyConnection <- open coldSnapshot
+              execute legacyConnection "UPDATE meta SET value=? WHERE key='materialization_fingerprint'" (Only legacy)
+              close legacyConnection
+            _ -> assertFailure "the fixture must distinguish current and legacy current-connection fingerprint orders"
         Nothing -> assertFailure "the cold archive did not provide materialization fingerprint evidence"
       healthySnapshot <- validateCachePublicationContract coldSnapshot
-      assertBool "the real complete compiler fixture validates for publication" healthySnapshot
+      assertBool "the real complete compiler fixture validates a legacy publication fingerprint" healthySnapshot
 
       -- The immediate same-revision path must select the immutable archive,
       -- not fall through to a second materialization.  Run it twice: the

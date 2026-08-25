@@ -166,8 +166,9 @@ validateCachePublicationContract = validateCacheWith False
 -- 'validateCachePublicationContract'.  The public compiler path consumes only
 -- the boolean validator; this seam lets bounded regressions distinguish a
 -- metadata/fingerprint disagreement from the other fail-closed checks.
--- The pair is @(written, recomputed)@.
-cachePublicationMaterializationFingerprintEvidence :: FilePath -> IO (Maybe (Text, Text))
+-- The triple is @(written, current, legacy)@; legacy is present only when its
+-- graph-axis reconstruction is well-formed.
+cachePublicationMaterializationFingerprintEvidence :: FilePath -> IO (Maybe (Text, Text, Maybe Text))
 cachePublicationMaterializationFingerprintEvidence path = do
   exists <- doesFileExist path
   if not exists
@@ -177,11 +178,12 @@ cachePublicationMaterializationFingerprintEvidence path = do
         bracket (open path) close $ \conn -> do
           metadata <- Map.fromList <$> (query_ conn "SELECT key, value FROM meta ORDER BY key" :: IO [(Text, Text)])
           sourceFingerprint <- persistedSourceFingerprint conn
-          recomputed <- persistedMaterializationFingerprint conn sourceFingerprint
+          current <- persistedMaterializationFingerprint conn sourceFingerprint
+          legacy <- persistedLegacyMaterializationFingerprint conn sourceFingerprint
           pure $ do
             written <- Map.lookup "materialization_fingerprint" metadata
-            actual <- recomputed
-            pure (written, actual)
+            actual <- current
+            pure (written, actual, legacy)
       pure (either (const Nothing) id result)
 
 validateCacheWith :: Bool -> FilePath -> IO Bool
@@ -202,17 +204,25 @@ validateCacheWith requireValidSemantics path = do
           projections <- canonicalProjectionChecks conn
           sourceFingerprint <- persistedSourceFingerprint conn
           materializationFingerprint <- persistedMaterializationFingerprint conn sourceFingerprint
+          legacyMaterializationFingerprint <- persistedLegacyMaterializationFingerprint conn sourceFingerprint
           semanticState <- persistedSemanticState conn
-          pure (metadataRows, integrity, foreignKeys, schemaRows, actualCounts, projections, sourceFingerprint, materializationFingerprint, semanticState)
+          pure (metadataRows, integrity, foreignKeys, schemaRows, actualCounts, projections, sourceFingerprint, materializationFingerprint, legacyMaterializationFingerprint, semanticState)
       pure $ case checked of
-        Right (metadataRows, [Only "ok"], [], schemaRows, actualCounts, True, Just sourceFingerprint, Just materializationFingerprint, Just semanticState)
+        Right (metadataRows, [Only "ok"], [], schemaRows, actualCounts, True, Just sourceFingerprint, Just materializationFingerprint, legacyMaterializationFingerprint, Just semanticState)
           | uniqueMetadata metadataRows ->
               let metadata = Map.fromList metadataRows
+                  writtenMaterializationFingerprint = Map.lookup "materialization_fingerprint" metadata
                in canonicalMetadata metadata semanticState
                     && canonicalSchema schemaRows
                     && declaredCountsMatch metadata actualCounts
                     && Map.lookup "source_fingerprint" metadata == Just sourceFingerprint
-                    && Map.lookup "materialization_fingerprint" metadata == Just materializationFingerprint
+                    -- P6-06G.7 changed the current-connection commitment from
+                    -- graph-axis order to SQLite's connection-ID order.  The
+                    -- ABI intentionally stayed stable, so immutable archives
+                    -- published by the prior writer remain exact authorities.
+                    -- Both reconstructions commit to every row and the
+                    -- projection proof above rejects axis/ordinal corruption.
+                    && writtenMaterializationFingerprint `elem` [Just materializationFingerprint, legacyMaterializationFingerprint]
         _ -> False
   where
     declaredCountTables =
@@ -440,8 +450,17 @@ persistedSemanticState connection = do
 -- value (including FTS source text), so forged metadata or a payload splice
 -- cannot retain a cache's reuse eligibility.
 persistedMaterializationFingerprint :: Connection -> Maybe Text -> IO (Maybe Text)
-persistedMaterializationFingerprint _ Nothing = pure Nothing
-persistedMaterializationFingerprint connection (Just sourceFingerprint) = do
+persistedMaterializationFingerprint = persistedMaterializationFingerprintWith "SELECT adr_id,connection_id FROM current_connection ORDER BY adr_id,ordinal"
+
+-- | Archives emitted before P6-06G.7 retain their graph-axis frame order.
+-- This compatibility reconstruction does not relax row validation; it merely
+-- verifies the immutable digest using the ordering used by that writer.
+persistedLegacyMaterializationFingerprint :: Connection -> Maybe Text -> IO (Maybe Text)
+persistedLegacyMaterializationFingerprint = persistedMaterializationFingerprintWith "SELECT adr_id,connection_id FROM current_connection ORDER BY adr_id,CASE axis WHEN 'decision' THEN 0 WHEN 'scope' THEN 1 WHEN 'domain' THEN 2 WHEN 'status' THEN 3 ELSE 4 END,ordinal"
+
+persistedMaterializationFingerprintWith :: String -> Connection -> Maybe Text -> IO (Maybe Text)
+persistedMaterializationFingerprintWith _ _ Nothing = pure Nothing
+persistedMaterializationFingerprintWith currentRowsSql connection (Just sourceFingerprint) = do
   sourceBytes <- pure (decodeBase64Url sourceFingerprint)
   diagnosticRows <- query_ connection "SELECT code,severity,origin,COALESCE(adr_id,''),COALESCE(object_id,''),COALESCE(operation_id,''),COALESCE(commit_oid,''),COALESCE(path,''),message FROM issue WHERE code <> 'ADR_CONFLICT' ORDER BY code,adr_id,object_id,operation_id,commit_oid,path,severity,CASE origin WHEN 'config' THEN 0 WHEN 'path_document' THEN 1 WHEN 'history' THEN 2 WHEN 'operation' THEN 3 WHEN 'graph' THEN 4 WHEN 'basis' THEN 5 ELSE 6 END,origin,message" :: IO [(Text, Text, Text, Text, Text, Text, Text, Text, Text)]
   conflictRows <- query_ connection "SELECT code,adr_id,candidate_count,state_token,summaries FROM adr_conflict ORDER BY adr_id" :: IO [(Text, Text, Int64, Text, Text)]
@@ -451,7 +470,7 @@ persistedMaterializationFingerprint connection (Just sourceFingerprint) = do
   parentRows <- query_ connection "SELECT operation_id,object_id,parent_object_id FROM operation_member_parent ORDER BY operation_id,object_id,ordinal" :: IO [(Text, Text, Text)]
   reducedRows <- query_ connection "SELECT adr_id,state_token FROM reduced_adr ORDER BY adr_id" :: IO [(Text, Text)]
   axisRows <- query_ connection "SELECT adr_id,axis,object_id FROM axis_head ORDER BY adr_id,axis,ordinal" :: IO [(Text, Text, Text)]
-  currentRows <- query_ connection "SELECT adr_id,connection_id FROM current_connection ORDER BY adr_id,ordinal" :: IO [(Text, Text)]
+  currentRows <- query_ connection (fromString currentRowsSql) :: IO [(Text, Text)]
   documentRows <- query_ connection "SELECT item_id || char(0) || adr_id || char(0) || candidate_record_id || char(0) || title || char(0) || summary || char(0) || context || char(0) || decision || char(0) || consequences || char(0) || domains || char(0) || rationale || char(0) || identifiers || char(0) || other || char(0) || scope || char(0) || source_paths || char(0) || CASE obsolete WHEN 1 THEN 'true' ELSE 'false' END || char(0) || CASE conflicted WHEN 1 THEN 'true' ELSE 'false' END || char(0) || state_token FROM search_document ORDER BY item_id" :: IO [Only Text]
   passageRows <- query_ connection "SELECT item_id || char(0) || search_item_id || char(0) || adr_id || char(0) || candidate_record_id || char(0) || section_kind || char(0) || ordinal || char(0) || line_start || char(0) || line_end || char(0) || text || char(0) || printf('%.6f',weight) || char(0) || source_paths || char(0) || identifiers FROM search_section ORDER BY item_id" :: IO [Only Text]
   aliases <- query_ connection "SELECT alias || char(0) || expansion FROM local_alias ORDER BY alias" :: IO [Only Text]
