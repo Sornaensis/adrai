@@ -4,7 +4,7 @@
 module Adrai.ColdCompilerTest (tests) where
 
 import Adrai.Compiler
-import Adrai.Compiler.Snapshot (AnalyzedRepositorySnapshot, analyzeRepositorySnapshot)
+import Adrai.Compiler.Snapshot (AnalyzedRepositorySnapshot (..), analyzeRepositorySnapshot, analyzeRepositorySnapshotWithHistoryCounts, analyzeRepositorySnapshotWithHistoryParseCount)
 import Adrai.Fixture.CompilerRepository
 import Adrai.Git
 import Adrai.GitTestSupport
@@ -13,6 +13,7 @@ import Adrai.Repository
 import Adrai.Retrieval (SearchMaterialization (..), SearchPassage (..))
 import Adrai.Sqlite
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BS8
 import Data.Int (Int64)
 import Data.String (fromString)
 import Data.Text (Text)
@@ -242,6 +243,84 @@ tests =
           historyComplete <- query_ connection "SELECT value FROM meta WHERE key='history_complete'" :: IO [Only Text]
           historyComplete @?= [Only "false"]
           close connection,
+       testCase "exact 32-commit noise suffix preserves analysis and adds no parse attempts" $
+         withHealthyRepository $ \repository resolvedBefore -> do
+          (before, beforeParses, beforeRequested) <- requireAnalyzedWithHistoryCounts resolvedBefore
+          mapM_
+            (\index -> do
+                _ <- commitFile repository ("src/noise/history-" <> show index <> ".txt") "noise"
+                pure ())
+            [1 :: Int .. 32]
+          resolvedAfter <- requireResolved repository "HEAD"
+          (after, afterParses, afterRequested) <- requireAnalyzedWithHistoryCounts resolvedAfter
+          assertBool "baseline must parse at least one historical managed blob" (beforeParses > 0)
+          analyzedHistoryCommitsScanned after @?= analyzedHistoryCommitsScanned before + 32
+          afterParses @?= beforeParses
+          afterRequested @?= beforeRequested
+          analyzedDiagnostics after @?= analyzedDiagnostics before
+          analyzedDocuments after @?= analyzedDocuments before
+          analyzedReduction after @?= analyzedReduction before
+          analyzedConflicts after @?= analyzedConflicts before
+          analyzedHistoryComplete after @?= analyzedHistoryComplete before
+          analyzedSourceFingerprint after @?= analyzedSourceFingerprint before,
+       testCase "linear history and convergent merge preserve snapshot analysis" $
+         withHealthyRepository $ \repository _ -> do
+           _ <- gitSuccess repository ["checkout", "-b", "history-feature"] BS.empty
+           _ <- commitFile repository "src/noise/feature.txt" "feature noise"
+           _ <- gitSuccess repository ["checkout", "main"] BS.empty
+           _ <- commitFile repository "src/noise/main.txt" "main noise"
+           linearResolved <- requireResolved repository "HEAD"
+           linear <- requireAnalyzed linearResolved
+           _ <- gitSuccess repository ["merge", "--no-ff", "-m", "convergent noise merge", "history-feature"] BS.empty
+           mergedResolved <- requireResolved repository "HEAD"
+           merged <- requireAnalyzed mergedResolved
+           analyzedHistoryCommitsScanned merged @?= analyzedHistoryCommitsScanned linear + 2
+           analyzedDiagnostics merged @?= analyzedDiagnostics linear
+           analyzedDocuments merged @?= analyzedDocuments linear
+           analyzedReduction merged @?= analyzedReduction linear
+           analyzedConflicts merged @?= analyzedConflicts linear
+           analyzedHistoryComplete merged @?= analyzedHistoryComplete linear
+           analyzedSourceFingerprint merged @?= analyzedSourceFingerprint linear,
+       testCase "ordinary blob batch requests and parses each distinct prefetched blob exactly once" $
+        withHealthyRepository $ \repository _ -> do
+          decisionBytes <- BS.readFile (repository </> decisionPath)
+          (_, beforeParsed, beforeRequested) <- requireAnalyzedWithHistoryCounts =<< requireResolved repository "HEAD"
+          _ <-
+            commitFiles
+              repository
+              [ ( "architecture/adrai/decisions/Rlookahead/prefetched-" <> show index <> ".decision.md",
+                  decisionBytes <> BS8.pack ("\n<!-- distinct prefetched blob " <> show index <> " -->\n")
+                )
+              | index <- [1 :: Int .. 4]
+              ]
+          mapM_
+            (\index -> do
+                _ <- commitFile repository ("src/noise/lookahead-" <> show index <> ".txt") "noise"
+                pure ())
+            [1 :: Int .. 40]
+          resolved <- requireResolved repository "HEAD"
+          (_analyzed, parsed, requested) <- requireAnalyzedWithHistoryCounts resolved
+          -- All four changed paths deliberately have distinct blob OIDs.  The
+          -- exact deltas make a future duplicate look-ahead request/reparse
+          -- observable even if both counters would otherwise rise together.
+          parsed - beforeParsed @?= 4
+          requested - beforeRequested @?= 4
+          requested @?= parsed,
+      testCase "oversized single managed commit streams historical blobs within the fixed budget" $
+        withHealthyRepository $ \repository resolvedBefore -> do
+          (_, beforeParses) <- requireAnalyzedWithHistoryParseCount resolvedBefore
+          decisionBytes <- BS.readFile (repository </> decisionPath)
+          _ <-
+            commitFiles
+              repository
+              [ ( "architecture/adrai/decisions/Rbulk/oversized-" <> show index <> ".decision.md",
+                  decisionBytes <> BS8.pack ("\n<!-- oversized-history-" <> show index <> " -->\n")
+                )
+                | index <- [1 :: Int .. 257]
+              ]
+          resolvedAfter <- requireResolved repository "HEAD"
+          (_, afterParses) <- requireAnalyzedWithHistoryParseCount resolvedAfter
+          afterParses @?= beforeParses + 257,
       testCase "nonfresh connection is rejected without modifying existing schema" $
         withHealthyRepository $ \_ resolved -> do
           connection <- open ":memory:"
@@ -376,6 +455,30 @@ requireAnalyzed resolved = do
     >>= \case
       Left problem -> assertFailure (show problem)
       Right value -> pure value
+
+requireAnalyzedWithHistoryParseCount :: ResolvedRepositoryRevision -> IO (AnalyzedRepositorySnapshot, Int)
+requireAnalyzedWithHistoryParseCount resolved = do
+  raw <-
+    observeRawRepositorySnapshotAt resolved
+      >>= \case
+        Left problem -> assertFailure (show problem)
+        Right value -> pure value
+  analyzeRepositorySnapshotWithHistoryParseCount raw
+    >>= \case
+      (Left problem, _) -> assertFailure (show problem)
+      (Right value, parsed) -> pure (value, parsed)
+
+requireAnalyzedWithHistoryCounts :: ResolvedRepositoryRevision -> IO (AnalyzedRepositorySnapshot, Int, Int)
+requireAnalyzedWithHistoryCounts resolved = do
+  raw <-
+    observeRawRepositorySnapshotAt resolved
+      >>= \case
+        Left problem -> assertFailure (show problem)
+        Right value -> pure value
+  analyzeRepositorySnapshotWithHistoryCounts raw
+    >>= \case
+      (Left problem, _, _) -> assertFailure (show problem)
+      (Right value, parsed, requested) -> pure (value, parsed, requested)
 
 count :: Connection -> Text -> IO Int64
 count connection table = do

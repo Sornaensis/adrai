@@ -53,6 +53,7 @@ module Adrai.Vector
     blake2b128Digest,
     slotFromDigest,
     featureSlot,
+    canonicalFloat32Vector,
     packVector,
     unpackVector,
     dot,
@@ -709,6 +710,17 @@ packVector (DenseVector values) =
     ( Builder.toLazyByteString
         (Unboxed.foldl' (\builder value -> builder <> Builder.word32LE (castFloatToWord32 (realToFrac value))) mempty values)
     )
+
+-- | Canonicalize each component through the same IEEE-754 float32
+-- representation used by 'packVector' and 'unpackVector', without allocating
+-- an intermediate byte representation.
+canonicalFloat32Vector :: DenseVector -> DenseVector
+canonicalFloat32Vector (DenseVector values) = DenseVector (Unboxed.map canonicalizeFloat32 values)
+
+canonicalizeFloat32 :: Double -> Double
+canonicalizeFloat32 value =
+  realToFrac
+    (castWord32ToFloat (castFloatToWord32 (realToFrac value :: Float)))
 
 unpackVector :: ByteString -> Either VectorError DenseVector
 unpackVector bytes

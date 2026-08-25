@@ -5,6 +5,7 @@ module Adrai.Integration.CLI
     git,
     gitStdout,
     gitSuccess,
+    adraiTestArgs,
     spawnAdrai,
     spawnAdraiStdin,
     adraiJson,
@@ -41,15 +42,6 @@ import Adrai.Cli
     DoctorCacheAccess (..),
     DoctorDatabaseBuild (..),
   )
-import Adrai.History (HistoryOrder (..))
-import Adrai.Query
-  ( CollapsedProjection (..),
-    ExplodedProjection (..),
-    SearchProjection (..),
-    SearchResult (..),
-    CompareProjection (..),
-    CompareChange (..),
-  )
 import Control.Applicative ((<|>))
 import Control.Monad (forM)
 import Data.Aeson
@@ -58,7 +50,6 @@ import Data.Aeson
     decode,
     encode,
     eitherDecode,
-    (.=),
   )
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
@@ -70,20 +61,16 @@ import Data.Text (Text, pack, strip, unpack)
 import qualified Data.Text as DT
 import qualified Data.Text.Encoding as TE
 import Database.SQLite.Simple
-  ( Connection,
-    Query (..),
+  ( Query (..),
     close,
     open,
-    query,
     query_,
   )
 import Database.SQLite.Simple.FromRow
   ( FromRow (..),
-    RowParser (..),
+    field,
   )
-import Database.SQLite.Simple.FromField (FromField (..), FieldParser)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
-import Unsafe.Coerce (unsafeCoerce)
+import System.Directory (createDirectoryIfMissing)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>), takeDirectory)
@@ -95,9 +82,11 @@ import System.Process.Typed
     setStdin,
   )
 
--- | Allow sqlite-simple to read ByteString rows (single-column tables).
-instance FromRow BS.ByteString where
-  fromRow = unsafeCoerce (fromField :: FieldParser BS.ByteString) :: RowParser BS.ByteString
+-- | Single-column SQLite row used for table-name queries.
+newtype SqliteByteString = SqliteByteString BS.ByteString
+
+instance FromRow SqliteByteString where
+  fromRow = SqliteByteString <$> field
 
 -- | Extra paths to prepend to PATH so subprocesses find git and adrai.
 extraPathParts :: [FilePath]
@@ -180,12 +169,23 @@ findAdraiExe = do
   maybePath <- lookupEnv "ADRAI_EXE"
   pure $ maybe "adrai" id maybePath
 
+-- | Arguments for a real @adrai@ child launched by the test suite.
+--
+-- The production executable defaults to @-N@, which is appropriate for a
+-- long-lived CLI but makes concurrent short-lived test children oversubscribe
+-- the host.  Keep the test-only override on the command line so it is
+-- consumed by the RTS and does not weaken the deliberately scrubbed child
+-- environments used by integration contracts.
+adraiTestArgs :: FilePath -> [String] -> [String]
+adraiTestArgs repoPath arguments =
+  ["--repo", repoPath] <> arguments <> ["+RTS", "-N1", "-RTS"]
+
 -- | Spawn the adrai CLI with arguments in a repository directory.
 spawnAdrai :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
 spawnAdrai repoPath args = do
   exe <- findAdraiExe
   env <- fullEnv
-  readProcess (setEnv env (proc exe ("--repo" : repoPath : args)))
+  readProcess (setEnv env (proc exe (adraiTestArgs repoPath args)))
 
 -- | Spawn with stdin input.
 spawnAdraiStdin
@@ -199,7 +199,7 @@ spawnAdraiStdin repoPath args input = do
   readProcess
     ( setEnv env
         ( setStdin (byteStringInput input)
-            (proc exe ("--repo" : repoPath : args))
+            (proc exe (adraiTestArgs repoPath args))
         )
     )
 
@@ -238,10 +238,6 @@ adraiJsonOrThrow repoPath args = do
 getExitCode :: ExitCode -> Int
 getExitCode (ExitFailure n) = n
 getExitCode ExitSuccess = 0
-
--- | Helper: decode a ByteString to Text.
-decodeText :: ByteString -> Text
-decodeText = TE.decodeUtf8Lenient
 
 -- | Create a minimal .adrai.toml config file at the given repo,
 -- writing it as a new file and committing it.
@@ -520,9 +516,9 @@ sqliteTableContents :: FilePath -> IO [(String, [[String]])]
 sqliteTableContents dbPath = do
   conn <- open dbPath
   tables <- query_ conn (Query "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-    :: IO [BS.ByteString]
+    :: IO [SqliteByteString]
   results <-
-    forM tables (\tbl -> do
+    forM tables (\(SqliteByteString tbl) -> do
       let tblName = TE.decodeUtf8 tbl
       let q = Query (DT.pack $ "SELECT * FROM " ++ DT.unpack tblName ++ " ORDER BY rowid")
       rows <-
@@ -555,12 +551,3 @@ _Object _ = Nothing
     Just v -> case eitherDecode (encode v) of
       Left  _ -> Nothing
       Right a -> Just a
-
--- | Optional lookup in a KeyMap and decode.
-(.:?) :: FromJSON a => KM.KeyMap Value -> Text -> Maybe (Maybe a)
-(.:?) km key =
-  case KM.lookup (Key.fromText key) km of
-    Nothing -> Just Nothing
-    Just v -> case eitherDecode (encode v) of
-      Left  _  -> Just Nothing
-      Right a  -> Just (Just a)

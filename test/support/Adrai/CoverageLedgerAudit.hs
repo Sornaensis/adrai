@@ -5,6 +5,7 @@ module Adrai.CoverageLedgerAudit
     auditGapRows,
     auditIsClosed,
     auditLedgerAt,
+    decodeStressCommandArguments,
     renderAuditReport,
     requireLedgerClosedAt,
     writeCurrentLedgerReport,
@@ -15,6 +16,7 @@ where
 import qualified Data.Aeson as Aeson
 import Data.Aeson ((.:), (.:?))
 import qualified Data.ByteString as ByteString
+import Data.Char (isSpace)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -318,9 +320,88 @@ targetExistenceGaps root (category, row)
 evidenceProblems :: Evidence -> [Text.Text]
 evidenceProblems evidence =
   [ "missing-evidence-command" | not (substantive (evidenceCommand evidence)) ]
-    <> ["invalid-evidence-command" | substantive (evidenceCommand evidence) && not ("stack test adrai:adrai-test" `Text.isPrefixOf` evidenceCommand evidence)]
+    <> ["invalid-evidence-command" | substantive (evidenceCommand evidence) && not (validEvidenceCommand (evidenceCommand evidence))]
     <> ["missing-evidence-fixture" | not (substantive (evidenceFixture evidence))]
     <> ["missing-evidence-result" | not (substantive (evidenceResult evidence))]
+
+-- | The ledger records commands that can be executed without accidentally
+-- constructing the intentionally expensive stress fixtures.  Ordinary-suite
+-- commands need only target @adrai-test@; a stress target must pass the
+-- opt-in through Stack's test-arguments option.
+validEvidenceCommand :: Text.Text -> Bool
+validEvidenceCommand command =
+  case shellWords command of
+    Just ("stack" : "test" : "adrai:adrai-test" : _) -> True
+    Just ("stack" : "test" : "adrai:adrai-stress-test" : arguments) -> hasStressOptIn arguments
+    _ -> False
+
+-- | The outer command and the value passed to Stack are distinct command
+-- lines.  Parse both rather than looking for a substring: @--run-stress=1@,
+-- @prefix--run-stress@, or a token hidden behind an unmatched quote are not
+-- the explicit sentinel accepted by the stress executable.
+hasStressOptIn :: [Text.Text] -> Bool
+hasStressOptIn arguments =
+  maybe False ("--run-stress" `elem`) (decodeStressTestArguments arguments)
+
+-- | Decode the exact argument vector delivered to the isolated stress
+-- executable by a documented ledger command.  Keeping this separate from the
+-- boolean validation makes quoting regressions observable: the PowerShell
+-- safe command must deliver the focused pattern as one argv element.
+decodeStressCommandArguments :: Text.Text -> Maybe [Text.Text]
+decodeStressCommandArguments command = do
+  words <- shellWords command
+  case words of
+    "stack" : "test" : "adrai:adrai-stress-test" : arguments -> decodeStressTestArguments arguments
+    _ -> Nothing
+
+decodeStressTestArguments :: [Text.Text] -> Maybe [Text.Text]
+decodeStressTestArguments arguments = exactlyOneTestArguments arguments >>= shellWords
+
+exactlyOneTestArguments :: [Text.Text] -> Maybe Text.Text
+exactlyOneTestArguments = go Nothing
+  where
+    go found [] = found
+    go found ("--test-arguments" : value : remaining) = add found value remaining
+    go _ ["--test-arguments"] = Nothing
+    go found (argument : remaining)
+      | "--test-arguments=" `Text.isPrefixOf` argument =
+          add found (Text.drop (Text.length "--test-arguments=") argument) remaining
+      | otherwise = go found remaining
+
+    add Nothing value remaining = go (Just value) remaining
+    add (Just _) _ _ = Nothing
+
+-- | A compact shell-word parser for the documented Stack command contract.
+-- It supports the single and double quotes used by ledger evidence, preserves
+-- ordinary Windows path separators, and rejects unmatched quotes.
+shellWords :: Text.Text -> Maybe [Text.Text]
+shellWords = fmap (map Text.pack) . go [] [] Nothing False . Text.unpack
+  where
+    go completed current quote started [] =
+      case quote of
+        Just _ -> Nothing
+        Nothing -> Just (reverse (finish completed current started))
+    go completed current quote started (character : remaining) =
+      case quote of
+        Nothing
+          | isSpace character -> go (finish completed current started) [] Nothing False remaining
+          | character == '\'' || character == '\"' -> go completed current (Just character) True remaining
+          | character == '\\' -> escaped completed current Nothing remaining
+          | otherwise -> go completed (character : current) Nothing True remaining
+        Just delimiter
+          | character == delimiter -> go completed current Nothing started remaining
+          | character == '\\' -> escaped completed current (Just delimiter) remaining
+          | otherwise -> go completed (character : current) (Just delimiter) True remaining
+
+    escaped completed current quote [] = go completed ('\\' : current) quote True []
+    escaped completed current quote (character : remaining)
+      | character == '\\' || character == '\'' || character == '\"' || isSpace character =
+          go completed (character : current) quote True remaining
+      | otherwise = go completed (character : '\\' : current) quote True remaining
+
+    finish completed current started
+      | started = reverse current : completed
+      | otherwise = completed
 
 translationProblems :: CoverageRow -> [Text.Text]
 translationProblems row

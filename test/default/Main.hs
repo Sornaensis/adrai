@@ -8,6 +8,7 @@ import qualified Adrai.CompilerMaterializationProperties
 import qualified Adrai.CompilerMaterializationTest
 import qualified Adrai.CompilerSearchSqliteTest
 import qualified Adrai.CompilerSnapshotTest
+import qualified Adrai.CompilerAttributionTest
 import qualified Adrai.ConsistencyTest
 import qualified Adrai.ColdCompilerTest
 import qualified Adrai.ColdCompilerGoldenTest
@@ -27,10 +28,7 @@ import qualified Adrai.CoverageLedgerAuditTest
 import qualified Adrai.CoverageLedgerTest
 import qualified Adrai.DomainFormatTest
 import qualified Adrai.DomainProperties
-import qualified Adrai.FixtureContractTest
-import qualified Adrai.FixturePlanTest
 import qualified Adrai.FixturePrngTest
-import qualified Adrai.FixtureProperties
 import qualified Adrai.FixtureQueryMaterializationTest
 import qualified Adrai.FixtureRelevanceTest
 import qualified Adrai.FingerprintGuardTest
@@ -70,7 +68,6 @@ import qualified Adrai.RelevanceQualityTest
 import qualified Adrai.RelevanceTest
 import qualified Adrai.RetrievalPlanGoldenTest
 import qualified Adrai.RetrievalSqliteTest
-import qualified Adrai.RetrievalScaleTest
 import qualified Adrai.SearchRetrievalProperties
 import qualified Adrai.SearchRetrievalTest
 import qualified Adrai.SearchRankingProperties
@@ -93,6 +90,7 @@ import Control.Exception (bracket)
 import qualified Data.ByteString.Char8 as BS8
 import Database.SQLite.Simple (close, execute_, open)
 import Hedgehog (property, success)
+import GHC.IO.Encoding (setLocaleEncoding, utf8)
 import System.Environment
   ( getArgs,
     getProgName,
@@ -101,7 +99,6 @@ import System.Environment
   )
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
 import System.FilePath (takeFileName)
-import System.IO (appendFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.Hedgehog (testProperty)
 import Test.Tasty.HUnit (testCase)
@@ -120,6 +117,7 @@ main = do
 
 normalMain :: [String] -> IO ()
 normalMain arguments = do
+  setLocaleEncoding utf8
   -- Ensure git and adrai are discoverable on PATH for subprocesses.
   -- Stack test subprocesses may have a minimal PATH.
   let extraPaths =
@@ -129,15 +127,16 @@ normalMain arguments = do
   currentPath <- lookupEnv "PATH"
   let newPath = intercalate ";" (catMaybes [currentPath] ++ extraPaths)
   setEnv "PATH" newPath
-  -- Provide absolute path to adrai for tests that require ADRAI_EXE.
-  setEnv
-    "ADRAI_EXE"
-    "D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin\\adrai.exe"
+  -- Preserve an executable selected by the caller.  Several integration
+  -- contracts intentionally exercise the exact binary named by ADRAI_EXE;
+  -- replacing it here with this machine's Stack install would silently test
+  -- a different build.  ADRAI_EXE is therefore deliberately inherited.
   normalMain' arguments
 
 normalMain' :: [String] -> IO ()
 normalMain' arguments =
   case arguments of
+    ["--assert-adrai-exe-preserved"] -> assertAdraiExePreserved
     ["--write-p3-01-goldens"] -> Adrai.VectorQualityTest.writeP301Goldens
     ["--write-p3-02-goldens"] -> Adrai.RetrievalPlanGoldenTest.writeP302Goldens
     ["--write-p3-03-goldens"] -> Adrai.CompilerMaterializationGoldenTest.writeP303Goldens
@@ -148,6 +147,21 @@ normalMain' arguments =
     ["--coverage-ledger-report"] -> Adrai.CoverageLedgerAudit.writeCurrentLedgerReport
     ["--require-coverage-ledger-closed"] -> Adrai.CoverageLedgerAudit.requireCurrentLedgerClosed
     _ -> defaultMain tests
+
+-- | A focused entry-point regression hook.  It runs after the ordinary test
+-- initialization (including PATH setup) without spawning the named program or
+-- constructing the suite, so callers can safely prove that an externally
+-- selected executable remains visible:
+--
+-- @ADRAI_EXE=C:\\external\\adrai.exe ADRAI_TEST_EXPECTED_EXE=C:\\external\\adrai.exe stack test adrai:adrai-test --test-arguments=--assert-adrai-exe-preserved@
+assertAdraiExePreserved :: IO ()
+assertAdraiExePreserved = do
+  actual <- lookupEnv "ADRAI_EXE"
+  expected <- lookupEnv "ADRAI_TEST_EXPECTED_EXE"
+  case (actual, expected) of
+    (Just actualPath, Just expectedPath)
+      | not (null actualPath), actualPath == expectedPath -> pure ()
+    _ -> exitWith (ExitFailure 64)
 
 referenceTransactionHook :: [String] -> IO ()
 referenceTransactionHook [phase] = do
@@ -207,9 +221,6 @@ tests =
       Adrai.CoverageLedgerAuditTest.tests,
       Adrai.FixturePrngTest.tests,
       Adrai.FixtureRelevanceTest.tests,
-      Adrai.FixturePlanTest.tests,
-      Adrai.FixtureProperties.tests,
-      Adrai.FixtureContractTest.tests,
       Adrai.DomainFormatTest.tests,
       Adrai.ScopeFormatTest.tests,
       Adrai.ProvenanceFormatTest.tests,
@@ -276,7 +287,6 @@ tests =
           [ Adrai.FixtureQueryMaterializationTest.tests,
             Adrai.P306QualityGoldenTest.tests,
             Adrai.RelevanceQualityTest.tests,
-            Adrai.RetrievalScaleTest.tests,
             Adrai.SearchVectorCorpusTest.tests,
             Adrai.SearchVectorReuseTest.tests
           ],
@@ -295,6 +305,7 @@ tests =
       testGroup
           "P4-03"
           [ Adrai.ColdCompilerGoldenTest.tests,
+            Adrai.CompilerAttributionTest.tests,
             Adrai.CompilerSnapshotTest.tests,
             Adrai.ColdCompilerTest.tests,
             Adrai.IntegrityAdversarialTest.tests,

@@ -1272,7 +1272,7 @@ runCurrentSearch :: Connection -> ReadSnapshot -> SearchMaterialization -> Searc
 runCurrentSearch connection snapshot materialization request =
   case buildSearchVectorCorpus materialization of
     Left problem -> pure (Left (SearchVectorCorpusFailure problem))
-    Right corpus -> runCurrentSearchWithCorpus connection snapshot materialization corpus request
+    Right corpus -> runCurrentSearchValidated connection snapshot materialization corpus request
 
 runCurrentSearchWithCorpus :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> SearchRequest -> IO (Either SearchError SearchProjection)
 runCurrentSearchWithCorpus connection snapshot materialization corpus request =
@@ -1424,7 +1424,7 @@ runRelevant :: Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRe
 runRelevant connection snapshot materialization request source =
   case buildSearchVectorCorpus materialization of
     Left problem -> pure (Left (RelevantVectorCorpusFailure problem))
-    Right corpus -> runRelevantWithCorpus connection snapshot materialization corpus request source
+    Right corpus -> runRelevantValidated connection snapshot materialization corpus request source
 
 runRelevantWithCorpus :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
 runRelevantWithCorpus connection snapshot materialization corpus request source =

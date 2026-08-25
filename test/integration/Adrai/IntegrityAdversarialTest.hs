@@ -10,7 +10,7 @@ import Adrai.Git
 import Adrai.GitTestSupport
 import Adrai.Provenance
 import Adrai.Repository
-import Adrai.Types (mkRepoPath)
+import Adrai.Types (mkOperationId, mkRepoPath, operationIdText)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Int (Int64)
@@ -76,7 +76,61 @@ tests =
           BS.writeFile (repository </> path) rewritten
           _ <- commitFiles repository []
           resolveHead repository >>= (\resolved -> assertInvalidWith resolved "APPEND_ONLY_REWRITE"),
-      testCase "permanent deletion persists MISSING_HISTORICAL_OBJECT" $
+      testCase "valid then malformed then delete does not retain historical identity" $
+        withExpandedRepository $ \repository _files (path, bytes) -> do
+          identity <- requireFixture (documentIdentityText path bytes)
+          BS.writeFile (repository </> path) "malformed managed document"
+          _ <- commitFiles repository []
+          removeFile (repository </> path)
+          _ <- commitFiles repository []
+          resolved <- resolveHead repository
+          connection <- compileIntoMemory resolved
+          assertIssue connection "APPEND_ONLY_REWRITE"
+          assertAttributedIssue connection "APPEND_ONLY_REWRITE" identity
+          assertUnattributedIssue connection "MISSING_HISTORICAL_OBJECT"
+          assertNoIssue connection "INCOMPLETE_OPERATION"
+          assertNoSemantics connection
+          close connection,
+      testCase "valid then malformed then different valid does not retain historical identity" $
+         withExpandedRepository $ \repository _files (path, bytes) -> do
+          identity <- requireFixture (documentIdentityText path bytes)
+          -- Do not copy a member from an operation that remains live: that is
+          -- covered below and must fail closed as INCOMPLETE_OPERATION.  This
+          -- case isolates the historical-identity rule by resealing the same
+          -- valid object under a new, otherwise non-live operation.
+          differentBytes <- requireFixture (resealWithDistinctOperation path bytes)
+          differentIdentity <- requireFixture (documentIdentityText path differentBytes)
+          assertBool "replacement must not retain the historical identity" (differentIdentity /= identity)
+          BS.writeFile (repository </> path) "malformed managed document"
+          _ <- commitFiles repository []
+          BS.writeFile (repository </> path) differentBytes
+          _ <- commitFiles repository []
+          resolved <- resolveHead repository
+          connection <- compileIntoMemory resolved
+          assertIssue connection "APPEND_ONLY_REWRITE"
+          assertAttributedIssue connection "APPEND_ONLY_REWRITE" identity
+          assertUnattributedIssue connection "APPEND_ONLY_REWRITE"
+          assertNoIssue connection "INCOMPLETE_OPERATION"
+          assertNoSemantics connection
+          close connection,
+       testCase "malformed then valid member reused from a live operation persists INCOMPLETE_OPERATION" $
+         withExpandedRepository $ \repository files (path, _bytes) -> do
+           (reusedPath, reusedBytes) <-
+             case [(candidatePath, candidate) | (candidatePath, candidate) <- files, candidatePath /= path] of
+               candidate : _ -> pure candidate
+               [] -> assertFailure "expanded fixture has no live member to reuse" >> fail "unreachable"
+           (_, reusedOperation) <- requireFixture (documentIdentityText reusedPath reusedBytes)
+           BS.writeFile (repository </> path) "malformed managed document"
+           _ <- commitFiles repository []
+           BS.writeFile (repository </> path) reusedBytes
+           _ <- commitFiles repository []
+           resolved <- resolveHead repository
+           connection <- compileIntoMemory resolved
+           assertIssue connection "INCOMPLETE_OPERATION"
+           assertIssueOperation connection "INCOMPLETE_OPERATION" reusedOperation
+           assertNoSemantics connection
+           close connection,
+       testCase "permanent deletion persists MISSING_HISTORICAL_OBJECT" $
         withExpandedRepository $ \repository _files (path, _bytes) -> do
           removeFile (repository </> path)
           _ <- commitFiles repository []
@@ -120,7 +174,48 @@ tests =
           _ <- gitSuccess repository ["merge", "--no-commit", "--no-ff", "feature"] BS.empty
           removeFile (repository </> memberPath)
           _ <- commitFiles repository []
-          resolveHead repository >>= (\resolved -> assertInvalidWith resolved "MISSING_HISTORICAL_OBJECT")
+          resolveHead repository >>= (\resolved -> assertInvalidWith resolved "MISSING_HISTORICAL_OBJECT"),
+      testCase "selected merge deltas exactly match full traversal when both parents change managed paths" $
+        withSystemTempDirectory "adrai compiler selected merge parity" $ \temporary -> do
+          let repository = temporary </> "repository"
+              repoPath value = case mkRepoPath value of
+                Right path -> path
+                Left problem -> error (show problem)
+              roots = [repoPath ".adrai.toml", repoPath "architecture/adrai/decisions", repoPath "architecture/adrai/connections"]
+          initTestRepository repository
+          basisText <- commitFile repository "seed.txt" "basis"
+          basis <- requireOid basisText
+          healthy <- requireFixture (healthyCompilerFiles basis)
+          _ <- commitFiles repository healthy
+          _ <- gitSuccess repository ["checkout", "-b", "feature"] BS.empty
+          let (featurePath, _) = head healthy
+          removeFile (repository </> featurePath)
+          _ <- commitFiles repository []
+          _ <- gitSuccess repository ["checkout", "main"] BS.empty
+          expanded <- requireFixture (scopeExpandedCompilerFiles basis)
+          let member@(memberPath, _) = requireExpandedMember healthy expanded
+          _ <- commitFiles repository [member]
+          _ <- gitSuccess repository ["merge", "--no-commit", "--no-ff", "feature"] BS.empty
+          _ <- commitFiles repository []
+          resolved <- resolveHead repository
+          graphResult <- reachableCommitGraphAt (resolvedRepository resolved) (resolvedCommitOid resolved)
+          graph <- case graphResult of
+            Left problem -> assertFailure (show problem) >> fail "unreachable"
+            Right value -> pure value
+          selectedResult <- historyTreeDeltasAt (resolvedRepository resolved) True graph (head roots) roots
+          fullResult <- historyTreeDeltasAt (resolvedRepository resolved) False graph (head roots) roots
+          selected <- case selectedResult of
+            Left problem -> assertFailure (show problem) >> fail "unreachable"
+            Right value -> pure value
+          full <- case fullResult of
+            Left problem -> assertFailure (show problem) >> fail "unreachable"
+            Right value -> pure value
+          selected @?= full
+          let mergeNode = last graph
+              mergeEdges = [delta | delta <- selected, gitHistoryTreeDeltaCommit delta == gitCommitNodeOid mergeNode]
+          map gitHistoryTreeDeltaParent mergeEdges @?= map Just (gitCommitNodeParents mergeNode)
+          assertBool "both original merge edges carry managed deltas" (length mergeEdges == 2 && all (not . null . gitHistoryTreeDeltaChanges) mergeEdges)
+          assertInvalidWith resolved "INCOMPLETE_OPERATION"
     ]
 
 malformedFiles :: GitOid -> Either Text [(FilePath, ByteString)]
@@ -168,6 +263,34 @@ resealChangedRationale path bytes = do
           capsuleInputDigests = provenanceInputs capsule
         }
   firstShow "seal" (sealManagedDocument changedRecord changedCapsule)
+
+-- | Build a parse-valid, standalone axis operation.  The object remains the
+-- same so the test isolates provenance-operation identity rather than a
+-- semantic-record replacement.
+resealWithDistinctOperation :: FilePath -> ByteString -> Either Text ByteString
+resealWithDistinctOperation path bytes = do
+  repoPath <- firstShow "path" (mkRepoPath (Text.pack path))
+  document <- firstShow "parse" (parseManagedDocument repoPath bytes)
+  operation <- firstShow "operation" (mkOperationId ("O" <> Text.replicate 25 "0" <> "2"))
+  let capsule = parsedManagedCapsule document
+  changedCapsule <-
+    firstShow "capsule" . mkProvenanceCapsule $
+      ProvenanceCapsuleInput
+        { capsuleInputOperationId = operation,
+          capsuleInputObjectId = provenanceObjectId capsule,
+          capsuleInputEventKind = provenanceEventKind capsule,
+          capsuleInputActor = provenanceActor capsule,
+          capsuleInputTimestampMs = provenanceTimestampMs capsule,
+          capsuleInputBasis = provenanceBasis capsule,
+          capsuleInputParents = provenanceParents capsule,
+          capsuleInputBranchHint = provenanceBranchHint capsule,
+          capsuleInputUpstreamHint = provenanceUpstreamHint capsule,
+          capsuleInputLineAnchors = provenanceLineAnchors capsule,
+          capsuleInputSemanticDigest = provenanceSemanticDigest capsule,
+          capsuleInputToolVersion = provenanceToolVersion capsule,
+          capsuleInputDigests = provenanceInputs capsule
+        }
+  firstShow "seal" (sealManagedDocument (parsedManagedRecord document) changedCapsule)
 
 firstShow :: (Show problem) => Text -> Either problem value -> Either Text value
 firstShow label = either (Left . ((label <> ": ") <>) . Text.pack . show) Right
@@ -229,6 +352,41 @@ assertIssue :: Connection -> Text -> IO ()
 assertIssue connection expected = do
   codes <- query_ connection "SELECT code FROM issue ORDER BY ordinal" :: IO [Only Text]
   assertBool ("missing diagnostic " <> Text.unpack expected <> " in " <> show codes) (Only expected `elem` codes)
+
+assertNoIssue :: Connection -> Text -> IO ()
+assertNoIssue connection forbidden = do
+  codes <- query_ connection "SELECT code FROM issue ORDER BY ordinal" :: IO [Only Text]
+  assertBool ("unexpected diagnostic " <> Text.unpack forbidden <> " in " <> show codes) (Only forbidden `notElem` codes)
+
+assertUnattributedIssue :: Connection -> Text -> IO ()
+assertUnattributedIssue connection expected = do
+  rows <- query_ connection "SELECT code,object_id,operation_id FROM issue ORDER BY ordinal" :: IO [(Text, Maybe Text, Maybe Text)]
+  assertBool
+    ("missing unattributed " <> Text.unpack expected <> " in " <> show rows)
+    (any (\(code, objectId, operationId) -> code == expected && objectId == Nothing && operationId == Nothing) rows)
+
+assertIssueOperation :: Connection -> Text -> Text -> IO ()
+assertIssueOperation connection expected expectedOperation = do
+  rows <- query_ connection "SELECT code,operation_id FROM issue ORDER BY ordinal" :: IO [(Text, Maybe Text)]
+  assertBool
+    ("missing " <> Text.unpack expected <> " attributed to " <> Text.unpack expectedOperation <> " in " <> show rows)
+    (any (\(code, operationId) -> code == expected && operationId == Just expectedOperation) rows)
+
+assertAttributedIssue :: Connection -> Text -> (Text, Text) -> IO ()
+assertAttributedIssue connection expected (objectId, operationId) = do
+  rows <- query_ connection "SELECT code,object_id,operation_id FROM issue ORDER BY ordinal" :: IO [(Text, Maybe Text, Maybe Text)]
+  assertBool
+    ("missing attributed " <> Text.unpack expected <> " in " <> show rows)
+    (any (\(code, actualObject, actualOperation) -> code == expected && actualObject == Just objectId && actualOperation == Just operationId) rows)
+
+documentIdentityText :: FilePath -> ByteString -> Either Text (Text, Text)
+documentIdentityText path bytes = do
+  repoPath <- firstShow "path" (mkRepoPath (Text.pack path))
+  document <- firstShow "parse" (parseManagedDocument repoPath bytes)
+  pure
+    ( provenanceObjectIdText (provenanceObjectId (parsedManagedCapsule document)),
+      operationIdText (provenanceOperationId (parsedManagedCapsule document))
+    )
 
 assertNoSemantics :: Connection -> IO ()
 assertNoSemantics connection = do

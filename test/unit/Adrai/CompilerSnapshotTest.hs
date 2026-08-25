@@ -85,7 +85,15 @@ tests =
         assertLeft (decodeGitCommitGraph "")
         assertLeft (decodeGitCommitGraph (TextEncoding.encodeUtf8 child))
         assertLeft (decodeGitCommitGraph (TextEncoding.encodeUtf8 (child <> "  " <> parent <> "\n")))
-        assertLeft (decodeGitCommitGraph (TextEncoding.encodeUtf8 (child <> "\n\n")))
+        assertLeft (decodeGitCommitGraph (TextEncoding.encodeUtf8 (child <> "\n\n"))),
+      testCase "history convergence compares only additional states" $ do
+        historyConvergencePairs ([] :: [Int]) @?= Nothing
+        historyConvergencePairs ([7] :: [Int]) @?= Just (7, [])
+        let primary = 7 :: Int
+            additional = [11, 13, 17]
+            expectedPairs = [(primary, 11), (primary, 13), (primary, 17)]
+        historyConvergencePairs (primary : additional) @?= Just (primary, expectedPairs)
+        length expectedPairs @?= length additional
     ]
 
 healthyDocuments :: IO [ParsedManagedDocument]

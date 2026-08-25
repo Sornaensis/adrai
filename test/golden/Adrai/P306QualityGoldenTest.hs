@@ -319,7 +319,7 @@ corpusJson search corpus =
 scaleJson :: JsonValue
 scaleJson =
   object
-    [ ("execution", JsonString "validated by test/integration/Adrai/RetrievalScaleTest.hs; not rerun by this golden"),
+    [ ("execution", JsonString "validated by test/stress/Adrai/RetrievalScaleTest.hs; not rerun by this golden"),
       ("seed", JsonNumber (fromIntegral (seedWord64 (fixtureSeed (retrievalScaleMeta retrievalScaleV1))))),
       ("logical_adrs", number scaleLogicalAdrs),
       ("search_documents", number scaleSearchDocuments),

@@ -47,11 +47,29 @@ executables:
     dependencies: [adrai]
     ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N]
 
+  # A Criterion-free, one-action executable for GHC attribution profiles.
+  # Keep it separate from adrai-bench: profiling changes runtime behaviour and
+  # must never become a Criterion timing result.
+  adrai-profile:
+    main: ProfileMain.hs
+    source-dirs:
+      - bench
+      - test/support
+    other-modules:
+      - Adrai.Benchmark.CurrentSearch
+      - Adrai.Benchmark.ProfileDriver
+      - Adrai.Fixture.Prng
+      - Adrai.Fixture.Types
+      - Adrai.Fixture.QueryMaterialization
+      - Adrai.Fixture.RetrievalScale
+    dependencies: [adrai]
+    ghc-options: [-threaded, -rtsopts, -eventlog, -with-rtsopts=-N1]
+
 tests:
   adrai-test:
     main: Main.hs
     source-dirs:
-      - test
+      - test/default
       - test/unit
       - test/property
       - test/golden
@@ -100,3 +118,36 @@ tests:
     # Both the harness and the real CLI child run with one capability.  The
     # component is intentionally isolated from the large support tree.
     ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1]
+
+  # A source-level guard for the native benchmark contract.  It is deliberately
+  # separate from the ordinary and stress suites: it reads only registration
+  # metadata and documentation, never constructs benchmark fixtures or samples.
+  adrai-benchmark-registration-test:
+    main: Main.hs
+    source-dirs: test/benchmark-registration
+    dependencies:
+      - directory
+      - tasty
+      - tasty-hunit
+
+benchmarks:
+  adrai-bench:
+    main: Main.hs
+    source-dirs:
+      - bench
+      - test/support
+    other-modules:
+      - Adrai.Benchmark.CurrentSearch
+      - Adrai.Fixture.Prng
+      - Adrai.Fixture.Types
+      - Adrai.Fixture.QueryMaterialization
+      - Adrai.Fixture.Relevance
+      - Adrai.Fixture.RetrievalScale
+    dependencies:
+      - adrai
+      - criterion
+      - deepseq
+    # The eventlog runtime remains idle for ordinary Criterion timing runs.
+    # It is enabled here only so the documented profiling invocation can opt
+    # in with +RTS -l and write heap samples to its run directory.
+    ghc-options: [-threaded, -rtsopts, -eventlog, -with-rtsopts=-N1]

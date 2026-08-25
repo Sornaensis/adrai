@@ -704,7 +704,7 @@ ownedCandidateSiblings directory _database = do
 assertIndexed :: Repository -> GitOid -> FilePath -> IO ()
 assertIndexed repository commitOid database = do
   result <- compilePostCommitIndex repository commitOid database
-  postCommitIndexed result @?= True
+  assertBool ("expected post-commit indexing success, got " <> show result) (postCommitIndexed result)
   postCommitDatabase result @?= Just database
   postCommitIndexRevision result @?= Just commitOid
   postCommitIndexError result @?= Nothing

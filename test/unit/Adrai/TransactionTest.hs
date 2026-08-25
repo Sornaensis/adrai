@@ -28,7 +28,7 @@ import Adrai.GitTestSupport
     outputText,
     withRejectingReferenceTransactionHook,
   )
-import Adrai.Integration.CLI (createAdraiInit)
+import Adrai.Integration.CLI (adraiTestArgs, createAdraiInit)
 import Adrai.Provenance
   ( ProvenanceCapsuleInput (..),
     ProvenanceObjectId (..),
@@ -880,8 +880,10 @@ gitLockTests =
         let contenderFailures = [(heldPath, pid) | Left (LockHeld heldPath pid) <- outcomes]
         assertEqual "exactly one contender is rejected with typed native contention" 1 (length contenderFailures)
         assertEqual "the contended path remains canonical" [path] (map fst contenderFailures)
-        let winningLock = head acquired
-            winningBytes = BS8.pack ("pid=" <> show (gitLockPid winningLock) <> "\n")
+        winningLock <- case acquired of
+          [lock] -> pure lock
+          _ -> assertFailure "expected exactly one native lock owner" >> fail "unreachable"
+        let winningBytes = BS8.pack ("pid=" <> show (gitLockPid winningLock) <> "\n")
         BS.readFile path >>= assertEqual "the native winner rewrites canonical owner bytes before returning" winningBytes
         gitLockStatus repository >>= \case
           Left (LockHeld observedPath observedPid) -> do
@@ -1123,7 +1125,7 @@ absoluteAdraiChild :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.
 absoluteAdraiChild repositoryPath arguments = do
   lookupEnv "ADRAI_EXE" >>= \case
     Just executable | not (null executable) && isAbsolute executable ->
-      readProcess (proc executable ("--repo" : repositoryPath : arguments))
+      readProcess (proc executable (adraiTestArgs repositoryPath arguments))
     _ -> fail "TransactionTest requires ADRAI_EXE to name an absolute executable under test"
 
 childLockObservableState :: FilePath -> IO (BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString, [(FilePath, BS.ByteString)])

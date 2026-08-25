@@ -31,7 +31,7 @@ import Adrai.Types hiding (ExitSuccess)
 import qualified Control.Concurrent.Async as Async
 import Control.Exception (SomeException, bracket, evaluate, onException, try)
 import Control.Concurrent (threadDelay)
-import Control.Monad (foldM, forM_, join, unless, when)
+import Control.Monad (foldM, forM_, join, unless)
 import Data.Char (isDigit)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -479,13 +479,14 @@ coldCompileTimeoutMicros = 5 * 60 * 1000000
 processCleanupTimeoutMicros :: Int
 processCleanupTimeoutMicros = 10 * 1000000
 
-stressHardHeapBytes, stressTargetResidencyBytes, stressWindowsProcessTreeTargetBytes :: Integer
+stressHardHeapBytes, stressTargetResidencyBytes, stressProcessTreeTargetBytes :: Integer
 stressHardHeapBytes = 2 * 1024 * 1024 * 1024
 stressTargetResidencyBytes = (3 * stressHardHeapBytes) `div` 4
 -- OS working-set accounting includes executable images and child processes.
--- This 2.5 GiB allowance is enforced only for the Windows CIM sampler below,
--- whose single snapshot accounts for the root and its descendants together.
-stressWindowsProcessTreeTargetBytes = (5 * 1024 * 1024 * 1024) `div` 2
+-- Both supported samplers capture the root with all observed descendants, so
+-- the 2.5 GiB process-tree allowance is an acceptance bound on Windows and
+-- POSIX rather than a Windows-only diagnostic.
+stressProcessTreeTargetBytes = (5 * 1024 * 1024 * 1024) `div` 2
 
 -- ADR key 800 is the canonical large-plan compiler template whose rendered
 -- identity is ADR 801.  Keep every probe string derived from that owned
@@ -542,19 +543,22 @@ largeRepositoryContract = withSystemTempDirectory "adrai-large-repository" $ \ro
     case parseMaximumResidency coldRtsStats of
       Nothing -> assertFailure ("cold compile RTS statistics omitted maximum residency: " <> coldRtsStats) >> fail "unreachable"
       Just value -> pure value
-  BS8.hPutStrLn stderr (BS8.pack ("P6-06G stress resource: cold_compile_max_residency_bytes=" <> show maximumResidency <> " process_tree_peak_bytes=" <> show (adraiProcessTreePeakBytes coldResult) <> " windows_process_tree_target_bytes=" <> show stressWindowsProcessTreeTargetBytes <> " hard_heap_bytes=" <> show stressHardHeapBytes))
+  BS8.hPutStrLn stderr (BS8.pack ("P6-06G stress resource: cold_compile_max_residency_bytes=" <> show maximumResidency <> " process_tree_peak_bytes=" <> show (adraiProcessTreePeakBytes coldResult) <> " process_tree_successful_samples=" <> show (adraiProcessTreeSuccessfulSamples coldResult) <> " process_tree_target_bytes=" <> show stressProcessTreeTargetBytes <> " hard_heap_bytes=" <> show stressHardHeapBytes))
   assertBool
     ("cold compile maximum residency must be <= " <> show stressTargetResidencyBytes <> " bytes, got " <> show maximumResidency)
     (maximumResidency <= stressTargetResidencyBytes)
-  when (os == "mingw32") $
-    assertBool
-      ("cold compile Windows process-tree peak must be <= " <> show stressWindowsProcessTreeTargetBytes <> " bytes, got " <> show (adraiProcessTreePeakBytes coldResult))
-      (withinWindowsProcessTreeTarget (adraiProcessTreePeakBytes coldResult))
+  assertBool
+    ("cold compile process-tree peak must be <= " <> show stressProcessTreeTargetBytes <> " bytes, got " <> show (adraiProcessTreePeakBytes coldResult))
+    (withinProcessTreeTarget (adraiProcessTreePeakBytes coldResult))
   assertContains "cold compile" "\"cache_mode\":\"full\"" cold
   assertContains "cold compile" "\"incremental_kind\":\"full\"" cold
   assertContains "cold compile" "\"errors\":0" cold
   coldHistory <- jsonIntegerAt ["history_commits_scanned"] cold
   assertEqual coldHistory 12000 "cold compile must scan exactly the 12,000 reachable commits"
+  coldDocuments <- jsonIntegerAt ["documents_parsed"] cold
+  assertEqual coldDocuments 5350 "cold compile must parse exactly the 5,350 managed documents"
+  coldAdrs <- jsonIntegerAt ["adrs_rebuilt"] cold
+  assertEqual coldAdrs 900 "cold compile must rebuild exactly the 900 ADRs"
   -- The exact-cache path is deliberately sampled twice: it must remain exact
   -- after the first immutable archive has been read and after the mutable alias
   -- has been refreshed.
@@ -1110,13 +1114,13 @@ runAdraiWithRtsStats repository arguments = runAdraiWithRuntime repository argum
 data AdraiProcessResult = AdraiProcessResult
   { adraiProcessStdout :: String,
     adraiProcessStderr :: String,
-    adraiProcessTreePeakBytes :: Integer
+    adraiProcessTreePeakBytes :: Integer,
+    adraiProcessTreeSuccessfulSamples :: Int
   }
 
 -- | Run the package-built executable while retaining structured RTS output and
--- an OS process-tree working-set high-water mark. The cold gate enforces the
--- Windows CIM figure, while other platforms emit it as a diagnostic because
--- their process-tree accounting is not yet equivalent.
+-- an OS process-tree working-set high-water mark. Both supported samplers
+-- include the root and all observed descendants, and are acceptance evidence.
 runAdraiWithRuntime :: FilePath -> [String] -> [String] -> Maybe Int -> IO AdraiProcessResult
 runAdraiWithRuntime repository arguments rtsStatistics timeoutMicros =
   runAdraiWithRuntimeEnvironment repository arguments rtsStatistics timeoutMicros []
@@ -1166,14 +1170,14 @@ runAdraiWithRuntimeEnvironment repository arguments rtsStatistics timeoutMicros 
       Nothing -> do
         cleanup
         peakBytes <- readIORef peakBytesRef
-        BS8.hPutStrLn stderr (BS8.pack ("P6-06G stress resource: cold_compile_timeout_process_tree_peak_bytes=" <> show peakBytes <> " windows_process_tree_target_bytes=" <> show stressWindowsProcessTreeTargetBytes <> " hard_heap_bytes=" <> show stressHardHeapBytes))
+        BS8.hPutStrLn stderr (BS8.pack ("P6-06G stress resource: cold_compile_timeout_process_tree_peak_bytes=" <> show peakBytes <> " process_tree_target_bytes=" <> show stressProcessTreeTargetBytes <> " hard_heap_bytes=" <> show stressHardHeapBytes))
         assertFailure ("cold compile exceeded the 5-minute safety timeout under +RTS -N1 -M2G; diagnostic process-tree peak bytes=" <> show peakBytes) >> fail "unreachable"
   (forcedOutput, forcedProblem) <- awaitWorkers `onException` cleanup
   successfulSamples <- readIORef successfulSamplesRef
   assertBool "cold compile requires at least one successful complete process-tree sample" (successfulSamples > 0)
   peakBytes <- readIORef peakBytesRef
   case status of
-    ExitSuccess -> pure (AdraiProcessResult forcedOutput forcedProblem peakBytes)
+    ExitSuccess -> pure (AdraiProcessResult forcedOutput forcedProblem peakBytes successfulSamples)
     ExitFailure code -> assertFailure ("adrai " <> unwords arguments <> " failed (" <> show code <> "): " <> forcedProblem) >> fail "unreachable"
 
 readFully :: Handle -> IO String
@@ -1232,8 +1236,8 @@ processTreeWorkingSet processHandle = do
       | os == "mingw32" -> windowsProcessTreeWorkingSet (show value)
        | otherwise -> posixProcessTreeWorkingSet (show value)
 
-withinWindowsProcessTreeTarget :: Integer -> Bool
-withinWindowsProcessTreeTarget peakBytes = peakBytes <= stressWindowsProcessTreeTargetBytes
+withinProcessTreeTarget :: Integer -> Bool
+withinProcessTreeTarget peakBytes = peakBytes <= stressProcessTreeTargetBytes
 
 windowsProcessTreeWorkingSet :: String -> IO (Either String Integer)
 windowsProcessTreeWorkingSet rootPid = do
@@ -1477,8 +1481,8 @@ processTreeSamplerContract = do
   processTreeWorkingSetFromPs (Just 10) "10 1 invalid\n" @?= Left "ps returned a malformed process row"
   readNonnegativeInteger "0\n" @?= Just 0
   readNonnegativeInteger "not-a-number\n" @?= Nothing
-  assertBool "Windows process-tree threshold accepts its exact boundary" (withinWindowsProcessTreeTarget stressWindowsProcessTreeTargetBytes)
-  assertBool "Windows process-tree threshold rejects excess working set" (not (withinWindowsProcessTreeTarget (stressWindowsProcessTreeTargetBytes + 1)))
+  assertBool "process-tree threshold accepts its exact boundary" (withinProcessTreeTarget stressProcessTreeTargetBytes)
+  assertBool "process-tree threshold rejects excess working set" (not (withinProcessTreeTarget (stressProcessTreeTargetBytes + 1)))
   peak <- newIORef 0
   samples <- newIORef 0
   successfulSample <- recordProcessTreeSample peak samples (Right 0)

@@ -6,4 +6,4 @@ Normal tests are read-only. Regeneration is explicit through `stack test --test-
 
 The Dropwire source corpus is absent, so its section is result-contract validation only and is not executable parity. Scale timings are reporting-only and are neither thresholds nor golden values. Persisted revision caches, incremental invalidation, branch isolation, and corrupt-cache recovery remain deferred.
 
-- `quality.golden` is 7519 bytes; SHA-256: `1CA3332623E5645524E00D15BDFEF112FB1776DABA110CD9C0BE0C028D4027F2`
+- `quality.golden` is 7514 bytes; SHA-256: `14D3825612F0D792F905AA1F3E148B74EC80B2F3D9A5DAC1021C1F3E2708EC7E`

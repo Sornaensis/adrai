@@ -12,16 +12,16 @@
                  {
                      "pythonPath":  "ADRAI_1_Source/tests/test_stress_large_repo.py",
                      "pythonMethod":  "test_twelve_thousand_commit_history_with_two_thousand_adrai_operations",
-                     "behaviorContract":  "A Haskell-owned deterministic generator builds a temporary repository with at least 12,000 commits and 2,000 ADR operations, then the real executable completes a clean cold compile, uses the exact and tree-identical caches correctly, retains bounded hybrid-search and representative relevance behavior, and remains consistent across branch revisions within generous regression ceilings.",
+                     "behaviorContract":  "A Haskell-owned deterministic generator builds a temporary 12,000-commit/2,000-operation repository from the owned large-stress plan. The explicit executable gate is pending a completed isolated full-run baseline for cold compile, cache, search, relevance, and branch-isolation assertions.",
                      "haskellTestName":  "12,000-commit repository with 2,000 ADR operations",
                      "haskellTestPath":  "test/e2e/Adrai/LargeRepositoryStressTest.hs",
                      "haskellTestType":  "e2e",
                      "phaseOwner":  "P6",
-                     "state":  "planned",
+                     "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"12,000-commit repository with 2,000 ADR operations\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_stress_large_repo.py:17 (static prototype stress test; the Haskell suite must own its generator and must not execute Python)",
-                                      "result":  "ADRAI_1_Source/tests/test_stress_large_repo.py:17 (static prototype stress test; the Haskell suite must own its generator and must not execute Python)"
+                                      "command":  "stack test adrai:adrai-stress-test --test-arguments='--run-stress --pattern=$0~/12,000-commit/'",
+                                      "fixture":  "test/e2e/Adrai/LargeRepositoryStressTest.hs (Haskell-owned fast-import generator; it does not execute the Python prototype)",
+                                      "result":  "2026-08-24 partial exact-gate evidence: initial fresh Haskell materialization completed in 26,014 ms; cold compile completed in 10,761 ms under +RTS -N1 -M2G with max_bytes_used=58,678,704 bytes and POSIX complete process-tree peak=143,155,200 bytes across 6 successful samples. Post-G.6 rerun at HEAD d776eae: fresh Haskell materialization completed in 25,352 ms; cold compile completed in 11,324 ms under +RTS -N1 -M2G with max_bytes_used=58,906,232 bytes and Windows complete process-tree peak=144,482,304 bytes across 6 successful samples. Cold counters passed: errors=0, cache_mode=full, incremental_kind=full, history_commits_scanned=12,000, documents_parsed=5,350, adrs_rebuilt=900. The first immediate same-revision exact-cache assertion instead returned cache_mode=full and incremental_kind=full after 20,822 ms, so this remains a production cache-selection defect; retrieval/relevance/tree-identical/branch checks, ledger closure, audit, and scoped commit remain pending separate atomic remediation."
                                   }
                  }
              ]

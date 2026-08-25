@@ -109,7 +109,7 @@ realSpawnAdrai repo arguments = do
   executable <- lookupEnv "ADRAI_EXE" >>= \case
     Just path | not (null path) && isAbsolute path -> pure path
     _ -> fail "EnvironmentTest requires ADRAI_EXE to name an absolute executable under test"
-  readProcess (proc executable ("--repo" : repo : arguments))
+  readProcess (proc executable (adraiTestArgs repo arguments))
 
 realAdraiJsonOrThrow :: FilePath -> [String] -> IO Data.Aeson.Value
 realAdraiJsonOrThrow repo arguments = do
@@ -264,12 +264,12 @@ testRepeatedSwitchesNoLeak =
         featureDb <- compileRepo repo
 
         -- Repeat 4 switch cycles
-        forM_ [1 .. 4] $ \_ -> do
+        forM_ [1 :: Int .. 4] $ \_ -> do
           -- On main
           switchBranch repo "main"
           mainTip' <- headCommit repo
           mainTip' @?= mainTip
-          mainDb <- compileRepo repo
+          _ <- compileRepo repo
           shownMain <-
             adraiJsonOrThrow repo
               [ "show", originalAdrId, "--json" ]
@@ -375,7 +375,6 @@ testScopeStatusBranchLocal =
           adraiJsonOrThrow repo
             [ "show", adrId, "--json" ]
         let statusMain = parseField shownMain "status" "" :: Maybe Text
-            appliesMain = parseField shownMain "applies_to" [] :: Maybe [Text]
         assertBool
           "main sees 'active' status"
           (statusMain == Just "active")
@@ -385,11 +384,9 @@ testScopeStatusBranchLocal =
 
         -- On feature: ADR should have different scope
         switchBranch repo "feature/scope-status"
-        shownFeature <-
+        _ <-
           adraiJsonOrThrow repo
             [ "show", adrId, "--json" ]
-        let statusFeature = parseField shownFeature "status" "" :: Maybe Text
-            appliesFeature = parseField shownFeature "applies_to" [] :: Maybe [Text]
         featureDbPath <- compileRepo repo
         metaRevFeature <- getMeta featureDbPath "source_revision"
         metaRevFeature @?= Just (unpack featureTip)
@@ -442,8 +439,7 @@ testBranchSpecificManagedRoots =
     "branch_specific_managed_roots_use_checked_out_configuration"
     $ withSystemTempDirectory "adrai branch roots" $ \tmpDir -> do
         repo <- createTestRepo tmpDir
-        baseAdr <- createCacheAdr repo
-        let mainAdrId = maybeUnpack (extractAdrId baseAdr)
+        _ <- createCacheAdr repo
         mainTip <- headCommit repo
         mainDbPath <- compileRepo repo
 
@@ -474,7 +470,6 @@ testBranchSpecificManagedRoots =
             "## Decision\nUse the branch-local configured managed paths."
             ["tooling.adrai"]
             ["tools/search/**"]
-        featureTip <- headCommit repo
         featureDbPath <- compileRepo repo
 
         -- Feature ADRs should be under the custom root
@@ -519,7 +514,6 @@ testBranchSpecificManagedRoots =
         shownFeatureOnMain <-
           adraiJsonOrThrow repo
             [ "show", featureId, "--json" ]
-        let mainSchema = parseField shownFeatureOnMain "schema" "adrai/show-collapsed/v1" :: Maybe Text
         -- If the ADR doesn't exist on main, the schema might differ
         -- or the ADR field might be absent
         case extractAdrId shownFeatureOnMain of
@@ -555,8 +549,6 @@ testDivergentAmendmentsConflict =
         createAdraiInit repo
         baseAdr <- createCacheAdr repo
         let adrId = maybeUnpack (extractAdrId baseAdr)
-            baseRecord = extractRecord baseAdr :: Maybe Text
-        mainTip <- headCommit repo
 
         -- Switch to feature
         switchBranch repo "feature/divergent-amendment"
@@ -570,8 +562,6 @@ testDivergentAmendmentsConflict =
             "## Decision\nFeature has its own approach.\n"
             ["feature.divergence"]
             ["src/feature/**"]
-
-        featureTip <- headCommit repo
 
         -- Back on main
         switchBranch repo "main"
@@ -611,8 +601,7 @@ testDivergentAmendmentsConflict =
         shownMain <-
           adraiJsonOrThrow repo
             [ "show", adrId, "--json" ]
-        let shownMainRecord = parseField shownMain "record" "" :: Maybe Text
-            mainTitle = do
+        let mainTitle = do
                   o <- _Object shownMain
                   o .: "title" :: Maybe Text
         assertBool
@@ -629,7 +618,6 @@ testDivergentAmendmentsConflict =
             [ "show", adrId, "--json" ]
         -- The merge might auto-resolve or create a conflict
         -- Check if there's a conflict field or if it resolved cleanly
-        let mergedTitle = parseField merged "title" "" :: Maybe Text
         -- After merge, both amendments should be visible through evolution
         let evolutionJson = do
                   o <- _Object merged
@@ -1470,8 +1458,6 @@ testUpstreamHintSurvives =
         let adrId = maybeUnpack (extractAdrId result)
 
         -- Create feature commit reference
-        featureCommit <- headCommit repo
-
         -- Verify upstream_hint in provenance
         shown <-
           adraiJsonOrThrow repo
@@ -1529,7 +1515,7 @@ testForceResetHidesAdr =
         git repo ["reset", "--hard", unpack currentCommit <> "^"]
 
         -- The ADR should not be visible
-        (exitCode, stdout, _) <-
+        (exitCode, _, _) <-
           spawnAdrai repo
             [ "show", adrId, "--json" ]
 
@@ -1568,7 +1554,7 @@ testForceResetHidesAdr =
                   Just True -> pure ()
                   _ -> pure () -- May not always be present
               Nothing -> pure ()
-          Nothing -> pure ()
+          _ -> pure ()
 
 -- =====================================================================
 -- Test suite

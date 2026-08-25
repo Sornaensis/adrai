@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- | Read-only, byte-exact Git observation.
 --
@@ -30,9 +31,20 @@ module Adrai.Git
     isShallowRepository,
     GitCommitNode,
     gitCommitNodeOid,
-    gitCommitNodeParents,
+     gitCommitNodeParents,
+     historyTreeDeltaBatchCount,
     reachableCommitGraphAt,
     decodeGitCommitGraph,
+    GitHistoryTreeDelta (..),
+    gitHistoryTreeDeltaCommit,
+    gitHistoryTreeDeltaParent,
+    gitHistoryTreeDeltaChanges,
+    GitTreeChange (..),
+    gitTreeChangePath,
+    gitTreeChangeOldEntry,
+    gitTreeChangeNewEntry,
+    historyTreeDeltasAt,
+    decodeGitHistoryTreeDeltas,
     GitObjectType (..),
     GitFileMode (..),
     GitTreeEntry (..),
@@ -46,6 +58,12 @@ module Adrai.Git
     foldBlobBatch,
     foldBlobBatchInOrder,
     readBlobBatch,
+    readBlobBatchOneSession,
+    GitBlobBatchSession,
+    withBlobBatchSession,
+    readBlobBatchFromSession,
+    GitBatchInput (..),
+    writePersistentBatchRequests,
     decodeGitBlobUtf8,
     readUtf8BlobBatch,
     readWorktreeFileBytes,
@@ -53,6 +71,7 @@ module Adrai.Git
     GitProtocolError (..),
     boundedDiagnostic,
     canonicalObjectChunks,
+    objectBatchRequestCount,
     decodeGitBoolean,
     decodeGitPathOutput,
     decodeGitTreeOutput,
@@ -82,6 +101,7 @@ import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Maybe (mapMaybe)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -105,8 +125,10 @@ import System.Process.Typed
     setStdout,
     startProcess,
     stopProcess,
+    unsafeProcessHandle,
     waitExitCode,
   )
+import System.Process (terminateProcess)
 import Text.Read (readMaybe)
 
 newtype GitClient = GitClient FilePath
@@ -195,6 +217,26 @@ data GitObjectInfo = GitObjectInfo
 data GitCommitNode = GitCommitNode
   { gitCommitNodeOid :: GitOid,
     gitCommitNodeParents :: [GitOid]
+  }
+  deriving (Eq, Show)
+
+-- | One parent-to-child tree delta reported by @git diff-tree@.  A root
+-- commit has 'Nothing' for its parent.  The types are deliberately raw Git
+-- facts: callers decide which paths carry domain meaning.
+data GitHistoryTreeDelta = GitHistoryTreeDelta
+  { gitHistoryTreeDeltaCommit :: GitOid,
+    gitHistoryTreeDeltaParent :: Maybe GitOid,
+    gitHistoryTreeDeltaChanges :: [GitTreeChange]
+  }
+  deriving (Eq, Show)
+
+-- | A single literal path transition.  'Nothing' means that side of the
+-- parent/child comparison is absent.  A non-blob entry remains represented so
+-- integrity layers can distinguish it from an ordinary deletion.
+data GitTreeChange = GitTreeChange
+  { gitTreeChangePath :: RepoPath,
+    gitTreeChangeOldEntry :: Maybe GitTreeEntry,
+    gitTreeChangeNewEntry :: Maybe GitTreeEntry
   }
   deriving (Eq, Show)
 
@@ -489,6 +531,274 @@ reachableCommitGraphAt repository target = do
       then Left (commandFailure "reachable commit graph" processResult)
       else decodeGitCommitGraph (processStdout processResult)
 
+-- | Bound history-delta requests by merge arity, not graph size.  A commit
+-- appears once in parent-ordinal zero (roots included) and once for each
+-- additional original parent it has.  Each synthetic node has at most one
+-- parent so its returned raw delta has an unambiguous original edge owner.
+historyTreeDeltaBatchCount :: [GitCommitNode] -> Int
+historyTreeDeltaBatchCount = length . groupHistoryTreeDeltaEdges
+
+groupHistoryTreeDeltaEdges :: [GitCommitNode] -> [[GitCommitNode]]
+groupHistoryTreeDeltaEdges selectedNodes =
+  filter (not . null) [edgeGroup parentIndex | parentIndex <- [0 .. maximum (0 : map (length . gitCommitNodeParents) selectedNodes)]]
+  where
+    edgeGroup parentIndex =
+      [ case drop parentIndex (gitCommitNodeParents node) of
+          [] | parentIndex == 0 && null (gitCommitNodeParents node) -> node
+          parent : _ -> node {gitCommitNodeParents = [parent]}
+          [] -> node {gitCommitNodeParents = []}
+        | node <- selectedNodes,
+          parentIndex == 0 || length (gitCommitNodeParents node) > parentIndex
+      ]
+
+-- | Batch all reachable parent-edge deltas beneath literal path roots.
+--
+-- @--always@ is essential: empty edges must still be framed so the decoder
+-- can account for every merge parent rather than silently treating a missing
+-- record as an absent edge.  @--no-renames@ preserves the historical
+-- add/delete semantics used by append-only validation.
+historyTreeDeltasAt :: Repository -> Bool -> [GitCommitNode] -> RepoPath -> [RepoPath] -> IO (Either GitError [GitHistoryTreeDelta])
+historyTreeDeltasAt repository allowPathSelection nodes configRoot roots =
+  if null nodes
+    then pure (Right [])
+    else do
+      selectedResult <- selectHistoryNodes
+      case selectedResult of
+        Left problem -> pure (Left problem)
+        Right semanticNodes -> do
+          let pathspecs = map (Text.unpack . repoPathText) (Map.keys (Map.fromList [(root, ()) | root <- roots]))
+              arguments =
+                [ "--literal-pathspecs",
+                  "diff-tree",
+                  "--stdin",
+                  "--root",
+                  "-r",
+                  "-t",
+                  "--no-renames",
+                  "--raw",
+                  "--no-abbrev",
+                  "--always",
+                  "-z",
+                  "--pretty=tformat:%x1e%H"
+                ]
+                  <> if null pathspecs then [] else "--" : pathspecs
+          groupResults <- traverse (runHistoryDeltaGroup arguments) (groupHistoryTreeDeltaEdges semanticNodes)
+          pure $ do
+            selectedDeltas <- concat <$> sequence groupResults
+            Right (restoreEmptyEdges nodes selectedDeltas)
+  where
+    -- Path-limited rev-list with --full-history preserves commits selected by
+    -- every original merge side.  It is used only as a set selector: all
+    -- parent relationships below come from the original full graph, never the
+    -- potentially simplified parent links emitted by a path-limited walk.
+    -- A shallow boundary and any post-root config edit are conservative full
+    -- traversal cases: a historical custom root then cannot be proved from
+    -- the current path configuration alone.
+    selectHistoryNodes
+      | not allowPathSelection = pure (Right nodes)
+      | otherwise = do
+          configResult <- historyPathRelevantNodes repository nodes [configRoot]
+          semanticResult <- historyPathRelevantNodes repository nodes roots
+          pure $ do
+            configNodes <- configResult
+            semanticNodes <- semanticResult
+            let configChangedAfterRoot = any (not . null . gitCommitNodeParents) configNodes
+                -- A merge may be tree-identical to one parent while differing
+                -- from another at a semantic root.  rev-list's dense path
+                -- selection may omit that merge, so preserve every merge for
+                -- the original per-parent diff check.
+                selectedOids = Set.fromList (map gitCommitNodeOid semanticNodes <> [gitCommitNodeOid node | node <- nodes, length (gitCommitNodeParents node) > 1])
+                semanticSelected = if configChangedAfterRoot then nodes else [node | node <- nodes, gitCommitNodeOid node `Set.member` selectedOids]
+            Right semanticSelected
+
+    -- A two-object stdin line asks Git to compare exactly that original edge.
+    -- Keep each parent ordinal in its own bounded process: Git coalesces
+    -- repeated merge commit headers within one --stdin walk, whereas each
+    -- group contains a child at most once. This is at most the largest merge
+    -- arity in batched invocations, never one process per commit.
+    runHistoryDeltaGroup arguments group = do
+      let payload = TextEncoding.encodeUtf8 (Text.intercalate "\n" (concatMap historyDeltaRequests group) <> "\n")
+      result <- runRepository repository "history tree deltas" arguments payload
+      pure $ do
+        processResult <- result
+        if processExitCode processResult /= ExitSuccess
+          then Left (commandFailure "history tree deltas" processResult)
+          else decodeGitHistoryTreeDeltas group (processStdout processResult)
+
+    -- Roots retain the one-object form so --root compares them with the null
+    -- tree. Every other request names exactly one original parent edge.
+    historyDeltaRequests node =
+      case gitCommitNodeParents node of
+        [] -> [gitOidText (gitCommitNodeOid node)]
+        parents -> [gitOidText (gitCommitNodeOid node) <> " " <> gitOidText parent | parent <- parents]
+
+-- | Select graph nodes whose trees are relevant to literal semantic roots.
+-- @--full-history@ is deliberately retained even though parent topology is
+-- discarded: without it a path-limited merge walk may prune a side whose
+-- original parent edge must still be checked by the compiler.
+historyPathRelevantNodes :: Repository -> [GitCommitNode] -> [RepoPath] -> IO (Either GitError [GitCommitNode])
+historyPathRelevantNodes repository nodes roots = do
+  let target = gitCommitNodeOid (last nodes)
+      pathspecs = map (Text.unpack . repoPathText) (Map.keys (Map.fromList [(root, ()) | root <- roots]))
+      arguments =
+        [ "--literal-pathspecs",
+          "rev-list",
+          "--full-history",
+          "--topo-order",
+          Text.unpack (gitOidText target)
+        ]
+          <> if null pathspecs then [] else "--" : pathspecs
+  result <- runRepository repository "history path selection" arguments BS.empty
+  pure $ do
+    processResult <- result
+    if processExitCode processResult /= ExitSuccess
+      then Left (commandFailure "history path selection" processResult)
+      else do
+        selectedOids <- decodeHistoryPathSelection nodes (processStdout processResult)
+        Right [node | node <- nodes, gitCommitNodeOid node `Set.member` selectedOids]
+
+decodeHistoryPathSelection :: [GitCommitNode] -> ByteString -> Either GitError (Set.Set GitOid)
+decodeHistoryPathSelection nodes raw = do
+  values <- traverse decodeLine (filter (not . BS.null) (BS.split 10 raw))
+  let known = Set.fromList (map gitCommitNodeOid nodes)
+  if all (`Set.member` known) values
+    then Right (Set.fromList values)
+    else Left (GitInvalidOutput "history path selection" (GitMalformedTreeRecord "path selection returned a commit outside the full graph"))
+  where
+    decodeLine line =
+      case TextEncoding.decodeUtf8' line of
+        Left _ -> Left (GitInvalidOutput "history path selection" (GitMalformedTreeRecord (protocolSample line)))
+        Right text ->
+          case mkGitOid text of
+            Left _ -> Left (GitInvalidOutput "history path selection" (GitMalformedTreeRecord (protocolSample line)))
+            Right oid -> Right oid
+
+restoreEmptyEdges :: [GitCommitNode] -> [GitHistoryTreeDelta] -> [GitHistoryTreeDelta]
+restoreEmptyEdges nodes selected =
+  [ Map.findWithDefault (GitHistoryTreeDelta (gitCommitNodeOid node) parent []) (gitCommitNodeOid node, parent) byEdge
+    | node <- nodes,
+      parent <- edgeParents node
+  ]
+  where
+    byEdge = Map.fromList [((gitHistoryTreeDeltaCommit delta, gitHistoryTreeDeltaParent delta), delta) | delta <- selected]
+    edgeParents node = case gitCommitNodeParents node of [] -> [Nothing]; parents -> map Just parents
+
+-- | Decode the strict byte protocol emitted by 'historyTreeDeltasAt'.  The
+-- repeated commit headers from @-m@ are matched in parent order supplied by
+-- the already-validated commit graph; Git's raw records carry no parent oid.
+decodeGitHistoryTreeDeltas :: [GitCommitNode] -> ByteString -> Either GitError [GitHistoryTreeDelta]
+decodeGitHistoryTreeDeltas nodes raw = do
+  validateGraphOidWidths
+  go expected raw []
+  where
+    expected = concatMap edgeHeaders nodes
+    -- Git does not annotate raw diff sides with the repository object format.
+    -- The already validated commit graph does, so use its OID width as the
+    -- protocol width for *every* side, including the all-zero absent sentinel.
+    -- This prevents a short or cross-format zero from bypassing 'mkGitOid'.
+    oidWidth =
+      case nodes of
+        node : _ -> Text.length (gitOidText (gitCommitNodeOid node))
+        [] -> 0
+    validateGraphOidWidths =
+      case Set.toList (Set.fromList (map (Text.length . gitOidText) (concatMap nodeOids nodes))) of
+        [] -> Right ()
+        [_] -> Right ()
+        _ -> Left (malformed "mixed OID widths in commit graph" raw)
+    nodeOids node = gitCommitNodeOid node : gitCommitNodeParents node
+    edgeHeaders node =
+      [ (gitCommitNodeOid node, parent)
+        | parent <- case gitCommitNodeParents node of [] -> [Nothing]; parents -> map Just parents
+      ]
+    go [] bytes accumulated
+      | BS.null bytes = Right (reverse accumulated)
+      | otherwise = Left (malformed "unexpected trailing history-delta bytes" bytes)
+    go ((expectedCommit, expectedParent) : remaining) bytes accumulated = do
+      (actualCommit, afterHeader) <- decodeHeader bytes
+      if actualCommit /= expectedCommit
+        then Left (malformed "history-delta commit header does not match graph" (TextEncoding.encodeUtf8 (gitOidText actualCommit)))
+        else do
+          (changes, afterChanges) <- decodeChanges afterHeader []
+          go remaining afterChanges (GitHistoryTreeDelta expectedCommit expectedParent (reverse changes) : accumulated)
+
+    decodeHeader bytes
+      | BS.null bytes || BS.head bytes /= recordSeparator = Left (malformed "missing history-delta record separator" bytes)
+      | otherwise =
+          case BS.break (== 0) (BS.tail bytes) of
+            (_, terminator) | BS.null terminator -> Left (malformed "unterminated history-delta header" bytes)
+            (oidBytes, terminator) -> do
+               oidText <- first (const (malformed "invalid history-delta oid" oidBytes)) (TextEncoding.decodeUtf8' oidBytes)
+               oid <- first (const (malformed "invalid history-delta oid" oidBytes)) (mkGitOid oidText)
+               case BS.uncons (BS.tail terminator) of
+                 Just (10, afterNewline) -> Right (oid, afterNewline)
+                 -- With @-z@, Git omits the pretty-format newline for an
+                 -- empty edge and emits the following record separator
+                 -- immediately.  Preserve that separator for
+                 -- 'decodeChanges', which represents the empty edge.
+                 Just (separator, _) | separator == recordSeparator -> Right (oid, BS.tail terminator)
+                 -- The final reachable commit can likewise have an empty
+                 -- selected-path delta, leaving its NUL-terminated header at
+                 -- EOF rather than followed by a pretty-format newline.
+                 Nothing -> Right (oid, BS.empty)
+                 _ -> Left (malformed "history-delta header missing newline" bytes)
+
+    decodeChanges bytes accumulated
+      | BS.null bytes = Right (accumulated, bytes)
+      | BS.head bytes == recordSeparator = Right (accumulated, bytes)
+      | otherwise = do
+          (change, remaining) <- decodeChange bytes
+          decodeChanges remaining (change : accumulated)
+
+    decodeChange bytes =
+      case BS.break (== 0) bytes of
+        (_, terminator) | BS.null terminator -> Left (malformed "unterminated history-delta metadata" bytes)
+        (metadata, terminator) -> do
+          (pathBytes, pathTerminator) <-
+            case BS.break (== 0) (BS.tail terminator) of
+              (_, finalTerminator) | BS.null finalTerminator -> Left (malformed "unterminated history-delta path" metadata)
+              pair -> Right pair
+          pathText <- first (const (GitInvalidUtf8Path (protocolSample pathBytes))) (TextEncoding.decodeUtf8' pathBytes)
+          path <- first (GitInvalidRepositoryPath pathText) (mkRepoPath pathText)
+          (oldEntry, newEntry) <- decodeMetadata path metadata
+          Right (GitTreeChange path oldEntry newEntry, BS.tail pathTerminator)
+
+    decodeMetadata path metadata =
+      case BS8.split ' ' metadata of
+        [oldMode, newMode, oldOid, newOid, status]
+          | BS.isPrefixOf ":" oldMode -> do
+              oldEntry <- decodeSide path (BS.drop 1 oldMode) oldOid
+              newEntry <- decodeSide path newMode newOid
+              validateStatus status oldEntry newEntry metadata
+              Right (oldEntry, newEntry)
+        _ -> Left (malformed "malformed history-delta metadata" metadata)
+
+    validateStatus status oldEntry newEntry metadata
+      | status == "A", Nothing <- oldEntry, Just _ <- newEntry = Right ()
+      | status == "D", Just _ <- oldEntry, Nothing <- newEntry = Right ()
+      | status `elem` ["M", "T"], Just _ <- oldEntry, Just _ <- newEntry = Right ()
+      | otherwise = Left (malformed "unsupported history-delta status" metadata)
+
+    decodeSide path modeRaw oidRaw
+       | BS.length oidRaw /= oidWidth = Left (malformed "history-delta oid width does not match commit graph" oidRaw)
+       | modeRaw == "000000" && zeroOid oidRaw = Right Nothing
+       | zeroOid oidRaw = Left (malformed "zero history-delta oid requires zero mode" oidRaw)
+      | otherwise = do
+          mode <- first (const (malformed "invalid history-delta mode" modeRaw)) (parseFileMode (BS8.unpack modeRaw))
+          oidText <- first (const (malformed "invalid history-delta oid" oidRaw)) (TextEncoding.decodeUtf8' oidRaw)
+          oid <- first (const (malformed "invalid history-delta oid" oidRaw)) (mkGitOid oidText)
+          let objectType = objectTypeForMode mode
+          Right (Just (GitTreeEntry path oid objectType mode))
+
+    zeroOid oid = BS.length oid == oidWidth && oidWidth > 0 && BS.all (== 48) oid
+    objectTypeForMode mode = case mode of
+      GitRegularFile -> GitBlobObject
+      GitExecutableFile -> GitBlobObject
+      GitSymbolicLink -> GitBlobObject
+      GitSubmodule -> GitCommitObject
+      GitDirectory -> GitTreeObject
+    recordSeparator = 0x1e
+    malformed label sample = GitInvalidOutput "history tree deltas" (GitMalformedTreeRecord (TextEncoding.encodeUtf8 label <> ": " <> protocolSample sample))
+
 decodeGitCommitGraph :: ByteString -> Either GitError [GitCommitNode]
 decodeGitCommitGraph raw
   | BS.null raw = Left malformedRaw
@@ -503,6 +813,7 @@ decodeGitCommitGraph raw
             | not (BS.null finalRecord) || any BS.null reversed -> Left malformedRaw
             | otherwise -> Right (reverse reversed)
       nodes <- traverse decodeLine linesBytes
+      validateGraphOids nodes
       let grouped = Map.fromListWith (<>) [(gitCommitNodeOid node, [node]) | node <- nodes]
       traverse_ rejectDuplicate (Map.elems grouped)
       Right nodes
@@ -524,6 +835,15 @@ decodeGitCommitGraph raw
     rejectDuplicate [] = Right ()
     rejectDuplicate [_] = Right ()
     rejectDuplicate _ = Left (GitInvalidOutput "reachable commit graph" (GitMalformedObjectHeader "duplicate commit node"))
+    validateGraphOids nodes =
+      case Set.toList (Set.fromList (map (Text.length . gitOidText) (concatMap nodeOids nodes))) of
+        [] -> Right ()
+        [_] ->
+          if any (Text.all (== '0') . gitOidText) (concatMap nodeOids nodes)
+            then Left (GitInvalidOutput "reachable commit graph" (GitMalformedObjectHeader "zero commit graph oid"))
+            else Right ()
+        _ -> Left (GitInvalidOutput "reachable commit graph" (GitMalformedObjectHeader "mixed commit graph oid widths"))
+    nodeOids node = gitCommitNodeOid node : gitCommitNodeParents node
 
 runRepository :: Repository -> Text -> [String] -> ByteString -> IO (Either GitError GitProcessResult)
 runRepository repository = runRepositoryWithEnvironment repository Map.empty
@@ -675,7 +995,18 @@ readRegularBlobAt repository revision path = do
             maybe (Left (GitObjectMissing (gitTreeOid entry))) Right (Map.lookup (gitTreeOid entry) values)
 
 canonicalObjectChunks :: [GitOid] -> [[GitOid]]
-canonicalObjectChunks = chunksOf 256 . Map.keys . Map.fromList . map (,())
+canonicalObjectChunks = chunksOf objectWindowLimit . Map.keys . Map.fromList . map (,())
+
+-- | Maximum number of object requests issued before a @cat-file@ protocol
+-- exchange is drained.  Keeping this bounded prevents a large response from
+-- blocking a subsequent request window on a full pipe.
+objectWindowLimit :: Int
+objectWindowLimit = 256
+
+-- | Number of pipelined @cat-file@ requests needed for a de-duplicated
+-- object set. Every request has at most 'objectWindowLimit' OIDs in flight.
+objectBatchRequestCount :: [GitOid] -> Int
+objectBatchRequestCount = length . canonicalObjectChunks
 
 chunksOf :: Int -> [value] -> [[value]]
 chunksOf _ [] = []
@@ -686,22 +1017,36 @@ batchObjectInfo repository objectIds = do
   chunks <- traverse readChunk (canonicalObjectChunks objectIds)
   pure (Map.unions <$> sequence chunks)
   where
-    readChunk chunk =
-      withGitPipes repository "cat-file batch-check" ["cat-file", "--batch-check"] $ \stdinHandle stdoutHandle ->
-        streamInfoResponses stdinHandle stdoutHandle chunk Map.empty
+    readChunk chunk = readBufferedInfoWindow repository chunk Map.empty
 
-streamInfoResponses :: Handle -> Handle -> [GitOid] -> Map GitOid (Maybe GitObjectInfo) -> IO (Either GitError (Map GitOid (Maybe GitObjectInfo)))
-streamInfoResponses stdinHandle stdoutHandle requested accumulated =
+readBufferedInfoWindow :: Repository -> [GitOid] -> Map GitOid (Maybe GitObjectInfo) -> IO (Either GitError (Map GitOid (Maybe GitObjectInfo)))
+readBufferedInfoWindow repository requested accumulated
+  | length requested > objectWindowLimit = pure (Left (objectWindowLimitError "cat-file batch-check"))
+  | otherwise =
+      withGitPipes repository "cat-file batch-check" ["cat-file", "--batch-check", "--buffer"] $ \stdinHandle stdoutHandle ->
+        pipelineClosedObjectBatch stdinHandle requested (readFiniteInfoResponses stdoutHandle requested accumulated)
+
+readFiniteInfoResponses :: Handle -> [GitOid] -> Map GitOid (Maybe GitObjectInfo) -> IO (Either GitError (Map GitOid (Maybe GitObjectInfo)))
+readFiniteInfoResponses stdoutHandle requested accumulated = do
+  responses <- readInfoResponses stdoutHandle requested accumulated
+  case responses of
+    Left problem -> pure (Left problem)
+    Right value -> do
+      trailing <- readBatchTrailing stdoutHandle
+      pure (trailing >> Right value)
+
+readInfoResponses :: Handle -> [GitOid] -> Map GitOid (Maybe GitObjectInfo) -> IO (Either GitError (Map GitOid (Maybe GitObjectInfo)))
+readInfoResponses stdoutHandle requested accumulated =
   case requested of
-    [] -> finishBatchInput stdinHandle stdoutHandle accumulated
+    [] -> pure (Right accumulated)
     expected : remaining -> do
-      response <- requestHeader stdinHandle stdoutHandle expected
+      response <- readBatchHeader stdoutHandle
       case response of
         Left problem -> pure (Left problem)
         Right header ->
           case decodeGitObjectInfoHeader expected header of
             Left problem -> pure (Left problem)
-            Right pair -> streamInfoResponses stdinHandle stdoutHandle remaining (uncurry Map.insert pair accumulated)
+            Right pair -> readInfoResponses stdoutHandle remaining (uncurry Map.insert pair accumulated)
 
 decodeGitObjectInfoHeader :: GitOid -> ByteString -> Either GitError (GitOid, Maybe GitObjectInfo)
 decodeGitObjectInfoHeader expected line = do
@@ -724,9 +1069,7 @@ foldBlobBatch repository objectIds initial step = go initial (canonicalObjectChu
   where
     go accumulator [] = pure (Right accumulator)
     go accumulator (chunk : remaining) = do
-      chunkResult <-
-        withGitPipes repository "cat-file batch" ["cat-file", "--batch"] $ \stdinHandle stdoutHandle ->
-          streamBlobResponses stdinHandle stdoutHandle chunk accumulator step
+      chunkResult <- readBufferedBlobWindow repository chunk accumulator step
       case chunkResult of
         Left problem -> pure (Left problem)
         Right next -> go next remaining
@@ -735,28 +1078,192 @@ readBlobBatch :: Repository -> [GitOid] -> IO (Either GitError (Map GitOid GitBl
 readBlobBatch repository objectIds =
   foldBlobBatch repository objectIds Map.empty (\values blob -> pure (Map.insert (gitBlobOid blob) blob values))
 
+-- | Read an object set through one buffered @cat-file@ session.  Its request
+-- plan is still split into finite windows of at most 'objectWindowLimit'
+-- de-duplicated OIDs.
+readBlobBatchOneSession :: Repository -> [GitOid] -> IO (Either GitError (Map GitOid GitBlob))
+readBlobBatchOneSession repository objectIds =
+  withBlobBatchSession repository (\session -> readBlobBatchFromSession session objectIds)
+
+-- | A caller-scoped @git cat-file --batch@ child.  The
+-- constructor remains opaque so requests can only be issued in bounded,
+-- drained windows through 'readBlobBatchFromSession'.
+data GitBlobBatchSession = GitBlobBatchSession Handle Handle
+
+-- | The native input actions used by one persistent @cat-file --batch@
+-- window.  Keeping this boundary explicit makes the one-write/one-flush
+-- framing contract independently observable without exposing session handles.
+data GitBatchInput = GitBatchInput
+  { gitBatchInputWrite :: ByteString -> IO (),
+    gitBatchInputFlush :: IO ()
+  }
+
+-- | Keep one @cat-file --batch@ child alive for the callback.
+-- Each successful callback closes stdin and proves stdout EOF before accepting
+-- the child; 'withGitPipes' cancels and reaps it on every error or exception.
+withBlobBatchSession :: Repository -> (GitBlobBatchSession -> IO (Either GitError value)) -> IO (Either GitError value)
+withBlobBatchSession repository interaction =
+  withGitPipes repository "cat-file batch" ["cat-file", "--batch"] $ \stdinHandle stdoutHandle -> do
+    outcome <- interaction (GitBlobBatchSession stdinHandle stdoutHandle)
+    case outcome of
+      Left problem -> pure (Left problem)
+      Right value -> finishBatchInput stdinHandle stdoutHandle value
+
+-- | Read one object set through the caller-owned persistent session.  A
+-- window is canonicalized exactly as the finite API is, so it contains at
+-- most 'objectWindowLimit' OIDs and is drained before the next request/flush
+-- is emitted.
+readBlobBatchFromSession :: GitBlobBatchSession -> [GitOid] -> IO (Either GitError (Map GitOid GitBlob))
+readBlobBatchFromSession (GitBlobBatchSession stdinHandle stdoutHandle) objectIds =
+  streamBlobResponseChunksOpen stdinHandle stdoutHandle (canonicalObjectChunks objectIds) Map.empty (\values blob -> pure (Map.insert (gitBlobOid blob) blob values))
+
 -- | Stream blob payloads for the given object ids in request order (no
 -- sorting or de-duplication), invoking the step once per blob as it arrives.
 -- The step folds each blob incrementally and may release it before the rest
 -- arrive, so callers can avoid materializing whole-corpus blob maps.
 foldBlobBatchInOrder :: Repository -> [GitOid] -> accumulator -> (accumulator -> GitBlob -> IO accumulator) -> IO (Either GitError accumulator)
-foldBlobBatchInOrder repository objectIds initial step = go initial (chunksOf 256 objectIds)
+foldBlobBatchInOrder repository objectIds initial step = go initial (chunksOf objectWindowLimit objectIds)
   where
     go accumulator [] = pure (Right accumulator)
     go accumulator (chunk : remaining) = do
-      chunkResult <-
-        withGitPipes repository "cat-file batch" ["cat-file", "--batch"] $ \stdinHandle stdoutHandle ->
-          streamBlobResponses stdinHandle stdoutHandle chunk accumulator step
+      chunkResult <- readBufferedBlobWindow repository chunk accumulator step
       case chunkResult of
         Left problem -> pure (Left problem)
         Right next -> go next remaining
 
-streamBlobResponses :: Handle -> Handle -> [GitOid] -> accumulator -> (accumulator -> GitBlob -> IO accumulator) -> IO (Either GitError accumulator)
-streamBlobResponses stdinHandle stdoutHandle requested accumulated step =
+-- | One finite Git 2.31+ buffered window.  The writer closes stdin once its
+-- at-most-'objectWindowLimit' OID plan is emitted; stdout response decoding and stderr
+-- draining therefore proceed without either pipe being allowed to deadlock the
+-- other.  'withGitPipes' owns child cancellation and waits for stderr on every
+-- outcome.
+readBufferedBlobWindow :: Repository -> [GitOid] -> accumulator -> (accumulator -> GitBlob -> IO accumulator) -> IO (Either GitError accumulator)
+readBufferedBlobWindow repository requested accumulated step
+  | length requested > objectWindowLimit = pure (Left (objectWindowLimitError "cat-file batch"))
+  | otherwise =
+      withGitPipes repository "cat-file batch" ["cat-file", "--batch", "--buffer"] $ \stdinHandle stdoutHandle ->
+        pipelineClosedObjectBatch stdinHandle requested (readFiniteBlobResponses stdoutHandle requested accumulated step)
+
+readFiniteBlobResponses :: Handle -> [GitOid] -> accumulator -> (accumulator -> GitBlob -> IO accumulator) -> IO (Either GitError accumulator)
+readFiniteBlobResponses stdoutHandle requested accumulated step = do
+  responses <- readBlobResponses stdoutHandle requested accumulated step
+  case responses of
+    Left problem -> pure (Left problem)
+    Right value -> do
+      trailing <- readBatchTrailing stdoutHandle
+      pure (trailing >> Right value)
+
+readBatchTrailing :: Handle -> IO (Either GitError ByteString)
+readBatchTrailing stdoutHandle = do
+  attempted <- try @IOException (BS.hGet stdoutHandle 129)
+  pure $
+    case attempted of
+      Left problem -> Left (gitBatchIoError problem)
+      Right trailing -> validateGitBatchTrailing trailing >> Right trailing
+
+-- | A closed finite plan differs from the persistent protocol helper below:
+-- Git's @--buffer@ output is released only after this input closes.  The two
+-- workers are still concurrent, so stderr drains while a large first blob is
+-- decoded and any asynchronous cancellation tears down both workers.
+pipelineClosedObjectBatch :: Handle -> [GitOid] -> IO (Either GitError value) -> IO (Either GitError value)
+pipelineClosedObjectBatch _ [] readResponses = readResponses
+pipelineClosedObjectBatch stdinHandle requested readResponses =
+  Async.withAsync (writeBatchRequestsAndClose stdinHandle requested) $ \writer ->
+    Async.withAsync readResponses $ \reader ->
+      Async.waitEither writer reader >>= \case
+        Left sent ->
+          case sent of
+            Left problem -> pure (Left problem)
+            Right () -> Async.wait reader
+        Right received ->
+          case received of
+            Left problem -> pure (Left problem)
+            Right value -> do
+              sent <- Async.wait writer
+              pure (value <$ sent)
+
+writeBatchRequestsAndClose :: Handle -> [GitOid] -> IO (Either GitError ())
+writeBatchRequestsAndClose stdinHandle requested = do
+  attempted <- try @IOException $
+    (BS.hPut stdinHandle (BS.concat (map objectRequestLine requested)) >> hFlush stdinHandle)
+      `finally` closeQuietly stdinHandle
+  pure $
+    case attempted of
+      Left problem -> Left (gitBatchIoError problem)
+      Right () -> Right ()
+
+-- | Variant for a caller-owned persistent batch session.  An empty request
+-- list leaves stdin open so another bounded request can follow on the same
+-- process.
+streamBlobResponsesOpen :: Handle -> Handle -> [GitOid] -> accumulator -> (accumulator -> GitBlob -> IO accumulator) -> IO (Either GitError accumulator)
+streamBlobResponsesOpen stdinHandle stdoutHandle requested accumulated step
+  | length requested > objectWindowLimit = pure (Left (objectWindowLimitError "cat-file batch"))
+  | otherwise =
+      pipelineObjectBatch stdinHandle requested (readBlobResponses stdoutHandle requested accumulated step)
+
+-- | Keep one @cat-file --batch@ request window in flight while its responses
+-- are read.
+-- Writing and reading run together because a large blob can fill a Windows
+-- stdout pipe before the child has consumed the entire request batch. The
+-- request writer emits one bare-OID sequence, then flushes the handle once.
+-- Callers only invoke it with a chunk produced by 'canonicalObjectChunks' (at
+-- most 'objectWindowLimit' OIDs).
+pipelineObjectBatch :: Handle -> [GitOid] -> IO (Either GitError value) -> IO (Either GitError value)
+pipelineObjectBatch _ [] readResponses = readResponses
+pipelineObjectBatch stdinHandle requested readResponses =
+  Async.withAsync (writePersistentBatchRequests (handleBatchInput stdinHandle) requested) $ \writer ->
+    Async.withAsync readResponses $ \reader ->
+      Async.waitEither writer reader >>= \case
+        Left sent ->
+          case sent of
+            Left problem -> pure (Left problem)
+            Right () -> Async.wait reader
+        Right received ->
+          case received of
+            Left problem -> pure (Left problem)
+            Right value -> do
+              sent <- Async.wait writer
+              pure (value <$ sent)
+
+-- | Emit one bounded plain @--batch@ request plan as one write/flush. Stdin
+-- remains open so a later window can use the same child. The 'GitBatchInput'
+-- argument is deliberately a narrow native-I/O seam for framing tests.
+writePersistentBatchRequests :: GitBatchInput -> [GitOid] -> IO (Either GitError ())
+writePersistentBatchRequests _ [] = pure (Right ())
+writePersistentBatchRequests input requested = do
+  attempted <- try @IOException $ do
+    gitBatchInputWrite input (BS.concat (map objectRequestLine requested))
+    gitBatchInputFlush input
+  pure $
+    case attempted of
+      Left problem -> Left (gitBatchIoError problem)
+      Right () -> Right ()
+
+handleBatchInput :: Handle -> GitBatchInput
+handleBatchInput handle = GitBatchInput (BS.hPut handle) (hFlush handle)
+
+objectRequestLine :: GitOid -> ByteString
+objectRequestLine = (<> "\n") . TextEncoding.encodeUtf8 . gitOidText
+
+readBatchHeader :: Handle -> IO (Either GitError ByteString)
+readBatchHeader stdoutHandle = do
+  attempted <- try @IOException (readProtocolLine stdoutHandle)
+  pure $
+    case attempted of
+      Left problem -> Left (gitBatchIoError problem)
+      Right header -> Right header
+
+gitBatchIoError :: IOException -> GitError
+gitBatchIoError problem =
+  GitInvalidOutput
+    "cat-file batch"
+    (GitMalformedObjectHeader (protocolSample (TextEncoding.encodeUtf8 (Text.pack (ioeGetErrorString problem)))))
+
+readBlobResponses :: Handle -> [GitOid] -> accumulator -> (accumulator -> GitBlob -> IO accumulator) -> IO (Either GitError accumulator)
+readBlobResponses stdoutHandle requested accumulated step =
   case requested of
-    [] -> finishBatchInput stdinHandle stdoutHandle accumulated
+    [] -> pure (Right accumulated)
     expected : remaining -> do
-      response <- requestHeader stdinHandle stdoutHandle expected
+      response <- readBatchHeader stdoutHandle
       case response of
         Left problem -> pure (Left problem)
         Right header ->
@@ -778,21 +1285,27 @@ streamBlobResponses stdinHandle stdoutHandle requested accumulated step =
                         framing <- BS.hGet stdoutHandle 1
                         pure (payload, framing)
                       case payloadRead of
-                        Left problem ->
-                          pure
-                            ( Left
-                                ( GitInvalidOutput
-                                    "cat-file batch"
-                                    (GitMalformedObjectHeader (protocolSample (TextEncoding.encodeUtf8 (Text.pack (ioeGetErrorString problem)))))
-                                )
-                            )
+                        Left problem -> pure (Left (gitBatchIoError problem))
                         Right (payload, framing) ->
                           case decodeGitBlobPayload expected size payload framing of
                             Left problem -> pure (Left problem)
                             Right blob -> do
                               next <- step accumulated blob
-                              streamBlobResponses stdinHandle stdoutHandle remaining next step
+                              readBlobResponses stdoutHandle remaining next step
                 _ -> pure (Left (GitInvalidOutput "cat-file batch" (GitMalformedObjectHeader (protocolSample header))))
+
+-- | A finite @cat-file --batch@ process closes after each bounded request
+-- plan has been fully consumed. A persistent session keeps stdin open while
+-- still enforcing the same per-plan in-flight limit.
+streamBlobResponseChunksOpen :: Handle -> Handle -> [[GitOid]] -> accumulator -> (accumulator -> GitBlob -> IO accumulator) -> IO (Either GitError accumulator)
+streamBlobResponseChunksOpen stdinHandle stdoutHandle chunks accumulated step =
+  case chunks of
+    [] -> pure (Right accumulated)
+    chunk : remaining -> do
+      chunkResult <- streamBlobResponsesOpen stdinHandle stdoutHandle chunk accumulated step
+      case chunkResult of
+        Left problem -> pure (Left problem)
+        Right next -> streamBlobResponseChunksOpen stdinHandle stdoutHandle remaining next step
 
 decodeGitBlobHeader :: GitOid -> ByteString -> ByteString -> ByteString -> ByteString -> Either GitError Word64
 decodeGitBlobHeader expected header returnedRaw typeRaw sizeRaw = do
@@ -813,6 +1326,10 @@ decodeGitBlobPayload expected size payload framing
       Left (GitInvalidOutput "cat-file batch" (GitTruncatedObject expected size (BS.length payload)))
   | framing /= "\n" = Left (GitInvalidOutput "cat-file batch" (GitMissingObjectFraming expected))
   | otherwise = Right (GitBlob expected payload)
+
+objectWindowLimitError :: Text -> GitError
+objectWindowLimitError operation =
+  GitInvalidOutput operation (GitMalformedObjectHeader "cat-file window exceeds object-window limit")
 
 parseDecimalSize :: Text -> ByteString -> Either GitError Word64
 parseDecimalSize operation raw
@@ -850,17 +1367,6 @@ readProtocolLine handle = go BS.empty
 
 protocolSample :: ByteString -> ByteString
 protocolSample = BS.take 4096
-
-requestHeader :: Handle -> Handle -> GitOid -> IO (Either GitError ByteString)
-requestHeader stdinHandle stdoutHandle objectId = do
-  attempted <- try @IOException $ do
-    BS8.hPutStrLn stdinHandle (TextEncoding.encodeUtf8 (gitOidText objectId))
-    hFlush stdinHandle
-    readProtocolLine stdoutHandle
-  pure $
-    case attempted of
-      Left problem -> Left (GitInvalidOutput "cat-file batch" (GitMalformedObjectHeader (protocolSample (TextEncoding.encodeUtf8 (Text.pack (ioeGetErrorString problem))))))
-      Right header -> Right header
 
 finishBatchInput :: Handle -> Handle -> value -> IO (Either GitError value)
 finishBatchInput stdinHandle stdoutHandle value = do
@@ -902,7 +1408,12 @@ withGitPipes repository operation arguments interaction = do
           completion <- try @IOException $ do
             closeQuietly (getStdin process)
             case outcome of
-              Left _ -> stopProcess process
+              -- If forceful termination itself fails, let the enclosing
+              -- IOException handler return immediately.  Waiting after a
+              -- failed termination could otherwise hang on a live malformed
+              -- protocol child before the outer finalizer gets a chance to
+              -- stop it.
+              Left _ -> terminateProcess (unsafeProcessHandle process)
               Right _ -> pure ()
             exitCode <- waitExitCode process
             stderrBytes <- Async.wait stderrWorker

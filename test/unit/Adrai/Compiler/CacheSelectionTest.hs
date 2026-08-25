@@ -15,11 +15,13 @@ import Adrai.Compiler.CacheSelection
     treeIdenticalCheck,
   )
 import Adrai.Git (GitClient (..), Repository (..), RepositoryLayout (BareRepository), systemGit)
+import Adrai.Retrieval (materializationImplementationFingerprint)
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
+import Data.Text (Text)
 import Data.List (sortBy)
 import Data.Ord (Down (..), comparing)
-import Database.SQLite.Simple (execute_, open, close)
+import Database.SQLite.Simple (close, execute, execute_, open)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=), assertBool)
 import System.Directory (createDirectory)
@@ -148,19 +150,17 @@ tests =
               mode @?= Full
               kind @?= FullCompile
 
-          , testCase "returns Exact when all meta keys match" $ do
+          , testCase "rejects metadata-complete but schema-incomplete exact cache" $ do
             withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
               let cachePath = tmpDir </> "exact.db"
                   targetRev = "abc123"
                   dbAlias = "alias1"
                   schema' = "adrai-cache/1"
                   repo = minimalRepository tmpDir
-              -- Create a SQLite DB with the expected meta keys
+              -- Metadata is not a cache contract: a candidate must carry the
+              -- full cold schema and every materialized projection.
               conn <- open cachePath
-              execute_ conn "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-              execute_ conn "INSERT INTO meta(key,value) VALUES ('schema', 'adrai-cache/1')"
-              execute_ conn "INSERT INTO meta(key,value) VALUES ('source_revision', 'alias1')"
-              execute_ conn "INSERT INTO meta(key,value) VALUES ('resolved_oid', 'abc123')"
+              insertCanonicalMeta conn targetRev
               close conn
               -- Verify meta loaded correctly
               meta <- loadCacheMeta cachePath
@@ -168,15 +168,14 @@ tests =
                 Nothing -> assertBool "meta should not be Nothing" False
                 Just m -> do
                   Map.lookup "schema" m @?= Just "adrai-cache/1"
-                  Map.lookup "source_revision" m @?= Just "alias1"
                   Map.lookup "resolved_oid" m @?= Just "abc123"
-                  -- Now check cachePathSelection
+                  -- A readable partial SQLite database is not exact reuse.
                   result <- cachePathSelection repo tmpDir dbAlias schema' targetRev (Just cachePath) []
                   let (mode, kind, _) = result
-                  mode @?= Exact
+                  mode @?= Full
                   kind @?= FullCompile
 
-          , testCase "returns ProvenanceDelta when schema+srcRev match but resolved_oid differs" $ do
+          , testCase "rejects incomplete cache metadata with a cold fallback" $ do
             withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
               let cachePath = tmpDir </> "delta.db"
                   targetRev = "abc123"
@@ -191,10 +190,10 @@ tests =
               close conn
               result <- cachePathSelection repo tmpDir dbAlias schema' targetRev (Just cachePath) []
               let (mode, kind, _) = result
-              mode @?= Incremental ProvenanceDelta
-              kind @?= ProvenanceDelta
+              mode @?= Full
+              kind @?= FullCompile
 
-          , testCase "returns TreeIdentical when candidate tree is identical" $ do
+          , testCase "does not tree-reuse without a bounded history proof" $ do
             withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
               let cachePath = tmpDir </> "identical.db"
                   targetRev = "abc123"
@@ -209,16 +208,12 @@ tests =
               execute_ conn "INSERT INTO meta(key,value) VALUES ('source_revision', 'srcRev')"
               execute_ conn "INSERT INTO meta(key,value) VALUES ('cache_key', 'test-key')"
               close conn
-              -- When managedPaths is empty, treeIdenticalCheck returns True
-              -- (no paths to diff). So the cascade should return TreeIdentical.
+              -- An empty managed-path set cannot prove compiler irrelevance.
               result <- cachePathSelection repo tmpDir "alias1" schema' targetRev Nothing []
               let (mode, kind, info) = result
-              mode @?= Incremental TreeIdentical
-              kind @?= TreeIdentical
-              -- Info should be the best candidate found
-              case info of
-                Just ri -> rcPath ri @?= cachePath
-                Nothing -> assertBool "cache info should not be Nothing" False
+              mode @?= Full
+              kind @?= FullCompile
+              info @?= Nothing
         ]
     ]
   where
@@ -252,3 +247,27 @@ tests =
       (comparing rcRank a b) <>
       (comparing (Down . rcMtime) a b) <>
       (comparing rcPath a b)
+
+    insertCanonicalMeta conn revision = do
+      execute_ conn "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+      execute_ conn "CREATE TABLE managed_source(path TEXT PRIMARY KEY)"
+      execute_ conn "CREATE TABLE issue(ordinal INTEGER PRIMARY KEY, severity TEXT NOT NULL)"
+      execute_ conn "CREATE TABLE adr_conflict(adr_id TEXT PRIMARY KEY)"
+      execute_ conn "CREATE TABLE operation(op_id TEXT PRIMARY KEY)"
+      execute_ conn "CREATE TABLE search_document(item_id TEXT PRIMARY KEY)"
+      mapM_ (execute conn "INSERT INTO meta(key,value) VALUES (?,?)")
+        [ ("schema" :: Text, "adrai-cache/1" :: Text)
+        , ("compiler_abi", "adrai-cold-compiler/1")
+        , ("materializer", materializationImplementationFingerprint)
+        , ("requested_revision", revision)
+        , ("resolved_oid", revision)
+        , ("source_fingerprint", "sha256:test-source")
+        , ("materialization_fingerprint", "sha256:test-materialization")
+        , ("semantic_state", "valid")
+        , ("history_complete", "true")
+        , ("managed_source_count", "0")
+        , ("issue_count", "0")
+        , ("conflict_count", "0")
+        , ("operation_count", "0")
+        , ("search_document_count", "0")
+        ]

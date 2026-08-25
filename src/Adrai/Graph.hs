@@ -270,8 +270,18 @@ data ConnectionAxis
 data Catalog = Catalog
   { catalogDecisionLists :: Map RecordId [DecisionRecord],
     catalogConnectionLists :: Map ConnectionId [ConnectionRecord],
-    catalogUniqueDecisions :: Map RecordId DecisionRecord,
-    catalogUniqueConnections :: Map ConnectionId ConnectionRecord,
+    -- | Complete local histories, including duplicate identifiers which must
+    -- remain visible for audit even though they are excluded from current
+    -- head reduction.  Each partition is pre-sorted with the same key that
+    -- historically ordered the per-ADR scan result.
+    catalogConnectionHistories :: Map (AdrId, ConnectionAxis) [ConnectionRecord],
+    -- | Globally unique records partitioned by their owning ADR.  Reduction
+    -- only ever needs the current ADR's candidates; retaining this index
+    -- avoids scanning every globally unique identifier for each ADR.  These
+    -- are deliberately the only unique-record indexes: separate global maps
+    -- duplicate every valid record without serving another reduction path.
+    catalogUniqueDecisionsByAdr :: Map AdrId (Map RecordId DecisionRecord),
+    catalogUniqueConnectionsByAdr :: Map AdrId (Map ConnectionId ConnectionRecord),
     catalogKnownAdrs :: Set AdrId
   }
 
@@ -291,8 +301,9 @@ buildCatalog managed =
   Catalog
     { catalogDecisionLists = decisionLists,
       catalogConnectionLists = connectionLists,
-      catalogUniqueDecisions = Map.mapMaybe onlyOne decisionLists,
-      catalogUniqueConnections = Map.mapMaybe onlyOne connectionLists,
+      catalogConnectionHistories = connectionHistories,
+      catalogUniqueDecisionsByAdr = decisionsByAdr,
+      catalogUniqueConnectionsByAdr = connectionsByAdr,
       catalogKnownAdrs =
         Set.fromList
           ( [ decisionAdr decision
@@ -318,10 +329,22 @@ buildCatalog managed =
         $ [ (connectionRecordId connection, [connection])
             | ManagedConnection connection <- managed
           ]
-
-onlyOne :: [value] -> Maybe value
-onlyOne [value] = Just value
-onlyOne _ = Nothing
+    connectionHistories =
+      fmap (sortOn stableConnectionKey)
+        . Map.fromListWith (<>)
+        $ [ ((connectionSubject connection, connectionAxis connection), [connection])
+            | ManagedConnection connection <- managed
+          ]
+    decisionsByAdr =
+      Map.fromListWith Map.union
+        [ (decisionAdr decision, Map.singleton identifier decision)
+          | (identifier, [decision]) <- Map.toAscList decisionLists
+        ]
+    connectionsByAdr =
+      Map.fromListWith Map.union
+        [ (connectionSubject connection, Map.singleton identifier connection)
+          | (identifier, [connection]) <- Map.toAscList connectionLists
+        ]
 
 managedAdrs :: [ManagedRecord] -> Set AdrId
 managedAdrs = Set.fromList . map managedAdr
@@ -392,8 +415,8 @@ reduceAdr catalog adr =
     decisionIssues <> scopeIssues <> domainIssues <> statusIssues
   )
   where
-    localDecisions = Map.filter ((== adr) . decisionAdr) (catalogUniqueDecisions catalog)
-    localConnections = Map.filter ((== adr) . connectionSubject) (catalogUniqueConnections catalog)
+    localDecisions = Map.findWithDefault Map.empty adr (catalogUniqueDecisionsByAdr catalog)
+    localConnections = Map.findWithDefault Map.empty adr (catalogUniqueConnectionsByAdr catalog)
 
     amendmentConnections = connectionsFor AmendmentConnectionAxis localConnections
     scopeConnections = connectionsFor ScopeConnectionAxis localConnections
@@ -487,13 +510,7 @@ reduceAdr catalog adr =
             decisionAdr decision == adr
         ]
     localConnectionHistory axis =
-      sortOn stableConnectionKey
-        [ connection
-          | connections <- Map.elems (catalogConnectionLists catalog),
-            connection <- connections,
-            connectionSubject connection == adr,
-            connectionAxis connection == axis
-        ]
+      Map.findWithDefault [] (adr, axis) (catalogConnectionHistories catalog)
     scopeHistory = localConnectionHistory ScopeConnectionAxis
     amendmentHistory = localConnectionHistory AmendmentConnectionAxis
     domainHistory = localConnectionHistory DomainConnectionAxis

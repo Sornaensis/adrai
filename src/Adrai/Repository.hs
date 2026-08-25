@@ -48,6 +48,7 @@ module Adrai.Repository
     repositorySnapshotAt,
     repositorySnapshot,
     isManagedSourcePath,
+    isSelectedManagedPath,
   )
 where
 

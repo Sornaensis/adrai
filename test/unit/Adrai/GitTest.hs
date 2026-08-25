@@ -9,6 +9,7 @@ import Adrai.Provenance (mkGitOid)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.Either (isLeft)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Numeric (showHex)
@@ -33,7 +34,24 @@ tests =
         let values = map oid [300, 299 .. 0] <> [oid 42, oid 42]
             chunks = canonicalObjectChunks values
         map length chunks @?= [256, 45]
-        concat chunks @?= map oid [0 .. 300],
+        concat chunks @?= map oid [0 .. 300]
+        objectBatchRequestCount values @?= 2
+        objectBatchRequestCount [] @?= 0
+        objectBatchRequestCount [oid 42, oid 42] @?= 1,
+      testCase "persistent batch input writes bare OIDs and flushes exactly once per window" $ do
+        writes <- newIORef []
+        flushes <- newIORef (0 :: Int)
+        let input =
+              GitBatchInput
+                { gitBatchInputWrite = \bytes -> modifyIORef' writes (bytes :),
+                  gitBatchInputFlush = modifyIORef' flushes (+ 1)
+                }
+            expected = BS8.pack (Text.unpack (gitOidText (oid 1)) <> "\n" <> Text.unpack (gitOidText (oid 2)) <> "\n")
+        writePersistentBatchRequests input [oid 1, oid 2] >>= (@?= Right ())
+        (reverse <$> readIORef writes) >>= (@?= [expected])
+        readIORef flushes >>= (@?= 1)
+        writePersistentBatchRequests input [] >>= (@?= Right ())
+        readIORef flushes >>= (@?= 1),
       testCase "bounded diagnostics normalize newlines and cap untrusted output" $ do
         boundedDiagnostic "first\r\nsecond\rthird" @?= "first\nsecond\nthird"
         assertBool "diagnostic is bounded" (Text.length (boundedDiagnostic (BS.replicate 50000 120)) < 5000),
@@ -57,7 +75,84 @@ tests =
         assertBool "empty record" (isLeft (decodeGitTreeOutput (valid <> "\NUL")))
         assertBool "noncanonical metadata whitespace" (isLeft (decodeGitTreeOutput (BS8.pack ("100644  blob " <> Text.unpack (gitOidText (oid 1)) <> "\tfile.txt\NUL"))))
         assertBool "invalid UTF-8 path" (isLeft (decodeGitTreeOutput (BS8.pack ("100644 blob " <> Text.unpack (gitOidText (oid 1)) <> "\t") <> BS.pack [0x80, 0x00]))),
-      testCase "batch headers reject mismatches, whitespace, invalid types, and size overflow" $ do
+      testCase "history-delta protocol preserves root and every merge-parent edge" $ do
+        let root = oid 1
+            child = oid 2
+            merge = oid 3
+            blobA = oid 10
+            blobB = oid 11
+            graph = BS8.pack (Text.unpack (gitOidText root) <> "\n" <> Text.unpack (gitOidText child) <> " " <> Text.unpack (gitOidText root) <> "\n" <> Text.unpack (gitOidText merge) <> " " <> Text.unpack (gitOidText child) <> " " <> Text.unpack (gitOidText root) <> "\n")
+            header value = "\x1e" <> BS8.pack (Text.unpack (gitOidText value)) <> "\NUL\n"
+            emptyHeader value = "\x1e" <> BS8.pack (Text.unpack (gitOidText value)) <> "\NUL"
+            path = "architecture/adrai/decisions/R001/example.decision.md\NUL"
+            zero = BS8.replicate 40 '0'
+            raw =
+              header root
+                <> ":000000 100644 " <> zero <> " " <> BS8.pack (Text.unpack (gitOidText blobA)) <> " A\NUL" <> path
+                <> header child
+                <> ":100644 100644 " <> BS8.pack (Text.unpack (gitOidText blobA)) <> " " <> BS8.pack (Text.unpack (gitOidText blobB)) <> " M\NUL" <> path
+                <> emptyHeader merge
+                <> header merge
+                <> ":000000 100644 " <> zero <> " " <> BS8.pack (Text.unpack (gitOidText blobA)) <> " A\NUL" <> path
+        case decodeGitCommitGraph graph >>= (`decodeGitHistoryTreeDeltas` raw) of
+          Left problem -> assertFailure (show problem)
+          Right deltas -> do
+            map gitHistoryTreeDeltaCommit deltas @?= [root, child, merge, merge]
+            map gitHistoryTreeDeltaParent deltas @?= [Nothing, Just root, Just child, Just root]
+            map (length . gitHistoryTreeDeltaChanges) deltas @?= [1, 1, 0, 1]
+        case decodeGitCommitGraph (BS8.pack (Text.unpack (gitOidText root) <> "\n")) >>= (`decodeGitHistoryTreeDeltas` (emptyHeader root)) of
+          Right [GitHistoryTreeDelta actualRoot Nothing []] -> actualRoot @?= root
+          unexpected -> assertFailure ("expected final empty edge, got " <> show unexpected)
+        assertBool "history-delta framing is strict" (isLeft (decodeGitHistoryTreeDeltas [] raw)),
+       testCase "history-delta protocol rejects zero OIDs on nonzero modes" $ do
+         let root = oid 1
+             graph = BS8.pack (Text.unpack (gitOidText root) <> "\n")
+             header = "\x1e" <> BS8.pack (Text.unpack (gitOidText root)) <> "\NUL\n"
+             path = "architecture/adrai/decisions/R001/example.decision.md\NUL"
+             zero = BS8.replicate 40 '0'
+             blob = BS8.pack (Text.unpack (gitOidText (oid 2)))
+             longZero = BS8.replicate 64 '0'
+             longBlob = BS8.replicate 63 '0' <> "1"
+             shortZero = "0"
+             malformedNew = header <> ":000000 100644 " <> zero <> " " <> zero <> " A\NUL" <> path
+             malformedOld = header <> ":100644 100644 " <> zero <> " " <> blob <> " M\NUL" <> path
+         assertBool "added side may not use a zero OID" (isLeft (decodeGitCommitGraph graph >>= (`decodeGitHistoryTreeDeltas` malformedNew)))
+         assertBool "removed side may not use a zero OID" (isLeft (decodeGitCommitGraph graph >>= (`decodeGitHistoryTreeDeltas` malformedOld)))
+         assertBool "short zero absent sentinel is rejected" (isLeft (decodeGitCommitGraph graph >>= (`decodeGitHistoryTreeDeltas` (header <> ":000000 100644 " <> shortZero <> " " <> blob <> " A\NUL" <> path))))
+         assertBool "SHA-256 zero sentinel mismatches SHA-1 graph" (isLeft (decodeGitCommitGraph graph >>= (`decodeGitHistoryTreeDeltas` (header <> ":000000 100644 " <> longZero <> " " <> blob <> " A\NUL" <> path))))
+         assertBool "SHA-256 nonzero side mismatches SHA-1 graph" (isLeft (decodeGitCommitGraph graph >>= (`decodeGitHistoryTreeDeltas` (header <> ":000000 100644 " <> zero <> " " <> longBlob <> " A\NUL" <> path))))
+         assertBool "SHA-256 old nonzero side mismatches SHA-1 graph" (isLeft (decodeGitCommitGraph graph >>= (`decodeGitHistoryTreeDeltas` (header <> ":100644 100644 " <> longBlob <> " " <> blob <> " M\NUL" <> path))))
+         let sha256Root = oid64 1
+             sha256Graph = BS8.pack (Text.unpack (gitOidText sha256Root) <> "\n")
+             sha256Header = "\x1e" <> BS8.pack (Text.unpack (gitOidText sha256Root)) <> "\NUL\n"
+         assertBool "SHA-1 zero sentinel mismatches SHA-256 graph" (isLeft (decodeGitCommitGraph sha256Graph >>= (`decodeGitHistoryTreeDeltas` (sha256Header <> ":000000 100644 " <> zero <> " " <> longBlob <> " A\NUL" <> path))))
+         assertBool "SHA-1 new nonzero side mismatches SHA-256 graph" (isLeft (decodeGitCommitGraph sha256Graph >>= (`decodeGitHistoryTreeDeltas` (sha256Header <> ":000000 100644 " <> longZero <> " " <> blob <> " A\NUL" <> path))))
+         assertBool "SHA-1 old nonzero side mismatches SHA-256 graph" (isLeft (decodeGitCommitGraph sha256Graph >>= (`decodeGitHistoryTreeDeltas` (sha256Header <> ":100644 100644 " <> blob <> " " <> longBlob <> " M\NUL" <> path))))
+         case decodeGitCommitGraph sha256Graph >>= (`decodeGitHistoryTreeDeltas` (sha256Header <> ":000000 100644 " <> longZero <> " " <> longBlob <> " A\NUL" <> path)) of
+           Right [GitHistoryTreeDelta _ Nothing [GitTreeChange _ Nothing (Just entry)]] -> gitTreeOid entry @?= oid64 1
+           unexpected -> assertFailure ("expected exact SHA-256 zero sentinel and object OID to parse, got " <> show unexpected),
+        testCase "commit graph requires one nonzero OID width across commits and parents" $ do
+          let sha1 = Text.unpack (gitOidText (oid 1))
+              sha1Parent = Text.unpack (gitOidText (oid 2))
+              sha256 = Text.unpack (gitOidText (oid64 1))
+              zero40 = replicate 40 '0'
+          assertBool "mixed child widths are rejected" (isLeft (decodeGitCommitGraph (BS8.pack (sha1 <> "\n" <> sha256 <> " " <> sha1 <> "\n"))))
+          assertBool "mixed parent width is rejected" (isLeft (decodeGitCommitGraph (BS8.pack (sha1 <> " " <> sha256 <> "\n"))))
+          assertBool "zero commit OID is rejected" (isLeft (decodeGitCommitGraph (BS8.pack (zero40 <> "\n"))))
+          assertBool "zero parent OID is rejected" (isLeft (decodeGitCommitGraph (BS8.pack (sha1 <> " " <> zero40 <> "\n"))))
+          assertBool "uniform nonzero graph is accepted" (not (isLeft (decodeGitCommitGraph (BS8.pack (sha1 <> "\n" <> sha1Parent <> " " <> sha1 <> "\n"))))),
+        testCase "history-delta batches are bounded by merge arity, not commit count" $ do
+         let root = oid 1
+             linear = [oid value | value <- [2 .. 64]]
+             merge = oid 65
+             line child parents = Text.unpack (gitOidText child) <> concatMap ((" " <>) . Text.unpack . gitOidText) parents <> "\n"
+             graph = BS8.pack (line root [] <> concat [line child [parent] | (parent, child) <- zip (root : linear) linear] <> line merge [oid 32, oid 64])
+         case decodeGitCommitGraph graph of
+           Left problem -> assertFailure (show problem)
+           Right nodes -> do
+             historyTreeDeltaBatchCount nodes @?= 2
+             assertBool "ordinary selected commits do not create batches" (historyTreeDeltaBatchCount nodes < length nodes),
+       testCase "batch headers reject mismatches, whitespace, invalid types, and size overflow" $ do
         let expected = oid 1
             returned = BS8.pack (Text.unpack (gitOidText expected))
             other = BS8.pack (Text.unpack (gitOidText (oid 2)))
@@ -122,3 +217,12 @@ oid value =
   where
     hex = showHex value ""
     pad = replicate (40 - length hex) '0'
+
+oid64 :: Int -> GitOid
+oid64 value =
+  case mkGitOid (Text.pack (pad <> hex)) of
+    Left problem -> error (show problem)
+    Right result -> result
+  where
+    hex = showHex value ""
+    pad = replicate (64 - length hex) '0'

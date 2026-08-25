@@ -4,15 +4,10 @@ module Adrai.FixtureQueryMaterializationTest (tests) where
 
 import Adrai.Fixture.QueryMaterialization
 import Adrai.Fixture.Relevance (relevanceCorpusV1)
-import Adrai.Fixture.RetrievalScale
-  ( adrTemplates,
-    retrievalScaleV1,
-  )
 import Adrai.Fixture.Types
   ( AdrKey (..),
     AdrTemplate (..),
     RelevanceCorpus (..),
-    RetrievalScaleSpec (..),
     SourceMode (..),
     SourceTemplate (..),
   )
@@ -33,8 +28,7 @@ import Adrai.Retrieval
     SearchPassage (..),
   )
 import Adrai.Types
-  ( adrIdText,
-    configManagedPaths,
+  ( configManagedPaths,
     defaultConfig,
     mkRepoPath,
     repoPathText,
@@ -60,8 +54,7 @@ tests =
     [ testCase "six ADR templates materialize canonically and independently of input order" sixAdrContract,
       testCase "all relevance source templates preserve deterministic bytes and source semantics" sourceContract,
       testCase "historical fixtures accept committed sources and reject worktree sources" historicalSourceContract,
-      testCase "duplicate and invalid fixture inputs fail with typed errors" typedFailureContract,
-      testCase "byte-derived identities and production materialization support 2,000 ADR ordinals" scaleIdentityContract
+      testCase "duplicate and invalid fixture inputs fail with typed errors" typedFailureContract
     ]
 
 sixAdrContract :: IO ()
@@ -181,23 +174,6 @@ typedFailureContract = do
   lookupQueryMaterializationAdr (AdrKey 999999) valid @?= Left (QueryMaterializationMissingAdr (AdrKey 999999))
   lookupQueryMaterializationSource "missing" valid @?= Left (QueryMaterializationMissingSource "missing")
 
-scaleIdentityContract :: IO ()
-scaleIdentityContract =
-  case NonEmpty.nonEmpty adrTemplates of
-    Nothing -> assertFailure "the 2,000 ADR fixture unexpectedly became empty"
-    Just templates -> do
-      let materialization = mustRight (materializeQueryFixture (retrievalScaleMeta retrievalScaleV1) templates [])
-          adrIds = queryMaterializationAdrIds materialization
-          documents = searchMaterializationDocuments (queryMaterializationSearch materialization)
-          snapshot = queryMaterializationSnapshot materialization
-      Map.size adrIds @?= retrievalLogicalAdrCount retrievalScaleV1
-      length documents @?= retrievalLogicalAdrCount retrievalScaleV1
-      length (readSnapshotDocuments snapshot) @?= retrievalLogicalAdrCount retrievalScaleV1 * 4
-      Set.size (Set.fromList (map adrIdText (Map.elems adrIds))) @?= retrievalLogicalAdrCount retrievalScaleV1
-      mapM_ (\key -> assertRight (lookupQueryMaterializationAdr (AdrKey key) materialization)) [0, 999, 1999]
-      graphReductionIssues (readSnapshotReduction snapshot) @?= []
-      validateReadSnapshot snapshot @?= Right ()
-
 assertSource :: RevisionIdentity -> QueryMaterialization -> SourceTemplate -> IO ()
 assertSource revision materialization template =
   case lookupQueryMaterializationSource (sourceTemplateKey template) materialization of
@@ -226,12 +202,6 @@ renderedFixtureBytes materialization =
 assertUnique :: (Ord value, Show value) => String -> [value] -> IO ()
 assertUnique label values =
   assertBool (label <> " were not unique: " <> show values) (Set.size (Set.fromList values) == length values)
-
-assertRight :: (Show problem) => Either problem value -> IO ()
-assertRight result =
-  case result of
-    Right _ -> pure ()
-    Left problem -> assertFailure ("expected Right, got " <> show problem)
 
 assertLeft :: String -> (problem -> Bool) -> Either problem value -> IO ()
 assertLeft label predicate result =

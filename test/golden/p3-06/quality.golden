@@ -173,7 +173,7 @@
     ]
   },
   "scale": {
-    "execution": "validated by test/integration/Adrai/RetrievalScaleTest.hs; not rerun by this golden",
+    "execution": "validated by test/stress/Adrai/RetrievalScaleTest.hs; not rerun by this golden",
     "field_rerank_candidates": 80,
     "identifier_corpus": 2000,
     "logical_adrs": 2000,

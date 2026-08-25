@@ -31,7 +31,12 @@ tests =
       testCase "empty evidence fixture is a blocking validation gap" testEmptyEvidenceFixture,
       testCase "empty evidence result is a blocking validation gap" testEmptyEvidenceResult,
       testCase "invalid evidence command is a blocking validation gap" testInvalidEvidenceCommand,
+      testCase "stress evidence command requires the explicit run-stress test argument" testBareStressEvidenceCommand,
+      testCase "stress evidence command with the explicit run-stress test argument is valid" testExplicitStressEvidenceCommand,
+      testCase "stress evidence command parsing rejects ambiguous opt-ins" testStressEvidenceCommandSyntax,
+      testCase "PowerShell-safe stress evidence decodes the exact argv" testPowerShellStressEvidenceArgv,
       testCase "committed ledger runtime audit decodes all six fragments" testCommittedLedgerRuntimeAudit,
+      testCase "committed large-stress row names the isolated stress suite and opt-in" testCommittedLargeStressEvidence,
       testCase "require-closed exits nonzero for an open ledger" testRequireClosed
     ]
 
@@ -97,6 +102,53 @@ testEmptyEvidenceResult = assertValidationGap EmptyEvidenceResult "missing-evide
 testInvalidEvidenceCommand :: IO ()
 testInvalidEvidenceCommand = assertValidationGap InvalidEvidenceCommand "invalid-evidence-command"
 
+testBareStressEvidenceCommand :: IO ()
+testBareStressEvidenceCommand = assertValidationGap BareStressEvidenceCommand "invalid-evidence-command"
+
+testExplicitStressEvidenceCommand :: IO ()
+testExplicitStressEvidenceCommand =
+  withFrozenLedger ExplicitStressEvidenceCommand $ \root -> do
+    result <- Audit.auditLedgerAt root
+    case result of
+      Left problem -> assertFailure (Text.unpack problem)
+      Right audit -> assertBool "explicit stress opt-in should be accepted" (Audit.auditIsClosed audit)
+
+testStressEvidenceCommandSyntax :: IO ()
+testStressEvidenceCommandSyntax = do
+  mapM_ assertAccepted validCommands
+  mapM_ assertRejected invalidCommands
+  where
+    assertAccepted command =
+      withFrozenLedger (StressEvidenceCommand command) $ \root -> do
+        result <- Audit.auditLedgerAt root
+        case result of
+          Left problem -> assertFailure (Text.unpack problem)
+          Right audit -> assertBool ("valid stress command rejected: " <> command) (Audit.auditIsClosed audit)
+    assertRejected command =
+      assertValidationGap (StressEvidenceCommand command) "invalid-evidence-command"
+    validCommands =
+      [ "stack test adrai:adrai-stress-test --test-arguments \"--run-stress --pattern=focused\"",
+        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress --pattern=focused\"",
+        powershellStressCommand
+      ]
+    invalidCommands =
+      [ "stack test adrai:adrai-stress-test",
+        "stack test adrai:adrai-stress-test --test-arguments",
+        "stack test adrai:adrai-stress-test --test-arguments=--run-stress --test-arguments=--pattern=focused",
+        "stack test adrai:adrai-stress-test --test-arguments=--run-stress=true",
+        "stack test adrai:adrai-stress-test --test-arguments=prefix--run-stress",
+        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress",
+        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress \\\"unterminated\""
+      ]
+
+testPowerShellStressEvidenceArgv :: IO ()
+testPowerShellStressEvidenceArgv =
+  Audit.decodeStressCommandArguments (Text.pack powershellStressCommand)
+    @?= Just
+      [ "--run-stress",
+        "--pattern=12,000-commit repository with 2,000 ADR operations"
+      ]
+
 testCommittedLedgerRuntimeAudit :: IO ()
 testCommittedLedgerRuntimeAudit = do
   result <- Audit.auditLedgerAt ("test" </> "coverage" </> "ledger" </> "v1")
@@ -105,6 +157,18 @@ testCommittedLedgerRuntimeAudit = do
     Right audit -> do
       let report = Audit.renderAuditReport audit
       assertBool "the committed ledger must contain all 206 rows from six decodable fragments" ("actual-total=206" `Text.isInfixOf` report)
+
+testCommittedLargeStressEvidence :: IO ()
+testCommittedLargeStressEvidence = do
+  evidence <- ByteString.readFile ("test" </> "coverage" </> "ledger" </> "v1" </> "large-stress.json")
+  result <- Audit.auditLedgerAt ("test" </> "coverage" </> "ledger" </> "v1")
+  assertBool "the committed large-stress ledger row must name the isolated stress suite" (ByteString.pack "adrai:adrai-stress-test" `ByteString.isInfixOf` evidence)
+  assertBool "the committed large-stress ledger row must carry the exact opt-in" (ByteString.pack "--run-stress" `ByteString.isInfixOf` evidence)
+  assertBool "the committed large-stress ledger row must select its focused stress contract" (ByteString.pack "12,000-commit repository with 2,000 ADR operations" `ByteString.isInfixOf` evidence)
+  assertBool "the committed large-stress ledger row must use PowerShell-safe single outer quotes" (ByteString.pack "--test-arguments='--run-stress --pattern=" `ByteString.isInfixOf` evidence)
+  case result of
+    Left problem -> assertFailure (Text.unpack problem)
+    Right audit -> assertBool "the committed stress command must survive audit parsing" (not ("invalid-evidence-command" `Text.isInfixOf` Audit.renderAuditReport audit))
 
 testRequireClosed :: IO ()
 testRequireClosed =
@@ -141,6 +205,9 @@ data Mutation
   | EmptyEvidenceFixture
   | EmptyEvidenceResult
   | InvalidEvidenceCommand
+  | BareStressEvidenceCommand
+  | ExplicitStressEvidenceCommand
+  | StressEvidenceCommand String
   deriving (Eq)
 
 withFrozenLedger :: Mutation -> (FilePath -> IO value) -> IO value
@@ -220,10 +287,18 @@ rowJson mutation categoryIndex rowIndex =
       | firstRow && mutation == EmptyEvidenceFixture = evidenceWith "stack test adrai:adrai-test --test-arguments=--pattern=coverage-ledger" "" "synthetic result"
       | firstRow && mutation == EmptyEvidenceResult = evidenceWith "stack test adrai:adrai-test --test-arguments=--pattern=coverage-ledger" "synthetic fixture" ""
       | firstRow && mutation == InvalidEvidenceCommand = evidenceWith "cabal test" "synthetic fixture" "synthetic result"
+      | firstRow, StressEvidenceCommand command <- mutation = evidenceWith command "synthetic fixture" "synthetic result"
+      | firstRow && mutation == BareStressEvidenceCommand = evidenceWith "stack test adrai:adrai-stress-test --test-arguments=--pattern=coverage-ledger" "synthetic fixture" "synthetic result"
+      | firstRow && mutation == ExplicitStressEvidenceCommand = evidenceWith "stack test adrai:adrai-stress-test --test-arguments=--run-stress" "synthetic fixture" "synthetic result"
       | otherwise = evidenceWith "stack test adrai:adrai-test --test-arguments=--pattern=coverage-ledger" "synthetic fixture" "synthetic result"
 
     evidenceWith command fixture result =
-      "{\"command\":\"" <> command <> "\",\"fixture\":\"" <> fixture <> "\",\"result\":\"" <> result <> "\"}"
+      "{\"command\":\"" <> escapeJson command <> "\",\"fixture\":\"" <> escapeJson fixture <> "\",\"result\":\"" <> escapeJson result <> "\"}"
+
+    escapeJson = concatMap escapeCharacter
+    escapeCharacter '\\' = "\\\\"
+    escapeCharacter '\"' = "\\\""
+    escapeCharacter character = [character]
 
 frozenCategories :: [(String, String, Int)]
 frozenCategories =
@@ -234,3 +309,7 @@ frozenCategories =
     ("search-relevance-vectors-history-compare-explorer.json", "search-relevance-vectors-history-compare-explorer", 69),
     ("large-stress.json", "large-stress", 1)
   ]
+
+powershellStressCommand :: String
+powershellStressCommand =
+  "stack test adrai:adrai-stress-test --test-arguments='--run-stress --pattern=\"12,000-commit repository with 2,000 ADR operations\"'"

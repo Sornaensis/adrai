@@ -108,17 +108,16 @@ tests =
 -- assertion reports the actual digest: update both sides of the equation
 -- together only when the frame format change is intentional.
 goldenColdMaterializationFingerprint :: Text
-goldenColdMaterializationFingerprint = "sha256:A7gaIPbkrBO-kGy-QUgl76fhTFB536sGdUIepLGsOCQ"
+goldenColdMaterializationFingerprint = "sha256:xSl_EAlUQySjtO3M_8iLk8sVx2NQxILlfGODTO4GD7I"
 
 goldenSourceFingerprint :: Text
 goldenSourceFingerprint = "sha256:LwtXmmMXX-IYLVlEQHKtNsl4s07MskGuF9jctUN7al8"
 
 -- Fixture -------------------------------------------------------------
 
--- | The analyzed snapshot the cold-materialization guard pins.  Every frame
--- section of the frame list contributes frames from this fixture
--- (diagnostics, conflicts, operation documents, and reduced ADRs), so the
--- pinned digest changes if any section is edited, reordered, or dropped.
+-- | The analyzed snapshot the cold-materialization guard pins.  With
+-- @Nothing@, its fingerprint includes header, schema, materializer, source,
+-- diagnostic, and conflict frames, and excludes semantic and search frames.
 guardAnalyzed :: [ParsedManagedDocument] -> AnalyzedRepositorySnapshot
 guardAnalyzed documents =
   AnalyzedRepositorySnapshot
@@ -127,10 +126,11 @@ guardAnalyzed documents =
       analyzedNonblobObservations = [],
       analyzedDiagnostics = [guardDiagnostic],
       analyzedDocuments = documents,
-      analyzedReduction = reduceManagedGraph (map parsedManagedRecord documents),
-      analyzedConflicts = [guardConflict],
-      analyzedHistoryComplete = True,
-      analyzedSourceFingerprint = sha256Digest "guard-source"
+       analyzedReduction = reduceManagedGraph (map parsedManagedRecord documents),
+       analyzedConflicts = [guardConflict],
+       analyzedHistoryComplete = True,
+       analyzedHistoryCommitsScanned = 0,
+       analyzedSourceFingerprint = sha256Digest "guard-source"
     }
 
 -- | Documents parsed from the healthy compiler fixture corpus.

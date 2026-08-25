@@ -13,7 +13,7 @@ import Adrai.Property.Generators
 import Adrai.Retrieval
 import Adrai.Sqlite
 import Adrai.Format.Json (renderCanonicalJson)
-import Adrai.Integration.CLI (createTestRepo, gitEnv, gitStdout, parseCompileResult)
+import Adrai.Integration.CLI (adraiTestArgs, createTestRepo, gitEnv, gitStdout, parseCompileResult)
 import Control.Exception (bracket)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
@@ -85,25 +85,53 @@ p602iRealExecutableCompile =
     current <- compileJson repository ["compile", "--json"]
     coldCompilerRevision current @?= currentRevision
     assertBool "current compile publishes a readable SQLite path" (not (null (coldCompilerDatabase current)))
+    coldCompilerCacheMode current @?= "exact"
+    coldCompilerIncrementalKind current @?= "exact"
+    coldCompilerDocumentsParsed current @?= 0
+    coldCompilerDocumentsReused current @?= 8
+    coldCompilerAdrsRebuilt current @?= 0
     currentMeta <- readCompileMeta (coldCompilerDatabase current)
     lookup "resolved_oid" currentMeta @?= Just currentRevision
-    lookup "managed_source_count" currentMeta @?= Just (Text.pack (show (coldCompilerDocumentsParsed current)))
-    lookup "operation_count" currentMeta @?= Just (Text.pack (show (coldCompilerAdrsRebuilt current)))
+    lookup "managed_source_count" currentMeta @?= Just (Text.pack (show (coldCompilerDocumentsParsed current + coldCompilerDocumentsReused current)))
+    lookup "operation_count" currentMeta @?= Just (Text.pack (show (coldCompilerAdrsRebuilt current + coldCompilerAdrsReused current)))
     lookup "search_document_count" currentMeta @?= Just (Text.pack (show (coldCompilerAnnBuckets current)))
 
     historical <- compileJson repository ["compile", "--at", Text.unpack historicalRevision, "--json"]
     coldCompilerRevision historical @?= historicalRevision
     coldCompilerDatabase historical @?= coldCompilerDatabase current
-    assertBool "historical compile selects fewer managed documents" (coldCompilerDocumentsParsed historical < coldCompilerDocumentsParsed current)
-    assertBool "historical compile selects fewer operations" (coldCompilerAdrsRebuilt historical < coldCompilerAdrsRebuilt current)
+    coldCompilerCacheMode historical @?= "full"
+    coldCompilerIncrementalKind historical @?= "full"
+    assertBool "historical compile rebuilds managed documents" (coldCompilerDocumentsParsed historical > 0)
+    coldCompilerDocumentsReused historical @?= 0
+    assertBool "historical compile rebuilds operations" (coldCompilerAdrsRebuilt historical > 0)
+    coldCompilerAdrsReused historical @?= 0
     historicalMeta <- readCompileMeta (coldCompilerDatabase historical)
     lookup "resolved_oid" historicalMeta @?= Just historicalRevision
-    databaseBeforeFailure <- BS.readFile (coldCompilerDatabase historical)
+    lookup "managed_source_count" historicalMeta @?= Just (Text.pack (show (coldCompilerDocumentsParsed historical + coldCompilerDocumentsReused historical)))
+    lookup "operation_count" historicalMeta @?= Just (Text.pack (show (coldCompilerAdrsRebuilt historical + coldCompilerAdrsReused historical)))
+
+    currentRebuilt <- compileJson repository ["compile", "--json"]
+    coldCompilerRevision currentRebuilt @?= currentRevision
+    coldCompilerDatabase currentRebuilt @?= coldCompilerDatabase current
+    coldCompilerCacheMode currentRebuilt @?= "full"
+    coldCompilerIncrementalKind currentRebuilt @?= "full"
+    coldCompilerDocumentsParsed currentRebuilt @?= 8
+    coldCompilerDocumentsReused currentRebuilt @?= 0
+    assertBool "current compile after historical rebuilds operations" (coldCompilerAdrsRebuilt currentRebuilt > 0)
+    coldCompilerAdrsReused currentRebuilt @?= 0
+    currentRebuiltMeta <- readCompileMeta (coldCompilerDatabase currentRebuilt)
+    lookup "resolved_oid" currentRebuiltMeta @?= Just currentRevision
+    lookup "managed_source_count" currentRebuiltMeta @?= Just (Text.pack (show (coldCompilerDocumentsParsed currentRebuilt + coldCompilerDocumentsReused currentRebuilt)))
+    lookup "operation_count" currentRebuiltMeta @?= Just (Text.pack (show (coldCompilerAdrsRebuilt currentRebuilt + coldCompilerAdrsReused currentRebuilt)))
+    databaseBeforeFailure <- BS.readFile (coldCompilerDatabase currentRebuilt)
 
     assertFailureCall repository ["compile", "--at", "refs/heads/does-not-exist", "--json"] 2 "adrai: "
-    BS.readFile (coldCompilerDatabase historical) >>= (@?= databaseBeforeFailure)
+    BS.readFile (coldCompilerDatabase currentRebuilt) >>= (@?= databaseBeforeFailure)
     assertFailureCall repository ["compile", "--database", "forbidden.sqlite"] 2 "Invalid option `--database'"
-    BS.readFile (coldCompilerDatabase historical) >>= (@?= databaseBeforeFailure)
+    BS.readFile (coldCompilerDatabase currentRebuilt) >>= (@?= databaseBeforeFailure)
+
+    plainCurrent <- compileJson repository ["compile", "--json"]
+    plainCurrent @?= current
 
     (plainExit, plainOut, plainErr) <- p602iRaw repository ["compile"]
     plainExit @?= ExitSuccess
@@ -112,14 +140,14 @@ p602iRealExecutableCompile =
       @?= LBS.fromStrict
         ( TextEncoding.encodeUtf8
             ( Text.unlines
-                [ "revision=" <> coldCompilerRevision current
-                , "database=" <> Text.pack (coldCompilerDatabase current)
-                , "documents_parsed=" <> Text.pack (show (coldCompilerDocumentsParsed current))
-                , "issues=" <> Text.pack (show (coldCompilerIssueCount current))
+                [ "revision=" <> coldCompilerRevision plainCurrent
+                , "database=" <> Text.pack (coldCompilerDatabase plainCurrent)
+                , "documents_parsed=" <> Text.pack (show (coldCompilerDocumentsParsed plainCurrent))
+                , "issues=" <> Text.pack (show (coldCompilerIssueCount plainCurrent))
                 ]
             )
         )
-    readCompileMeta (coldCompilerDatabase current) >>= \metadata -> lookup "resolved_oid" metadata @?= Just currentRevision
+    readCompileMeta (coldCompilerDatabase plainCurrent) >>= \metadata -> lookup "resolved_oid" metadata @?= Just currentRevision
 
     afterHead <- headOid repository
     afterRef <- gitStdout repository ["symbolic-ref", "--quiet", "HEAD"]
@@ -194,7 +222,7 @@ p602iRaw repository arguments = do
     Just path | not (null path) -> pure path
     _ -> assertFailure "P6-02I requires ADRAI_EXE to name the executable under test" >> fail "unreachable"
   inherited <- getEnvironment
-  readProcess (setEnv (p602iEnvironment inherited) (proc executable ("--repo" : repository : arguments)))
+  readProcess (setEnv (p602iEnvironment inherited) (proc executable (adraiTestArgs repository arguments)))
 
 p602iJsonOrThrow :: FilePath -> [String] -> IO Aeson.Value
 p602iJsonOrThrow repository arguments = do

@@ -6,7 +6,10 @@ module Adrai.GitBatchTest (tests) where
 import Adrai.Git
 import Adrai.GitTestSupport
 import Adrai.Provenance (mkGitOid)
+import qualified Control.Concurrent.Async as Async
+import Control.Concurrent (newEmptyMVar, putMVar, takeMVar, threadDelay)
 import qualified Data.ByteString as BS
+import Data.Either (isLeft)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -15,6 +18,7 @@ import System.Directory (createDirectoryIfMissing, createFileLink, removeFile)
 import System.FilePath ((</>))
 import System.IO.Error (tryIOError)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase, testCaseSteps)
 
@@ -57,11 +61,12 @@ tests =
           case mkRevisionSpec "--help" of
             Left (GitInvalidRevisionSpec _) -> pure ()
             result -> assertFailure (show result),
-      testCase "batch info and blobs are deterministic across duplicates and the 256 boundary" $
+      testCase "257 blob OIDs are read through two deterministic bounded windows" $
         withRepository $ \repository discovered -> do
           oidTexts <- mapM (hashObject repository . TextEncoding.encodeUtf8 . Text.pack . ("blob-" <>) . show) [0 :: Int .. 256]
           let oids = map requireOid oidTexts
               permuted = reverse oids <> take 4 oids
+          map length (canonicalObjectChunks oids) @?= [256, 1]
           batchObjectInfo discovered permuted >>= \case
             Left problem -> assertFailure (show problem)
             Right infos -> do
@@ -71,7 +76,42 @@ tests =
             Left problem -> assertFailure (show problem)
             Right blobs -> do
               Map.size blobs @?= 257
-              Map.keys blobs @?= Map.keys (Map.fromList [(oid, ()) | oid <- oids]),
+              Map.keys blobs @?= Map.keys (Map.fromList [(oid, ()) | oid <- oids])
+          readBlobBatchOneSession discovered permuted >>= \case
+            Left problem -> assertFailure (show problem)
+            Right blobs -> Map.keys blobs @?= Map.keys (Map.fromList [(oid, ()) | oid <- oids]),
+      testCase "persistent blob sessions keep consecutive windows on one buffered child" $
+        withRepository $ \repository discovered -> do
+          firstText <- hashObject repository "first persistent batch"
+          secondText <- hashObject repository "second persistent batch"
+          let firstOid = requireOid firstText
+              secondOid = requireOid secondText
+          withBlobBatchSession discovered (\session -> do
+            firstResult <- readBlobBatchFromSession session [firstOid]
+            secondResult <- readBlobBatchFromSession session [secondOid]
+            pure $ do
+              firstBlobs <- firstResult
+              secondBlobs <- secondResult
+              Right (firstBlobs, secondBlobs)
+            ) >>= \case
+              Left problem -> assertFailure (show problem)
+              Right (firstBlobs, secondBlobs) -> do
+                Map.lookup firstOid firstBlobs @?= Just (GitBlob firstOid "first persistent batch")
+                Map.lookup secondOid secondBlobs @?= Just (GitBlob secondOid "second persistent batch"),
+      testCase "persistent sessions use ordered bounded exchanges and reap protocol failures" persistentProtocolContract,
+      testCase "one buffered exchange preserves in-order duplicate folds" $
+        withRepository $ \repository discovered -> do
+          firstOid <- requireOid <$> hashObject repository "first ordered blob"
+          secondOid <- requireOid <$> hashObject repository "second ordered blob"
+          foldBlobBatchInOrder discovered [firstOid, secondOid, firstOid] [] (\seen blob -> pure (seen <> [gitBlobOid blob]))
+            >>= (@?= Right [firstOid, secondOid, firstOid]),
+      testCase "ordered folds preserve duplicates across the 256-request boundary" $
+        withRepository $ \repository discovered -> do
+          firstOid <- requireOid <$> hashObject repository "boundary first"
+          secondOid <- requireOid <$> hashObject repository "boundary second"
+          let requested = replicate 255 firstOid <> [secondOid, firstOid, secondOid]
+          foldBlobBatchInOrder discovered requested [] (\seen blob -> pure (seen <> [gitBlobOid blob]))
+            >>= (@?= Right requested),
       testCase "missing objects, type mismatch, and invalid UTF-8 are structured" $
         withRepository $ \repository discovered -> do
           let missing = requireOid (Text.replicate 40 "f")
@@ -82,21 +122,45 @@ tests =
           invalidText <- hashObject repository (BS.pack [0x66, 0x80])
           let invalidOid = requireOid invalidText
           readUtf8BlobBatch discovered [invalidOid] >>= (@?= Left (GitInvalidUtf8Blob invalidOid)),
-      testCase "fold callback IO exceptions are not misclassified as executable failures" $
+      testCase "persistent-session callback cancellation reaps its child and leaves the next window usable" $
         withRepository $ \repository discovered -> do
           blobText <- hashObject repository "callback"
           let blobOid = requireOid blobText
           attempted <-
             tryIOError
-              ( foldBlobBatch
-                  discovered
-                  [blobOid]
-                  ()
-                  (\() _ -> ioError (userError "caller callback failure"))
+              ( ( withBlobBatchSession discovered $ \session -> do
+                    loaded <- readBlobBatchFromSession session [blobOid]
+                    case loaded of
+                      Left problem -> pure (Left problem)
+                      Right _ -> ioError (userError "caller callback failure")
+                ) :: IO (Either GitError ())
               )
           case attempted of
             Left problem -> assertBool "original callback exception remains visible" ("caller callback failure" `Text.isInfixOf` Text.pack (show problem))
-            Right result -> assertFailure ("expected callback IOException, got " <> show result),
+            Right result -> assertFailure ("expected callback IOException, got " <> show result)
+          withBlobBatchSession discovered (\freshSession -> readBlobBatchFromSession freshSession [blobOid])
+            >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "callback"))),
+      testCase "persistent-session async cancellation reaps its child and leaves the next window usable" $
+        withRepository $ \repository discovered -> do
+          blobOid <- requireOid <$> hashObject repository "async callback"
+          entered <- newEmptyMVar
+          worker <-
+            Async.async $
+              withBlobBatchSession discovered $ \session -> do
+                loaded <- readBlobBatchFromSession session [blobOid]
+                case loaded of
+                  Left problem -> pure (Left problem)
+                  Right _ -> putMVar entered () >> threadDelay (60 * 1000000) >> pure (Right ())
+          takeMVar entered
+          Async.cancel worker
+          cancelled <- Async.waitCatch worker
+          assertBool "cancellation propagates" (isLeft cancelled)
+          withBlobBatchSession discovered (\freshSession -> readBlobBatchFromSession freshSession [blobOid])
+            >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "async callback"))),
+      testCase "persistent malformed output reaps its child and leaves the next window usable" $
+        withRepository $ \repository discovered -> do
+          blobOid <- requireOid <$> hashObject repository "malformed callback"
+          malformedPersistentOutputReapsChild discovered blobOid,
       testCase "tree parser rejects invalid UTF-8 paths and classifies non-regular entries" $
         withRepository $ \repository discovered -> do
           blobText <- hashObject repository "target"
@@ -210,6 +274,88 @@ withRepository action =
     discoverRepository systemGit repository >>= \case
       Left problem -> assertFailure (show problem)
       Right discovered -> action repository discovered
+
+-- | A real Git child validates the persistent request/flush lifecycle across
+-- bounded windows, including failures that must reap the child.
+persistentProtocolContract :: IO ()
+persistentProtocolContract =
+  withRepository $ \repository discovered -> do
+    oidTexts <- mapM (hashObject repository . TextEncoding.encodeUtf8 . Text.pack . ("persistent-protocol-" <>) . show) [0 :: Int .. 256]
+    let windowOids = map requireOid oidTexts
+        permuted = reverse windowOids <> take 4 windowOids
+        expectedBlobs =
+          Map.fromList
+            [ (oid, GitBlob oid (TextEncoding.encodeUtf8 (Text.pack ("persistent-protocol-" <> show index))))
+              | (index, oid) <- zip [0 :: Int ..] windowOids
+            ]
+    withBlobBatchSession discovered
+      (\session -> do
+          empty <- readBlobBatchFromSession session []
+          loaded <- readBlobBatchFromSession session permuted
+          pure (empty >> loaded)
+      )
+      >>= (@?= Right expectedBlobs)
+    persistentLargeFirstBlobContract repository discovered
+    let missingOid = repeatedOid 'f'
+    assertPersistentFailureAndFreshSession discovered (head windowOids) missingOid (GitObjectMissing missingOid)
+    commit <- resolveHead discovered
+    assertPersistentFailureAndFreshSession discovered (head windowOids) commit (GitObjectTypeMismatch commit GitBlobObject GitCommitObject)
+
+persistentLargeFirstBlobContract :: FilePath -> Repository -> IO ()
+persistentLargeFirstBlobContract repository discovered = do
+  largeCandidates <-
+    mapM
+      (hashObject repository . \index -> BS.cons (fromIntegral index) (BS.replicate (1024 * 1024 - 1) 0))
+      [0 :: Int .. 7]
+  let largeOid = minimum (map requireOid largeCandidates)
+  smallOids <- collectOidsAfter repository largeOid 256 0 []
+  let requested = largeOid : smallOids
+      canonical = concat (canonicalObjectChunks requested)
+  case canonical of
+    firstOid : _ -> firstOid @?= largeOid
+    [] -> assertFailure "large-first persistent request unexpectedly had no OIDs"
+  completed <- timeout (30 * 1000000) (withBlobBatchSession discovered (\session -> readBlobBatchFromSession session requested))
+  case completed of
+    Nothing -> assertFailure "persistent cat-file window timed out while draining the first large blob"
+    Just (Left problem) -> assertFailure (show problem)
+    Just (Right blobs) -> do
+      Map.size blobs @?= 257
+      fmap (BS.length . gitBlobBytes) (Map.lookup largeOid blobs) @?= Just (1024 * 1024)
+
+collectOidsAfter :: FilePath -> GitOid -> Int -> Int -> [GitOid] -> IO [GitOid]
+collectOidsAfter repository lower remaining next accepted
+  | remaining == 0 = pure (reverse accepted)
+  | otherwise = do
+      candidate <- requireOid <$> hashObject repository (TextEncoding.encodeUtf8 (Text.pack ("persistent-large-small-" <> show next)))
+      if candidate > lower
+        then collectOidsAfter repository lower (remaining - 1) (next + 1) (candidate : accepted)
+        else collectOidsAfter repository lower remaining (next + 1) accepted
+
+malformedPersistentOutputReapsChild :: Repository -> GitOid -> IO ()
+malformedPersistentOutputReapsChild discovered blobOid =
+  withSystemTempDirectory "adrai malformed git" $ \temporary -> do
+    let fakeGit = temporary </> "malformed-git.cmd"
+        malformedRepository = discovered {repositoryClient = GitClient fakeGit}
+    -- Keep the batch process itself alive after emitting a malformed frame.
+    -- A child process here would inherit stderr and obscure whether
+    -- 'withGitPipes' reaped the actual protocol child.
+    BS.writeFile fakeGit "@echo off\r\necho malformed\r\n:loop\r\ngoto loop\r\n"
+    completed <- timeout (5 * 1000000) (withBlobBatchSession malformedRepository (\session -> readBlobBatchFromSession session [blobOid]))
+    case completed of
+      Nothing -> assertFailure "malformed persistent child was not reaped promptly"
+      Just (Left (GitInvalidOutput "cat-file batch" _)) -> pure ()
+      Just result -> assertFailure ("expected malformed persistent protocol failure, got " <> show result)
+    withBlobBatchSession discovered (\freshSession -> readBlobBatchFromSession freshSession [blobOid])
+      >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "malformed callback")))
+
+assertPersistentFailureAndFreshSession :: Repository -> GitOid -> GitOid -> GitError -> IO ()
+assertPersistentFailureAndFreshSession repository freshOid failedOid expectedFailure = do
+  withBlobBatchSession repository (\session -> readBlobBatchFromSession session [failedOid]) >>= (@?= Left expectedFailure)
+  withBlobBatchSession repository (\session -> readBlobBatchFromSession session [freshOid])
+    >>= (@?= Right (Map.singleton freshOid (GitBlob freshOid (TextEncoding.encodeUtf8 "persistent-protocol-0"))))
+
+repeatedOid :: Char -> GitOid
+repeatedOid character = requireOid (Text.replicate 40 (Text.singleton character))
 
 resolveHead :: Repository -> IO GitOid
 resolveHead repository =

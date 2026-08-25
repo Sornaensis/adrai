@@ -26,7 +26,6 @@ import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text, strip, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import Data.Vector qualified as Vector
 import Database.SQLite.Simple
   ( Only (..),
     SQLData,
@@ -39,7 +38,6 @@ import System.Directory
   ( createDirectoryIfMissing,
     doesDirectoryExist,
     removeDirectoryRecursive,
-    renamePath,
   )
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
@@ -78,7 +76,7 @@ adraiRaw repoPath arguments = do
   executable <- lookupEnv "ADRAI_EXE" >>= \case
     Just path | not (null path) && isAbsolute path -> pure path
     _ -> fail "ConsistencyTest requires ADRAI_EXE to name an absolute executable under test"
-  readProcess (proc executable ("--repo" : repoPath : arguments))
+  readProcess (proc executable (adraiTestArgs repoPath arguments))
 
 adraiJsonOrThrow :: FilePath -> [String] -> IO Data.Aeson.Value
 adraiJsonOrThrow repoPath arguments = do
@@ -111,36 +109,9 @@ lookupString v key = do
   km <- _Object v
   km .: key
 
-(.:?) :: Data.Aeson.FromJSON a => KM.KeyMap Data.Aeson.Value -> Text -> Maybe (Maybe a)
-(.:?) km key =
-  case KM.lookup (AesonKey.fromText key) km of
-    Nothing  -> Just Nothing
-    Just v   -> case Data.Aeson.eitherDecode (Data.Aeson.encode v) of
-      Left   _  -> Just Nothing
-      Right a   -> Just (Just a)
-
 valText :: Data.Aeson.Value -> Maybe Text
 valText (Data.Aeson.String t) = Just t
 valText _                     = Nothing
-
-valBool :: Data.Aeson.Value -> Maybe Bool
-valBool (Data.Aeson.Bool b) = Just b
-valBool _                   = Nothing
-
-valInt :: Data.Aeson.Value -> Maybe Int
-valInt (Data.Aeson.Number n) = Just (floor n)
-valInt _                     = Nothing
-
-valTextList :: Data.Aeson.Value -> Maybe [Text]
-valTextList (Data.Aeson.Array arr) =
-  if Vector.null arr then Nothing else Just (mapMaybe valText (Vector.toList arr))
-valTextList _ = Nothing
-
--- | Extract array contents as Values.
-valValueList :: Data.Aeson.Value -> Maybe [Data.Aeson.Value]
-valValueList (Data.Aeson.Array arr) =
-  if Vector.null arr then Nothing else Just (Vector.toList arr)
-valValueList _ = Nothing
 
 -- | Extract "adr" field from a search result object.
 adrFromResult :: Data.Aeson.Value -> Maybe Text
@@ -148,22 +119,11 @@ adrFromResult v = do
   km <- _Object v
   km .: "adr"
 
-headVal :: Data.Aeson.Value -> Maybe Data.Aeson.Value
-headVal (Data.Aeson.Array arr) =
-  if Vector.null arr then Nothing else Just (Vector.head arr)
-headVal _ = Nothing
-
 -- | Extract the ADR ID from a create result value.
 extractAdrId :: Data.Aeson.Value -> Maybe Text
 extractAdrId v = do
   o <- _Object v
   o .: "adr"
-
--- | Extract commit hash from a create result.
-extractCommit :: Data.Aeson.Value -> Maybe Text
-extractCommit v = do
-  o <- _Object v
-  o .: "commit"
 
 -- ---------------------------------------------------------------------------
 -- Head / revision helpers
@@ -207,21 +167,6 @@ createJobsAdr repo =
     ["runtime.jobs"]
     ["src/jobs/**"]
     "llm:planner"
-    (Just "demo-model")
-
--- | Create a release-only ADR for the release branch.
-createReleaseAdr
-  :: FilePath
-  -> IO Data.Aeson.Value
-createReleaseAdr repo =
-  createConsistencyAdr
-    repo
-    "Release-only compatibility shim"
-    "The old release retains its compatibility shim."
-    "## Decision\nKeep the compatibility shim on the old release line."
-    ["release.compatibility"]
-    ["src/legacy/**"]
-    "human:release-owner"
     (Just "demo-model")
 
 createConsistencyAdr
@@ -309,32 +254,6 @@ commitFileWithMsg repo relativePath content message =
 -- ---------------------------------------------------------------------------
 -- Semantic database snapshot helpers
 -- ---------------------------------------------------------------------------
-
--- | The 20 semantic tables that must agree between warm and cold rebuilds.
--- Matches the canonical set from ``test_cache_equivalence.py``.
-semanticTables :: [String]
-semanticTables =
-  [ "decision_record",
-    "connection",
-    "record_parent",
-    "record_head",
-    "scope_revision",
-    "scope_head",
-    "domain_revision",
-    "domain_head",
-    "status_revision",
-    "status_head",
-    "operation",
-    "object_event",
-    "operation_commit",
-    "line_landing",
-    "collapsed",
-    "projection",
-    "embedding",
-    "vector_bucket",
-    "issue",
-    "adr_materialization"
-  ]
 
 -- | Get all semantic table contents from a database.
 semanticTableContents :: FilePath -> IO [(String, [[SQLData]])]
@@ -835,10 +754,8 @@ testAllMutationAxes =
     -- Create fixture ADRs
     cache <- createCacheAdr repo
     jobs <- createJobsAdr repo
-    let allAdrs = [cache, jobs]
-
     -- Commit representative source files
-    commitFilesWithMsg repo
+    _ <- commitFilesWithMsg repo
       [ ("src/runtime/cache/Key.py",
          "cache key uses normalized source digest and compiler ABI; "
          <> "exclude absolute workspace paths\n"),
@@ -861,7 +778,7 @@ testAllMutationAxes =
       (Just "## Decision\nUse normalized source, compiler, and environment digests for cache identity.")
 
     -- Mutation: change domains
-    adraiJsonOrThrow repo
+    _ <- adraiJsonOrThrow repo
       [ "domain", unpack cacheId,
         "--refine", "compiler.cache=compiler.cache.identity",
         "--reason", "refine cache domain",
@@ -869,7 +786,7 @@ testAllMutationAxes =
       ]
 
     -- Mutation: change scope
-    adraiJsonOrThrow repo
+    _ <- adraiJsonOrThrow repo
       [ "scope", unpack cacheId,
         "--add", "src/runtime/cache/**",
         "--reason", "expand cache scope",
@@ -877,12 +794,12 @@ testAllMutationAxes =
       ]
 
     -- Mutation: obsolete then reactivate ADR (jobs)
-    adraiJsonOrThrow repo
+    _ <- adraiJsonOrThrow repo
       [ "obsolete", unpack jobsId,
         "--reason", "A replacement was expected to own queue acknowledgement.",
         "--actor", "human:runtime-owner", "--json"
       ]
-    adraiJsonOrThrow repo
+    _ <- adraiJsonOrThrow repo
       [ "reactivate", unpack jobsId,
         "--reason", "The replacement did not cover worker acknowledgement semantics.",
         "--actor", "human:runtime-owner", "--json"
@@ -894,8 +811,8 @@ testAllMutationAxes =
 
     -- Create develop branch with noise commits
     git repo ["switch", "-c", "develop"]
-    forM_ [0 .. 2] $ \index -> do
-      commitFileWithMsg repo
+    forM_ [0 :: Int .. 2] $ \index -> do
+      void $ commitFileWithMsg repo
         ("src/noise/develop-" ++ show index <.> "txt")
         (encodeUtf8 ("develop noise " <> T.pack (show index) <> "\n"))
         (T.pack ("develop: noisy product change " <> show index))
@@ -915,7 +832,7 @@ testAllMutationAxes =
     let observabilityId = fromMaybe "" (extractAdrId observability)
     let allAdrIds' = [cacheId, jobsId, observabilityId]
 
-    commitFileWithMsg repo
+    _ <- commitFileWithMsg repo
       ("src/runtime/telemetry/README.md")
       "telemetry implementation noise\n"
       "feature: implement telemetry plumbing"
@@ -923,7 +840,7 @@ testAllMutationAxes =
     -- Merge feature into develop
     git repo ["switch", "develop"]
     git repo ["merge", "--no-ff", "feature/observability", "-m", "merge observability feature"]
-    commitFilesWithMsg repo
+    _ <- commitFilesWithMsg repo
       [ ("src/noise/after-merge.txt", "post merge development noise\n") ]
       "develop: continue after feature merge"
 
@@ -984,9 +901,9 @@ testAllMutationAxes =
       (cacheId `elem` changedAdrs)
 
     -- Repeated switching must recover exactly the same state
-    forM_ [0 .. 2] $ \_ -> do
+    forM_ [0 :: Int .. 2] $ \_ -> do
       git repo ["switch", "main"]
-      mainSnap <- publicSnapshot repo ExpectHealthy allAdrIds'
+      _ <- publicSnapshot repo ExpectHealthy allAdrIds'
       -- Verify observability is visible
       mainCheck <- adraiJsonOrThrow repo
         [ "search", "--include-obsolete", "--limit", "1000", "--json" ]
@@ -1016,7 +933,7 @@ testDivergentAmendments =
     let createdId = fromMaybe "" (extractAdrId created)
 
     -- Commit fixture source files
-    commitFilesWithMsg repo
+    _ <- commitFilesWithMsg repo
       [ ("src/runtime/cache/Key.py", "cache key source digest compiler ABI target platform\n"),
         ("src/jobs/Worker.py", "durable queue acknowledgement after successful execution\n")
       ]
@@ -1113,7 +1030,6 @@ testMergeHeavyBranchEquivalence =
     let base = "main"  -- start from base (HEAD = main after init)
 
     -- Create release branch
-    releaseTip <- headCommit repo
     git repo ["branch", "release/2025-08-01"]
 
     -- Amend cache on main
@@ -1123,7 +1039,7 @@ testMergeHeavyBranchEquivalence =
       (Just "## Decision\nUse normalized source and compiler ABI digests.")
 
     -- Change scope on main
-    adraiJsonOrThrow repo
+    _ <- adraiJsonOrThrow repo
       [ "scope", unpack cacheId,
         "--add", "src/runtime/cache/**",
         "--reason", "expand cache scope",
@@ -1131,7 +1047,7 @@ testMergeHeavyBranchEquivalence =
       ]
 
     -- Change domains on main
-    adraiJsonOrThrow repo
+    _ <- adraiJsonOrThrow repo
       [ "domain", unpack cacheId,
         "--refine", "compiler.cache=compiler.cache.identity",
         "--reason", "refine cache domain",
@@ -1159,8 +1075,6 @@ testMergeHeavyBranchEquivalence =
     void $ amendAdrViaCli repo jobsId Nothing
       (Just "Workers acknowledge durable jobs after idempotent completion.")
       (Just "## Decision\nUse durable queues, idempotency keys, and post-completion acknowledgement.")
-
-    featureTip <- headCommit repo
 
     -- Merge feature into develop
     git repo ["switch", "develop"]
@@ -1212,8 +1126,8 @@ testMergeHeavyBranchEquivalence =
 
     -- Create noisy feature train on develop
     git repo ["switch", "-c", "feature/noisy-product", "develop"]
-    forM_ [0 .. 3] $ \index -> do
-      commitFileWithMsg repo
+    forM_ [0 :: Int .. 3] $ \index -> do
+      void $ commitFileWithMsg repo
         ("src/noise/feature-" ++ show index <.> "txt")
         (encodeUtf8 ("feature noise " <> T.pack (show index) <> "\n"))
         (T.pack ("feature product work " <> show index))
@@ -1222,8 +1136,8 @@ testMergeHeavyBranchEquivalence =
 
     -- Hotfixes on release
     git repo ["switch", "release/2025-08-01"]
-    forM_ [0 .. 1] $ \index -> do
-      commitFileWithMsg repo
+    forM_ [0 :: Int .. 1] $ \index -> do
+      void $ commitFileWithMsg repo
         ("release/hotfix-" ++ show index <.> "txt")
         (encodeUtf8 ("hotfix " <> T.pack (show index) <> "\n"))
         (T.pack ("release hotfix " <> show index))

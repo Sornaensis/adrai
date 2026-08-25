@@ -19,34 +19,23 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.List (isSuffixOf)
-import Data.Maybe (listToMaybe)
 import Data.Text (Text, strip, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Text.Encoding (decodeUtf8)
-import Data.Time.Clock (DiffTime, UTCTime, getCurrentTime)
+import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
-import Data.Vector qualified as Vector
 import System.Directory
   ( createDirectoryIfMissing,
     doesDirectoryExist,
     doesFileExist,
     getDirectoryContents,
     getModificationTime,
-    removeDirectoryRecursive,
     removeFile,
   )
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.IO (Handle, hFlush, hPutStrLn, stdout, stderr)
-import Database.SQLite.Simple
-  ( Connection,
-    Only (..),
-    close,
-    open,
-    query,
-    query_,
-  )
+import System.IO (hFlush, hPutStrLn, stdout, stderr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
   ( (@?=),
@@ -70,11 +59,6 @@ _Object _ = Nothing
     Just v -> case Data.Aeson.eitherDecode (Data.Aeson.encode v) of
       Left _ -> Nothing
       Right a -> Just a
-
-headVal :: Data.Aeson.Value -> Maybe Data.Aeson.Value
-headVal (Data.Aeson.Array arr) =
-  if Vector.null arr then Nothing else Just (Vector.head arr)
-headVal _ = Nothing
 
 -- ---------------------------------------------------------------------------
 -- Local helpers (wrapping CLI helpers for convenience)
@@ -105,24 +89,6 @@ commitFilesWithMsg
 commitFilesWithMsg repo files message = do
   results <- mapM (\(rel, content) -> commitFileWithMsg repo rel content message) files
   pure (last results)
-
--- ---------------------------------------------------------------------------
--- SQLite helpers
--- ---------------------------------------------------------------------------
-
--- | Read a single meta value from the adrai database.
-getMeta :: FilePath -> String -> IO (Maybe String)
-getMeta dbPath key = do
-  conn <- open dbPath
-  result <- query conn "SELECT value FROM meta WHERE key = ?" (Only key) :: IO [Only String]
-  close conn
-  pure $ listToMaybe result >>= \(Only v) -> Just v
-
--- | Get the HEAD commit hash of a repository.
-headCommit :: FilePath -> IO Text
-headCommit repo =
-  gitStdout repo ["rev-parse", "HEAD"]
-    >>= \h -> pure (strip (decodeUtf8 (LBS.toStrict h)))
 
 -- ---------------------------------------------------------------------------
 -- ADR creation helpers
@@ -198,12 +164,6 @@ compileAdrsRebuilt = coldCompilerAdrsRebuilt
 
 compileAdrsReused :: CompileResult -> Int
 compileAdrsReused = coldCompilerAdrsReused
-
-compileEmbComputed :: CompileResult -> Int
-compileEmbComputed = coldCompilerEmbeddingComputed
-
-compileEmbReused :: CompileResult -> Int
-compileEmbReused = coldCompilerEmbeddingReused
 
 compileHistScanned :: CompileResult -> Int
 compileHistScanned = coldCompilerHistoryCommitsScanned
@@ -356,7 +316,7 @@ testNoiseOnlyReuse =
       Just cr -> compileCacheMode cr @?= "exact"
 
     -- Add noise files (non-ADR)
-    commitFilesWithMsg repo
+    _ <- commitFilesWithMsg repo
       [ ( "src/noise/generated.txt", "unrelated build output metadata\n" ),
         ( "docs/release-notes.md", "No architecture records changed.\n" )
       ]
@@ -393,12 +353,12 @@ testMergeDelta =
 
     -- Create feature branch with noise
     git repo ["switch", "-c", "feature/noise"]
-    commitFilesWithMsg repo
+    _ <- commitFilesWithMsg repo
       [ ( "src/feature.txt", "feature noise\n" ) ]
       "feature noise"
     git repo ["switch", "main"]
     -- Add noise on main
-    commitFilesWithMsg repo
+    _ <- commitFilesWithMsg repo
       [ ( "src/main.txt", "main noise\n" ) ]
       "main noise"
     -- Merge feature into main
@@ -430,14 +390,14 @@ testReflogCommit =
 
     -- Create ephemeral branch with noise
     git repo ["switch", "-c", "ephemeral/noise"]
-    commitFilesWithMsg repo
+    _ <- commitFilesWithMsg repo
       [ ( "src/ephemeral-only.txt", "reachable only through the reflog\n" ) ]
       "ephemeral product experiment"
     git repo ["switch", "main"]
     -- Delete the ephemeral branch (removes ref but reflog retains it)
     git repo ["branch", "-D", "ephemeral/noise"]
     -- Add noise on main
-    commitFilesWithMsg repo
+    _ <- commitFilesWithMsg repo
       [ ( "src/main-noise.txt", "ordinary mainline work\n" ) ]
       "ordinary mainline work"
 
@@ -470,7 +430,7 @@ testTrailerInNoise =
         _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
 
         -- Commit with ADRAI-Op trailer but no real ADRAI files
-        commitFilesWithMsg repo
+        _ <- commitFilesWithMsg repo
           [ ( "src/misleading-trailer.txt", "not an ADRAI operation\n" ) ]
           ("ordinary work\n\nADRAI-Op: " <> adrId')
 
@@ -615,7 +575,7 @@ testStableReleaseSurvivesMerges =
 
     -- Create release branch
     git repo ["switch", "-c", "release/stable"]
-    commitFilesWithMsg repo
+    _ <- commitFilesWithMsg repo
       [ ( "release/version.txt", "2025.08\n" ) ]
       "cut stable release"
 
@@ -633,9 +593,9 @@ testStableReleaseSurvivesMerges =
     git repo ["switch", "-c", "develop"]
 
     -- Merge 6 noise trains (2 commits each)
-    forM_ [0 .. 5] $ \train -> do
+    forM_ ([0 .. 5] :: [Int]) $ \train -> do
       git repo ["switch", "-c", "feature/noise-" ++ show train]
-      commitFilesWithMsg repo
+      _ <- commitFilesWithMsg repo
         [ ( "src/noise/" ++ show train ++ "/change.txt",
             encodeUtf8 (T.pack ("train=" ++ show train ++ "\n")) ) ]
         (T.pack ("product noise " ++ show train))
@@ -686,7 +646,7 @@ testNearestCachedAncestor =
 
     -- Switch back to main with noise
     git repo ["switch", "main"]
-    forM_ [0 .. 3] $ \i -> do
+    forM_ ([0 .. 3] :: [Int]) $ \i -> do
       commitFilesWithMsg repo
         [ ( "src/main-noise/" ++ show i ++ ".txt",
             encodeUtf8 (T.pack (show i ++ "\n")) ) ]
@@ -769,9 +729,9 @@ testDivergentAdStates =
 
     -- Create develop with noise merges
     git repo ["switch", "-c", "develop"]
-    forM_ [0 .. 3] $ \train -> do
+    forM_ ([0 .. 3] :: [Int]) $ \train -> do
       git repo ["switch", "-c", "feature/noise-" ++ show train]
-      commitFilesWithMsg repo
+      _ <- commitFilesWithMsg repo
         [ ( "src/noise/" ++ show train ++ "/change.txt",
              encodeUtf8 ("train=" <> T.pack (show train) <> "\n") ) ]
         ("product noise " <> T.pack (show train))

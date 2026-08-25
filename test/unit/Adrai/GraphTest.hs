@@ -27,10 +27,12 @@ import Adrai.Types
   ( AdrId,
     ConnectionId,
     RecordId,
+    connectionIdText,
     connectionObjectRef,
     mkAdrId,
     mkConnectionId,
     mkRecordId,
+    recordIdText,
     recordObjectRef,
   )
 import Data.List (permutations)
@@ -61,6 +63,8 @@ tests =
       testCase "scope and domain diagnostics retain the static taxonomy" deltaDiagnosticTaxonomy,
       testCase "semantic conflicts are typed, sorted, and exclude integrity-only zero heads" semanticConflictClassification,
       testCase "head lists and state token are sorted and compatible" sortedHeadsAndToken,
+      testCase "connection histories retain sorted duplicates within their ADR and axis" connectionHistoryIndexContract,
+      testCase "ADR candidate indexes preserve missing, duplicate, and ordered local records" adrCandidateIndexContract,
       testCase "representative graph reduction is invariant under every permutation" permutationInvariant
     ]
 
@@ -587,6 +591,125 @@ sortedHeadsAndToken = do
   assertBool "scope multi-root cardinality" ("SCOPE_ROOT_CARDINALITY" `elem` issueCodes)
   assertBool "domain multi-root cardinality" ("DOMAIN_ROOT_CARDINALITY" `elem` issueCodes)
   assertBool "status multi-root cardinality" ("STATUS_ROOT_CARDINALITY" `elem` issueCodes)
+
+connectionHistoryIndexContract :: IO ()
+connectionHistoryIndexContract = do
+  let a = aid '1'
+      otherAdr = aid '2'
+      decisionId = rid '1'
+      scopeDuplicateZ = ConnectionRecord (cid '1') (AppliesToConnection (AppliesToPayload a [] "initial" [scope "src/**"] [] [scope "src/**"])) "z rationale"
+      scopeLater = ConnectionRecord (cid '2') (AppliesToConnection (AppliesToPayload a [] "initial" [scope "test/**"] [] [scope "test/**"])) "later rationale"
+      scopeDuplicateA = ConnectionRecord (cid '1') (AppliesToConnection (AppliesToPayload a [] "initial" [scope "docs/**"] [] [scope "docs/**"])) "a rationale"
+      domainConnection = ConnectionRecord (cid '3') (DomainsConnection (DomainsPayload a [] "initial" [domain "compiler"] [] [domain "compiler"] [])) "domain rationale"
+      statusConnection = ConnectionRecord (cid '4') (StatusConnection (StatusPayload a [] StatusActive [decisionId] Nothing)) "status rationale"
+      amendmentConnection = ConnectionRecord (cid '5') (AmendsConnection (AmendsPayload a decisionId [])) "amendment rationale"
+      otherScope = ConnectionRecord (cid '6') (AppliesToConnection (AppliesToPayload otherAdr [] "initial" [scope "other/**"] [] [scope "other/**"])) "other ADR rationale"
+      records =
+        [ ManagedConnection scopeLater,
+          ManagedConnection otherScope,
+          ManagedConnection scopeDuplicateZ,
+          ManagedConnection statusConnection,
+          ManagedConnection scopeDuplicateA,
+          ManagedConnection amendmentConnection,
+          ManagedConnection domainConnection,
+          decision a decisionId [] "base"
+        ]
+      result = reduceManagedGraph records
+      adr = reduced a result
+  reducedScopeHistory adr @?= [scopeDuplicateA, scopeDuplicateZ, scopeLater]
+  reducedAmendmentHistory adr @?= [amendmentConnection]
+  reducedDomainHistory adr @?= [domainConnection]
+  reducedStatusHistory adr @?= [statusConnection]
+  assertBool "duplicate connection remains quarantined from current scope heads" (cid '1' `notElem` axisResolutionHeads (reducedScopeAxis adr))
+  assertBool "duplicate diagnostic is retained" ("DUPLICATE_CONNECTION_ID" `elem` codes result)
+
+adrCandidateIndexContract :: IO ()
+adrCandidateIndexContract = do
+  let a = aid '1'
+      b = aid '2'
+      aDecision = rid '1'
+      bDecision = rid '2'
+      missingDecision = rid '3'
+      duplicateDecision = rid '9'
+      aScope = cid '1'
+      bScope = cid '2'
+      missingChildAmendment = cid '3'
+      duplicateScope = cid '9'
+      records =
+        [ decision b duplicateDecision [] "duplicate owned by B",
+          scopeRevision duplicateScope b [] "initial" [scope "b-duplicate/**"] [] [scope "b-duplicate/**"],
+          scopeRevision bScope b [] "initial" [scope "b/**"] [] [scope "b/**"],
+          decision b bDecision [] "B",
+          decision a duplicateDecision [] "duplicate owned by A",
+          scopeRevision duplicateScope a [] "initial" [scope "a-duplicate/**"] [] [scope "a-duplicate/**"],
+          amend missingChildAmendment a missingDecision [aDecision],
+          scopeRevision aScope a [] "initial" [scope "a/**"] [] [scope "a/**"],
+          decision a aDecision [] "A"
+        ]
+      result = reduceManagedGraph records
+      adrA = reduced a result
+      adrB = reduced b result
+  map reducedAdrId (graphReductionAdrs result) @?= [a, b]
+  axisResolutionHeads (reducedDecisionAxis adrA) @?= [aDecision]
+  axisResolutionHeads (reducedDecisionAxis adrB) @?= [bDecision]
+  axisResolutionHeads (reducedScopeAxis adrA) @?= [aScope]
+  axisResolutionHeads (reducedScopeAxis adrB) @?= [bScope]
+  map decisionRecord (reducedDecisionHistory adrA) @?= [aDecision, duplicateDecision]
+  map decisionRecord (reducedDecisionHistory adrB) @?= [bDecision, duplicateDecision]
+  map connectionRecordId (reducedScopeHistory adrA) @?= [aScope, duplicateScope]
+  map connectionRecordId (reducedScopeHistory adrB) @?= [bScope, duplicateScope]
+  map connectionRecordId (reducedAmendmentHistory adrA) @?= [missingChildAmendment]
+  graphReductionIssues result
+    @?= [ GraphIssue
+            AmendmentMissingChild
+            (Just a)
+            (Just (connectionObjectRef missingChildAmendment))
+            ("amendment child does not exist: " <> recordIdText missingDecision),
+          GraphIssue
+            DomainRootCardinality
+            (Just a)
+            Nothing
+            "expected exactly 1 valid parentless domain root, found 0",
+          GraphIssue
+            DomainRootCardinality
+            (Just b)
+            Nothing
+            "expected exactly 1 valid parentless domain root, found 0",
+          GraphIssue
+            DuplicateConnectionId
+            Nothing
+            (Just (connectionObjectRef duplicateScope))
+            ("connection identifier " <> connectionIdText duplicateScope <> " occurs 2 times; every occurrence is quarantined"),
+          GraphIssue
+            DuplicateRecordId
+            Nothing
+            (Just (recordObjectRef duplicateDecision))
+            ("record identifier " <> recordIdText duplicateDecision <> " occurs 2 times; every occurrence is quarantined"),
+          GraphIssue
+            StatusRootCardinality
+            (Just a)
+            Nothing
+            "expected exactly 1 valid parentless status root, found 0",
+          GraphIssue
+            StatusRootCardinality
+            (Just b)
+            Nothing
+            "expected exactly 1 valid parentless status root, found 0"
+        ]
+  assertCurrentProjection aDecision aScope adrA
+  assertCurrentProjection bDecision bScope adrB
+
+assertCurrentProjection :: RecordId -> ConnectionId -> ReducedAdr -> IO ()
+assertCurrentProjection decisionId scopeId adr = do
+  axisResolutionHeads (reducedDecisionAxis adr) @?= [decisionId]
+  axisResolutionHeads (reducedScopeAxis adr) @?= [scopeId]
+  axisResolutionHeads (reducedDomainAxis adr) @?= []
+  axisResolutionHeads (reducedStatusAxis adr) @?= []
+  map (decisionRecord . currentDecisionRecord) (reducedCurrentDecisions adr) @?= [decisionId]
+  reducedCurrentConnections adr @?= [CurrentConnectionRef ScopeAxis scopeId]
+  let expectedHeads = StateHeads [decisionId] [scopeId] [] []
+  reducedStateHeads adr @?= expectedHeads
+  reducedStateToken adr @?= stateTokenForHeads expectedHeads
 
 permutationInvariant :: IO ()
 permutationInvariant = do

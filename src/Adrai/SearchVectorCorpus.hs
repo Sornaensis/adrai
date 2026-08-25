@@ -21,8 +21,8 @@ module Adrai.SearchVectorCorpus
 where
 
 import Adrai.Format (renderDigest)
-import Adrai.Format.Json (JsonValue (..), object, renderCanonicalJsonBytes)
-import Adrai.Provenance (sha256Digest)
+import Adrai.Format.Json (JsonValue (JsonString), renderCanonicalJsonBytes)
+import Adrai.Provenance (sha256DigestFrames)
 import Adrai.Retrieval
   ( SearchDocument (..),
     SearchMaterialization (..),
@@ -31,15 +31,16 @@ import Adrai.Retrieval
 import Adrai.Types (adrIdText, recordIdText)
 import Adrai.Vector
   ( DenseVector,
+    Embedder,
     VectorError,
+    canonicalFloat32Vector,
+    embed,
     embedderVectorId,
     identifierEmbedder,
-    identifierEmbedding,
-    packVector,
     semanticEmbedder,
-    semanticEmbedding,
-    unpackVector,
   )
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -77,9 +78,9 @@ data SearchVectorCorpusError
 buildSearchVectorCorpus :: SearchMaterialization -> Either SearchVectorCorpusError SearchVectorCorpus
 buildSearchVectorCorpus materialization = do
   validateUniqueKeys materialization
-  summaries <- buildVectors "semantic summary" searchDocumentItemId (semanticEmbedding . searchVectorSemanticSummaryText) documents
-  identifiers <- buildVectors "identifier" searchDocumentItemId (identifierEmbedding . searchVectorIdentifierSourceText) documents
-  sections <- buildVectors "semantic section" searchPassageId (semanticEmbedding . searchPassageText) passages
+  summaries <- buildVectors "semantic summary" searchDocumentItemId semanticEmbedder searchVectorSemanticSummaryText documents
+  identifiers <- buildVectors "identifier" searchDocumentItemId identifierEmbedder searchVectorIdentifierSourceText documents
+  sections <- buildVectors "semantic section" searchPassageId semanticEmbedder searchPassageText passages
   Right
     SearchVectorCorpus
       { searchVectorCorpusFingerprint = compatibilityFingerprint materialization,
@@ -144,13 +145,11 @@ searchVectorSemanticSummaryText document =
 searchVectorIdentifierSourceText :: SearchDocument -> Text
 searchVectorIdentifierSourceText = searchDocumentIdentifierSource
 
-buildVectors :: Text -> (value -> Text) -> (value -> DenseVector) -> [value] -> Either SearchVectorCorpusError (Map Text DenseVector)
-buildVectors context key embedValue values =
+buildVectors :: Text -> (value -> Text) -> Embedder -> (value -> Text) -> [value] -> Either SearchVectorCorpusError (Map Text DenseVector)
+buildVectors _context key embedder vectorText values =
   Map.fromAscList <$> traverse buildOne values
   where
-    buildOne value = do
-      vector <- mapLeft (SearchVectorCorpusVectorFailure (context <> " " <> key value)) (unpackVector (packVector (embedValue value)))
-      Right (key value, vector)
+    buildOne value = Right (key value, canonicalFloat32Vector (embed embedder (vectorText value)))
 
 validateUniqueKeys :: SearchMaterialization -> Either SearchVectorCorpusError ()
 validateUniqueKeys materialization = do
@@ -176,38 +175,77 @@ validateKeys missingError unexpectedError expected actual =
 
 compatibilityFingerprint :: SearchMaterialization -> Text
 compatibilityFingerprint materialization =
-  renderDigest (sha256Digest (renderCanonicalJsonBytes payload))
+  renderDigest (sha256DigestFrames (compatibilityFingerprintFrames materialization))
+
+-- | The exact canonical JSON byte sequence previously built as one large
+-- Text and ByteString.  Frames are fed lazily to SHA-256, so memory is bounded
+-- by one encoded field instead of the entire search materialization.
+compatibilityFingerprintFrames :: SearchMaterialization -> [ByteString]
+compatibilityFingerprintFrames materialization =
+  [ "{\n",
+    "  \"documents\": "
+  ]
+    <> canonicalArrayFrames documentFingerprintFrames documents
+    <> [ ",\n",
+         "  \"identifier_vector_id\": ", jsonString currentIdentifierVectorId, ",\n",
+         "  \"passages\": "
+       ]
+    <> canonicalArrayFrames passageFingerprintFrames passages
+    <> [ ",\n",
+         "  \"schema\": \"adrai/search-vector-corpus/v1\",\n",
+         "  \"semantic_vector_id\": ", jsonString currentSemanticVectorId, "\n}\n"
+       ]
   where
-    payload =
-      object
-        [ ("schema", JsonString "adrai/search-vector-corpus/v1"),
-          ("semantic_vector_id", JsonString currentSemanticVectorId),
-          ("identifier_vector_id", JsonString currentIdentifierVectorId),
-          ("documents", JsonArray (map documentFingerprint documents)),
-          ("passages", JsonArray (map passageFingerprint passages))
-        ]
     documents = sortOn documentIdentity (searchMaterializationDocuments materialization)
     passages = sortOn passageIdentity (searchMaterializationPassages materialization)
 
-documentFingerprint :: SearchDocument -> JsonValue
-documentFingerprint document =
-  object
-    [ ("item_id", JsonString (searchDocumentItemId document)),
-      ("adr_id", JsonString (adrIdText (searchDocumentAdrId document))),
-      ("candidate_record_id", JsonString (recordIdText (searchDocumentCandidateRecordId document))),
-      ("semantic_input", JsonString (searchVectorSemanticSummaryText document)),
-      ("identifier_input", JsonString (searchVectorIdentifierSourceText document))
+canonicalArrayFrames :: (value -> [ByteString]) -> [value] -> [ByteString]
+canonicalArrayFrames _ [] = ["[]"]
+canonicalArrayFrames renderValue values =
+  ["[\n"] <> framedArray "    " renderValue values <> ["\n  ]"]
+
+framedArray :: ByteString -> (value -> [ByteString]) -> [value] -> [ByteString]
+framedArray _ _ [] = []
+framedArray indent renderValue (first : rest) =
+  [indent] <> renderValue first <> concatMap renderRest rest
+  where
+    renderRest value = [",\n", indent] <> renderValue value
+
+documentFingerprintFrames :: SearchDocument -> [ByteString]
+documentFingerprintFrames document =
+  framedObject
+    [ ("adr_id", adrIdText (searchDocumentAdrId document)),
+      ("candidate_record_id", recordIdText (searchDocumentCandidateRecordId document)),
+      ("identifier_input", searchVectorIdentifierSourceText document),
+      ("item_id", searchDocumentItemId document),
+      ("semantic_input", searchVectorSemanticSummaryText document)
     ]
 
-passageFingerprint :: SearchPassage -> JsonValue
-passageFingerprint passage =
-  object
-    [ ("passage_id", JsonString (searchPassageId passage)),
-      ("document_item_id", JsonString (searchPassageDocumentItemId passage)),
-      ("adr_id", JsonString (adrIdText (searchPassageAdrId passage))),
-      ("candidate_record_id", JsonString (recordIdText (searchPassageCandidateRecordId passage))),
-      ("semantic_input", JsonString (searchPassageText passage))
+passageFingerprintFrames :: SearchPassage -> [ByteString]
+passageFingerprintFrames passage =
+  framedObject
+    [ ("adr_id", adrIdText (searchPassageAdrId passage)),
+      ("candidate_record_id", recordIdText (searchPassageCandidateRecordId passage)),
+      ("document_item_id", searchPassageDocumentItemId passage),
+      ("passage_id", searchPassageId passage),
+      ("semantic_input", searchPassageText passage)
     ]
+
+framedObject :: [(Text, Text)] -> [ByteString]
+framedObject members =
+  [ "{\n" ]
+    <> concatMap renderMember (zip [0 :: Int ..] members)
+    <> [ "\n    }" ]
+  where
+    renderMember (index, (key, value)) =
+      [ if index == 0 then "      " else ",\n      ",
+        jsonString key,
+        ": ",
+        jsonString value
+      ]
+
+jsonString :: Text -> ByteString
+jsonString = ByteString.init . renderCanonicalJsonBytes . JsonString
 
 documentIdentity :: SearchDocument -> (Text, Text, Text)
 documentIdentity document =
@@ -229,6 +267,3 @@ currentSemanticVectorId = embedderVectorId semanticEmbedder
 
 currentIdentifierVectorId :: Text
 currentIdentifierVectorId = embedderVectorId identifierEmbedder
-
-mapLeft :: (left -> right) -> Either left value -> Either right value
-mapLeft transform = either (Left . transform) Right

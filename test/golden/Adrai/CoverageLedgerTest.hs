@@ -6,7 +6,7 @@ import Control.Monad (forM_)
 import qualified Data.Aeson as Aeson
 import Data.Aeson ((.:), (.:?))
 import qualified Data.ByteString as BS
-import Data.Char (isAsciiLower, isDigit)
+import Data.Char (isAsciiLower, isDigit, isSpace)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -28,6 +28,8 @@ tests =
       testCase "all required row fields are substantive and well shaped" testRowShapes,
       testCase "test directories, types, phases, and states are approved" testApprovedEnums,
       testCase "every row carries substantive evidence" testEvidence,
+      testCase "stress evidence accepts only one explicit standalone opt-in" testStressEvidenceOptIn,
+      testCase "PowerShell-safe stress evidence decodes the exact argv" testPowerShellStressEvidenceArgv,
       testCase "translation-only states are limited to distribution rows" testTranslationStates,
       testCase "source-module declarations account for every row" testSourceModuleTotals,
       testCase "JSON decoder strips exactly one leading UTF-8 BOM" testUtf8BomDecoding
@@ -306,8 +308,106 @@ testEvidence = do
     assertSubstantive "evidence fixture" (evidenceFixture evidence)
     assertSubstantive "evidence result" (evidenceResult evidence)
     assertBool
-      "evidence command must invoke the Haskell test suite"
-      ("stack test adrai:adrai-test" `T.isPrefixOf` evidenceCommand evidence)
+      "evidence command must invoke a valid Haskell test suite command"
+      (validEvidenceCommand (evidenceCommand evidence))
+
+validEvidenceCommand :: Text -> Bool
+validEvidenceCommand command =
+  case shellWords command of
+    Just ("stack" : "test" : "adrai:adrai-test" : _) -> True
+    Just ("stack" : "test" : "adrai:adrai-stress-test" : arguments) -> hasStressOptIn arguments
+    _ -> False
+
+-- Deliberately independent from CoverageLedgerAudit: the golden verifier is
+-- the second line of defence for the frozen ledger contract.
+hasStressOptIn :: [Text] -> Bool
+hasStressOptIn arguments =
+  case exactlyOneTestArguments arguments of
+    Nothing -> False
+    Just testArguments ->
+      case shellWords testArguments of
+        Nothing -> False
+        Just innerArguments -> "--run-stress" `elem` innerArguments
+
+exactlyOneTestArguments :: [Text] -> Maybe Text
+exactlyOneTestArguments = go Nothing
+  where
+    go found [] = found
+    go found ("--test-arguments" : value : remaining) = add found value remaining
+    go _ ["--test-arguments"] = Nothing
+    go found (argument : remaining)
+      | "--test-arguments=" `T.isPrefixOf` argument =
+          add found (T.drop (T.length "--test-arguments=") argument) remaining
+      | otherwise = go found remaining
+
+    add Nothing value remaining = go (Just value) remaining
+    add (Just _) _ _ = Nothing
+
+shellWords :: Text -> Maybe [Text]
+shellWords = fmap (map T.pack) . go [] [] Nothing False . T.unpack
+  where
+    go completed current quote started [] =
+      case quote of
+        Just _ -> Nothing
+        Nothing -> Just (reverse (finish completed current started))
+    go completed current quote started (character : remaining) =
+      case quote of
+        Nothing
+          | isSpace character -> go (finish completed current started) [] Nothing False remaining
+          | character == '\'' || character == '\"' -> go completed current (Just character) True remaining
+          | character == '\\' -> escaped completed current Nothing remaining
+          | otherwise -> go completed (character : current) Nothing True remaining
+        Just delimiter
+          | character == delimiter -> go completed current Nothing started remaining
+          | character == '\\' -> escaped completed current (Just delimiter) remaining
+          | otherwise -> go completed (character : current) (Just delimiter) True remaining
+
+    escaped completed current quote [] = go completed ('\\' : current) quote True []
+    escaped completed current quote (character : remaining)
+      | character == '\\' || character == '\'' || character == '\"' || isSpace character =
+          go completed (character : current) quote True remaining
+      | otherwise = go completed (character : '\\' : current) quote True remaining
+
+    finish completed current started
+      | started = reverse current : completed
+      | otherwise = completed
+
+testStressEvidenceOptIn :: Assertion
+testStressEvidenceOptIn = do
+  mapM_ (assertBool "valid stress evidence command was rejected" . validEvidenceCommand) validCommands
+  mapM_ (assertBool "ambiguous stress evidence command was accepted" . not . validEvidenceCommand) invalidCommands
+  where
+    validCommands =
+      [ "stack test adrai:adrai-stress-test --test-arguments \"--run-stress --pattern=focused\"",
+        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress --pattern=focused\"",
+        powershellStressCommand
+      ]
+    invalidCommands =
+      [ "stack test adrai:adrai-stress-test",
+        "stack test adrai:adrai-stress-test --test-arguments=--run-stress --test-arguments=--pattern=focused",
+        "stack test adrai:adrai-stress-test --test-arguments=--run-stress=true",
+        "stack test adrai:adrai-stress-test --test-arguments=prefix--run-stress",
+        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress",
+        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress \\\"unterminated\""
+      ]
+
+testPowerShellStressEvidenceArgv :: Assertion
+testPowerShellStressEvidenceArgv =
+  decodeStressCommandArguments powershellStressCommand
+    @?= Just
+      [ "--run-stress",
+        "--pattern=12,000-commit repository with 2,000 ADR operations"
+      ]
+
+decodeStressCommandArguments :: Text -> Maybe [Text]
+decodeStressCommandArguments command = do
+  words <- shellWords command
+  case words of
+    "stack" : "test" : "adrai:adrai-stress-test" : arguments -> decodeStressTestArguments arguments
+    _ -> Nothing
+
+decodeStressTestArguments :: [Text] -> Maybe [Text]
+decodeStressTestArguments arguments = exactlyOneTestArguments arguments >>= shellWords
 
 testTranslationStates :: Assertion
 testTranslationStates = do
@@ -491,3 +591,7 @@ exactDynamicGenerators =
       "test/support/Adrai/Fixture/LargeStress.hs"
       "P6"
   ]
+
+powershellStressCommand :: Text
+powershellStressCommand =
+  "stack test adrai:adrai-stress-test --test-arguments='--run-stress --pattern=\"12,000-commit repository with 2,000 ADR operations\"'"

@@ -13,18 +13,10 @@ import Control.Monad (void)
 import qualified Data.Aeson
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as KM
-import Data.Maybe (fromMaybe, isJust, mapMaybe)
-import Data.Text (Text, strip, unpack)
+import Data.Maybe (isJust, mapMaybe)
+import Data.Text (Text, unpack)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8)
-import qualified Data.ByteString.Lazy as LBS
-import System.Exit (ExitCode (..))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process.Typed
-  ( proc,
-    readProcess,
-    setEnv,
-  )
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
   ( (@?=),
@@ -55,51 +47,11 @@ extractAdrId v = do
   o <- _Object v
   o .: "adr"
 
--- | Extract a field value as 'Text' from a JSON value (with default).
-extractField :: Text -> Data.Aeson.Value -> Text
-extractField key val =
-  case _Object val of
-    Nothing -> ""
-    Just o -> fromMaybe "" (o .: key)
-
--- | Extract a field as 'Bool' from a JSON value (with default).
-extractBoolField :: Text -> Data.Aeson.Value -> Bool
-extractBoolField key val =
-  case _Object val of
-    Nothing -> False
-    Just o -> fromMaybe False (o .: key)
-
--- | Extract 'Text' list field from a JSON value.
-extractTextField :: Text -> Data.Aeson.Value -> Maybe [Text]
-extractTextField key val =
-  case _Object val of
-    Nothing -> Nothing
-    Just o -> o .: key
-
 -- | Extract the "label" from a history operation.
 historyLabel :: Data.Aeson.Value -> Maybe Text
 historyLabel v = do
   o <- _Object v
   o .: "label"
-
--- | Extract the "adr" from a history operation.
-historyAdr :: Data.Aeson.Value -> Maybe Text
-historyAdr v = do
-  o <- _Object v
-  o .: "adr"
-
--- | Extract the "commit" from a history operation.
-historyCommit :: Data.Aeson.Value -> Maybe Text
-historyCommit v = do
-  o <- _Object v
-  o .: "commit"
-
--- | Get the HEAD commit hash of a repository.
-headCommit :: FilePath -> IO Text
-headCommit repo =
-  gitStdout repo ["rev-parse", "HEAD"]
-    >>= \h -> pure (strip (decodeUtf8 (LBS.toStrict h)))
-
 
 
 -- | Compile the repo to ensure database is ready.

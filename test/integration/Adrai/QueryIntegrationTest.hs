@@ -23,11 +23,10 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.List (find, isPrefixOf, sortOn)
-import Data.Maybe (fromMaybe, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (isJust, listToMaybe, mapMaybe)
 import Data.Text (Text, strip)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import qualified Data.Vector as Vector
 import System.Directory (createDirectoryIfMissing)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
@@ -53,47 +52,11 @@ _Object _                     = Nothing
       Left  _ -> Nothing
       Right a -> Just a
 
-(.:?) :: Data.Aeson.FromJSON a => KM.KeyMap Data.Aeson.Value -> Text -> Maybe (Maybe a)
-(.:?) km key =
-  case KM.lookup (AesonKey.fromText key) km of
-    Nothing -> Just Nothing
-    Just v  -> case Data.Aeson.eitherDecode (Data.Aeson.encode v) of
-      Left  _  -> Just Nothing
-      Right a  -> Just (Just a)
-
-valText :: Data.Aeson.Value -> Maybe Text
-valText (Data.Aeson.String t) = Just t
-valText _                     = Nothing
-
-valBool :: Data.Aeson.Value -> Maybe Bool
-valBool (Data.Aeson.Bool b) = Just b
-valBool _                   = Nothing
-
-valInt :: Data.Aeson.Value -> Maybe Int
-valInt (Data.Aeson.Number n) = Just (floor n)
-valInt _                     = Nothing
-
-valTextList :: Data.Aeson.Value -> Maybe [Text]
-valTextList (Data.Aeson.Array arr) =
-  pure (mapMaybe valText (Vector.toList arr))
-valTextList _ = Nothing
-
-headVal :: Data.Aeson.Value -> Maybe Data.Aeson.Value
-headVal (Data.Aeson.Array arr) =
-  if Vector.null arr then Nothing else Just (Vector.head arr)
-headVal _ = Nothing
-
 -- | Extract the ADR ID from a create-adr result value.
 extractAdrId :: Data.Aeson.Value -> Maybe Text
 extractAdrId v = do
   o <- _Object v
   o .: "adr"
-
--- | Extract the commit hash from a create-adr result.
-extractCommit :: Data.Aeson.Value -> Maybe Text
-extractCommit v = do
-  o <- _Object v
-  o .: "commit"
 
 -- | Get the HEAD commit hash of a repository.
 headCommit :: FilePath -> IO Text
@@ -138,12 +101,6 @@ compareEntryKind v = do
   o <- _Object v
   o .: "kind"
 
--- | Extract the "changes" array from a compare entry.
-compareEntryChanges :: Data.Aeson.Value -> Maybe [Data.Aeson.Value]
-compareEntryChanges v = do
-  o <- _Object v
-  o .: "changes"
-
 -- | Extract the "label" from a history operation.
 historyLabel :: Data.Aeson.Value -> Maybe Text
 historyLabel v = do
@@ -156,30 +113,6 @@ historyAdr v = do
   o <- _Object v
   o .: "adr"
 
--- | Extract the "commit" from a history operation.
-historyCommit :: Data.Aeson.Value -> Maybe Text
-historyCommit v = do
-  o <- _Object v
-  o .: "commit"
-
--- | Extract the "resolved" boolean from a history operation.
-historyResolved :: Data.Aeson.Value -> Maybe Bool
-historyResolved v = do
-  o <- _Object v
-  o .: "resolved"
-
--- | Extract the "conflict" field from a history operation.
-historyConflict :: Data.Aeson.Value -> Maybe Text
-historyConflict v = do
-  o <- _Object v
-  o .: "conflict"
-
--- | Extract the "title" from an ADR create result.
-extractTitle :: Data.Aeson.Value -> Maybe Text
-extractTitle v = do
-  o <- _Object v
-  o .: "title"
-
 -- | P6-02F launches the explicitly selected executable under the same small
 -- Windows process environment used by mutation E2E.  It keeps Git discoverable
 -- while excluding inherited Git/config controls from the parent process.
@@ -191,7 +124,7 @@ p602fRaw repoPath args = do
     Just "" -> assertFailure "P6-02F requires ADRAI_EXE to be non-empty" >> fail "unreachable"
     Just path -> pure path
   inherited <- getEnvironment
-  readProcess (setEnv (p602fEnvironment inherited) (proc exe ("--repo" : repoPath : args)))
+  readProcess (setEnv (p602fEnvironment inherited) (proc exe (adraiTestArgs repoPath args)))
 
 p602fJsonOrThrow :: FilePath -> [String] -> IO Data.Aeson.Value
 p602fJsonOrThrow repoPath args = do
@@ -274,7 +207,7 @@ testHistoryFullAndFiltered =
       case (extractAdrId result1, extractAdrId result2) of
         (Nothing, _) -> assertFailure "first createAdr failed"
         (_, Nothing) -> assertFailure "second createAdr failed"
-        (Just adr1, Just adr2) -> do
+        (Just adr1, Just _) -> do
           -- Compile to establish the database
           _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
 
@@ -382,8 +315,6 @@ testHistoryBranchSwitchRevisionLocal =
         ["src/**"]
 
       mainHead <- headCommit repo
-      let mainAdr = fromMaybe "" (extractAdrId result)
-
       case extractAdrId result of
         Nothing -> assertFailure "createAdr failed"
         Just adrId -> do
@@ -403,7 +334,7 @@ testHistoryBranchSwitchRevisionLocal =
           releaseHist <- adraiJsonOrThrow repo
             [ "history", T.unpack adrId, "--json" ]
           case parseHistory releaseHist of
-            Just (_, rev, _, ops) -> do
+            Just (_, _, _, ops) -> do
               -- The revision should differ from main
               assertBool "release head differs from main"
                 (releaseHead /= mainHead)
@@ -1691,13 +1622,11 @@ testShowCollapsedEvolution =
             Nothing -> assertFailure "could not parse collapsed"
 
           -- Compare between revisions
-          mainHead <- headCommit repo
           git repo ["switch", "-c", "feature"]
           _ <- amendAdr repo adrId
             (Just "Collapsed evolution v3")
             Nothing
             Nothing
-          featureHead <- headCommit repo
 
           compareResult <- adraiJsonOrThrow repo
             [ "compare", "refs/heads/main", "refs/heads/feature", "--json" ]

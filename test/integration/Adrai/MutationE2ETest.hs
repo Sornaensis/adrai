@@ -73,13 +73,11 @@ import Adrai.Types
     mkRepoPath,
     operationIdText,
     recordIdText,
-     repoPathText,
      stateTokenText,
   )
 import Control.Exception (bracket)
-import Control.Monad (filterM, unless, void)
+import Control.Monad (filterM, void)
 import Data.List (isPrefixOf, sort)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text, strip, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
@@ -138,17 +136,10 @@ extractAdrId v = do
   o <- _Object v
   o .: "adr"
 
--- | Extract commit hash from a create-adr result.
-extractCommit :: Data.Aeson.Value -> Maybe Text
-extractCommit v = do
-  o <- _Object v
-  o .: "commit"
-
--- | Extract operation ID from a create-adr result.
-extractOperationId :: Data.Aeson.Value -> Maybe Text
-extractOperationId v = do
-  o <- _Object v
-  o .: "operation"
+singleGeneratedPath :: [Text] -> Text
+singleGeneratedPath = \case
+  [path] -> path
+  _ -> error "expected exactly one generated path"
 
 -- ---------------------------------------------------------------------------
 -- Test helpers
@@ -175,15 +166,11 @@ symbolicHeadRef repo =
 fileExists :: FilePath -> IO Bool
 fileExists p = doesFileExist p
 
--- | Check if a directory exists.
-dirExists :: FilePath -> IO Bool
-dirExists p = doesDirectoryExist p
-
 -- | Run adrai and return the raw (exit, stdout, stderr) tuple.
 adraiRaw :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
 adraiRaw repoPath args = do
   exe <- lookupEnv "ADRAI_EXE" >>= \p -> pure $ maybe "adrai" id p
-  readProcess (setEnv gitEnv (proc exe ("--repo" : repoPath : args)))
+  readProcess (setEnv gitEnv (proc exe (adraiTestArgs repoPath args)))
 
 -- | Launch the real executable selected explicitly by the test environment.
 -- These P6-02A cases deliberately never fall back to a PATH lookup: they are
@@ -198,7 +185,7 @@ adraiRequiredRaw repoPath args = do
       Just path -> pure path
   inheritedEnv <- getEnvironment
   let mergedEnv = isolatedGitEnvironment inheritedEnv
-  readProcess (setEnv mergedEnv (proc exe ("--repo" : repoPath : args)))
+  readProcess (setEnv mergedEnv (proc exe (adraiTestArgs repoPath args)))
 
 adraiRequiredScriptRaw :: FilePath -> [String] -> LBS.ByteString -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
 adraiRequiredScriptRaw repoPath args input = do
@@ -210,7 +197,7 @@ adraiRequiredScriptRaw repoPath args input = do
       Just path -> pure path
   inheritedEnv <- getEnvironment
   let mergedEnv = isolatedGitEnvironment inheritedEnv
-  readProcess (setStdin (byteStringInput input) (setEnv mergedEnv (proc exe ("--repo" : repoPath : args))))
+  readProcess (setStdin (byteStringInput input) (setEnv mergedEnv (proc exe (adraiTestArgs repoPath args))))
 
 -- | Retain only the variables required to launch child processes on Windows,
 -- comparing names case-insensitively, then overlay the deterministic Git test
@@ -318,14 +305,6 @@ adrFileExists repo adrId =
   let path = repo </> ".adrai" </> "decisions" </> T.unpack adrId </> "decision.md"
    in fileExists path
 
--- | Ensure .adrai init is present.
-ensureInit :: FilePath -> IO ()
-ensureInit repo = do
-  let tomlPath = repo </> ".adrai.toml"
-  BS.writeFile tomlPath "schema = 1\n"
-  git repo ["add", ".adrai.toml"]
-  git repo ["commit", "-m", "adrai init"]
-
 -- =====================================================================
 -- Test 1: Unborn repository — initCommand succeeds on a fresh repo
 -- =====================================================================
@@ -369,7 +348,7 @@ testUnbornRepository =
         Right val ->
           case extractAdrId val of
             Nothing -> assertFailure "no ADR ID in response"
-            Just adrId -> do
+            Just _ -> do
               -- Verify the ADR file exists.
               assertBool
                 "ADR file should exist"
@@ -387,7 +366,7 @@ testUnrelatedStagedEntry =
   testCase "unrelated_staged_entry_remains_untouched_after_init" $
     withSystemTempDirectory "adrai mutation unrelated" $ \tmpDir -> do
       let repo = tmpDir </> "unrelated-repo"
-      createTestRepo repo
+      _ <- createTestRepo repo
       createAdraiInit repo
 
       -- Create a branch, commit an ADR, then switch to main.
@@ -402,7 +381,6 @@ testUnrelatedStagedEntry =
             "--model", "demo-model",
             "--json"
           ]
-      featureCommit <- headCommit repo
       git repo ["switch", "main"]
 
       -- Stage an unrelated file but DO NOT commit it.
@@ -450,7 +428,7 @@ testDetachedHead =
   testCase "detached_head_mutations_succeed_with_warning" $
     withSystemTempDirectory "adrai mutation detached" $ \tmpDir -> do
       let repo = tmpDir </> "detached-repo"
-      createTestRepo repo
+      _ <- createTestRepo repo
       createAdraiInit repo
 
       -- Switch to a commit in detached HEAD mode.
@@ -501,7 +479,7 @@ testActiveGitOperations =
   testCase "active_git_operations_merge_cherry_pick_rebase" $
     withSystemTempDirectory "adrai mutation git operations" $ \tmpDir -> do
       let repo = tmpDir </> "git-ops-repo"
-      createTestRepo repo
+      _ <- createTestRepo repo
       createAdraiInit repo
 
       -- Test merge: create ADR, merge a branch with conflicting files,
@@ -519,7 +497,6 @@ testActiveGitOperations =
             "--model", "demo-model",
             "--json"
           ]
-      featureCommit <- headCommit repo
 
       -- Diverge on main.
       git repo ["switch", "main"]
@@ -605,11 +582,10 @@ testDirtyManagedPath =
   testCase "dirty_managed_path_blocks_mutation" $
     withSystemTempDirectory "adrai mutation dirty" $ \tmpDir -> do
       let repo = tmpDir </> "dirty-repo"
-      createTestRepo repo
+      _ <- createTestRepo repo
       createAdraiInit repo
 
       -- Make a normal commit.
-      initialCommit <- headCommit repo
 
       -- Modify the .adrai.toml file to make it dirty (staged or unstaged).
       BS.writeFile (repo </> ".adrai.toml") "schema = 1\n# dirty\n"
@@ -658,7 +634,7 @@ testCustomManagedPaths =
   testCase "custom_managed_paths_in_config" $
     withSystemTempDirectory "adrai mutation custom paths" $ \tmpDir -> do
       let repo = tmpDir </> "custom-paths-repo"
-      createTestRepo repo
+      _ <- createTestRepo repo
 
       -- Create a custom .adrai.toml with custom managed paths.
       let customDecisions = "architecture/adr"
@@ -754,7 +730,7 @@ testSymlinkEscape =
   testCase "symlinked_directories_do_not_escape_repo" $
     withSystemTempDirectory "adrai mutation symlink" $ \tmpDir -> do
       let repo = tmpDir </> "symlink-repo"
-      createTestRepo repo
+      _ <- createTestRepo repo
       createAdraiInit repo
 
       -- Create a file outside the repo.
@@ -803,7 +779,7 @@ testBranchSwitch =
   testCase "branch_switch_changes_state_token" $
     withSystemTempDirectory "adrai mutation branch switch" $ \tmpDir -> do
       let repo = tmpDir </> "branch-switch-repo"
-      createTestRepo repo
+      _ <- createTestRepo repo
       createAdraiInit repo
 
       -- Create an ADR on main.
@@ -936,7 +912,7 @@ testAmendAcrossEnvironments =
   testCase "amend_adr_across_branches_and_merges" $
     withSystemTempDirectory "adrai mutation amend" $ \tmpDir -> do
       let repo = tmpDir </> "amend-repo"
-      createTestRepo repo
+      _ <- createTestRepo repo
       createAdraiInit repo
 
       -- Create an ADR on main.
@@ -1328,7 +1304,8 @@ p602lDoctor =
             , ("revision", JsonString revision)
             , ("shallow", JsonBool False)
             ]
-        runPreserved label arguments expectedExit expectedJson = do
+        runPreserved :: String -> [String] -> ExitCode -> JsonValue -> IO LBS.ByteString
+        runPreserved _ arguments expectedExit expectedJson = do
           baseline <- captureDoctorGitBaseline repo callerPaths
           (exitCode, stdout, stderr) <- adraiRequiredRaw repo arguments
           exitCode @?= expectedExit
@@ -1408,8 +1385,8 @@ p602eStatusConflicts =
           commit <- requireJsonField command result "commit" :: IO Text
           headCommit repo >>= (@?= commit)
           created @?= ["architecture/adrai/connections/" <> T.take 4 connection <> "/" <> connection <> "--status.connection.md"]
-          assertStatusSuccessPreserved repo database successBaseline (head created) commit
-          pure (connection, resolved, head created)
+          assertStatusSuccessPreserved repo database successBaseline (singleGeneratedPath created) commit
+          pure (connection, resolved, singleGeneratedPath created)
         create title = do
           stdout <- assertExitSuccess "create" =<< adraiRequiredRaw repo ["create", "--title", title, "--summary", title, "--body", title <> "\n", "--domain", "compiler", "--actor", "human:e2e", "--json"]
           result <- decodeCanonicalJson "create" stdout
@@ -1452,7 +1429,7 @@ p602eStatusConflicts =
     git repo ["add", "--", "unrelated-status-conflict.bin"]
     BS.writeFile (repo </> "seed.txt") "dirty status conflict\n"
     assertRejected 3 "adrai: conflict: Stage3ValidateState \"status target ADR is conflicted\"\n" "obsolete" target ["--reason", "ambiguous"]
-    (obsoleteMerged, obsoleteResolved, obsoletePath) <- run "obsolete" target ["--reason", "resolve obsolete", "--replacement", unpack replacement, "--resolve"]
+    (_, obsoleteResolved, obsoletePath) <- run "obsolete" target ["--reason", "resolve obsolete", "--replacement", unpack replacement, "--resolve"]
     obsoleteResolved @?= True
     (obsoleteParents, obsoleteCapsuleParents, obsoleteRecords, obsoletePayload, obsoleteConnection, obsoleteCapsule) <- statusParents obsoletePath
     obsoleteParents @?= sort [otherObsolete, mainObsolete]
@@ -1555,7 +1532,7 @@ p602eStatus =
           created @?= ["architecture/adrai/connections/" <> T.take 4 connection <> "/" <> connection <> "--status.connection.md"]
           fmap (sort . T.lines) (gitText repo ["diff-tree", "--no-commit-id", "--name-only", "-r", unpack current]) >>= (@?= created)
           mapM_ (\(path, bytes) -> gitStdout repo ["show", unpack current <> ":" <> unpack path] >>= (@?= bytes)) prior
-          document <- parseCommittedAndWorktreeDocument repo current (head created)
+          document <- parseCommittedAndWorktreeDocument repo current (singleGeneratedPath created)
           case document of
             parsed@(ParsedManagedDocument _ (ManagedConnection connectionRecord) capsule _ _) ->
               case connectionPayload connectionRecord of
@@ -1580,14 +1557,14 @@ p602eStatus =
                   operationIdText (provenanceOperationId capsule) @?= operation
                   provenanceToolVersion capsule @?= "adrai/1.0.0"
                   provenanceSemanticDigest capsule @?= semanticDigest (parsedManagedSemantic parsed)
-                  gitStdout repo ["diff", "--cached", "--name-only", "--", unpack (head created)] >>= (@?= "")
-                  headBytes <- gitStdout repo ["show", unpack current <> ":" <> unpack (head created)]
-                  worktreeBytes <- BS.readFile (repo </> unpack (head created))
+                  gitStdout repo ["diff", "--cached", "--name-only", "--", unpack (singleGeneratedPath created)] >>= (@?= "")
+                  headBytes <- gitStdout repo ["show", unpack current <> ":" <> unpack (singleGeneratedPath created)]
+                  worktreeBytes <- BS.readFile (repo </> unpack (singleGeneratedPath created))
                   worktreeBytes @?= LBS.toStrict headBytes
                 _ -> assertFailure "status command must create a status connection" >> fail "unreachable"
             _ -> assertFailure "status command must create exactly one connection document" >> fail "unreachable"
           assertIndexResolvedOid database current
-          assertStatusSuccessPreserved repo database successBaseline (head created) current
+          assertStatusSuccessPreserved repo database successBaseline (singleGeneratedPath created) current
           pure (current, connection)
         committedManagedBytes revision = do
           paths <- fmap (filter isManaged . T.lines) (gitText repo ["ls-tree", "-r", "--name-only", unpack revision])
@@ -1693,8 +1670,8 @@ p602dDomain =
           changed @?= created
           mapM_ (\(path, bytes) -> gitStdout repo ["show", unpack current <> ":" <> unpack path] >>= (@?= bytes)) priorManaged
           mapM_ (\(path, bytes) -> BS.readFile (repo </> unpack path) >>= (@?= bytes)) priorWorktree
-          gitStdout repo ["diff", "--cached", "--name-only", "--", unpack (head created)] >>= (@?= "")
-          document <- parseCommittedAndWorktreeDocument repo current (head created)
+          gitStdout repo ["diff", "--cached", "--name-only", "--", unpack (singleGeneratedPath created)] >>= (@?= "")
+          document <- parseCommittedAndWorktreeDocument repo current (singleGeneratedPath created)
           case document of
             parsed@(ParsedManagedDocument _ (ManagedConnection connection) capsule _ _) ->
               case connectionPayload connection of
@@ -1747,25 +1724,25 @@ p602dDomain =
     seedIndexBefore <- gitStdout repo ["ls-files", "-s", "--", "seed.txt"]
     BS.writeFile (repo </> "seed.txt") "dirty seed\n"
     seedWorktreeBefore <- BS.readFile (repo </> "seed.txt")
-    (expandConnection, expand, expandMode, expandAdded, expandRemoved, expandEffective, expandRefinements) <- runDomain adr [initialDomain] ["--add", "platform", "--reason", "Expand"]
+    (expandConnection, _, expandMode, expandAdded, expandRemoved, expandEffective, expandRefinements) <- runDomain adr [initialDomain] ["--add", "platform", "--reason", "Expand"]
     expandMode @?= "expand"; expandAdded @?= ["platform"]; expandRemoved @?= []; expandEffective @?= ["compiler", "platform"]; expandRefinements @?= []
     assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
-    (contractConnection, contract, contractMode, contractAdded, contractRemoved, contractEffective, _) <- runDomain adr [connectionIdText (connectionRecordId expandConnection)] ["--remove", "compiler", "--reason", "Contract"]
+    (contractConnection, _, contractMode, contractAdded, contractRemoved, contractEffective, _) <- runDomain adr [connectionIdText (connectionRecordId expandConnection)] ["--remove", "compiler", "--reason", "Contract"]
     contractMode @?= "contract"; contractAdded @?= []; contractRemoved @?= ["compiler"]; contractEffective @?= ["platform"]
     assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
-    (mixedConnection, mixed, mixedMode, mixedAdded, mixedRemoved, mixedEffective, _) <- runDomain adr [connectionIdText (connectionRecordId contractConnection)] ["--add", "api", "--remove", "platform", "--reason", "Move"]
+    (mixedConnection, _, mixedMode, mixedAdded, mixedRemoved, mixedEffective, _) <- runDomain adr [connectionIdText (connectionRecordId contractConnection)] ["--add", "api", "--remove", "platform", "--reason", "Move"]
     mixedMode @?= "mixed"; mixedAdded @?= ["api"]; mixedRemoved @?= ["platform"]; mixedEffective @?= ["api"]
     assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
-    (refinedConnection, refined, refineMode, refineAdded, refineRemoved, refineEffective, refineMappings) <- runDomain adr [connectionIdText (connectionRecordId mixedConnection)] ["--refine", "api=api.v1", "--reason", "Refine"]
+    (refinedConnection, _, refineMode, refineAdded, refineRemoved, refineEffective, refineMappings) <- runDomain adr [connectionIdText (connectionRecordId mixedConnection)] ["--refine", "api=api.v1", "--reason", "Refine"]
     refineMode @?= "refine"; refineAdded @?= ["api.v1"]; refineRemoved @?= ["api"]; refineEffective @?= ["api.v1"]; refineMappings @?= ["api=api.v1"]
     assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
-    (replacedConnection, replaced, replaceMode, replaceAdded, replaceRemoved, replaceEffective, _) <- runDomain adr [connectionIdText (connectionRecordId refinedConnection)] ["--set", "product", "--reason", "Replace"]
+    (replacedConnection, _, replaceMode, replaceAdded, replaceRemoved, replaceEffective, _) <- runDomain adr [connectionIdText (connectionRecordId refinedConnection)] ["--set", "product", "--reason", "Replace"]
     replaceMode @?= "replace"; replaceAdded @?= ["product"]; replaceRemoved @?= ["api.v1"]; replaceEffective @?= ["product"]
     assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
-    (clearedConnection, cleared, clearMode, clearAdded, clearRemoved, clearEffective, _) <- runDomain adr [connectionIdText (connectionRecordId replacedConnection)] ["--clear", "--reason", "Clear"]
+    (clearedConnection, _, clearMode, clearAdded, clearRemoved, clearEffective, _) <- runDomain adr [connectionIdText (connectionRecordId replacedConnection)] ["--clear", "--reason", "Clear"]
     clearMode @?= "replace"; clearAdded @?= []; clearRemoved @?= ["product"]; clearEffective @?= []
     assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
-    (readdedConnection, readded, readdMode, readdAdded, readdRemoved, readdEffective, _) <- runDomain adr [connectionIdText (connectionRecordId clearedConnection)] ["--add", "services", "--reason", "Re-add"]
+    (readdedConnection, _, readdMode, readdAdded, readdRemoved, readdEffective, _) <- runDomain adr [connectionIdText (connectionRecordId clearedConnection)] ["--add", "services", "--reason", "Re-add"]
     readdMode @?= "expand"; readdAdded @?= ["services"]; readdRemoved @?= []; readdEffective @?= ["services"]
     assertUnrelated indexBefore seedIndexBefore seedWorktreeBefore
     noOpBaseline <- captureMutationFailureBaseline repo database
@@ -1895,11 +1872,11 @@ p602cScope =
           changed @?= created
           mapM_ (\(path, bytes) -> gitStdout repo ["show", T.unpack current <> ":" <> T.unpack path] >>= (@?= bytes)) priorManaged
           mapM_ (\(path, bytes) -> BS.readFile (repo </> T.unpack path) >>= (@?= bytes)) priorManagedWorktree
-          generatedHeadBytes <- gitStdout repo ["show", T.unpack current <> ":" <> T.unpack (head created)]
-          generatedWorktreeBytes <- BS.readFile (repo </> unpack (head created))
+          generatedHeadBytes <- gitStdout repo ["show", T.unpack current <> ":" <> T.unpack (singleGeneratedPath created)]
+          generatedWorktreeBytes <- BS.readFile (repo </> unpack (singleGeneratedPath created))
           generatedWorktreeBytes @?= LBS.toStrict generatedHeadBytes
-          gitStdout repo ["diff", "--cached", "--name-only", "--", T.unpack (head created)] >>= (@?= "")
-          document <- parseCommittedAndWorktreeDocument repo current (head created)
+          gitStdout repo ["diff", "--cached", "--name-only", "--", T.unpack (singleGeneratedPath created)] >>= (@?= "")
+          document <- parseCommittedAndWorktreeDocument repo current (singleGeneratedPath created)
           case document of
             parsed@(ParsedManagedDocument _ (ManagedConnection connection) capsule _ _) -> do
               connectionIdText (connectionRecordId connection) @?= resultScope
@@ -1971,9 +1948,9 @@ p602cScope =
     -- before invoking either public conflict path.
     git repo ["stash", "push", "--include-untracked", "-m", "p602c scope topology fixture"]
     git repo ["switch", "-c", "scope-other"]
-    (other, otherHead, _) <- runScope adr ["--add", "docs/**", "--reason", "Other branch"]
+    (_, otherHead, _) <- runScope adr ["--add", "docs/**", "--reason", "Other branch"]
     git repo ["switch", "main"]
-    (mainChange, mainHead, _) <- runScope adr ["--add", "test/**", "--reason", "Main branch"]
+    (_, mainHead, _) <- runScope adr ["--add", "test/**", "--reason", "Main branch"]
     git repo ["merge", "--no-ff", "scope-other", "-m", "merge scope heads"]
     git repo ["stash", "pop", "--index"]
     conflictBaseline <- captureMutationFailureBaseline repo database
@@ -2085,7 +2062,11 @@ p602bAmend =
         expectedInputs = ProvenanceInputs (Just (sha256Digest (encodeUtf8 "Replacement body\n"))) Nothing Nothing
     mapM_ (assertSharedCapsule operation createCommit expectedActor expectedInputs) capsules
     let timestamps = map provenanceTimestampMs capsules
-    assertBool "amend documents must share one positive timestamp" (length timestamps == 2 && head timestamps > 0 && all (== head timestamps) timestamps)
+    assertBool
+      "amend documents must share one positive timestamp"
+      (case timestamps of
+        timestamp : rest -> length timestamps == 2 && timestamp > 0 && all (== timestamp) rest
+        [] -> False)
     case [(decision, capsule) | ParsedManagedDocument _ (ManagedDecision decision) capsule _ _ <- documents] of
       [(decision, capsule)] -> do
         adrIdText (decisionAdr decision) @?= adr
@@ -2528,7 +2509,11 @@ assertCreatedDocumentSemantics operation basis adr record scope domain status ti
       expectedInputs = ProvenanceInputs (Just (sha256Digest (encodeUtf8 (T.pack body)))) Nothing Nothing
   length documents @?= 4
   mapM_ (assertSharedCapsule operation basis expectedActor expectedInputs) capsules
-  assertBool "all created documents share one positive timestamp" (not (null timestamps) && head timestamps > 0 && all (== head timestamps) timestamps)
+  assertBool
+    "all created documents share one positive timestamp"
+    (case timestamps of
+      timestamp : rest -> timestamp > 0 && all (== timestamp) rest
+      [] -> False)
   case [(decision, capsule) | ParsedManagedDocument _ (ManagedDecision decision) capsule _ _ <- documents] of
     [(decision, capsule)] -> do
       adrIdText (decisionAdr decision) @?= adr

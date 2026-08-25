@@ -20,9 +20,8 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.List (find)
-import Data.Maybe (fromMaybe, mapMaybe, listToMaybe)
-import Data.Vector qualified as Data.Vector
-import Data.Text (Text, strip)
+import Data.Maybe (fromMaybe)
+import Data.Text (strip)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8)
 import System.Directory (createDirectoryIfMissing)
@@ -48,37 +47,6 @@ _Object _                     = Nothing
     Just v  -> case Data.Aeson.eitherDecode (Data.Aeson.encode v) of
       Left  _ -> Nothing
       Right a -> Just a
-
--- | Optional lookup in a KeyMap.
-(.:?) :: Data.Aeson.FromJSON a => KM.KeyMap Data.Aeson.Value -> T.Text -> Maybe (Maybe a)
-(.:?) km key =
-  case KM.lookup (AesonKey.fromText key) km of
-    Nothing -> Just Nothing
-    Just v  -> case Data.Aeson.eitherDecode (Data.Aeson.encode v) of
-      Left  _  -> Just Nothing
-      Right a  -> Just (Just a)
-
--- | Extract a Text value from an Aeson Value.
-valText :: Data.Aeson.Value -> Maybe T.Text
-valText (Data.Aeson.String t) = Just t
-valText _                     = Nothing
-
--- | Extract a Bool value from an Aeson Value.
-valBool :: Data.Aeson.Value -> Maybe Bool
-valBool (Data.Aeson.Bool b) = Just b
-valBool _                   = Nothing
-
--- | Extract a list of Text values from an Aeson array.
-valTextList :: Data.Aeson.Value -> Maybe [T.Text]
-valTextList (Data.Aeson.Array arr) =
-  if Data.Vector.null arr then Nothing else Just (mapMaybe valText (Data.Vector.toList arr))
-valTextList _ = Nothing
-
--- | Extract the first element of an array.
-headVal :: Data.Aeson.Value -> Maybe Data.Aeson.Value
-headVal (Data.Aeson.Array arr) =
-  if Data.Vector.null arr then Nothing else Just (Data.Vector.head arr)
-headVal _ = Nothing
 
 -- | Get the HEAD commit hash of a repository.
 headCommit :: FilePath -> IO T.Text
@@ -173,12 +141,6 @@ lineLandingComplete v = do
   o <- _Object v
   o .: "complete"
 
--- | Extract the ref from a line landing.
-lineLandingRef :: Data.Aeson.Value -> Maybe T.Text
-lineLandingRef v = do
-  o <- _Object v
-  o .: "ref"
-
 -- | Run a full show command and extract the collapsed provenance.
 runShowProvenance :: FilePath -> T.Text -> IO Data.Aeson.Value
 runShowProvenance repo adrId =
@@ -192,29 +154,6 @@ prove label v =
   case extractProvenance v of
     Nothing -> assertFailure (label <> ": could not extract provenance from show output")
     Just p  -> pure (Data.Aeson.Object p)
-
--- | Extract a trunk landing commit from provenance line_landings.
-findTrunkLandingCommit :: String -> Data.Aeson.Value -> IO T.Text
-findTrunkLandingCommit label prov =
-  case extractLineLandings prov >>= findTrunk >>= lineLandingCommit of
-    Nothing -> assertFailure (label <> ": no trunk landing found in provenance")
-    Just c  -> pure c
-  where
-    findTrunk lls = find (\v -> lineLandingLine v == Just "trunk") lls
-
--- | Find the commit hash of an original operation commit.
-findOriginalCommit :: String -> Data.Aeson.Value -> IO T.Text
-findOriginalCommit label prov =
-  case extractOriginalCommits prov >>= listToMaybe of
-    Nothing -> assertFailure (label <> ": no original commit found in provenance")
-    Just c  -> pure c
-
--- | Find a commit in the introductions list.
-findIntroductionCommit :: String -> Data.Aeson.Value -> IO T.Text
-findIntroductionCommit label prov =
-  case extractIntroductions prov >>= listToMaybe of
-    Nothing -> assertFailure (label <> ": no introduction commit found in provenance")
-    Just c  -> pure c
 
 -- | Check that a value is a trunk landing in provenance.
 assertTrunkLandingPresent :: String -> Data.Aeson.Value -> IO ()
@@ -246,66 +185,6 @@ assertBranchHint label expected prov =
       if hint == expected
         then pure ()
         else assertFailure (label <> ": expected branch_hint " <> show expected <> " but got " <> show hint)
-
--- | Extract the "when" object from exploded provenance.
--- Path: operations -> [0] -> full_provenance -> when
-extractWhen :: Data.Aeson.Value -> Maybe Data.Aeson.Value
-extractWhen v = do
-  ops <- headVal v
-  fp <- _Object ops >>= (\o -> o .: "full_provenance")
-  fp .: "when"
-
--- | Extract placements from exploded provenance.
--- Path: operations -> [0] -> full_provenance -> placements
-extractPlacements :: Data.Aeson.Value -> Maybe [Data.Aeson.Value]
-extractPlacements v = do
-  ops <- headVal v
-  fp <- _Object ops >>= (\o -> o .: "full_provenance")
-  fp .: "placements"
-
--- | Extract the classification of a commit from placements.
-placementClassification :: T.Text -> Data.Aeson.Value -> Maybe T.Text
-placementClassification commit oidVal =
-  case _Object oidVal of
-    Nothing -> Nothing
-    Just o  -> o .: "classification"
-
--- | Check if a placement commit matches the expected commit.
-placementMatches :: T.Text -> Data.Aeson.Value -> Maybe T.Text
-placementMatches expected placement = do
-  o <- _Object placement
-  c <- o .: "commit"
-  pure c
-
--- | Extract the "copies" list from the "when" object.
-extractWhenCopies :: Data.Aeson.Value -> Maybe [T.Text]
-extractWhenCopies whenObj = do
-  o <- _Object whenObj
-  o .: "copies"
-
--- | Extract the "introductions" list from the "when" object.
-extractWhenIntroductions :: Data.Aeson.Value -> Maybe [T.Text]
-extractWhenIntroductions whenObj = do
-  o <- _Object whenObj
-  o .: "introductions"
-
--- | Extract the "original_operation_commits" list from the "when" object.
-extractWhenOriginalCommits :: Data.Aeson.Value -> Maybe [T.Text]
-extractWhenOriginalCommits whenObj = do
-  o <- _Object whenObj
-  o .: "original_operation_commits"
-
--- | Extract doctor issues for checking warning codes.
-extractDoctorIssues :: Data.Aeson.Value -> Maybe [Data.Aeson.Value]
-extractDoctorIssues v = do
-  o <- _Object v
-  o .: "issues"
-
--- | Extract issue codes from doctor output.
-issueCodes :: Data.Aeson.Value -> Maybe [T.Text]
-issueCodes v = do
-  issues <- extractDoctorIssues v
-  pure [code | issue <- issues, Just o <- [_Object issue], Just code <- [o .: "code"]]
 
 -- | Extract "claimed_ms" from provenance.
 extractClaimedMs :: Data.Aeson.Value -> Maybe Integer
@@ -813,7 +692,7 @@ testSquashSurvivesDeletedBranchReflogExpiryAndGc =
       case (commit, adrId) of
         (Nothing, _) -> assertFailure "createAdr did not return a commit"
         (_, Nothing) -> assertFailure "createAdr did not return an ADR ID"
-        (Just adrCommit, Just adrId') -> do
+        (Just _, Just adrId') -> do
           -- Compile and show to establish provenance
           _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
 
@@ -973,7 +852,7 @@ testRedundantOperationTrailerDoesNotFabricateACopy =
         (Nothing, _, _) -> assertFailure "createAdr did not return an operation"
         (_, Nothing, _) -> assertFailure "createAdr did not return a record"
         (_, _, Nothing) -> assertFailure "createAdr did not return an ADR ID"
-        (Just opId, Just recId, Just adrId') -> do
+        (Just opId, Just _, Just adrId') -> do
           -- Create an unrelated commit with the same ADRAI-Op trailer
           let unrelatedFile = repo </> "unrelated.txt"
           BS.writeFile unrelatedFile "unrelated\n"

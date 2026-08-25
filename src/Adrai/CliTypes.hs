@@ -161,13 +161,16 @@ coldCompilerToCompileResult compiled database =
         , coldCompilerCacheMode = "full"
         , coldCompilerDocumentsParsed = coldDatabaseManagedSourceCount stats
         , coldCompilerDocumentsReused = 0
-        , coldCompilerHistoryCommitsScanned = 0
+        , coldCompilerHistoryCommitsScanned = coldCompiledHistoryCommitsScanned compiled
         , coldCompilerIncrementalKind = "full"
-        , coldCompilerAdrsRebuilt = coldDatabaseOperationCount stats
+        , coldCompilerAdrsRebuilt = coldDatabaseReducedAdrCount stats
         , coldCompilerAdrsReused = 0
-        , coldCompilerAnnBuckets = coldDatabaseSearchDocumentCount stats
+        -- Search vectors and ANN buckets are process-local and this cache has
+        -- no retention implementation; do not turn row counts or a policy
+        -- default into fabricated persistence metrics.
+        , coldCompilerAnnBuckets = 0
         , coldCompilerCacheKey = ""
-        , coldCompilerCacheRetainRevisions = 12
+        , coldCompilerCacheRetainRevisions = 0
         }
 
 compileResultJson :: CompileResult -> Aeson.Value
