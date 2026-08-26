@@ -1,7 +1,30 @@
 # Installation
 
-ADRAI does not yet provide an installable release. Packaging and release installation instructions remain deferred.
+ADRAI is currently installed from source.
 
-The implemented read-only repository layer has one external runtime prerequisite: Git 2.31 or newer, including support for `git rev-parse --path-format=absolute`. Git is invoked directly with argument arrays; no shell, Python runtime, or libgit2 installation is required.
+## Requirements
 
-Building from source additionally requires the pinned Stack/GHC toolchain described by `stack.yaml`. Stack and GHC are build-time dependencies, not runtime prerequisites of repository observation.
+- Git 2.31 or newer
+- Stack 3.11.1
+
+The project pins its compiler and package set in `stack.yaml` (`lts-24.52`). Stack downloads the matching GHC toolchain when needed. Python and libgit2 are not runtime dependencies.
+
+## Build
+
+From the repository root:
+
+```console
+stack build
+stack exec adrai -- --help
+```
+
+To copy the executable into Stack's local binary directory:
+
+```console
+stack install
+adrai --help
+```
+
+If Stack's binary directory is not on `PATH`, use `stack path --local-bin` to locate the installed executable.
+
+See [Usage](USAGE.md) for the repository setup flow.

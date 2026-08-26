@@ -1,19 +1,42 @@
 # Data format
 
-ADRAI's implemented v1 managed-document, repository-configuration, and generated cold-database contracts are versioned and tested below. Later cache-publication and public command formats remain outside this document's current scope.
+ADRAI has three versioned formats: repository configuration, managed Markdown documents, and a generated SQLite cache.
 
-## Revision-local repository configuration
+## Repository configuration
 
-Repository observation reads `.adrai.toml` from the same resolved commit OID as every managed tree and blob. Only an absent path selects the v1 default configuration. A committed empty file, invalid UTF-8, or invalid TOML is an error; it never silently falls back to defaults. A config entry with any Git blob mode, including executable or symlink mode, is decoded from its literal blob bytes. A tree, commit/gitlink, or other nonblob entry at `.adrai.toml` is rejected.
+`.adrai.toml` uses schema `1`. The default configuration is equivalent to:
 
-The parsed decision and connection roots are logical repository-relative paths in that committed tree. Selection is case-sensitive and includes only paths ending exactly in `.decision.md` or `.connection.md` under their corresponding configured roots. Selected blob entries retain their exact bytes and Git metadata; repeated object IDs are retained once per logical path. Selected nonblob entries retain metadata with no fabricated content. Ordering is deterministic and does not depend on checkout materialization, sparse patterns, the index, or dirty and untracked files.
+```toml
+schema = 1
 
-## Disposable cold database
+[paths]
+decisions = "architecture/adrai/decisions"
+connections = "architecture/adrai/connections"
 
-P4-03 defines the generated SQLite contract `adrai-cache/1`. The caller supplies a fresh connection; a cold compile creates configuration, managed-source, diagnostic, conflict, normalized semantic/operation, P3 search, and all six bundled FTS5 tables in one transaction. The database is a derived artifact, not repository source and not a committed format.
+[[line]]
+id = "trunk"
+refs = ["refs/heads/main", "refs/remotes/origin/main", "refs/heads/master", "refs/remotes/origin/master"]
+```
 
-Every selected current path retains its Git OID, mode, object type, exact nullable blob bytes, and parse state. Operation storage preserves shared capsule context, each member's object/event/digest, and ordered provenance parents. Unbounded positive operation timestamps are stored as checked decimal text. Ordered line anchors and typed connection payloads are canonical JSON rather than delimiter-packed text, so identifiers containing `@` or newlines and scope values containing commas remain reconstructible without reparsing managed source. Normalized decision, connection, reduction, and search rows exist only when strict source validation succeeds. Invalid source still yields a complete diagnostic database with `semantic_state=invalid` and no semantic or search rows.
+Paths are case-sensitive, repository-relative logical paths. Decision and connection roots must not overlap. The `line` entries name logical lines and the refs that belong to each line.
 
-Before the transaction commits, P4-03 verifies exact metadata, foreign keys, every declared normalized/search/FTS table count, operation-member identity coverage, and bidirectional ordinary/FTS key parity. Any mismatch rolls back schema and rows together.
+Configuration is read from the same resolved commit as the managed documents. An absent `.adrai.toml` selects the defaults. A present but empty, invalid UTF-8, invalid TOML, or non-blob entry is an error; it never falls back silently.
 
-The source fingerprint covers committed configuration facts and sorted path/mode/type/OID/byte observations, excluding the machine-local repository namespace and mutable requested-revision alias. The final fingerprint also covers diagnostics, conflicts, reduced semantics, operations, search DTOs, and ABI tags. Raw SQLite page bytes are not canonical.
+## Managed documents
+
+ADRAI selects only exact `*.decision.md` and `*.connection.md` suffixes under their configured roots. Both formats use canonical TOML front matter followed by Markdown and a sealed provenance capsule:
+
+- decisions: `adrai/decision/v1`
+- connections: `adrai/connection/v1`
+
+Managed paths are derived from record identity and content. Line endings, field ordering, lists, identifiers, and the provenance capsule are validated canonically. Prefer `adrai create` and the mutation commands over hand-editing these files.
+
+Repository reads are revision-local: sparse checkouts, staged changes, dirty files, and untracked files cannot replace bytes from the resolved Git commit. The explicit `relevant --worktree` mode is the exception for relevance input; its ADR context still comes from `HEAD`.
+
+## Generated database
+
+The SQLite schema is `adrai-cache/1`. It contains source observations, diagnostics, conflicts, reduced semantics, operations, search documents, passages, and FTS5 indexes. It is a derived artifact under `.adrai/`, not repository source or a portable interchange format.
+
+Compilation publishes schema and data atomically and verifies foreign keys, row counts, operation membership, and ordinary/FTS key parity before commit. Invalid source can still produce diagnostic data, but normalized semantic and search rows are withheld. Logical fingerprints are canonical; raw SQLite page bytes are not.
+
+See [Cache](CACHE.md) for lifecycle details.

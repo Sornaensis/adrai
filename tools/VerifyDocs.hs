@@ -6,7 +6,8 @@ import System.Exit (exitFailure)
 
 expectedDocs :: [FilePath]
 expectedDocs =
-  [ "docs/INSTALL.md",
+  [ "docs/README.md",
+    "docs/INSTALL.md",
     "docs/USAGE.md",
     "docs/WEB.md",
     "docs/CONFLICTS.md",
@@ -20,7 +21,7 @@ main :: IO ()
 main = do
   missing <- filterM (fmap not . doesFileExist) expectedDocs
   if null missing
-    then putStrLn "All scaffold documentation files are present."
+    then putStrLn "All documentation files are present."
     else do
       putStrLn "Missing documentation files:"
       mapM_ putStrLn missing

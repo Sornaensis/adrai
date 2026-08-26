@@ -1,3 +1,5 @@
 # Web interface
 
-The Haskell web modules and browser workspace are scaffolds; there is no usable web service yet. Routes, protocols, security considerations, and browser workflows will be documented alongside their tested implementations.
+There is no supported web service yet. `Adrai.Web.*` and the Elm workspace under `web/` are scaffolds and are not exposed by the `adrai` executable.
+
+Use the command-line interface or terminal explorer described in [Usage](USAGE.md). Routes, protocols, security guidance, and browser build instructions will be added when the web interface is wired into a tested executable.

@@ -1,9 +1,15 @@
 # Conflict handling
 
-P2 graph reduction distinguishes a valid unresolved multihead from malformed graph state. P4-03 preserves that distinction in the cold database.
+ADRAI distinguishes a valid unresolved multihead from malformed graph state.
 
-`ADR_CONFLICT` is semantic state, not an integrity issue. A valid multihead passes the strict compiler gate, is stored in `adr_conflict`, retains normalized semantics, and produces one deterministic `ADR@record` search candidate per current decision head. Its database `semantic_state` is `conflict`.
+## Semantic conflicts
 
-Malformed graph state, including zero-head axes, missing parents, cycles, and invalid deltas, produces typed graph-origin issues. Those errors set `semantic_state=invalid` and block normalized semantic and search rows. Source, history, operation, config, and basis diagnostics remain in the separate `issue` table; a missing or noncommit provenance basis is a warning and does not itself block materialization.
+`ADR_CONFLICT` represents multiple valid current heads. It is semantic state, not corrupt data. Compilation retains the competing records in `adr_conflict`, and search indexes one deterministic `ADR@record` candidate for each current decision head. Collapsed results group those candidates under the logical ADR while preserving the matched head as evidence.
 
-P4-03 does not implement public conflict-resolution mutation or CLI rendering. Those workflows remain later-phase behavior.
+`doctor` and `explore` expose conflicts. A command that cannot safely choose a head exits with status `3`. Resolution is axis-specific: use the relevant mutation command and its reviewed replacement or resolution option; inspect `adrai COMMAND --help` before changing a conflicted ADR.
+
+## Integrity failures
+
+Zero-head axes, missing parents, cycles, invalid deltas, noncanonical documents, and malformed operation membership are integrity failures. They produce typed diagnostics, set the compiled semantic state to `invalid`, and prevent normalized semantic and search rows from being published.
+
+Warnings, such as unavailable provenance basis information, remain diagnostics but do not by themselves block materialization.

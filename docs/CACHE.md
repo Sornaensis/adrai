@@ -1,9 +1,20 @@
 # Cache
 
-P3-06 provides a narrow reusable in-memory vector seam, not a persisted cache. `SearchVectorCorpus` belongs to one exact `SearchMaterialization` and contains its compatibility fingerprint, the semantic and identifier vector IDs, semantic summary vectors keyed by search item ID, identifier vectors keyed by item ID, and semantic section vectors keyed by passage ID.
+ADRAI stores generated data under the repository's ignored `.adrai/` directory:
 
-Corpus construction is deterministic. Each stored vector comes from the release embedder and is immediately packed to canonical little-endian float32 bytes and unpacked before it enters the corpus. Query text and relevance source-chunk vectors remain request-ephemeral and are never stored. Before retrieval, explicit-corpus APIs validate current vector IDs, exact document/passage key sets, and a fingerprint covering sorted identities and embedding inputs. A changed materialization is rejected rather than reused. Compatibility wrappers build a corpus and delegate, while callers doing several queries may build once and reuse the same validated value. These are called cold-built and reused-corpus paths; their public projections and rendered bytes are identical, and public diagnostics do not reveal which path was used.
+- `.adrai/index.sqlite` is the mutable alias for the current compiled index.
+- `.adrai/cache/<commit-oid>.sqlite` is an immutable, revision-addressed snapshot.
 
-This process-local value has no filesystem or revision-cache behavior. There is no cache directory or publication protocol, persisted warm path, incremental invalidation, unrelated-ADR reuse accounting, branch isolation, eviction or maintenance policy, corruption recovery, or cache performance counter. Embedder/fingerprint rejection at this seam does not establish those behaviors. Full revision caching and invalidation remain planned work, so the corresponding cold/warm/incremental/branch and reuse-accounting coverage contracts are not advanced by P3-06.
+Both use the `adrai-cache/1` SQLite/FTS5 schema. They are derived artifacts and must not be committed.
 
-P4-03 adds a separate cold-only artifact: a complete `adrai-cache/1` SQLite/FTS5 database built into a fresh caller-owned connection from one exact resolved Git OID. Its source and materialization fingerprints make logical rebuild equality observable, and `/.adrai/` is ignored defensively. P4-03 does not choose a production path, publish or reopen an existing revision database, reuse prior rows, evict entries, or recover corruption. Those cache lifecycle behaviors remain P4-05 work.
+## Reuse
+
+`compile`, read commands, and post-mutation indexing resolve a commit before selecting a cache. ADRAI can reuse an exact snapshot or clone a compatible snapshot when Git proves that configuration and managed document trees are unchanged. Otherwise it performs a fresh compile. The published result is checked against its resolved revision and logical fingerprints.
+
+Vector corpora remain process-local. A corpus belongs to one exact search materialization and is rejected when document identities, passage identities, embedding inputs, or vector implementations differ. Query and relevance-source vectors are request-ephemeral.
+
+## Maintenance
+
+The current compiler does not enforce a revision-snapshot retention limit. Old files under `.adrai/cache/` may therefore accumulate.
+
+The entire `.adrai/` directory is disposable when no ADRAI process is using it; the next command rebuilds the required data from committed source. Removing it loses only generated indexes and local provenance acceleration, not managed ADR documents.
