@@ -5,8 +5,10 @@ module Adrai.Integration.CLI
     git,
     gitStdout,
     gitSuccess,
+    prependExtraPathParts,
     adraiTestArgs,
     spawnAdrai,
+    spawnAdraiWith,
     spawnAdraiStdin,
     adraiJson,
     adraiJsonOrThrow,
@@ -18,8 +20,6 @@ module Adrai.Integration.CLI
     amendAdr,
     amendAdrStatus,
     amendAdrScope,
-    amendAdrDomain,
-    createAdrWithTitle,
     parseCompileResult,
     parseDoctorOutput,
     parseShowCollapsed,
@@ -42,7 +42,6 @@ import Adrai.Cli
     DoctorCacheAccess (..),
     DoctorDatabaseBuild (..),
   )
-import Control.Applicative ((<|>))
 import Control.Monad (forM)
 import Data.Aeson
   ( FromJSON,
@@ -99,17 +98,16 @@ extraPathParts =
 currentPath :: IO String
 currentPath = maybe "" id <$> lookupEnv "PATH"
 
+-- | Prepend the configured paths to an inherited PATH without splitting it.
+-- Keeping the inherited value intact avoids both separator normalization and
+-- non-advancing recursive splitters.
+prependExtraPathParts :: String -> String
+prependExtraPathParts inheritedPath =
+  intercalate ";" (extraPathParts ++ [inheritedPath | not (null inheritedPath)])
+
 -- | Full PATH with extra directories prepended, using Windows semicolons.
 fullPath :: IO String
-fullPath = do
-  cp <- currentPath
-  pure $ intercalate ";" (extraPathParts ++ filter (/= "") (splitOn ';' cp))
-    where
-      splitOn c = go
-        where
-          go s = case dropWhile (== c) s of
-            [] -> []
-            rest -> takeWhile (/= c) rest : go rest
+fullPath = prependExtraPathParts <$> currentPath
 
 -- | Standard Git test environment variables.
 gitEnv :: [(String, String)]
@@ -129,7 +127,10 @@ gitEnv =
 fullEnv :: IO [(String, String)]
 fullEnv = do
   fp <- fullPath
-  pure $ ("PATH", fp) : gitEnv
+  pure (fullEnvWithPath fp)
+
+fullEnvWithPath :: String -> [(String, String)]
+fullEnvWithPath path = ("PATH", path) : gitEnv
 
 -- | Run git in a directory with the standard test environment.
 -- Fails the test on non-success exit.
@@ -175,17 +176,30 @@ findAdraiExe = do
 -- long-lived CLI but makes concurrent short-lived test children oversubscribe
 -- the host.  Keep the test-only override on the command line so it is
 -- consumed by the RTS and does not weaken the deliberately scrubbed child
--- environments used by integration contracts.
+-- environments used by integration contracts.  The test-runner PATH probe is
+-- not threaded, so it deliberately omits that production-child RTS override.
 adraiTestArgs :: FilePath -> [String] -> [String]
 adraiTestArgs repoPath arguments =
-  ["--repo", repoPath] <> arguments <> ["+RTS", "-N1", "-RTS"]
+  ["--repo", repoPath] <> arguments <> rtsArgs
+  where
+    rtsArgs
+      | "--integration-cli-path-probe" `elem` arguments = []
+      | otherwise = ["+RTS", "-N1", "-RTS"]
 
 -- | Spawn the adrai CLI with arguments in a repository directory.
 spawnAdrai :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
 spawnAdrai repoPath args = do
   exe <- findAdraiExe
-  env <- fullEnv
-  readProcess (setEnv env (proc exe (adraiTestArgs repoPath args)))
+  inheritedPath <- currentPath
+  spawnAdraiWith exe inheritedPath repoPath args
+
+-- | Spawn a selected executable with a child PATH derived from the explicitly
+-- supplied inherited value.  This is primarily useful for harness contracts
+-- that must not mutate the test process environment.
+spawnAdraiWith :: FilePath -> String -> FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
+spawnAdraiWith exe inheritedPath repoPath args =
+  readProcess
+    (setEnv (fullEnvWithPath (prependExtraPathParts inheritedPath)) (proc exe (adraiTestArgs repoPath args)))
 
 -- | Spawn with stdin input.
 spawnAdraiStdin
@@ -273,7 +287,7 @@ commitFile repo relativePath content = do
 commitFiles :: FilePath -> [(FilePath, ByteString)] -> IO Text
 commitFiles repo files = do
   mapM_ writeOne files
-  git repo ["--literal-pathspecs", "add", "--"]
+  git repo (["--literal-pathspecs", "add", "--"] <> map fst files)
   git repo ["commit", "-m", "fixture"]
   gitStdout repo ["rev-parse", "HEAD"] >>= \h -> pure (strip (TE.decodeUtf8 (LBS.toStrict h)))
   where
@@ -304,60 +318,44 @@ createAdr repo title summary body domains scopes =
       <> concatMap (\s -> ["--applies-to", unpack s]) scopes
       <> ["--json"]
 
--- | Variant of 'createAdr' that also sets a revision title.
-createAdrWithTitle
-  :: FilePath
-  -> Text
-  -> Text
-  -> Text
-  -> Text
-  -> [Text]
-  -> [Text]
-  -> IO Value
-createAdrWithTitle repo title summary body revTitle domains scopes =
-  adraiJsonOrThrow repo $
-    [ "create",
-      "--title", unpack title,
-      "--summary", unpack summary,
-      "--body", unpack body,
-      "--actor", "llm:planner",
-      "--model", "demo-model",
-      "--title-rev", unpack revTitle
-    ]
-      <> concatMap (\d -> ["--domain", unpack d]) domains
-      <> concatMap (\s -> ["--applies-to", unpack s]) scopes
-      <> ["--json"]
-
--- | Amend an ADR via CLI.
+-- | Amend an ADR via the canonical public command.  Callers must supply the
+-- substantive body and the audit-facing change summary explicitly: this helper
+-- intentionally does not invent either value.
 amendAdr
   :: FilePath
   -> Text
   -> Maybe Text
   -> Maybe Text
-  -> Maybe Text
+  -> Text
+  -> Text
   -> IO Value
-amendAdr repo adrId maybeTitle maybeSummary maybeBody =
-  adraiJsonOrThrow repo $
-    ("amend-adr" : adrIdStr <> flags <> ["--json"])
+amendAdr repo adrId maybeTitle maybeSummary body changeSummary
+  | DT.null (DT.strip body) = fail "amendAdr requires a nonblank body"
+  | DT.null (DT.strip changeSummary) = fail "amendAdr requires a nonblank change summary"
+  | otherwise =
+      adraiJsonOrThrow repo $
+        ("amend" : adrIdStr <> flags <> ["--change-summary", unpack changeSummary, "--actor", "human:test", "--json"])
   where
     adrIdStr = [unpack adrId]
     flags = concat
-      [ maybe [] (\v -> ["--title", unpack v]) maybeTitle,
-        maybe [] (\v -> ["--summary", unpack v]) maybeSummary,
-        maybe [] (\v -> ["--body", unpack v]) maybeBody
-      ]
+        [ maybe [] (\v -> ["--title", unpack v]) maybeTitle,
+          maybe [] (\v -> ["--summary", unpack v]) maybeSummary,
+          ["--body", unpack body]
+        ]
 
--- | Amend an ADR's status (active\/obsolete\/archived) via CLI.
+-- | Change ADR status using the dedicated canonical commands.
 amendAdrStatus
   :: FilePath
   -> Text
   -> Text
   -> IO Value
 amendAdrStatus repo adrId status =
-  adraiJsonOrThrow repo
-    [ "amend-adr", unpack adrId, "--status", unpack status, "--actor", "human:test", "--json" ]
+  case status of
+    "obsolete" -> adraiJsonOrThrow repo ["obsolete", unpack adrId, "--reason", "integration status change", "--actor", "human:test", "--json"]
+    "active" -> adraiJsonOrThrow repo ["reactivate", unpack adrId, "--reason", "integration status change", "--actor", "human:test", "--json"]
+    _ -> fail ("unsupported canonical status helper value: " <> unpack status)
 
--- | Amend ADR scope via add\/remove lists.
+-- | Change ADR scope with its dedicated canonical command.
 amendAdrScope
   :: FilePath
   -> Text
@@ -366,23 +364,10 @@ amendAdrScope
   -> IO Value
 amendAdrScope repo adrId addScopes removeScopes =
   adraiJsonOrThrow repo
-    ( [ "amend-adr", unpack adrId ]
-        <> concatMap (\s -> ["--add-scope", unpack s]) addScopes
-        <> concatMap (\s -> ["--remove-scope", unpack s]) removeScopes
-        <> ["--actor", "human:test", "--json"]
-    )
-
--- | Amend ADR domains via change-domain flags.
-amendAdrDomain
-  :: FilePath
-  -> Text
-  -> [Text]
-  -> IO Value
-amendAdrDomain repo adrId changes =
-  adraiJsonOrThrow repo
-    ( [ "amend-adr", unpack adrId ]
-        <> concatMap (\c -> ["--change-domain", unpack c]) changes
-        <> ["--actor", "human:test", "--json"]
+    ( [ "scope", unpack adrId ]
+        <> concatMap (\s -> ["--add", unpack s]) addScopes
+        <> concatMap (\s -> ["--remove", unpack s]) removeScopes
+        <> ["--reason", "integration scope change", "--actor", "human:test", "--json"]
     )
 
 -- | Parse a 'CompileResult' from an Aeson Value.
@@ -390,26 +375,38 @@ amendAdrDomain repo adrId changes =
 parseCompileResult :: Value -> Maybe CompileResult
 parseCompileResult obj = decodeValue obj
   where
-    decodeValue (Object o) =
-      CompileResult
-        <$> (o .: "coldCompilerDatabase" <|> o .: "database")
-        <*> (o .: "coldCompilerRevision" <|> o .: "revision")
-        <*> (o .: "coldCompilerIssueCount" <|> o .: "issues")
-        <*> (o .: "coldCompilerErrorCount" <|> o .: "errors")
-        <*> (o .: "coldCompilerWarningCount" <|> o .: "warnings")
-        <*> (o .: "coldCompilerEmbeddingComputed" <|> o .: "embedding_computed")
-        <*> (o .: "coldCompilerEmbeddingReused" <|> o .: "embedding_reused")
-        <*> (o .: "coldCompilerCacheMode" <|> o .: "cache_mode")
-        <*> (o .: "coldCompilerDocumentsParsed" <|> o .: "documents_parsed")
-        <*> (o .: "coldCompilerDocumentsReused" <|> o .: "documents_reused")
-        <*> (o .: "coldCompilerHistoryCommitsScanned" <|> o .: "history_commits_scanned")
-        <*> (o .: "coldCompilerIncrementalKind" <|> o .: "incremental_kind")
-        <*> (o .: "coldCompilerAdrsRebuilt" <|> o .: "adrs_rebuilt")
-        <*> (o .: "coldCompilerAdrsReused" <|> o .: "adrs_reused")
-        <*> (o .: "coldCompilerAnnBuckets" <|> o .: "ann_buckets")
-        <*> (o .: "coldCompilerCacheKey" <|> o .: "cache_key")
-        <*> (o .: "coldCompilerCacheRetainRevisions" <|> o .: "cache_retain_revisions")
+    decodeValue (Object o)
+      | any (`KM.member` o) legacyCamelCaseKeys = Nothing
+      | otherwise =
+          CompileResult
+            <$> o .: "database"
+            <*> o .: "revision"
+            <*> o .: "issues"
+            <*> o .: "errors"
+            <*> o .: "warnings"
+            <*> o .: "embedding_computed"
+            <*> o .: "embedding_reused"
+            <*> o .: "cache_mode"
+            <*> o .: "documents_parsed"
+            <*> o .: "documents_reused"
+            <*> o .: "history_commits_scanned"
+            <*> o .: "incremental_kind"
+            <*> o .: "adrs_rebuilt"
+            <*> o .: "adrs_reused"
+            <*> o .: "ann_buckets"
+            <*> o .: "cache_key"
+            <*> o .: "cache_retain_revisions"
     decodeValue _ = Nothing
+
+    legacyCamelCaseKeys =
+      map Key.fromText
+        [ "coldCompilerDatabase", "coldCompilerRevision", "coldCompilerIssueCount",
+          "coldCompilerErrorCount", "coldCompilerWarningCount", "coldCompilerEmbeddingComputed",
+          "coldCompilerEmbeddingReused", "coldCompilerCacheMode", "coldCompilerDocumentsParsed",
+          "coldCompilerDocumentsReused", "coldCompilerHistoryCommitsScanned", "coldCompilerIncrementalKind",
+          "coldCompilerAdrsRebuilt", "coldCompilerAdrsReused", "coldCompilerAnnBuckets",
+          "coldCompilerCacheKey", "coldCompilerCacheRetainRevisions"
+        ]
 
 -- | Parse a 'DoctorOutput' from an Aeson Value.
 parseDoctorOutput :: Value -> Maybe DoctorOutput
@@ -437,23 +434,23 @@ parseShowCollapsed obj
   | otherwise = Nothing
 
 -- | Parse an 'ExplodedProjection' from an Aeson Value.
--- Returns the records field if present.
+-- Returns the canonical operations field if present.
 parseShowExploded :: Value -> Maybe [Value]
 parseShowExploded obj
-  | Just o <- _Object obj = o .: "records"
+  | Just o <- _Object obj = o .: "operations"
   | otherwise = Nothing
 
 -- | Parse a history projection from an Aeson Value.
--- Returns a tuple of (schema, revision, order, results).
+-- Returns a tuple of (schema, as_of, order, operations).
 parseHistory
   :: Value -> Maybe (Text, Text, Text, [Value])
 parseHistory obj
   | Just o <- _Object obj = do
       schema <- o .: "schema"
-      revision <- o .: "revision"
+      asOf <- o .: "as_of"
       order <- o .: "order"
-      results <- o .: "results"
-      pure (schema, revision, order, results)
+      operations <- o .: "operations"
+      pure (schema, asOf, order, operations)
   | otherwise = Nothing
 
 -- | Parse a compact history projection from an Aeson Value.
@@ -498,16 +495,16 @@ parseSearchResults obj
   | otherwise = Nothing
 
 -- | Parse compare results from an Aeson Value.
--- Returns (schema, before, after, changes).
+-- Returns (view, from, to, entries).
 parseCompareResults
   :: Value -> Maybe (Text, Text, Text, [Value])
 parseCompareResults obj
   | Just o <- _Object obj = do
-      schema <- o .: "schema"
-      before <- o .: "before"
-      after <- o .: "after"
-      changes <- o .: "changes"
-      pure (schema, before, after, changes)
+      view <- o .: "view"
+      from <- o .: "from"
+      to <- o .: "to"
+      entries <- o .: "entries"
+      pure (view, from, to, entries)
   | otherwise = Nothing
 
 -- | Get all table contents from a SQLite database as sorted

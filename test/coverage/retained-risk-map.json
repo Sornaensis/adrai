@@ -1,0 +1,946 @@
+{
+  "schemaVersion": 1,
+  "snapshot": {
+    "baseSha": "1794ec24edb198bb8949b22b3d7bf0a333dc72a0",
+    "registrationEvidence": {
+      "ordinary": {
+        "count": 949,
+        "evidence": "C:\\Users\\Sornaensis\\AppData\\Local\\Temp\\adrai-retained-list-ordinary-query-git-20260907\\result.json"
+      },
+      "cacheSelection": {
+        "count": 9,
+        "evidence": "C:\\Users\\Sornaensis\\AppData\\Local\\Temp\\adrai-retained-list-bound-cache-20260906\\result.json"
+      },
+      "stressWithRunStress": {
+        "count": 28,
+        "evidence": "C:\\Users\\Sornaensis\\AppData\\Local\\Temp\\adrai-retained-list-bound-stress-20260906\\result.json"
+      },
+      "benchmarkRegistration": {
+        "count": 6,
+        "evidence": "C:\\Users\\Sornaensis\\AppData\\Local\\Temp\\adrai-retained-list-bound-benchmark-20260906\\result.json"
+      }
+    },
+    "projectedOrdinaryCountAfterRetainedReductions": 852,
+    "note": "The 949 ordinary count remains historical bounded evidence. The last bounded List verified 885 names before round-nine source changes. Frozen round nine removes 13 R, seven N, four K, eight O and one D registrations and renames one retained RepositorySnapshot leaf, declaring 852 names pending the next bounded List."
+  },
+  "replacements": [
+    {
+      "removed": "Consistency oracle.all_mutation_axes_and_merge_heavy_branch_switches_are_cold_warm_identical",
+      "oldAnchor": "test/integration/Adrai/ConsistencyTest.hs:917",
+      "retained": [
+        "ADRAI.query, history, comparison, and public JSON.collapsed compact and rich projections preserve exact resolved semantics",
+        "ADRAI.query, history, comparison, and public JSON.snapshot inconsistency is rejected by collapsed, exploded, history, and compare",
+        "ADRAI.query, history, comparison, and public JSON.all projection bytes are invariant under input permutation",
+        "ADRAI.P2-06.P2-06 projection properties.history topology overrides clocks and orders siblings",
+        "ADRAI.P2-06.P2-06 projection properties.reverse comparisons swap direction without requiring symmetric diff text",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.public commands preserve a staged binary and return canonical exits"
+      ],
+      "boundary": "Pure projection and topology contracts plus one real shared-repository public-command smoke.",
+      "acceptedLoss": "The same semantics are no longer replayed through every mutation-axis, branch-switch, and cold/warm CLI matrix cell."
+    },
+    {
+      "removed": "Consistency oracle.divergent_amendments_conflict_and_reconciliation_are_cold_warm_identical",
+      "oldAnchor": "test/integration/Adrai/ConsistencyTest.hs:1094",
+      "retained": [
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads",
+        "ADRAI.P2-06.P2-06 projection properties.history topology overrides clocks and orders siblings"
+      ],
+      "boundary": "A real divergent merge and amend producer asserts the producer and reducer operations, both reconciliation parents, the returned resolved record and capsules, and caller-state protection.",
+      "acceptedLoss": "The matching FTS, vector and hybrid conflict queries, nonmatching empty-result queries, and independent public snapshot/cold/warm repetitions were removed; no current public-query execution is claimed by this replacement."
+    },
+    {
+      "removed": "Consistency oracle.merge_heavy_branch_caches_are_semantically_identical_to_cold_rebuilds",
+      "oldAnchor": "test/integration/Adrai/ConsistencyTest.hs:1187",
+      "retained": [
+        "production cache selection.exact CLI reports immutable archive reuse",
+        "ADRAI.P4-07.Cache integration (P4-07).competing tree-identical targets retain their own provenance projections"
+      ],
+      "boundary": "Real cache publication and independent competing-target provenance remain at the SQLite/process boundary.",
+      "acceptedLoss": "Large merge-heavy repeated branch-switch snapshot equivalence is removed; the cache task must retain compact explicit cold/exact/incremental mode proof."
+    },
+    {
+      "removed": "EvolutionCompareAnnTest and SearchCliTest registered real-executable matrices",
+      "oldAnchor": "test/default/Main.hs (former registrations); deleted test/integration/Adrai/EvolutionCompareAnnTest.hs and SearchCliTest.hs",
+      "retained": [
+        "ADRAI.query, history, comparison, and public JSON.ADR and repository histories use topology, exact labels, filters, and optional omission",
+        "ADRAI.query, history, comparison, and public JSON.exploded operations have exact item fields, grouped provenance, raw opt-in, and real hunks",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.public commands preserve a staged binary and return canonical exits",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads"
+      ],
+      "boundary": "Typed/pure projections retain ordering, filters, history and comparison fields; compact real commands retain executable routing with real exits 0, 2, and 3.",
+      "acceptedLoss": "Repeated real-CLI FTS/vector/hybrid ordering, branch-local evolution/compare permutations, and ANN correspondence matrices are not retained end to end. Unhealthy doctor exit 4 is retained only by typed CliContract rendering, so real-process exit-4 assurance is retired."
+    },
+    {
+      "removed": "Environment repeated branch, worktree, sparse, history-rewrite and public cache-view matrices",
+      "oldAnchor": "test/integration/Adrai/EnvironmentTest.hs",
+      "retained": [
+        "ADRAI.P4-02.Repository snapshot isolation.dirty staged deleted and untracked worktree state never enters committed observations",
+        "ADRAI.P4-02.Repository snapshot isolation.linked worktrees concurrently retain distinct immutable observations",
+        "ADRAI.P4-07.Environment (branch / worktree / sparse / unicode).linked_worktree_commits_only_its_branch_and_uses_common_lock",
+        "ADRAI.P4-07.Environment (branch / worktree / sparse / unicode).symlinked managed parent cannot escape repository",
+        "ADRAI.P4-07.Query integration (history / search / compare).P6-08Q exact-v3 archive hooks and tamper fallback"
+      ],
+      "retainedAnchors": [
+        "test/integration/Adrai/RepositoryIsolationTest.hs:54-67 staged/dirty/deleted/untracked exclusion",
+        "test/integration/Adrai/RepositoryIsolationTest.hs retained dirty-state and linked-worktree isolation carriers"
+      ],
+      "boundary": "RepositoryIsolation keeps dirty-index/worktree exclusion and simultaneous linked-worktree immutable observations. The rich linked-worktree Environment carrier proves committed custom roots, returned HEAD, physical files and exact SQLite identity while preserving common-lock and caller-state wiring; Query keeps rich Unicode search parity.",
+      "acceptedLoss": "The earlier branch-switch, deleted-ref, force-reset and sparse/depth-one secondary mappings are themselves retired in round nine. Their independent ref/topology/compiler compositions, the compact branch-selection/cache-identity CLI matrix, the separate configured-root fixture/create child and standalone Japanese/emoji search pipeline are explicit losses; no deleted carrier is claimed as current coverage."
+    },
+    {
+      "removed": "ProvenanceRead ASCII-only landing, cross-operation priming, signature-byte, malformed-schema, duplicate-registration and duplicate-placement cases",
+      "oldAnchor": "test/integration/Adrai/ProvenanceReadTest.hs (former registrations)",
+      "retained": [
+        "ADRAI.P4-07.ProvenanceRead.cold and warm hydration preserve genuine original placement for Unicode paths",
+        "ADRAI.P4-07.ProvenanceRead.tampered cache mismatches fail closed while missing placement repairs",
+        "ADRAI.P4-07.ProvenanceRead.invalid existing schema is typed and byte-preserved",
+        "ADRAI.P4-07.ProvenanceRead.v1 overlay is rebuilt as v2 before placement hydration",
+        "ADRAI.P4-07.ProvenanceRead.extra overlay trigger and view are invalid and byte-preserved",
+        "ADRAI.P4-07.ProvenanceRead.materialize indexes canonical identities, groups documents, and rejects registration drift",
+        "ADRAI.P4-07.ProvenanceRead.writer cancellation removes a fresh overlay and releases the lock",
+        "ADRAI.P4-07.ProvenanceRead.warm validation cancellation propagates without mutation",
+        "ADRAI.P4-07.ProvenanceRead.contended lock cancellation propagates without mutation"
+      ],
+      "boundary": "The retained public hydration paths keep Unicode placement, schema/object validation, registration canonicality, repair behavior and all three cancellation/lock phases.",
+      "acceptedLoss": "ASCII-only and duplicate-shape repetitions no longer execute independently; cross-operation priming is covered through current cache signature and placement validation."
+    },
+    {
+      "removed": "MutationService duplicate amend conflict, scope, domain, and status authority matrix cases",
+      "removedNames": [
+        "successive amendments chain from the prior current head",
+        "amend rejects inactive, conflicted, and misplaced committed sources",
+        "scope reviewed set replaces one current scope head truthfully",
+        "scope reviewed set merges two current scope heads and clears only scope conflict",
+        "scope rejects inactive ADRs with the exact state error",
+        "scope rejects conflicted heads with the exact state error",
+        "scope rejects detached HEAD before generating files",
+        "domain reviewed merge commits an exact two-head union without changing other axes",
+        "domain rejects a committed ADR with no current domain head",
+        "domain stale unknown detached and inactive authority failures preserve state",
+        "status authority, replacement, and compatibility rejections preserve state",
+        "ordinary complete amend reconciles a decision-only conflict",
+        "init commits bootstrap files and returns transaction result",
+        "create commits four sealed records and returns transaction result",
+        "amend commits a truthful append-only decision and amendment edge",
+        "domain rejects a real scope-axis conflict without state change",
+        "domain induced post-generation transaction failure preserves every observable state",
+        "init transaction failure returns no success result",
+        "create failure leaves HEAD and unrelated staged index entry unchanged",
+        "scope transaction failure after generation preserves every caller-owned state",
+        "obsolete and reactivate use current heads, truthful provenance, and state tokens",
+        "status transaction failure preserves every observable state",
+        "no-op amend rejection preserves the complete caller state",
+        "ordinary amend and domain change reject a scope-axis conflict without mutation",
+        "amend transaction failure is retry-safe before generated files exist",
+        "ADRAI.mutation service results.P6-02D domain mutation service.domain reviewed set reconciles a domain-only two-head conflict"
+      ],
+      "renamed": [
+        {
+          "old": "amend rejections do not create a commit",
+          "retained": "ADRAI.mutation service results.P6-02A mutation service results.amend rejection routes preserve complete caller state across attached detached and conflicted histories"
+        },
+        {
+          "old": "domain mixed and refinement updates report truthful state",
+          "retained": "ADRAI.mutation service results.P6-02D domain mutation service.domain mixed update reports truthful state"
+        },
+        {
+          "old": "status rejections preserve the complete caller-visible repository state",
+          "retained": "ADRAI.mutation service results.P6-02E status mutation service.representative status request and stale-token rejections preserve complete caller state"
+        }
+      ],
+      "oldAnchor": "test/unit/Adrai/MutationServiceTest.hs (former 27-case amend-conflict/scope/domain/status set)",
+      "retained": [
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads",
+        "ADRAI.mutation service results.P6-02A mutation service results.amend rejection routes preserve complete caller state across attached detached and conflicted histories",
+        "ADRAI.mutation service results.P6-02C scope mutation service.scope mixed update reports truthful delta and provenance",
+        "ADRAI.mutation service results.P6-02C scope mutation service.scope reviewed merge resolves two heads even when the reviewed set equals their union",
+        "ADRAI.mutation service results.P6-02C scope mutation service.representative scope request and stale-token rejections preserve complete caller state",
+        "ADRAI.mutation service results.P6-02C scope mutation service.scope reviewed set rejects a conflict outside the scope axis without state changes",
+        "ADRAI.mutation service results.P6-02D domain mutation service.domain mixed update reports truthful state",
+        "ADRAI.mutation service results.P6-02D domain mutation service.representative domain delta set refine and stale-token rejections preserve state",
+        "ADRAI.mutation service results.P6-02E status mutation service.representative status request and stale-token rejections preserve complete caller state",
+        "ADRAI.mutation service results.P6-02E status mutation service.status resolve merges every current status head and rejects unapproved conflicts",
+        "ADRAI.Transaction contract.unreadable first-commit CAS inspection fails closed without destructive rollback",
+        "ADRAI.Transaction contract.Stage7 failure restores caller index and generated worktree state exactly",
+        "ADRAI.Transaction contract.append-only synchronous rollback failure is typed and preserves caller state",
+        "ADRAI.pure managed graph reducer.domains refine, fork, merge, and ignore embedded historical domains",
+        "ADRAI.pure managed graph reducer.obsolete, replacement, reactivation, and status forks retain history",
+        "ADRAI.pure managed graph reducer.invalid domain refinement and replacements are diagnosed",
+        "ADRAI.pure graph service.lifecycle gates reject inactive targets and ambiguous decision domains",
+        "ADRAI.pure graph service.status reconciliation requires explicit resolve and covers current decisions",
+        "ADRAI.pure graph service.obsolete status reconciliation enforces replacement rules"
+      ],
+      "boundary": "The 31 retained mutation-service cases include one consolidated amend-rejection carrier whose four production service calls preserve the exact no-op, detached, scope-conflict amend and domain-conflict Stage3 errors, seven snapshot points and four complete caller-state equalities. The retained D carriers preserve a truthful mixed update plus representative delta/refine/stale-token rejection. Transaction rollback, pure graph/service lifecycle and real MutationE2E carriers retain the other mapped boundaries.",
+      "acceptedLoss": "Earlier reductions retire detached init/create, scope Stage7, status, refinement and repeated wrappers as mapped. Round eight combines three amend-rejection carriers into one with all four routes and state oracles. Round nine explicitly retires the independent domain-only antichain/two-head reviewed positive merge, conflicted-target DomainDelta rejection and its private-fixture replay."
+    },
+    {
+      "removed": "MutationService repeated copy-local repository discovery and HEAD setup",
+      "oldAnchor": "test/unit/Adrai/MutationServiceTest.hs (round-6 fixture setup)",
+      "retained": [
+        "ADRAI.mutation service results.P6-02A mutation service results.post-commit indexing replaces a same-path projection with the exact latest commit",
+        "ADRAI.mutation service results.P6-02C scope mutation service.scope mixed update reports truthful delta and provenance",
+        "ADRAI.mutation service results.P6-02D domain mutation service.domain mixed update reports truthful state",
+        "ADRAI.mutation service results.P6-02E status mutation service.status resolve merges every current status head and rejects unapproved conflicts"
+      ],
+      "boundary": "All 34 registered mutation-service cases and semantic assertions remain. Each selected process acquires its production seed, proves real discovery equivalence and the captured OID once, then relocates that audited identity into private copies without changing compiler, SQLite, publication, cancellation or per-case semantic Git boundaries.",
+      "acceptedLoss": "No semantic coverage loss. Static setup Git calls fall from 219 to 40 while filesystem copies rise from 33 to 43; elapsed savings remain unmeasured."
+    },
+    {
+      "removed": "CacheIntegration stable_release_cache_survives_dev_merges, divergent_adr_states_remain_consistent, exact_cache_does_not_deserialize_managed_documents, compile_cli_reports_cache_counters, noise_only_commit_reuses_documents, post-refresh observed commit count matches the overlay, cold_compile_then_exact_cache_does_not_replace_database, new operations rebuild a changed managed tree, corrupt_old_cache_is_rebuilt, corrupt_current_db_does_not_invalidate_revision_cache, and nearest_cached_ancestor_beats_unrelated",
+      "oldAnchor": "test/integration/Adrai/CacheIntegrationTest.hs (former registrations)",
+      "retained": [
+        "ADRAI.P4-07.Cache integration (P4-07).adr_bearing_merge_rebuilds_changed_managed_tree",
+        "ADRAI.P4-07.Cache integration (P4-07).competing tree-identical targets retain their own provenance projections",
+        "production cache selection.exact CLI reports immutable archive reuse",
+        "production cache selection.corrupt authoritative archive falls back and republishes",
+        "production cache selection.candidate selection owns private validation and cleanup",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads"
+      ],
+      "boundary": "Named cache-selection cases retain exact archive/alias bytes and mtime, corrupt-alias recovery, authoritative-archive fallback, real ancestor ranking, and private cleanup; CacheIntegration retains ADR-bearing merge rebuild and simultaneous-target provenance.",
+      "acceptedLoss": "The duplicate straight-line managed rebuild, additional real-CLI topology permutations, merge-delta history-count execution, and repeated cross-component cold/exact/corrupt executions are retired. The isolated competing-target partition duplicates one simple seed compile and two concurrent target compiles; its exclusive repeat does the same."
+    },
+    {
+      "removed": "MutationE2E successful public dispatches for scope, domain, obsolete, reactivate, compile, show, compare, history, relevant, doctor, and terminal explore",
+      "oldAnchor": "test/integration/Adrai/MutationE2ETest.hs (former compact public-command matrix)",
+      "retained": [
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.public commands preserve a staged binary and return canonical exits",
+        "ADRAI.P4-06.cli-contracts.init/create CLI contracts.dispatch seam preserves the full typed obsolete request and returned projection",
+        "ADRAI.P4-06.cli-contracts.init/create CLI contracts.dispatch seam preserves the full typed reactivate request and returned projection",
+        "ADRAI.P4-06.cli-contracts.init/create CLI contracts.dispatch seam selects scope service with parsed repo and materialized request",
+        "ADRAI.P4-06.cli-contracts.init/create CLI contracts.dispatch seam selects domain service with the typed request and configured repository"
+      ],
+      "boundary": "The real command case retains one FTS JSON search over the amended ADR and exact unknown-show exit 2 while typed dispatch/projection tests retain removed request shapes.",
+      "acceptedLoss": "Seventeen real CLI launches are removed: the listed successful scope/domain/status/compile/show/compare/history/relevant/doctor/explore wiring permutations no longer execute as processes. Terminal explore and unhealthy-doctor real-process assurances are explicitly retired."
+    },
+    {
+      "removed": "Provenance overlay topology.branch_rename_preserves_hint and redundant_trailer_no_copy",
+      "oldAnchor": "test/integration/Adrai/ProvenanceOverlayTest.hs (former branch-ref hint and redundant-trailer registrations)",
+      "retained": [
+        "ADRAI.P4-07.Provenance overlay topology.target-relative evidence is lossless and ignores later cache facts"
+      ],
+      "boundary": "Stable committed-OID authority and target-relative evidence remain at the real Git/provenance boundary.",
+      "acceptedLoss": "The extra named branch-ref hint permutation, redundant-trailer warning repetition, and the later round-nine standalone trailerless-first-parent and branch-switch compositions are retired. No deleted topology carrier is claimed as current coverage."
+    },
+    {
+      "removed": "single p6-06g0-real-executable-cache-selection cache monolith",
+      "oldAnchor": "test/cache-selection/Main.hs:87-88 at original base",
+      "retained": [
+        "production cache selection.cold production archive has canonical fingerprints and bounded validation work",
+        "production cache selection.exact CLI reports immutable archive reuse",
+        "production cache selection.corrupt authoritative archive falls back and republishes",
+        "production cache selection.archive, alias, and publication contracts reject forged state",
+        "production cache selection.candidate selection owns private validation and cleanup"
+      ],
+      "boundary": "Five named cases keep cold production creation, exact CLI reuse, corruption fallback, forged archive/alias/publication rejection, and private candidate cleanup with four total compile calls.",
+      "acceptedLoss": "The former change/revert, merged-side-path-touch, and config-drift CLI scenarios no longer run as independent cache-selection matrix cells. Their repeated real-CLI paths are an accepted loss; the five named replacements retain cold production creation, exact reuse, corruption recovery, forged-state rejection, private cleanup, and a shared immutable real-cold seed."
+    },
+    {
+      "removed": "GitBatch six later-window fixture modes and broad repeated native protocol setup",
+      "oldAnchor": "test/integration/Adrai/GitBatchTest.hs (former laterWindowFixtureTests matrix)",
+      "retained": [
+        "ADRAI.P4-01.Git batch and safe reads.real 513-object later-window failure latches, reaps, and permits a fresh retry",
+        "ADRAI.P4-01.Git batch and safe reads.persistent header EOF latches its first error, reaps, and rejects later IO",
+        "ADRAI.P4-01.Git batch and safe reads.persistent native batch cancellation reaps a silent writer-blocking child and retries",
+        "ADRAI.P4-01.Git batch and safe reads.persistent native batch-check cancellation reaps a silent writer-blocking child and retries"
+      ],
+      "boundary": "One real 513-object sentinel still requests 257 objects and crosses the implementation's 256-object window; tiny native children retain header EOF, malformed output, writer-blocking cancellation and exact reaping phases.",
+      "acceptedLoss": "Equivalent later-window failure modes no longer each materialize a 513-object fixture. Immediate completion and injected timeout coverage do not preserve the former greater-than-five-second normal Git child duration guarantee."
+    },
+    {
+      "removed": "pre-snapshot transaction probes could refresh caller index stat metadata before capturing rollback bytes",
+      "oldAnchor": "src/Adrai/Service/Transaction.hs and test/unit/Adrai/TransactionTest.hs",
+      "retained": [
+        "ADRAI.Transaction contract.Stage7 failure restores caller index and generated worktree state exactly",
+        "ADRAI.Transaction contract.Stage8 rejected CAS restores generated files only after confirming the old ref",
+        "ADRAI.Transaction contract.rollback refuses to overwrite an external caller index change"
+      ],
+      "boundary": "Command-scoped non-locking pre-snapshot probes preserve stale-stat index bytes through deterministic Stage7 and Stage8 failures, while a distinct external caller-index write is detected and never overwritten.",
+      "acceptedLoss": "No semantic coverage loss; the added deterministic regression distinguishes read-only preflight from a real external index mutation."
+    },
+    {
+      "removed": "Transaction commit-tree one-parent/root plumbing carriers and standalone append-only caller-state carrier",
+      "removedNames": [
+        "ADRAI.Transaction contract.commit-tree creates a one-parent commit from stdin message",
+        "ADRAI.Transaction contract.commit-tree creates a root commit from stdin message",
+        "ADRAI.Transaction contract.append-only transaction preserves unrelated staged entry and binary worktree bytes"
+      ],
+      "oldAnchor": "test/unit/Adrai/TransactionTest.hs",
+      "retained": [
+        "ADRAI.Transaction contract.successful CAS refreshes from new commit when HEAD switches branches",
+        "ADRAI.Transaction contract.unreadable first-commit CAS inspection fails closed without destructive rollback",
+        "ADRAI.Transaction contract.rollback refuses to overwrite an external caller index change"
+      ],
+      "boundary": "The retained successful append and first-commit CAS cases now assert exact parent/root shape, message and trailers. The successful append also preserves unrelated staged binary bytes, result and index-updated semantics; rollback, CAS, lock and external-index refusal phases remain registered.",
+      "acceptedLoss": "The same plumbing and ordinary-HEAD behavior no longer execute through three standalone direct/helper carriers. Transaction setup calls fall from 145 to 19, discovery calls from 55 to 35, Git initializations from 35 to 33, private copies from 19 to 18, and observation checkpoints from 80 to 64; 184 known Git launches plus uncounted removed append internals are retired, with elapsed savings unmeasured."
+    },
+    {
+      "removed": "multi-revision tree lookup cancellation reaps a silent cmd child and retry succeeds",
+      "oldAnchor": "test/integration/Adrai/GitBatchTest.hs",
+      "retained": [
+        "ADRAI.P4-01.Git batch and safe reads.multi-revision tree lookup cancellation reaps a silent native child and retry succeeds",
+        "ADRAI.P4-01.Git batch and safe reads.persistent native batch cancellation reaps a silent writer-blocking child and retries",
+        "ADRAI.P4-01.Git batch and safe reads.persistent native batch-check cancellation reaps a silent writer-blocking child and retries",
+        "ADRAI.P4-01.Git batch and safe reads.persistent batch-check cancellation after trailing proof reaps a still-alive native child and retries"
+      ],
+      "boundary": "The retained multi-revision API case uses an actual native root and distinct grandchild, preserves AsyncCancelled identity, proves bounded exact-PID cleanup for both, and completes a fresh real-Git commit/read retry.",
+      "acceptedLoss": "The duplicate cmd-wrapper cancellation carrier, including its normal metadata bridge and blocked cmd invocation, no longer executes independently."
+    },
+    {
+      "removed": "Repository snapshots 257 unique selected blobs cross the inherited batch boundary deterministically and Cold compiler two cold rebuilds have identical fingerprints and logical meta",
+      "oldAnchor": "test/integration/Adrai/RepositorySnapshotTest.hs and ColdCompilerTest.hs",
+      "retained": [
+        "ADRAI.P4-03.Cold compiler.managed-source restream uses one production session and preserves every SQLite row",
+        "ADRAI.P4-01.Git batch and safe reads.real 513-object later-window failure latches, reaps, and permits a fresh retry"
+      ],
+      "boundary": "The restream carrier asserts the exact 257-entry path-to-bytes map and all 261 rows, while the retained Git failure carrier preserves the 513-object protocol boundary.",
+      "acceptedLoss": "The duplicate independent 257-blob snapshot invocation, the successful native 257-map replay, a second identical cold rebuild, and the later revision-alias/managed-mode carrier are retired. Their successful-map and alias-equivalence compositions are not claimed by the retained failure and restream carriers."
+    },
+    {
+      "removed": "Cache path integration exact_reuse_no_parse_on_identical_cache, provenance_delta_new_commit_classified, tree_identical_clone_on_ancestor, semantic_reuse_partial_parse, and full_cold_compile_first_time",
+      "removedNames": [
+        "ADRAI.P4-05.Cache path integration (P4-05.5).exact_reuse_no_parse_on_identical_cache",
+        "ADRAI.P4-05.Cache path integration (P4-05.5).provenance_delta_new_commit_classified",
+        "ADRAI.P4-05.Cache path integration (P4-05.5).tree_identical_clone_on_ancestor",
+        "ADRAI.P4-05.Cache path integration (P4-05.5).semantic_reuse_partial_parse",
+        "ADRAI.P4-05.Cache path integration (P4-05.5).full_cold_compile_first_time"
+      ],
+      "oldAnchor": "test/integration/Adrai/CachePathIntegrationTest.hs and its former test/default/Main.hs registration",
+      "retained": [
+        "production cache selection.exact CLI reports immutable archive reuse",
+        "production cache selection.archive, alias, and publication contracts reject forged state",
+        "ADRAI.P4-07.Cache integration (P4-07).v3 tree-identical seed reproduces parsed registration signatures from operation_member",
+        "ADRAI.P4-07.Cache integration (P4-07).tree-identical zero-scan clone publishes a zero history counter",
+        "ADRAI.P4-07.Cache integration (P4-07).adr_bearing_merge_rebuilds_changed_managed_tree",
+        "production cache selection.cold production archive has canonical fingerprints and bounded validation work"
+      ],
+      "boundary": "Retained cache-selection and CacheIntegration cases cover immutable archive reuse and forgery rejection, tree-identical registration and zero-scan publication, ADR-bearing merge rebuilds and canonical cold archives.",
+      "acceptedLoss": "Five separately registered CachePath cold-compile carriers were retired in round six. Round nine additionally retires the independent merge-delta and revision-alias carriers that previously appeared in this replacement set; no current equivalence is claimed for their topology/count and alias-mode compositions."
+    },
+    {
+      "removed": "12,000-commit/2,000-operation repository, bounded fast-import transition, and opt-in 2,000-commit phase profile",
+      "oldAnchor": "test/e2e/Adrai/LargeRepositoryStressTest.hs and former conditional registration",
+      "retained": [
+        "ADRAI stress.P6-06G compact repository stress.32-commit repository with 16 ADR operations and a two-parent merge",
+        "ADRAI stress.P6-06G compact repository stress.process-tree sampler distinguishes failures, zero working sets, and descendants",
+        "ADRAI stress.P6-06G compact repository stress.Windows process-tree sampler observes a live ProcessHandle through PowerShell",
+        "ADRAI stress.P6-06G compact repository stress.taskkill failure accepts only a verified terminated process tree"
+      ],
+      "boundary": "The enabled stress component keeps an actual 32-base-plus-one-noise commit repository, 16 operations, a two-parent merge, executable resolution, live process sampling and cleanup failure policy.",
+      "acceptedLoss": "The complete gate no longer proves 12,000-commit, 2,000-operation, fast-import, or 2,000-commit profiling capacity; there is no hidden nightly replacement."
+    },
+    {
+      "removed": "registered Git worker cleanup classified its own expected AsyncCancelled as an IOException",
+      "oldAnchor": "src/Adrai/Git.hs:1584-1598",
+      "retained": [
+        "ADRAI.P4-01.Git batch and safe reads.owner close preserves session-closed while canceling a blocked fold callback",
+        "ADRAI.P4-01.Git batch and safe reads.owner close reports blocked fold cleanup failure and reaps exact helper",
+        "ADRAI.P4-01.Git batch and safe reads.persistent-session callback cancellation reaps its child and leaves the next window usable",
+        "ADRAI.P4-01.Git batch and safe reads.persistent-session async cancellation reaps its child and leaves the next window usable"
+      ],
+      "boundary": "A latch-blocked real fold proves expected owner cancellation retains GitBlobBatchSessionClosed, waits for the registered worker and native helper to exit, and permits a fresh real Git session. A cancellation-finalizer sentinel separately proves a genuine registered-worker cleanup failure remains GitCommandFailed with its diagnostic while bounded join, exact helper reaping, one-request accounting, and a fresh session still hold. Existing cancellation cases retain external async identity.",
+      "acceptedLoss": "No semantic coverage loss; the added one-object case distinguishes expected owner-requested cancellation from already-observed or unexpected worker failure."
+    },
+    {
+      "removed": "2,000-ADR retrieval identity case and redundant same-seed, lazy-prefix and repeated-strict-fold properties",
+      "oldAnchor": "test/stress/Adrai/FixtureQueryMaterializationScaleTest.hs, RetrievalScaleTest.hs and FixtureProperties.hs",
+      "retained": [
+        "ADRAI stress.P3-06 deterministic 100 ADR retained retrieval corpus.identity, tail search, relevance, and vector reuse share one materialization",
+        "ADRAI stress.fixture plan properties.changed seed perturbs noise while preserving counts",
+        "ADRAI stress.fixture plan properties.semantic targets follow their creates",
+        "ADRAI stress.fixture plans.retrieval tail template preserves the untruncated index"
+      ],
+      "boundary": "One 100-ADR materialization asserts identity, tail and middle search, relevance, vector reuse, section-100, field-80, source-24 and parity bounds.",
+      "acceptedLoss": "The complete gate no longer proves 2,000-ADR capacity or larger-corpus LSH shortlist reduction. The 100-document/600-section fixture intentionally exercises production ExactSectionScan and exact reranking of all 600 selected-section pairs; remaining generators retain seed perturbation, unique keys and target ordering."
+    },
+    {
+      "removed": "unguarded publication-refresh candidate acquisition after openTempFile",
+      "oldAnchor": "src/Adrai/Compiler/CacheSelection/TestSupport.hs:213-214 and former newCandidate:277-282",
+      "retained": [
+        "production cache selection.publication refresh acquisition cleanup.successful acquisition preserves inputs and releases its candidate",
+        "production cache selection.publication refresh acquisition cleanup.synchronous acquisition failures clean every owned artifact",
+        "production cache selection.publication refresh acquisition cleanup.synchronized acquisition cancellation preserves ThreadKilled",
+        "production cache selection.publication refresh acquisition cleanup.cleanup failure does not mask cancellation or skip remaining cleanup"
+      ],
+      "boundary": "Seven deterministic seam scenarios cover healthy acquisition, close/remove/copy/partial-copy failure, synchronized real ThreadKilled, and ThreadKilled over an injected cleanup failure without Git or CLI setup.",
+      "acceptedLoss": "The seam observes closed phase, exception, cleanup, seed and sentinel facts; it does not expose the owned pathname or reproduce nondeterministic operating-system permission failures."
+    },
+    {
+      "removed": "exact-query SQLite open completed before bracket acquired ownership",
+      "oldAnchor": "src/Adrai/Service/Query.hs:510-542",
+      "retained": [
+        "ADRAI.P4-07.Query integration (history / search / compare).P6-08Q exact-v3 archive hooks and tamper fallback",
+        "ADRAI.P4-07.Query integration (history / search / compare).P6-08Q exact archive acquisition owns cancellation cleanup"
+      ],
+      "boundary": "A compact exact-archive case covers successful acquisition/use, latch-synchronized ThreadKilled at the owned handoff, exactly-one close, real rename/reopen/removal, and missing-open fallback with zero close. The separately registered tamper case preserves all corruption assertions.",
+      "acceptedLoss": "No query behavior or validation coverage is removed; the regression uses one small create-and-compile archive rather than the broad tamper matrix."
+    },
+    {
+      "removed": "every exact-archive corruption variant repeated the full raw observation, hydration, and cold compile fallback",
+      "oldAnchor": "test/integration/Adrai/QueryIntegrationTest.hs (former thirteen assertArchiveFallback calls)",
+      "retained": [
+        "ADRAI.P4-07.Query integration (history / search / compare).P6-08Q exact-v3 archive hooks and tamper fallback",
+        "production cache selection.archive, alias, and publication contracts reject forged state",
+        "ADRAI.P4-07.ProvenanceRead.tampered cache mismatches fail closed while missing placement repairs"
+      ],
+      "boundary": "All thirteen missing/corrupt archive variants still exercise the actual exact-context validator. Missing archive, deliberate v2 incompatibility, forged v3 old DDL, and readable FTS shadow corruption additionally prove the full search fallback and hook counts. A freshly reapplied readable FTS corruption remains in place during relevant-query execution and proves fallback, raw observation, analysis, hydration, and cold compilation exactly once before restoration; synchronous/asynchronous consumer precedence remains.",
+      "acceptedLoss": "Nine validator-axis variants no longer repeat the same raw observation, provenance hydration, and cold compiler path after already proving exact-context rejection."
+    },
+    {
+      "removed": "P6-08Q exact query context preserves raw identifier source and corpus and P6-08Q exact query context excludes divergent-branch placement evidence",
+      "oldAnchor": "test/integration/Adrai/QueryIntegrationTest.hs (former standalone identifier-source and two-target placement carriers)",
+      "retained": [
+        "ADRAI.P4-07.Query integration (history / search / compare).P6-08Q exact-v3 archive hooks and tamper fallback",
+        "ADRAI.P3-03.P3-03 compiled search SQLite.typed loader round-trips identifier source and vector corpus losslessly"
+      ],
+      "boundary": "The shared exact-query seed carries RFC-HTTP/2, OAuth2, København, Japanese, emoji, punctuation, acronym and newline-rich source bytes plus both target histories. The retained exact-v3 carrier compares raw source, materialization and vector corpus, and proves exact target placement, landing OIDs and cross-branch absence through healthy and cold contexts.",
+      "acceptedLoss": "The standalone identifier-source and two-target placement registrations no longer repeat their own repository/compile/query pipelines. Successful full fallbacks fall from five to two and total cold entries from eight to five; both target histories and branch/cherry-pick geometry remain in the shared retained carrier."
+    },
+    {
+      "removed": "ADRAI.P4-03.Cold compiler.healthy exact-OID revision populates normalized semantics search and six FTS tables",
+      "oldAnchor": "test/integration/Adrai/ColdCompilerTest.hs (former registered name)",
+      "retained": [
+        "ADRAI.P4-03.Cold compiler.healthy exact-OID revision ignores later HEAD and worktree corruption and persists a reopenable database"
+      ],
+      "boundary": "The renamed carrier retains exact-OID compilation, normalized semantic/search tables, later invalid HEAD and dirty-worktree isolation, private on-disk reopen, exact metadata/logical rows, and sidecar absence.",
+      "acceptedLoss": "No behavior is removed by this registration rename; the separately retired duplicate healthy compiles are mapped below."
+    },
+    {
+      "removed": "ADRAI.P4-03.Cold compiler.shallow cold compilation persists incomplete history without blocking semantics",
+      "oldAnchor": "test/integration/Adrai/ColdCompilerTest.hs (former registered name)",
+      "retained": [
+        "ADRAI.P4-07.Provenance overlay topology.shallow_history_incomplete"
+      ],
+      "boundary": "A real shallow-history provenance carrier continues to preserve typed incomplete-history behavior.",
+      "acceptedLoss": "Round nine retires the combined sparse/depth-one compiler carrier; exact sparse committed bytes, depth-one clone parent absence and valid cold-compilation composition are explicit losses."
+    },
+    {
+      "removed": "ADRAI.P4-03.Cold compiler.exact historical OID remains healthy after later HEAD corruption",
+      "oldAnchor": "test/integration/Adrai/ColdCompilerTest.hs",
+      "retained": [
+        "ADRAI.P4-03.Cold compiler.healthy exact-OID revision ignores later HEAD and worktree corruption and persists a reopenable database"
+      ],
+      "boundary": "The retained carrier creates an invalid later HEAD and dirty managed bytes, then compiles the older bound OID and verifies its decision row and distinct identity.",
+      "acceptedLoss": "An independent repeated healthy compiler execution is removed."
+    },
+    {
+      "removed": "ADRAI.P4-03.Cold compiler.on-disk disposable database reopens and leaves no WAL or SHM sidecars",
+      "oldAnchor": "test/integration/Adrai/ColdCompilerTest.hs",
+      "retained": [
+        "ADRAI.P4-03.Cold compiler.healthy exact-OID revision ignores later HEAD and worktree corruption and persists a reopenable database"
+      ],
+      "boundary": "The retained private on-disk database is reopened and checked for exact metadata, logical rows, semantic/count/FTS content, no sidecars, and no repository-owned database.",
+      "acceptedLoss": "An independent repeated healthy compiler execution is removed."
+    },
+    {
+      "removed": "ADRAI.P4-03.Cold compiler.missing basis is a stable warning and does not block semantics",
+      "oldAnchor": "test/integration/Adrai/ColdCompilerTest.hs",
+      "retained": [
+        "ADRAI.P4-03.P4-03 cold compiler goldens.actual placement-free SQLite logical rows and fingerprints are frozen"
+      ],
+      "boundary": "The actual SQLite golden compiles an unavailable basis and asserts VALID semantics with exactly one BASIS_COMMIT_UNAVAILABLE warning before the unchanged logical dump.",
+      "acceptedLoss": "The same missing-basis condition no longer owns a standalone duplicate compiler carrier."
+    },
+    {
+      "removed": "ADRAI.P4-03.Cold compiler.noncommit basis is a stable warning and does not block semantics",
+      "oldAnchor": "test/integration/Adrai/ColdCompilerTest.hs",
+      "retained": [
+        "ADRAI.P4-01.Git batch and safe reads.multi-revision tree observations reject missing and non-commit revisions",
+        "ADRAI.P4-07.Provenance overlay topology.classification records missing and noncommit shared-batch bases as warnings",
+        "ADRAI.P4-03.P4-03 cold compiler goldens.actual placement-free SQLite logical rows and fingerprints are frozen"
+      ],
+      "boundary": "A real blob supplied as a revision yields exact GitObjectTypeMismatch, overlay classification retains noncommit-basis warnings, and the actual golden retains valid semantics with the lone basis warning.",
+      "acceptedLoss": "The blob-as-basis condition no longer repeats an independent full compiler selection pass."
+    },
+    {
+      "removed": "ADRAI.P4-03.Cold compiler.linear history and convergent merge preserve snapshot analysis",
+      "oldAnchor": "test/integration/Adrai/ColdCompilerTest.hs",
+      "retained": [
+        "ADRAI.P4-03.Compiler integrity adversarial.selected merge deltas exactly match full traversal when both parents change managed paths"
+      ],
+      "boundary": "The retained real two-parent noise merge asserts two additional scans, identical analysis outputs, selected/full managed deltas, and a cold compile.",
+      "acceptedLoss": "The same convergent-merge analysis no longer runs through a standalone repository/analyzer carrier."
+    },
+    {
+      "removed": "ADRAI.P4-02.Repository snapshot isolation.sparse and shallow repositories observe committed trees by OID",
+      "oldAnchor": "test/integration/Adrai/RepositoryIsolationTest.hs",
+      "retained": [
+        "ADRAI.P4-02.Repository snapshot isolation.linked worktrees concurrently retain distinct immutable observations",
+        "ADRAI.P4-07.Provenance overlay topology.shallow_history_incomplete"
+      ],
+      "boundary": "Real immutable-revision separation and shallow-history incompleteness remain as separate retained boundaries.",
+      "acceptedLoss": "The separate isolation fixture and the later combined sparse/depth-one compiler execution are retired; exact configured hidden-root bytes and source/clone equivalence are not claimed by the remaining carriers."
+    },
+    {
+      "removed": "ADRAI.P4-03.Compiler integrity adversarial.wrong path and duplicate identity persist canonical diagnostics",
+      "oldAnchor": "test/integration/Adrai/IntegrityAdversarialTest.hs",
+      "retained": [
+        "ADRAI.managed integrity contracts.renames and duplicate IDs have stable diagnostics",
+        "ADRAI.managed integrity contracts.the snapshot entry path is authoritative",
+        "ADRAI.P4-03.Compiler integrity adversarial.malformed managed bytes persist INVALID_MANAGED_DOCUMENT and gate semantics"
+      ],
+      "boundary": "Pure contracts retain rename, duplicate-ID, and authoritative-path diagnostics; an actual malformed compiler carrier retains SQLite persistence and semantic gating.",
+      "acceptedLoss": "The diagnostic pair no longer repeats through an independent SQLite compiler carrier."
+    },
+    {
+      "removed": "ADRAI.P4-03.Compiler integrity adversarial.graph zero-head input persists graph diagnostics and no semantics",
+      "oldAnchor": "test/integration/Adrai/IntegrityAdversarialTest.hs",
+      "retained": [
+        "ADRAI.pure managed graph reducer.semantic conflicts are typed, sorted, and exclude integrity-only zero heads",
+        "ADRAI.P4-03.Compiler integrity adversarial.malformed managed bytes persist INVALID_MANAGED_DOCUMENT and gate semantics",
+        "ADRAI.P4-03.Compiler integrity adversarial.valid then malformed then delete does not retain historical identity"
+      ],
+      "boundary": "The graph reducer retains typed sorted conflicts excluding zero heads; actual malformed and rewrite/delete carriers retain persisted diagnostics without invalid semantics.",
+      "acceptedLoss": "Zero-head input no longer repeats an independent full compiler-to-SQLite pass."
+    },
+    {
+      "removed": "ADRAI.P4-03.Compiler integrity adversarial.internally resealed same-path rewrite persists APPEND_ONLY_REWRITE",
+      "oldAnchor": "test/integration/Adrai/IntegrityAdversarialTest.hs",
+      "retained": [
+        "ADRAI.managed integrity contracts.resealed rewrites remain append-only violations",
+        "ADRAI.P4-03.Compiler integrity adversarial.valid then malformed then delete does not retain historical identity"
+      ],
+      "boundary": "The retained adversarial carrier performs a genuine resealed semantic rewrite and persists APPEND_ONLY_REWRITE attribution. The older unit integrity assertion covers only newline-based byte rewriting and is supplementary.",
+      "acceptedLoss": "The resealed rewrite no longer has a separate full compiler pass."
+    },
+    {
+      "removed": "ADRAI.P4-03.Compiler integrity adversarial.permanent deletion persists MISSING_HISTORICAL_OBJECT",
+      "oldAnchor": "test/integration/Adrai/IntegrityAdversarialTest.hs",
+      "retained": [
+        "ADRAI.managed integrity contracts.deletes make the historical object and operation incomplete",
+        "ADRAI.P4-03.Compiler integrity adversarial.valid then malformed then delete does not retain historical identity",
+        "ADRAI.P4-03.Compiler integrity adversarial.malformed then valid member reused from a live operation persists INCOMPLETE_OPERATION"
+      ],
+      "boundary": "The integrity contract retains incomplete historical semantics; actual compiler carriers retain missing-object and incomplete-operation persistence.",
+      "acceptedLoss": "Permanent deletion no longer has a separate full compiler pass."
+    },
+    {
+      "removed": "ADRAI.P4-03.Compiler integrity adversarial.rename persists noncanonical destination and historical disappearance",
+      "oldAnchor": "test/integration/Adrai/IntegrityAdversarialTest.hs",
+      "retained": [
+        "ADRAI.managed integrity contracts.renames combine noncanonical destination and historical deletion",
+        "ADRAI.P4-03.Compiler integrity adversarial.valid then malformed then delete does not retain historical identity"
+      ],
+      "boundary": "The integrity contract retains noncanonical destination plus historical deletion, while the actual compiler carrier retains persisted historical disappearance.",
+      "acceptedLoss": "Renamed-path corruption no longer has a separate full compiler pass."
+    },
+    {
+      "removed": "ADRAI.P4-01.Git batch and safe reads.committed tree reads ignore sparse worktree materialization",
+      "oldAnchor": "test/integration/Adrai/GitBatchTest.hs",
+      "retained": [
+        "ADRAI.P4-02.Repository snapshots.shared session combines Unicode paths, repeated blobs, arbitrary bytes, and nonblob metadata"
+      ],
+      "boundary": "The retained snapshot carrier reads exact committed Unicode paths and arbitrary bytes through a real persistent native session.",
+      "acceptedLoss": "Both the lower-layer GitBatch sparse fixture and the later combined sparse/depth-one carrier are retired; cone-sparse hidden-path composition is explicitly lost."
+    },
+    {
+      "removed": "ADRAI.P4-01.Git batch and safe reads.shallow repositories expose incompleteness while retaining tree reads",
+      "oldAnchor": "test/integration/Adrai/GitBatchTest.hs",
+      "retained": [
+        "ADRAI.P4-07.Provenance overlay topology.shallow_history_incomplete"
+      ],
+      "boundary": "The retained provenance carrier keeps a real shallow-history incomplete observation.",
+      "acceptedLoss": "Both the lower-layer GitBatch shallow fixture and the later combined depth-one cold carrier are retired; exact clone bytes and parent-unavailable composition are explicit losses."
+    },
+    {
+      "removed": "Environment configured-root carrier and five Transaction lock/linked-worktree carriers",
+      "removedNames": [
+        "ADRAI.P4-07.Environment (branch / worktree / sparse / unicode).branch_specific_managed_roots_use_checked_out_configuration",
+        "ADRAI.Transaction contract.repository-common mutation lock.linked worktrees share one canonical common-directory lock",
+        "ADRAI.Transaction contract.repository-common mutation lock.live lock contention is typed and preserves the lock bytes",
+        "ADRAI.Transaction contract.repository-common mutation lock.transaction lock contention preserves refs and generated files",
+        "ADRAI.Transaction contract.repository-common mutation lock.parent-held production lock rejects an absolute executable child without repository mutation",
+        "ADRAI.Transaction contract.linked worktree transaction uses its own index and updates only its pinned branch"
+      ],
+      "oldAnchor": "test/integration/Adrai/EnvironmentTest.hs and test/unit/Adrai/TransactionTest.hs",
+      "retained": [
+        "ADRAI.P4-07.Environment (branch / worktree / sparse / unicode).linked_worktree_commits_only_its_branch_and_uses_common_lock",
+        "ADRAI.Transaction contract.Stage7 failure restores caller index and generated worktree state exactly"
+      ],
+    "boundary": "One real linked-worktree executable carrier now owns configured roots, distinct local index/gitdir, pinned feature-only advancement, main/index/tree/cache preservation, a genuine installed-executable compile and pre-existing SQLite cache-byte equality, canonical common lock, live contention, absolute-child Stage2 rejection and exact raw caller state. The retained Stage7 carrier preserves injected post-generation rollback and generated-file cleanup.",
+    "acceptedLoss": "Six separate fixtures, two CLI children, four repository initializations, three linked-worktree creations and three direct native transaction calls are retired. Their mapped assertions remain; only repeated fixture and native successful-transaction permutations are lost."
+    },
+    {
+      "removed": "three standalone ColdCompiler capacity/optimization carriers and eight fragmented CacheSync carriers",
+      "removedNames": [
+        "ADRAI.P4-03.Cold compiler.exact 32-commit noise suffix preserves analysis and adds no parse attempts",
+        "ADRAI.P4-03.Cold compiler.ordinary blob batch requests and parses each distinct prefetched blob exactly once",
+        "ADRAI.P4-03.Cold compiler.oversized single managed commit streams historical blobs within the fixed budget",
+        "ADRAI.P4-05.CacheSync.overlay DB can be opened and queried directly",
+        "ADRAI.P4-05.CacheSync.syncs operation_commit rows filtered by operation IDs",
+        "ADRAI.P4-05.CacheSync.syncs line_landing rows filtered by config_key and op_ids",
+        "ADRAI.P4-05.CacheSync.syncs ref_observations from direct Haskell data",
+        "ADRAI.P4-05.CacheSync.syncs provenance_issue into issue with origin='provenance'",
+        "ADRAI.P4-05.CacheSync.writes provenance metadata to cache meta table",
+        "ADRAI.P4-05.CacheSync.SyncResult has correct counts",
+        "ADRAI.P4-05.CacheSync.batches 12000 reachable commits and 2000 operations without changing the certified projection"
+      ],
+      "oldAnchor": "test/integration/Adrai/ColdCompilerTest.hs and test/unit/Adrai/Compiler/CacheSyncTest.hs",
+      "retained": [
+        "ADRAI.P4-03.Cold compiler.managed-source restream uses one production session and preserves every SQLite row",
+        "ADRAI.P4-03.Cold compiler.late history batch corruption returns the original Git error without a later request",
+        "ADRAI.P4-03.Compiler integrity adversarial.selected merge deltas exactly match full traversal when both parents change managed paths",
+        "ADRAI.P4-05.CacheSync.syncs the rich filtered projection, refs, issues, metadata and counts",
+        "ADRAI.P4-05.CacheSync.repairs a missing final row in the complete 32-reachable-commit 16-operation projection idempotently"
+      ],
+      "boundary": "The retained production restream proves exact 257 managed payloads and 261 rows in one unbuffered session; the late-failure carrier proves 256 parsed of 257 requested, the original Git error and a fresh 257/257 retry. The rich CacheSync case asserts complete filtered operations, landings, refs, issues, all metadata and exact counts. The compact case asserts 16-operation/32-reachable rowsets, fingerprint stability, missing-final-row repair and idempotence.",
+      "acceptedLoss": "Standalone 32/40 noise optimization counts, the oversized one-commit fixed-budget permutation, noise-only merge scan optimization, isolated overlay DDL inspection, five repeated positive sync calls and the 12,000/2,000 capacity/load assurance are retired. Exact functional row, error, repair and 257-request boundaries remain."
+    },
+    {
+      "removed": "CompilerSearch plain-text fifth CLI smoke and three separate MutationService amend-rejection registrations",
+      "removedNames": [
+        "ADRAI.mutation service results.P6-02A mutation service results.no-op amend rejection preserves the complete caller state",
+        "ADRAI.mutation service results.P6-02A mutation service results.ordinary amend and domain change reject a scope-axis conflict without mutation",
+        "ADRAI.mutation service results.P6-02A mutation service results.amend transaction failure is retry-safe before generated files exist"
+      ],
+      "oldAnchor": "test/integration/Adrai/CompilerSearchSqliteTest.hs and test/unit/Adrai/MutationServiceTest.hs",
+      "retained": [
+        "ADRAI.P3-03.P3-03 compiled search SQLite.P6-02I real executable compile is revision-bound, canonical, readable, and preserves caller state",
+        "ADRAI.mutation service results.P6-02A mutation service results.amend rejection routes preserve complete caller state across attached detached and conflicted histories",
+        "ADRAI.P4-06.cli-contracts.JSON schema contracts.compile render outcome is exact canonical JSON or truthful final-LF text",
+        "ADRAI.P4-06.cli-contracts.init/create CLI contracts.compile accepts only frozen revision and JSON options and dispatches the typed request"
+      ],
+      "boundary": "The compiled-search executable carrier retains four real CLI launches, two cold compiles, exact reuse, unknown-ref failure, mutable-alias and authoritative-archive preservation. The consolidated Mutation carrier retains all four production rejection routes, exact Stage3 messages, conflict topology and complete caller-state snapshots.",
+      "acceptedLoss": "One independent real-process plain-text formatting smoke and two independent private-fixture replay boundaries are removed. Canonical text/final-LF behavior remains in typed CLI contracts; no rejection variant, archive guarantee or caller-state oracle is lost."
+    },
+    {
+      "removed": "Round-nine low-priority compiler, repository-snapshot, repository-isolation and adversarial-integrity carriers",
+      "removedNames": [
+        "ADRAI.P4-03.Cold compiler.revision aliases preserve fingerprint and logical meta while managed mode changes fingerprint",
+        "ADRAI.P4-03.Cold compiler.custom Unicode committed roots drive the cold source set",
+        "ADRAI.P4-03.Cold compiler.sparse committed reads and a depth-one cold clone preserve exact managed bytes and incomplete history",
+        "ADRAI.P4-02.Repository snapshots.committed config is strict: empty, invalid UTF-8, and invalid TOML fail",
+        "ADRAI.P4-02.Repository snapshots.committed config and managed tree share one persistent blob child",
+        "ADRAI.P4-02.Repository snapshots.Unicode configured roots preserve repeated OIDs and arbitrary managed bytes",
+        "ADRAI.P4-02.Repository snapshots.selected symlink blobs and gitlinks preserve raw metadata without interpretation",
+        "ADRAI.P4-02.Repository snapshot isolation.branch switch after resolution cannot change the bound snapshot",
+        "ADRAI.P4-02.Repository snapshot isolation.deleted refs do not invalidate an already resolved immutable commit",
+        "ADRAI.P4-02.Repository snapshot isolation.unborn, detached, and direct-bare HEAD states remain advisory",
+        "ADRAI.P4-02.Repository snapshot isolation.force reset changes only the newly resolved committed path set",
+        "ADRAI.P4-03.Compiler integrity adversarial.managed-suffix directories are observed as nonblobs",
+        "ADRAI.P4-03.Compiler integrity adversarial.each merge parent edge is checked independently"
+      ],
+      "renamed": [
+        {
+          "old": "ADRAI.P4-02.Repository snapshots.config blob modes are literal while a nonblob config is rejected",
+          "retained": "ADRAI.P4-02.Repository snapshots.nonblob config is rejected"
+        }
+      ],
+      "oldAnchor": "test/integration/Adrai/ColdCompilerTest.hs, RepositorySnapshotTest.hs, RepositoryIsolationTest.hs and IntegrityAdversarialTest.hs",
+      "retained": [
+        "ADRAI.P4-02.Repository snapshots.shared session combines Unicode paths, repeated blobs, arbitrary bytes, and nonblob metadata",
+        "ADRAI.P4-02.Repository snapshots.raw observation retains invalid committed config without guessing managed roots",
+        "ADRAI.P4-02.Repository snapshots.nonblob config is rejected",
+        "ADRAI.P4-02.Repository snapshot isolation.dirty staged deleted and untracked worktree state never enters committed observations",
+        "ADRAI.P4-02.Repository snapshot isolation.a pruned required blob fails the bound observation atomically",
+        "ADRAI.P4-02.Repository snapshot isolation.linked worktrees concurrently retain distinct immutable observations",
+        "ADRAI.P4-03.Compiler integrity adversarial.selected Git nonblob persists MANAGED_NONBLOB",
+        "ADRAI.P4-03.Compiler integrity adversarial.selected merge deltas exactly match full traversal when both parents change managed paths",
+        "ADRAI.P4-07.Provenance overlay topology.shallow_history_incomplete"
+      ],
+      "boundary": "Retained carriers keep strict raw-invalid configuration, genuine nonblob rejection, exact persistent-session committed bytes, dirty-worktree exclusion, missing-object atomicity, linked-worktree revision separation, selected nonblob persistence, real two-parent managed deltas and shallow-history incompleteness.",
+      "acceptedLoss": "Independent alias/mode fingerprint replay, Unicode-to-SQLite replay, sparse/depth-one cold composition, extra config-error and session permutations, symlink literal-metadata replay, branch/deleted-ref/advisory-HEAD/force-reset topologies, alternate directory-shape nonblob persistence and a second merge-parent SQL-code replay are retired. No retained carrier is presented as covering those lost compositions."
+    },
+    {
+      "removed": "Round-nine redundant native Git success and discovery carriers",
+      "removedNames": [
+        "ADRAI.P4-01.Git batch and safe reads.revision tree and blob reads are exact for custom Unicode roots",
+        "ADRAI.P4-01.Git batch and safe reads.unknown and non-commit revisions are distinguished and option-like input is rejected",
+        "ADRAI.P4-01.Git batch and safe reads.257 blob OIDs are read through two deterministic bounded windows",
+        "ADRAI.P4-01.Git batch and safe reads.257 tree-path observations retain bounded correlated cat-file windows and exact metadata",
+        "ADRAI.P4-01.Git batch and safe reads.persistent blob sessions keep consecutive windows on one buffered child",
+        "ADRAI.P4-01.Git batch and safe reads.one buffered exchange preserves in-order duplicate folds",
+        "ADRAI.P4-01.Git discovery.ordinary and bare-origin linked worktrees keep per-worktree git dirs and common storage"
+      ],
+      "oldAnchor": "test/integration/Adrai/GitBatchTest.hs and GitDiscoveryTest.hs",
+      "retained": [
+        "ADRAI.P4-01.Git batch and safe reads.multi-revision tree observations batch exact Unicode paths and preserve absences",
+        "ADRAI.P4-01.Git batch and safe reads.multi-revision tree observations reject missing and non-commit revisions",
+        "ADRAI.P4-01.Git contract.revision specs preserve safe expressions and reject framing or option input",
+        "ADRAI.P4-01.Git batch and safe reads.persistent sessions use ordered bounded exchanges and reap protocol failures",
+        "ADRAI.P4-01.Git batch and safe reads.ordered folds preserve duplicates across the 256-request boundary",
+        "ADRAI.P4-01.Git batch and safe reads.correlated tree-path observations match ls-tree across history, divergence, merge parents, and shared mode objects",
+        "ADRAI.P4-01.Git batch and safe reads.real 513-object later-window failure latches, reaps, and permits a fresh retry",
+        "ADRAI.P4-01.Git discovery.main worktree discovery is canonical from a Unicode subdirectory",
+        "ADRAI.P4-02.Repository snapshot isolation.linked worktrees concurrently retain distinct immutable observations"
+      ],
+      "boundary": "The retained native carriers keep Unicode batch observations, typed missing/noncommit errors, option framing, one-session ordered 257-window folds, cross-window duplicate ordering, correlated real-tree metadata, the 513-object latch/reap/retry sentinel and real linked-worktree revision separation.",
+      "acceptedLoss": "The separate Unicode list/read integration, resolveRevision textual route, successful 257 object-map and tree-path capacity replays, two one-OID result-map assertions, short duplicate-fold carrier, and standalone ordinary/bare-origin git-dir/common-dir topology are retired. Failure sentinels are not claimed as successful-map equivalents."
+    },
+    {
+      "removed": "Round-nine cache compiler-v1 and legacy provenance topology carriers",
+      "removedNames": [
+        "ADRAI.P4-07.Cache integration (P4-07).merge_delta_scans_only_provenance_delta",
+        "ADRAI.P4-07.Cache integration (P4-07).hidden_reflog_commit_in_provenance_delta",
+        "ADRAI.P4-07.Cache integration (P4-07).v1 exact archive is rebuilt from repository as v3",
+        "ADRAI.P4-07.Cache integration (P4-07).v1 cross-revision archive never enters no-parse provenance seeding",
+        "ADRAI.P4-07.Provenance overlay topology.immediate_commit_is_original",
+        "ADRAI.P4-07.Provenance overlay topology.fast_forward_preserves_original",
+        "ADRAI.P4-07.Provenance overlay topology.no_ff_merge_introduction",
+        "ADRAI.P4-07.Provenance overlay topology.merge_trailer_is_introduction",
+        "ADRAI.P4-07.Provenance overlay topology.rebase_surviving_copy",
+        "ADRAI.P4-07.Provenance overlay topology.squash_merge_introduction",
+        "ADRAI.P4-07.Provenance overlay topology.trailerless merge with first-parent operation does not emit redundant trailer",
+        "ADRAI.P4-07.Provenance overlay topology.store_new_commits_discovers_unicode_managed_path_candidate"
+      ],
+      "oldAnchor": "test/integration/Adrai/CacheIntegrationTest.hs and ProvenanceOverlayTest.hs",
+      "retained": [
+        "ADRAI.P4-07.Cache integration (P4-07).v3 exact archive rejects missing or mismatched target placement coverage",
+        "ADRAI.P4-07.Cache integration (P4-07).v3 tree-identical seed reproduces parsed registration signatures from operation_member",
+        "ADRAI.P4-07.Cache integration (P4-07).competing tree-identical targets retain their own provenance projections",
+        "ADRAI.P4-07.Cache integration (P4-07).adr_bearing_merge_rebuilds_changed_managed_tree",
+        "ADRAI.P4-07.Provenance overlay topology.cherry_pick_copy",
+        "ADRAI.P4-07.Provenance overlay topology.squash_survives_gc",
+        "ADRAI.P4-07.Provenance overlay topology.first-parent warm priming reconciles trailerless merge placement",
+        "ADRAI.P4-07.Provenance overlay topology.second-parent warm priming recovers merge introduction placement",
+        "ADRAI.P4-07.Provenance overlay topology.missing source-target coverage replays indexed later merge placement repository-wide"
+      ],
+      "boundary": "The changed v3 authority carrier now rejects an old-schema private archive through both production validators before exercising the existing corruption matrix. Competing-target, changed-tree rebuild, warm first/second-parent placement, missing-coverage repair and exact certificate boundaries remain.",
+      "acceptedLoss": "Independent merge-delta and hidden-reflog CLI/history-count executions, public compiler v1 rebuild/migration modes, fast-forward/no-ff/merge-trailer/rebase/squash/trailerless compositions, and both standalone Unicode provenance compositions are retired. The retained topology cases are not claimed as equivalents for the deleted compositions."
+    },
+    {
+      "removed": "Round-nine MutationE2E single-head amend/search replay and service-built reconciliation setup",
+      "oldAnchor": "test/integration/Adrai/MutationE2ETest.hs",
+      "retained": [
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.public commands preserve a staged binary and return canonical exits",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads"
+      ],
+      "boundary": "The compact public-command carrier retains real init, create and show plus staged-binary preservation. The reconciliation carrier retains public incomplete rejection, successful reconciliation and stale rejection, a genuine prior-index compile, real sealed two-parent setup, exact parents/capsules/reduced record/SQLite revision and immediate caller/index/cache equality.",
+      "acceptedLoss": "The independent successful single-head amend and post-amend FTS replay are retired. Four production setup transactions and two typed setup service calls are replaced by explicit sealed Git history; the three critical public reconciliation calls and every transferred caller-state and provenance oracle remain."
+    }
+  ],
+  "runtimeDesign": {
+    "targetSeconds": 600,
+    "allocationsAreUnvalidated": true,
+    "proposedCountsAreNotClaims": true,
+    "overlayFixtureReduction": {
+      "sharedImmutableSeedInitializations": 2,
+      "privateSeedCopies": 11,
+      "originalSeedPrivateCopies": 8,
+      "mergePlacementSeedPrivateCopies": 3,
+      "historicalNetGitInitializationsRemovedInEarlierReduction": 6,
+      "largeFixtureRows": 2000,
+      "observedReadAssertions": [
+        4,
+        8,
+        11
+      ],
+      "writeBatchTransaction": true
+    },
+    "queryFixtureReduction": {
+      "sharedImmutableSeedInitializations": 1,
+      "privateSeedCopies": 2,
+      "directExactValidatorVariants": 11,
+      "successfulFullFallbacksBeforeRound8": 5,
+      "successfulFullFallbacksRound8": 2,
+      "totalColdEntriesBeforeRound8": 8,
+      "totalColdEntriesRound8": 5,
+      "explicitDiscoveriesBeforeRound8": 5,
+      "explicitDiscoveriesRound8": 2,
+      "wholeQueryCommitCreationsBeforeRound8": 11,
+      "wholeQueryCommitCreationsRound8": 7
+    },
+    "stressCapacityTradeoff": {
+      "retainedRetrievalAdrs": 100,
+      "baseRepositoryCommits": 32,
+      "postCacheNoiseCommits": 1,
+      "totalExecutedCommits": 33,
+      "retainedRepositoryOperations": 16,
+      "lostAssurance": "Former 2,000-ADR and 12,000-commit capacity profiles are no longer executed."
+    },
+    "currentKnownProcessStructure": {
+      "ordinaryAggregateCliAndSeedTotals": "Unmeasured after shared-seed consolidation; the prior 51-CLI/10-seed partial subtotal is retired.",
+      "cacheIntegrationAdraiLaunchesWithoutRepeat": 10,
+      "cacheSelectionCompileCalls": 6,
+      "mutationE2ERealCliLaunches": 6,
+      "overlayEnsureCalls": 6,
+      "overlayDedicatedHistoriesAndResources": 2,
+      "compilerSearchRealAdraiLaunches": 4,
+      "competingTargetRepeatAdraiLaunches": 3,
+      "note": "These exact source-structure counts overlap their owning jobs and are not a complete executed-process total or runtime claim."
+    },
+    "round7FixtureReductions": {
+      "transaction": {
+        "registeredCases": 52,
+        "setupGitProcessesBefore": 601,
+        "setupGitProcessesAfter": 101,
+        "repositoryInitializationsBefore": 33,
+        "repositoryInitializationsAfter": 5,
+        "repositoryDiscoveriesBefore": 35,
+        "repositoryDiscoveriesAfter": 7,
+        "acceptedLoss": "None; all registered names and behavioral assertions remain."
+      },
+      "nativeSparseShallowTransfer": {
+        "registeredCasesRemoved": 2,
+        "affectedInitializationsBefore": 8,
+        "affectedInitializationsAfter": 5,
+        "affectedDiscoveriesBefore": 8,
+        "affectedDiscoveriesAfter": 8,
+        "affectedCommitHelpersBefore": 7,
+        "affectedCommitHelpersAfter": 3,
+        "affectedIndependentClonesBefore": 3,
+        "affectedIndependentClonesAfter": 2,
+        "affectedSetupAcquisitionsBefore": 7,
+        "affectedSetupAcquisitionsAfter": 5,
+        "affectedColdCompiles": 1,
+        "gitDiscoveryGitProcessesBefore": 21,
+        "gitDiscoveryGitProcessesAfter": 13,
+        "acceptedLoss": "Two duplicate lower-layer sparse/shallow fixture executions; their real boundaries are retained by the combined R carrier."
+      },
+      "compilerAndRepository": {
+        "registeredCasesBefore": 56,
+        "registeredCasesAfter": 45,
+        "runtimeColdCompilationAttemptsBefore": 34,
+        "runtimeColdCompilationAttemptsAfter": 25,
+        "successfulFullCompilesAfter": 24,
+        "storageWriterAttemptsOutsideRuntimeColdCount": 2,
+        "combinedRuntimeAndStorageWriterAttemptsAfter": 27,
+        "standaloneAnalyzerCallsBefore": 12,
+        "standaloneAnalyzerCallsAfter": 12,
+        "repositoryDiscoveriesBefore": 67,
+        "repositoryDiscoveriesAfter": 39,
+        "revisionResolutionsBefore": 81,
+        "revisionResolutionsAfter": 64,
+        "repositoryInitializationsBefore": 17,
+        "repositoryInitializationsAfter": 10,
+        "seedConstructionsBefore": 6,
+        "seedConstructionsAfter": 7,
+        "privateCopiesBefore": 44,
+        "privateCopiesAfter": 43,
+        "tastyResourceAcquisitions": 6,
+        "retainedThresholds": [
+          32,
+          40,
+          257
+        ],
+        "note": "The 25 runtime cold attempts comprise 14 ColdCompiler attempts (12 requireCompiled calls, one direct nonfresh rejection, and one internal post-close attributed cold action), nine Integrity attempts, and two Golden attempts. One runtime attempt is the intentional nonfresh rejection, leaving 24 successful full compiles. Two separate storage-writer attempts are reported only in the combined pipeline/write count of 27. These are exact static source counts for changed R scopes, not the whole R partition or elapsed-time claims."
+      }
+    },
+    "round8FixtureReductions": {
+      "query": {
+        "registeredCasesBefore": 3,
+        "registeredCasesAfter": 2,
+        "successfulFullFallbacksBefore": 5,
+        "successfulFullFallbacksAfter": 2,
+        "totalColdEntriesBefore": 8,
+        "totalColdEntriesAfter": 5,
+        "directCorruptClassificationsBefore": 9,
+        "directCorruptClassificationsAfter": 11,
+        "explicitDiscoveriesBefore": 5,
+        "explicitDiscoveriesAfter": 2,
+        "wholeCommitCreationsBefore": 11,
+        "wholeCommitCreationsAfter": 7
+      },
+      "environmentAndTransaction": {
+        "registeredCasesBefore": 55,
+        "registeredCasesAfter": 49,
+        "cliChildrenBefore": 5,
+      "cliChildrenAfter": 3,
+      "successfulCliChildrenBefore": 3,
+      "successfulCliChildrenAfter": 2,
+      "rejectedCliChildrenBefore": 2,
+      "rejectedCliChildrenAfter": 1,
+        "freshRepositoryInitializationsBefore": 5,
+        "freshRepositoryInitializationsAfter": 1,
+        "linkedWorktreeCreationsBefore": 4,
+        "linkedWorktreeCreationsAfter": 1,
+        "repositoryDiscoveriesBefore": 7,
+        "repositoryDiscoveriesAfter": 2,
+        "harnessGitProcessesBefore": 119,
+      "harnessGitProcessesAfter": 26,
+      "successfulCompilerSqliteBuildsBefore": 3,
+      "successfulCompilerSqliteBuildsAfter": 2,
+      "emptyPreflightDirectoriesAdded": 1,
+      "cacheCopiesAdded": 0,
+      "cacheSeedsAdded": 0
+      },
+      "compilerAndCacheSync": {
+        "registeredCasesBefore": 39,
+        "registeredCasesAfter": 30,
+        "analyzerLaunchesRemoved": 8,
+        "fixtureCommitsRemoved": 77,
+        "cacheSyncProductionCallsBefore": 15,
+        "cacheSyncProductionCallsAfter": 10,
+        "testOwnedSqlCallsBefore": 344,
+        "testOwnedSqlCallsAfter": 216,
+        "testOwnedSqliteOpensBefore": 51,
+        "testOwnedSqliteOpensAfter": 31,
+        "acceptedCapacityLoss": "The 12,000-reachable/2,000-operation capacity assurance and standalone 32/40 optimization counts are retired."
+      },
+      "compilerSearchAndAmend": {
+        "compilerSearchRealCliBefore": 5,
+        "compilerSearchRealCliAfter": 4,
+        "compilerSearchColdCompiles": 2,
+        "mutationRegistrationsBefore": 3,
+        "mutationRegistrationsAfter": 1,
+        "mutationServiceCalls": 4,
+        "mutationSnapshotPoints": 7
+      }
+    },
+    "round9CarrierReductions": {
+      "ordinaryRegistrationsBefore": 885,
+      "ordinaryRegistrationsAfter": 852,
+      "native": {
+        "registeredCasesBefore": 77,
+        "registeredCasesAfter": 70,
+        "knownGitChildrenRemoved": 60,
+        "privateCopiesBefore": 31,
+        "privateCopiesAfter": 26,
+        "immutableFixtureUsesBefore": 23,
+        "immutableFixtureUsesAfter": 22,
+        "resourceAcquisitionsBefore": 2,
+        "resourceAcquisitionsAfter": 2
+      },
+      "compilerAndRepository": {
+        "registeredCasesBefore": 39,
+        "registeredCasesAfter": 26,
+        "runtimeColdCompilesBefore": 23,
+        "runtimeColdCompilesAfter": 16,
+        "repositoryInitializationsBefore": 9,
+        "repositoryInitializationsAfter": 7,
+        "privateCopiesBefore": 38,
+        "privateCopiesAfter": 27,
+        "testOwnedSqliteOpensBefore": 25,
+        "testOwnedSqliteOpensAfter": 18,
+        "note": "gitSuccess, commitFile, commitFiles and hashObject reductions are source-site counts, not runtime-child totals or elapsed-time claims."
+      },
+      "cacheIntegration": {
+        "registeredCasesBefore": 14,
+        "registeredCasesAfter": 10,
+        "realCompileCliBefore": 12,
+        "realCompileCliAfter": 8,
+        "privateFixtureExecutionsBefore": 14,
+        "privateFixtureExecutionsAfter": 10,
+        "archiveCopyExecutionsBefore": 13,
+        "archiveCopyExecutionsAfter": 14
+      },
+      "provenanceOverlay": {
+        "registeredCasesBefore": 43,
+        "registeredCasesAfter": 35,
+        "privateSeedCopiesBefore": 14,
+        "privateSeedCopiesAfter": 11,
+        "knownGitTestSupportChildrenRemoved": 147,
+        "repositoryDiscoveryResolutionPairsRemoved": 9
+      },
+      "domainMutation": {
+        "registeredCasesBefore": 3,
+        "registeredCasesAfter": 2,
+        "privateCopiesRemoved": 1,
+        "runDomainCallsRemoved": 4,
+        "directGitResetCherryPickCallsRemoved": 2
+      },
+      "mutationE2E": {
+        "registeredCasesBefore": 3,
+        "registeredCasesAfter": 3,
+        "realCliLaunchesBefore": 10,
+        "realCliLaunchesAfter": 6,
+        "compactCompilerSqlitePathsBefore": 3,
+        "compactCompilerSqlitePathsAfter": 2,
+        "reconciliationCompilerSqliteBuildsBefore": 5,
+        "reconciliationCompilerSqliteBuildsAfter": 2,
+        "reconciliationExplicitHarnessGitBefore": 78,
+        "reconciliationExplicitHarnessGitAfter": 87
+      },
+      "measurement": "All counts are static source-derived scopes. Complete83 remains failed/incomplete at 590.032027 seconds; no post-round-nine runtime saving is claimed."
+    }
+  }
+}

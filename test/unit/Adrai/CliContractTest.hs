@@ -8,7 +8,6 @@ module Adrai.CliContractTest (tests) where
 
 import Adrai.Cli
   ( CompileResult (..),
-    coldCompilerToCompileResult,
     compileResultJson,
     DoctorOutput (..),
     DoctorIssue (..),
@@ -23,7 +22,6 @@ import Adrai.Cli
     ShowCommand (..),
     showCommandJson,
     HistoryCommand (..),
-    HistoryOrder (..),
     SearchCommand (..),
     RelevantCommand (..),
     CompareCommand (..),
@@ -57,6 +55,10 @@ import Adrai.CliRunner
     parseDigest,
     parseStructuredCreate,
      parseStructuredAmend,
+     materializeCreate,
+     materializeCreateWithStdin,
+     materializeAmend,
+     materializeAmendWithStdin,
      materializeScope,
      materializeDomain,
      materializeObsolete,
@@ -85,6 +87,7 @@ import Adrai.CliRunner
     renderInitOutcome,
   )
 import Adrai.Git (GitOid (..))
+import Adrai.Integration.CLI (parseCompileResult, prependExtraPathParts, spawnAdraiWith)
 import Adrai.Domain (canonicalDomains, mkDomain, parseDomainRefinement)
 import Adrai.Scope (mkScopePattern)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
@@ -93,15 +96,11 @@ import Adrai.Types (ActorKind (..), ProvenanceInputs (..), RevisionSelector (..)
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import qualified Adrai.Format as Format
 import Adrai.Provenance (sha256Digest)
-import Adrai.Compiler (ColdCompilerResult (..))
-import Adrai.Retrieval (SearchMaterialization(..))
-
-import Adrai.Sqlite (ColdDatabaseStats (..))
 import Adrai.Graph (GraphReduction (..))
 import Adrai.History
   ( ActorSelector (..),
     HistoryOptions (..),
-    HistoryOrder (..),
+    HistoryOrder (NewestFirst, OldestFirst),
     HistoryProjection (..),
     ReadSnapshot (..),
     RevisionIdentity (..),
@@ -135,7 +134,6 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.ByteString as BS
-import Data.Aeson (Value (..), Object)
 import qualified Data.Text.Encoding as Text.Encoding
 import Data.Text (Text)
 import qualified Data.ByteString.Lazy as BL
@@ -148,9 +146,12 @@ import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
 import System.Exit (ExitCode (..))
 import System.IO (IOMode (WriteMode), withBinaryFile)
-import System.Environment (lookupEnv, setEnv, unsetEnv)
-import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, fromException, throwIO, try)
+import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
+import System.Timeout (timeout)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, evaluate, fromException, throwIO, try)
 import System.IO.Temp (withSystemTempDirectory)
+import System.IO.Unsafe (unsafePerformIO)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Foldable (for_)
 import Data.List (sort)
@@ -238,9 +239,44 @@ objectKeys :: Aeson.Value -> [Text]
 objectKeys (Aeson.Object km) = sort (map Aeson.Key.toText (KM.keys km))
 objectKeys _ = []
 
--- | Encode a value to JSON text for inspection.
-toJsonText :: Aeson.Value -> Text
-toJsonText = Text.Encoding.decodeUtf8 . BL.toStrict . Aeson.encode
+expectObject :: String -> Aeson.Value -> IO Aeson.Object
+expectObject context = \case
+  Aeson.Object object -> pure object
+  value -> assertFailure (context <> ": expected object, got " <> show value) >> fail "unreachable"
+
+expectArray :: String -> Aeson.Value -> IO Aeson.Array
+expectArray context = \case
+  Aeson.Array array -> pure array
+  value -> assertFailure (context <> ": expected array, got " <> show value) >> fail "unreachable"
+
+unsupportedCliDispatchDependencies :: CliDispatchDependencies
+unsupportedCliDispatchDependencies =
+  CliDispatchDependencies
+    { cliRunCompile = \_ _ -> error "compile service must not be selected"
+    , cliRunDoctor = \_ _ -> error "doctor service must not be selected"
+    , cliRunShow = \_ _ -> error "show service must not be selected"
+    , cliRunCompare = \_ _ -> error "compare service must not be selected"
+    , cliRunHistory = \_ _ -> error "history service must not be selected"
+    , cliRunSearch = \_ _ -> error "search service must not be selected"
+    , cliRunRelevant = \_ _ -> error "relevant service must not be selected"
+    , cliMaterializeCreate = \_ -> error "create materialization must not be selected"
+    , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
+    , cliMaterializeObsolete = \_ -> error "obsolete materialization must not be selected"
+    , cliMaterializeReactivate = \_ -> error "reactivate materialization must not be selected"
+    , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
+    , cliMaterializeDomain = \_ -> error "domain materialization must not be selected"
+    , cliRunInit = \_ -> error "init service must not be selected"
+    , cliRunCreate = \_ _ -> error "create service must not be selected"
+    , cliRunAmend = \_ _ -> error "amend service must not be selected"
+    , cliRunObsolete = \_ _ _ -> error "obsolete service must not be selected"
+    , cliRunReactivate = \_ _ _ -> error "reactivate service must not be selected"
+    , cliRunScope = \_ _ -> error "scope service must not be selected"
+    , cliRunDomain = \_ _ -> error "domain service must not be selected"
+    }
+
+actorEnvironmentFixtureLock :: MVar ()
+{-# NOINLINE actorEnvironmentFixtureLock #-}
+actorEnvironmentFixtureLock = unsafePerformIO (newMVar ())
 
 -- ============================================================
 -- compileResultJson tests
@@ -255,14 +291,14 @@ compileResultTests =
         keys @?= sort keys,
       testCase "database field is a string" $ do
         let json = compileResultJson (mkCompileResult)
-            Aeson.Object km = json
+        km <- expectObject "compile result database" json
         case KM.lookup "database" km of
           Just (Aeson.String _) -> pure ()
           Just v -> assertFailure $ "Expected String, got: " <> show v
           Nothing -> assertFailure "Missing 'database' key",
       testCase "numeric fields are Aeson.Number (not string)" $ do
         let json = compileResultJson (mkCompileResult)
-            Aeson.Object km = json
+        km <- expectObject "compile result numeric fields" json
         let numericKeys =
               [ "adrs_rebuilt",
                 "adrs_reused",
@@ -290,7 +326,7 @@ compileResultTests =
               , coldCompilerIssueCount = 10
               }
             json = compileResultJson result
-            Aeson.Object km = json
+        km <- expectObject "compile result issue counts" json
         case (KM.lookup "errors" km, KM.lookup "warnings" km, KM.lookup "issues" km) of
           (Just (Aeson.Number e), Just (Aeson.Number w), Just (Aeson.Number i)) -> do
             (e, w, i) @?= (4, 6, 10)
@@ -300,7 +336,7 @@ compileResultTests =
               { coldCompilerCacheKey = ""
               }
             json = compileResultJson result
-            Aeson.Object km = json
+        km <- expectObject "compile result cache key" json
         case KM.lookup "cache_key" km of
           Just (Aeson.String "") -> pure ()
           Just v -> assertFailure $ "Expected empty string, got: " <> show v
@@ -308,9 +344,9 @@ compileResultTests =
       testCase "cache_retain_revisions defaults to 12" $ do
         let result = mkCompileResult
             json = compileResultJson result
-            Aeson.Object km = json
+        km <- expectObject "compile result retention" json
         case KM.lookup "cache_retain_revisions" km of
-          Just (Aeson.Number n) -> pure ()
+          Just (Aeson.Number _) -> pure ()
           Just v -> assertFailure $ "Expected Number, got: " <> show v
           Nothing -> assertFailure "Missing 'cache_retain_revisions' key",
       testCase "produces deterministic output (same input → identical JSON)" $ do
@@ -332,7 +368,7 @@ compileResultTests =
               , coldCompilerAnnBuckets = 25
               }
             json = compileResultJson result
-            Aeson.Object km = json
+        km <- expectObject "compile result mappings" json
         -- Verify key mappings
         KM.lookup "database" km @?= Just (Aeson.String "/test/path.db")
         KM.lookup "revision" km @?= Just (Aeson.String "rev1")
@@ -351,8 +387,50 @@ compileResultTests =
             round warnings @?= (5 :: Int)
             round built @?= (10 :: Int)
             round buckets @?= (25 :: Int)
-          _ -> assertFailure "Missing expected mapped numeric keys"
+          _ -> assertFailure "Missing expected mapped numeric keys",
+       testCase "integration compile parser accepts only the frozen snake_case projection" $ do
+         let canonical = compileResultJson mkCompileResult
+         parseCompileResult canonical @?= Just mkCompileResult,
+       testCase "integration compile parser rejects a camelCase-only projection" $ do
+         let camelOnly =
+               case compileResultJson mkCompileResult of
+                 Aeson.Object fields ->
+                   Aeson.Object $
+                     KM.fromList
+                       [ (Aeson.Key.fromText (camelCompileKey (Aeson.Key.toText key)), value)
+                         | (key, value) <- KM.toList fields
+                       ]
+                 value -> value
+         parseCompileResult camelOnly @?= Nothing,
+       testCase "integration compile parser rejects conflicting legacy and canonical keys" $ do
+         let conflicting =
+               case compileResultJson mkCompileResult of
+                 Aeson.Object fields -> Aeson.Object (KM.insert "coldCompilerDatabase" (Aeson.String "wrong.sqlite") fields)
+                 value -> value
+         parseCompileResult conflicting @?= Nothing
         ]
+
+camelCompileKey :: Text -> Text
+camelCompileKey key =
+  case key of
+    "database" -> "coldCompilerDatabase"
+    "revision" -> "coldCompilerRevision"
+    "issues" -> "coldCompilerIssueCount"
+    "errors" -> "coldCompilerErrorCount"
+    "warnings" -> "coldCompilerWarningCount"
+    "embedding_computed" -> "coldCompilerEmbeddingComputed"
+    "embedding_reused" -> "coldCompilerEmbeddingReused"
+    "cache_mode" -> "coldCompilerCacheMode"
+    "documents_parsed" -> "coldCompilerDocumentsParsed"
+    "documents_reused" -> "coldCompilerDocumentsReused"
+    "history_commits_scanned" -> "coldCompilerHistoryCommitsScanned"
+    "incremental_kind" -> "coldCompilerIncrementalKind"
+    "adrs_rebuilt" -> "coldCompilerAdrsRebuilt"
+    "adrs_reused" -> "coldCompilerAdrsReused"
+    "ann_buckets" -> "coldCompilerAnnBuckets"
+    "cache_key" -> "coldCompilerCacheKey"
+    "cache_retain_revisions" -> "coldCompilerCacheRetainRevisions"
+    _ -> key
 
 -- ============================================================
 -- doctorOutputJson tests
@@ -367,7 +445,7 @@ doctorOutputTests =
         keys @?= sort keys,
       testCase "ok field is Aeson.Bool" $ do
         let json = doctorOutputJson (mkDoctorOutput)
-            Aeson.Object km = json
+        km <- expectObject "doctor ok" json
         case KM.lookup "ok" km of
           Just (Aeson.Bool _) -> pure ()
           Just v -> assertFailure $ "Expected Bool, got: " <> show v
@@ -377,7 +455,7 @@ doctorOutputTests =
               { doctorDatabase = Nothing
               }
             json = doctorOutputJson output
-            Aeson.Object km = json
+        km <- expectObject "doctor null database" json
         case KM.lookup "database" km of
           Just Aeson.Null -> pure ()
           Just v -> assertFailure $ "Expected Null, got: " <> show v
@@ -387,7 +465,7 @@ doctorOutputTests =
               { doctorDatabase = Just "/prod/data.db"
               }
             json = doctorOutputJson output
-            Aeson.Object km = json
+        km <- expectObject "doctor database" json
         case KM.lookup "database" km of
           Just (Aeson.String p) -> p @?= "/prod/data.db"
           Just v -> assertFailure $ "Expected String, got: " <> show v
@@ -395,7 +473,7 @@ doctorOutputTests =
       testCase "issues is an array of DoctorIssue objects" $ do
         let output = mkDoctorOutput
             json = doctorOutputJson output
-            Aeson.Object km = json
+        km <- expectObject "doctor issues" json
         case KM.lookup "issues" km of
           Just (Aeson.Array arr) ->
             assertBool "issues array has at least one element" (Vector.length arr > 0)
@@ -404,7 +482,7 @@ doctorOutputTests =
       testCase "doctorCountsJson emits errors and warnings" $ do
         let counts = DoctorCounts { doctorErrorCount = 5, doctorWarningCount = 2 }
             json = doctorCountsJson counts
-            Aeson.Object km = json
+        km <- expectObject "doctor counts" json
         case (KM.lookup "errors" km, KM.lookup "warnings" km) of
           (Just (Aeson.Number e), Just (Aeson.Number w)) -> do
             round e @?= (5 :: Int)
@@ -420,8 +498,8 @@ doctorOutputTests =
               , doctorIssueStateToken = Nothing
               , doctorIssueConflicts = [] }
             json = doctorIssueJson issue
-            Aeson.Object km = json
-            keys = sort $ map Aeson.Key.toText (KM.keys km)
+        km <- expectObject "doctor issue" json
+        let keys = sort $ map Aeson.Key.toText (KM.keys km)
             nullCheck =
               case ( KM.lookup "adr_id" km
                    , KM.lookup "object_id" km
@@ -446,7 +524,6 @@ doctorOutputTests =
               , dbBuildEmbeddingReused = Nothing
               , dbBuildReuseSourceRevision = Nothing }
             json = doctorDatabaseBuildJson build
-            Aeson.Object km = json
             nullKeys =
               [ "source_revision",
                 "document_count",
@@ -461,7 +538,8 @@ doctorOutputTests =
                 "embedding_reused",
                 "reuse_source_revision"
               ]
-            checkKey k =
+        km <- expectObject "doctor database build" json
+        let checkKey k =
               case KM.lookup (Aeson.Key.fromText (T.pack k)) km of
                 Just Aeson.Null -> pure ()
                 Just v -> assertFailure $ k <> " expected Null, got: " <> show v
@@ -497,7 +575,7 @@ doctorOutputTests =
               { doctorOk = False
               }
             json = doctorOutputJson output
-            Aeson.Object km = json
+        km <- expectObject "doctor output roundtrip" json
         case KM.lookup "ok" km of
           Just (Aeson.Bool b) -> b @?= False
           Just v -> assertFailure $ "Expected Bool, got: " <> show v
@@ -532,12 +610,12 @@ toAesonValueTests =
   testGroup "toAesonValue"
     [ testCase "JsonObject maps all key-value pairs correctly" $ do
         let input = JsonObject [("a", JsonString "1"), ("b", JsonString "2")]
-            Aeson.Object km = toAesonValue input
+        km <- expectObject "json object conversion" (toAesonValue input)
         (KM.lookup "a" km, KM.lookup "b" km) @?=
           (Just (Aeson.String "1"), Just (Aeson.String "2")),
       testCase "JsonArray preserves element order and converts nested objects" $ do
         let input = JsonArray [JsonString "x", JsonObject [("k", JsonNumber 42)]]
-            Aeson.Array arr = toAesonValue input
+        arr <- expectArray "json array conversion" (toAesonValue input)
         Vector.length arr @?= 2
         case (arr ! 0, arr ! 1) of
           (Aeson.String "x", Aeson.Object km) ->
@@ -560,7 +638,7 @@ toAesonValueTests =
             output = toAesonValue input
         case output of
           Aeson.Number n ->
-            assertBool "decimal is approximately 3.14159" (abs (fromRational (toRational n) - 3.14159) < 0.00001)
+            assertBool "decimal is approximately 3.14159" (abs (fromRational (toRational n) - (3.14159 :: Double)) < 0.00001)
           _ -> assertFailure $ "Expected Number, got: " <> show output,
       testCase "JsonBool converts to Aeson.Bool" $ do
         let input = JsonBool True
@@ -606,6 +684,7 @@ toAesonValueTests =
                         _ -> assertFailure "Expected object at level2"
                     _ -> assertFailure "Wrong array length at level1"
                 _ -> assertFailure "Missing level1 key"
+            checkLevel1 value = assertFailure ("Expected outer object, got " <> show value)
         case output of
           Aeson.Object km1 -> checkLevel1 (Aeson.Object km1)
           _ -> assertFailure "Expected outer object"
@@ -917,7 +996,7 @@ mutationCliContractTests =
         selectedRepo <- newIORef Nothing
         selectedCommand <- newIORef Nothing
         let dependencies =
-              CliDispatchDependencies
+              unsupportedCliDispatchDependencies
                 { cliRunCompile = \config received -> do
                     writeIORef selectedRepo (Just (configRepo config))
                     writeIORef selectedCommand (Just received)
@@ -991,7 +1070,7 @@ mutationCliContractTests =
         selectedRepo <- newIORef Nothing
         selectedCommand <- newIORef Nothing
         let dependencies =
-              CliDispatchDependencies
+              unsupportedCliDispatchDependencies
                 { cliRunDoctor = \config received -> do
                     writeIORef selectedRepo (Just (configRepo config))
                     writeIORef selectedCommand (Just received)
@@ -1046,17 +1125,17 @@ mutationCliContractTests =
         for_ [["search", "--query", "cache"], ["search", "cache", "--fts"], ["search", "cache", "--collapsed"], ["search", "cache", "--model", "planner"], ["search", "cache", "--mode", "other"], ["search", "cache", "--view", "other"]] assertParserFailure
         case searchCommandRequest explicit of
           Left problem -> assertFailure (T.unpack problem)
-          Right request -> do
-            searchRequestQuery request @?= "cache ü"
-            searchRequestMode request @?= VectorRetrieval
-            searchRequestView request @?= ExplodedView
-            searchRequestFile request @?= Just (RepoPath "src/cache ü.hs")
-            searchRequestDomains request @?= ["compiler", "runtime"]
-            searchRequestActor request @?= Just (ActorSelector LlmActor "planner")
-            searchRequestSince request @?= Just 100
-            searchRequestUntil request @?= Just 200
-            searchRequestIncludeObsolete request @?= True
-            searchRequestLimit request @?= 7
+          Right searchRequest -> do
+            searchRequestQuery searchRequest @?= "cache ü"
+            searchRequestMode searchRequest @?= VectorRetrieval
+            searchRequestView searchRequest @?= ExplodedView
+            searchRequestFile searchRequest @?= Just (RepoPath "src/cache ü.hs")
+            searchRequestDomains searchRequest @?= ["compiler", "runtime"]
+            searchRequestActor searchRequest @?= Just (ActorSelector LlmActor "planner")
+            searchRequestSince searchRequest @?= Just 100
+            searchRequestUntil searchRequest @?= Just 200
+            searchRequestIncludeObsolete searchRequest @?= True
+            searchRequestLimit searchRequest @?= 7
         assertBool "malformed actor is rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchActor = Just "planner"})))
         assertBool "actor surrounding whitespace is rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchActor = Just "llm: planner"})))
         assertBool "actor control characters are rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchActor = Just "llm:plan\tner"})))
@@ -1068,7 +1147,7 @@ mutationCliContractTests =
         selectedRepo <- newIORef Nothing
         selectedRequest <- newIORef Nothing
         let dependencies =
-              CliDispatchDependencies
+              unsupportedCliDispatchDependencies
                 { cliRunSearch = \config received -> do
                     writeIORef selectedRepo (Just (configRepo config))
                     writeIORef selectedRequest (Just received)
@@ -1147,7 +1226,7 @@ mutationCliContractTests =
         selectedRepo <- newIORef Nothing
         selectedRequest <- newIORef Nothing
         let dependencies =
-              CliDispatchDependencies
+              unsupportedCliDispatchDependencies
                 { cliRunRelevant = \config received -> do
                     writeIORef selectedRepo (Just (configRepo config))
                     writeIORef selectedRequest (Just received)
@@ -1188,7 +1267,7 @@ mutationCliContractTests =
               (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))
               []
             command = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True False
-            dependencies = CliDispatchDependencies
+            dependencies = unsupportedCliDispatchDependencies
               { cliRunShow = \config received -> do
                   writeIORef serviceCalled True
                   writeIORef selectedRepo (Just (configRepo config))
@@ -1234,7 +1313,7 @@ mutationCliContractTests =
                 []
                 []
             dependencies =
-              CliDispatchDependencies
+              unsupportedCliDispatchDependencies
                 { cliRunShow = \_ _ -> error "show service must not be selected",
                   cliRunCompare = \config received -> do
                     writeIORef selectedRepo (Just (configRepo config))
@@ -1284,7 +1363,7 @@ mutationCliContractTests =
               options
               []
             dependencies =
-              CliDispatchDependencies
+              unsupportedCliDispatchDependencies
                 { cliRunShow = \_ _ -> error "show service must not be selected",
                   cliRunCompare = \_ _ -> error "compare service must not be selected",
                   cliRunHistory = \config received -> do
@@ -1374,27 +1453,26 @@ mutationCliContractTests =
         materializeObsolete blank >>= (assertBool "blank obsolete reason rejects" . either (const True) (const False))
         materializeReactivate reactivate >>= (assertBool "reactivate materializes" . either (const False) (const True))
     , testCase "status materialization preserves every typed intent and rejects malformed fields" $ do
-        let target = requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
-            replacement = requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS")
+        let replacement = requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS")
             token = requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN")
-            actor = requireRight (parseActor "llm:reviewer" (Just "gpt-test"))
+            typedActor = requireRight (parseActor "llm:reviewer" (Just "gpt-test"))
             input = sha256Digest "input bytes"
             prompt = sha256Digest "prompt bytes"
             context = sha256Digest "context bytes"
             obsolete = ObsoleteCommand "A0123456789ABCDEFGHJKMNPQRS" "  replace it  " (Just "A1123456789ABCDEFGHJKMNPQRS") (Just "S0123456789ABCDEFGHJKMN") True (Just "llm:reviewer") (Just "gpt-test") (Just (Format.renderDigest input)) (Just (Format.renderDigest prompt)) (Just (Format.renderDigest context)) Nothing Nothing True
             reactivate = ReactivateCommand "A0123456789ABCDEFGHJKMNPQRS" "  restore it  " (Just "S0123456789ABCDEFGHJKMN") True (Just "llm:reviewer") (Just "gpt-test") (Just (Format.renderDigest input)) (Just (Format.renderDigest prompt)) (Just (Format.renderDigest context)) Nothing Nothing True
-        materializeObsolete obsolete >>= (@?= Right (ObsoleteCliRequest (ObsoleteRequest (Just token) "  replace it  " True (Just replacement)) actor (ProvenanceInputs (Just input) (Just prompt) (Just context))))
-        materializeReactivate reactivate >>= (@?= Right (ReactivateCliRequest (ReactivateRequest (Just token) "  restore it  " True) actor (ProvenanceInputs (Just input) (Just prompt) (Just context))))
+        materializeObsolete obsolete >>= (@?= Right (ObsoleteCliRequest (ObsoleteRequest (Just token) "  replace it  " True (Just replacement)) typedActor (ProvenanceInputs (Just input) (Just prompt) (Just context))))
+        materializeReactivate reactivate >>= (@?= Right (ReactivateCliRequest (ReactivateRequest (Just token) "  restore it  " True) typedActor (ProvenanceInputs (Just input) (Just prompt) (Just context))))
         materializeObsolete (obsolete { obsoleteAdrSpec = "bad" }) >>= (assertBool "invalid target rejects" . isLeft)
         materializeObsolete (obsolete { obsoleteReplacementSpec = Just "bad" }) >>= (assertBool "invalid replacement rejects" . isLeft)
         materializeObsolete (obsolete { obsoleteExpectedStateSpec = Just "bad" }) >>= (assertBool "invalid state token rejects" . isLeft)
         materializeObsolete (obsolete { obsoleteActorSpec = Just "bad" }) >>= (assertBool "invalid actor rejects" . isLeft)
         materializeObsolete (obsolete { obsoleteInputDigestSpec = Just "bad" }) >>= (assertBool "invalid input digest rejects" . isLeft)
     , testCase "scope is canonical and parses only frozen scope options" $ do
-        let expected = ScopeCommand
+        let scopeExpected = ScopeCommand
               "A0123456789ABCDEFGHJKMNPQRS" ["src/**", "test/**"] ["legacy/**"] [] (Just "Broaden coverage")
               (Just "S0123456789ABCDEFGHJKMN") (Just "human:architect") (Just "editor") Nothing Nothing Nothing Nothing Nothing True
-        parseCli ["scope", "A0123456789ABCDEFGHJKMNPQRS", "--add", "src/**", "--add", "test/**", "--remove", "legacy/**", "--reason", "Broaden coverage", "--expect", "S0123456789ABCDEFGHJKMN", "--actor", "human:architect", "--model", "editor", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdScope expected))
+        parseCli ["scope", "A0123456789ABCDEFGHJKMNPQRS", "--add", "src/**", "--add", "test/**", "--remove", "legacy/**", "--reason", "Broaden coverage", "--expect", "S0123456789ABCDEFGHJKMN", "--actor", "human:architect", "--model", "editor", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdScope scopeExpected))
         assertParserFailure ["scope-adr", "A0123456789ABCDEFGHJKMNPQRS"]
         assertParserFailure ["scope", "A0123456789ABCDEFGHJKMNPQRS", "--body", "forbidden"]
         assertParserFailure ["scope", "A0123456789ABCDEFGHJKMNPQRS", "--input-json", "forbidden.json"]
@@ -1403,10 +1481,10 @@ mutationCliContractTests =
     , testCase "scope materialization preserves typed duplicate delta inputs and exact rejections" $ do
         let duplicate = scopeCommand ["src/**", "src/**"] [] [] (Just "Reason") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing
         materializeScope duplicate >>= \case
-          Right request -> do
-            scopeRequestAdr request @?= requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
-            scopeRequestChange request @?= ScopeDelta [requireRight (mkScopePattern "src/**"), requireRight (mkScopePattern "src/**")] []
-            scopeRequestActor request @?= requireRight (parseActor "human:cli" Nothing)
+          Right scopeRequest -> do
+            scopeRequestAdr scopeRequest @?= requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
+            scopeRequestChange scopeRequest @?= ScopeDelta [requireRight (mkScopePattern "src/**"), requireRight (mkScopePattern "src/**")] []
+            scopeRequestActor scopeRequest @?= requireRight (parseActor "human:cli" Nothing)
           Left problem -> assertFailure (T.unpack problem)
         materializeScope (scopeCommand [] [] [] Nothing Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing) >>= (@?= Left "scope requires --reason")
         materializeScope (scopeCommand [] [] [] (Just "  ") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing) >>= (@?= Left "scope reason must be nonblank")
@@ -1418,22 +1496,22 @@ mutationCliContractTests =
         withSystemTempDirectory "adrai scope materialize" $ \temporary -> do
           let promptPath = temporary <> "/prompt.txt"
               contextPath = temporary <> "/context.txt"
-              command = scopeCommand ["src/**"] [] [] (Just "Reason") (Just "S0123456789ABCDEFGHJKMN") Nothing (Just "model") (Just ("sha256:" <> T.replicate 43 "A")) Nothing Nothing (Just promptPath) (Just contextPath)
+              scopeMaterializationCommand = scopeCommand ["src/**"] [] [] (Just "Reason") (Just "S0123456789ABCDEFGHJKMN") Nothing (Just "model") (Just ("sha256:" <> T.replicate 43 "A")) Nothing Nothing (Just promptPath) (Just contextPath)
           BS.writeFile promptPath "prompt bytes"
           BS.writeFile contextPath "context bytes"
           withActorEnvironment "human:from-environment" $
-            materializeScope command >>= \case
+            materializeScope scopeMaterializationCommand >>= \case
               Left problem -> assertFailure (T.unpack problem)
-              Right request -> do
-                scopeRequestExpectedState request @?= Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))
-                scopeRequestActor request @?= requireRight (parseActor "human:from-environment" (Just "model"))
-                scopeRequestInputDigest request @?= Just (requireRight (parseDigest ("sha256:" <> T.replicate 43 "A")))
-                scopeRequestPromptDigest request @?= Just (sha256Digest "prompt bytes")
-                scopeRequestContextDigest request @?= Just (sha256Digest "context bytes")
+              Right scopeRequest -> do
+                scopeRequestExpectedState scopeRequest @?= Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))
+                scopeRequestActor scopeRequest @?= requireRight (parseActor "human:from-environment" (Just "model"))
+                scopeRequestInputDigest scopeRequest @?= Just (requireRight (parseDigest ("sha256:" <> T.replicate 43 "A")))
+                scopeRequestPromptDigest scopeRequest @?= Just (sha256Digest "prompt bytes")
+                scopeRequestContextDigest scopeRequest @?= Just (sha256Digest "context bytes")
     , testCase "domain is canonical, repeats frozen inputs, and rejects aliases or content flags" $ do
-        let expected = DomainCommand "A0123456789ABCDEFGHJKMNPQRS" ["platform", "ops"] ["legacy"] [] [] False
+        let domainExpected = DomainCommand "A0123456789ABCDEFGHJKMNPQRS" ["platform", "ops"] ["legacy"] [] [] False
               (Just "Broaden ownership") (Just "S0123456789ABCDEFGHJKMN") (Just "human:architect") (Just "editor") Nothing Nothing Nothing Nothing Nothing True
-        parseCli ["domain", "A0123456789ABCDEFGHJKMNPQRS", "--add", "platform", "--add", "ops", "--remove", "legacy", "--reason", "Broaden ownership", "--expect", "S0123456789ABCDEFGHJKMN", "--actor", "human:architect", "--model", "editor", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdDomain expected))
+        parseCli ["domain", "A0123456789ABCDEFGHJKMNPQRS", "--add", "platform", "--add", "ops", "--remove", "legacy", "--reason", "Broaden ownership", "--expect", "S0123456789ABCDEFGHJKMN", "--actor", "human:architect", "--model", "editor", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdDomain domainExpected))
         assertParserFailure ["domain-adr", "A0123456789ABCDEFGHJKMNPQRS"]
         assertParserFailure ["domain", "A0123456789ABCDEFGHJKMNPQRS", "--body", "forbidden"]
         assertParserFailure ["domain", "A0123456789ABCDEFGHJKMNPQRS", "--input-json", "forbidden.json"]
@@ -1442,13 +1520,13 @@ mutationCliContractTests =
         let domainCommand adds removes refines sets clear reason =
               DomainCommand "A0123456789ABCDEFGHJKMNPQRS" adds removes refines sets clear reason Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing False
         materializeDomain (domainCommand ["platform", "platform"] [] [] [] False (Just "Reason")) >>= \case
-          Right request -> domainRequestChange request @?= DomainDelta [requireRight (mkDomain "platform"), requireRight (mkDomain "platform")] []
+          Right domainRequest -> domainRequestChange domainRequest @?= DomainDelta [requireRight (mkDomain "platform"), requireRight (mkDomain "platform")] []
           Left problem -> assertFailure (T.unpack problem)
         materializeDomain (domainCommand [] [] ["platform=platform.api"] [] False (Just "Refine")) >>= \case
-          Right request -> domainRequestChange request @?= DomainRefine [requireRight (parseDomainRefinement "platform=platform.api")]
+          Right domainRequest -> domainRequestChange domainRequest @?= DomainRefine [requireRight (parseDomainRefinement "platform=platform.api")]
           Left problem -> assertFailure (T.unpack problem)
         materializeDomain (domainCommand [] [] [] [] True (Just "Clear")) >>= \case
-          Right request -> domainRequestChange request @?= DomainReviewedSet []
+          Right domainRequest -> domainRequestChange domainRequest @?= DomainReviewedSet []
           Left problem -> assertFailure (T.unpack problem)
         materializeDomain (domainCommand [] [] [] [] False (Just "Reason")) >>= (@?= Left "domain requires --add, --remove, --refine, --set, or --clear")
         materializeDomain (domainCommand ["platform"] [] ["platform=platform.api"] [] False (Just "Reason")) >>= (@?= Left "domain modes --add/--remove, --refine, --set, and --clear are mutually exclusive")
@@ -1468,23 +1546,23 @@ mutationCliContractTests =
             do
               materializeDomain (command Nothing Nothing (Just promptPath) (Just contextPath)) >>= \case
                 Left problem -> assertFailure (T.unpack problem)
-                Right request -> do
-                  domainRequestExpectedState request @?= Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))
-                  domainRequestActor request @?= requireRight (parseActor "human:from-environment" (Just "model"))
-                  domainRequestInputDigest request @?= Just (requireRight (parseDigest direct))
-                  domainRequestPromptDigest request @?= Just (sha256Digest "prompt bytes")
-                  domainRequestContextDigest request @?= Just (sha256Digest "context bytes")
+                Right domainRequest -> do
+                  domainRequestExpectedState domainRequest @?= Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))
+                  domainRequestActor domainRequest @?= requireRight (parseActor "human:from-environment" (Just "model"))
+                  domainRequestInputDigest domainRequest @?= Just (requireRight (parseDigest direct))
+                  domainRequestPromptDigest domainRequest @?= Just (sha256Digest "prompt bytes")
+                  domainRequestContextDigest domainRequest @?= Just (sha256Digest "context bytes")
               materializeDomain (command (Just direct) Nothing (Just promptPath) Nothing) >>= (@?= Left "prompt digest conflicts with the digest derived from its file")
           let explicitCommand =
                 DomainCommand "A0123456789ABCDEFGHJKMNPQRS" ["platform"] [] [] [] False (Just "Reason")
                   (Just "S0123456789ABCDEFGHJKMN") (Just "human:explicit") (Just "model") (Just direct) (Just direct) (Just direct) Nothing Nothing False
           materializeDomain explicitCommand >>= \case
             Left problem -> assertFailure (T.unpack problem)
-            Right request -> do
-              domainRequestActor request @?= requireRight (parseActor "human:explicit" (Just "model"))
-              domainRequestInputDigest request @?= Just (requireRight (parseDigest direct))
-              domainRequestPromptDigest request @?= Just (requireRight (parseDigest direct))
-              domainRequestContextDigest request @?= Just (requireRight (parseDigest direct))
+            Right domainRequest -> do
+              domainRequestActor domainRequest @?= requireRight (parseActor "human:explicit" (Just "model"))
+              domainRequestInputDigest domainRequest @?= Just (requireRight (parseDigest direct))
+              domainRequestPromptDigest domainRequest @?= Just (requireRight (parseDigest direct))
+              domainRequestContextDigest domainRequest @?= Just (requireRight (parseDigest direct))
     , testCase "parser failures map to exit 2" $
         case parseArguments ["create-adr"] of
           Left rendered -> renderedExitCode rendered @?= ExitFailure 2
@@ -1498,6 +1576,28 @@ mutationCliContractTests =
         case parseStructuredAmend "{\"body\":\"x\",\"change_summary\":[]}" of
           Left message -> message @?= "structured amend field change_summary must be a string"
           Right _ -> assertFailure "wrong amend change summary accepted"
+    , testCase "create and amend prevalidate canonical bodies and digests for every content source" $
+        withSystemTempDirectory "adrai content materialize" $ \temporary -> do
+          let bodyFile = temporary <> "/body.md"
+              inputJsonFile = temporary <> "/input.json"
+              body = "  source body\r\nsecond line  "
+              canonicalBody = "source body\nsecond line\n"
+              canonicalStructuredBody = "structured body\nsecond line\n"
+              structuredInput = "{\"body\":\"  structured body\\r\\nsecond line  \"}"
+              create source = CreateCommand (Just "title") (Just "summary") [] [] (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing [source] False
+              amend source = AmendCommand "A0123456789ABCDEFGHJKMNPQRS" Nothing Nothing (Just "reason") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing [source] False
+          BS.writeFile bodyFile (Text.Encoding.encodeUtf8 body)
+          BS.writeFile inputJsonFile (Text.Encoding.encodeUtf8 structuredInput)
+          assertCreateMaterialization "--body" canonicalBody (materializeCreate (create (BodyText body)))
+          assertCreateMaterialization "--body-file" canonicalBody (materializeCreate (create (BodyFile bodyFile)))
+          assertCreateMaterialization "--stdin" canonicalBody (materializeCreateWithStdin (pure body) (create BodyStdin))
+          assertCreateMaterialization "--input-json PATH" canonicalStructuredBody (materializeCreate (create (InputJson inputJsonFile)))
+          assertCreateMaterialization "--input-json -" canonicalStructuredBody (materializeCreateWithStdin (pure structuredInput) (create (InputJson "-")))
+          assertAmendMaterialization "--body" canonicalBody (materializeAmend (amend (BodyText body)))
+          assertAmendMaterialization "--body-file" canonicalBody (materializeAmend (amend (BodyFile bodyFile)))
+          assertAmendMaterialization "--stdin" canonicalBody (materializeAmendWithStdin (pure body) (amend BodyStdin))
+          assertAmendMaterialization "--input-json PATH" canonicalStructuredBody (materializeAmend (amend (InputJson inputJsonFile)))
+          assertAmendMaterialization "--input-json -" canonicalStructuredBody (materializeAmendWithStdin (pure structuredInput) (amend (InputJson "-")))
     , testCase "actor, scope/domain, and digest validation stay typed" $ do
         assertBool "invalid actor accepted" (isLeft (parseActor "machine:agent" Nothing))
         assertBool "short digest accepted" (isLeft (parseDigest "sha256:abcd"))
@@ -1615,7 +1715,7 @@ mutationCliContractTests =
         selectedRequest <- newIORef Nothing
         let command = CreateCommand (Just "CLI title") (Just "CLI summary") ["platform"] ["src/**"] (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing [BodyText "CLI body"] True
             invocation = CliInvocation (defaultCliConfig {configRepo = "selected-repo"}) (CmdCreate command)
-            dependencies = CliDispatchDependencies
+            dependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \received -> do
                   received @?= command
                   pure (Right request)
@@ -1639,7 +1739,7 @@ mutationCliContractTests =
         receivedRequest @?= Just request
     , testCase "dispatch seam selects init service and preserves successful output contract" $ do
         selectedRepo <- newIORef Nothing
-        let dependencies = CliDispatchDependencies
+        let dependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
               , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliRunInit = \repo -> do
@@ -1668,7 +1768,7 @@ mutationCliContractTests =
             amendRequest = AmendRequest
               (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")) Nothing "Reason" "Replacement" "" "body"
               (requireRight (parseActor "human:cli" Nothing)) Nothing Nothing Nothing
-            dependencies = CliDispatchDependencies
+            dependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
               , cliMaterializeAmend = \received -> do
                   received @?= command
@@ -1696,7 +1796,7 @@ mutationCliContractTests =
             requestStatus = ObsoleteCliRequest
               (ObsoleteRequest (Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))) "Retire it" True (Just (requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS"))))
               (requireRight (parseActor "human:cli" Nothing)) (ProvenanceInputs Nothing Nothing Nothing)
-            dependencies = CliDispatchDependencies
+            dependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
               , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliMaterializeObsolete = \received -> do received @?= command; pure (Right requestStatus)
@@ -1725,7 +1825,7 @@ mutationCliContractTests =
             requestStatus = ReactivateCliRequest
               (ReactivateRequest (Just (requireRight (Format.parseStateToken "S0123456789ABCDEFGHJKMN"))) "Restore it" True)
               (requireRight (parseActor "human:cli" Nothing)) (ProvenanceInputs Nothing Nothing Nothing)
-            dependencies = CliDispatchDependencies
+            dependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
               , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliMaterializeObsolete = \_ -> error "obsolete materialization must not be selected"
@@ -1748,7 +1848,7 @@ mutationCliContractTests =
         readIORef selectedRequest >>= (@?= Just requestStatus)
     , testCase "dispatch seam maps precommit user failure to exit 2 without mutation" $ do
         mutationCalled <- newIORef False
-        let dependencies = CliDispatchDependencies
+        let dependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \_ -> pure (Left "unreadable body")
               , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliRunInit = \_ -> error "init service must not be selected"
@@ -1773,7 +1873,7 @@ mutationCliContractTests =
               (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")) Nothing "Expand tests"
               (ScopeDelta [requireRight (mkScopePattern "test/**")] [])
               (requireRight (parseActor "human:cli" Nothing)) Nothing Nothing Nothing
-            dependencies = CliDispatchDependencies
+            dependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
               , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliMaterializeScope = \received -> do
@@ -1794,7 +1894,7 @@ mutationCliContractTests =
         readIORef selectedRequest >>= (@?= Just scopeRequest)
     , testCase "amend structured-field validation renders exact stderr and exit 2" $ do
         let command = AmendCommand "A0123456789ABCDEFGHJKMNPQRS" Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing [InputJson "input.json"] False
-            dependencies = CliDispatchDependencies
+            dependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
               , cliMaterializeAmend = \_ -> pure (Left "structured amend field change_summary must be a string")
               , cliRunInit = \_ -> error "init service must not be selected"
@@ -1815,7 +1915,7 @@ mutationCliContractTests =
         let command = DomainCommand "A0123456789ABCDEFGHJKMNPQRS" ["platform"] [] [] [] False (Just "Expand") Nothing (Just "human:cli") Nothing Nothing Nothing Nothing Nothing Nothing True
             requestDomain = DomainRequest (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")) Nothing "Expand"
               (DomainDelta [requireRight (mkDomain "platform")] []) (requireRight (parseActor "human:cli" Nothing)) Nothing Nothing Nothing
-            dependencies = CliDispatchDependencies
+            dependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
               , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliMaterializeScope = \_ -> error "scope materialization must not be selected"
@@ -1836,7 +1936,7 @@ mutationCliContractTests =
         readIORef selectedRequest >>= (@?= Just requestDomain)
     , testCase "dispatch seam preserves service user and conflict exit classes" $ do
         let invocation = CliInvocation defaultCliConfig (CmdInit (InitCommand False))
-            userDependencies = CliDispatchDependencies
+            userDependencies = unsupportedCliDispatchDependencies
               { cliMaterializeCreate = \_ -> error "create materialization must not be selected"
               , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
               , cliRunInit = \_ -> pure (Left (CliUserFailure "service rejected input"))
@@ -1855,11 +1955,13 @@ mutationCliContractTests =
         conflictExit @?= ExitFailure 3
     ]
   where
+    parseCli :: [String] -> Either String CliInvocation
     parseCli arguments =
       case execParserPure defaultPrefs (info parser mempty) arguments of
         Success value -> Right value
         Failure _ -> Left "parser failure"
         CompletionInvoked _ -> Left "completion invoked"
+    assertParserFailure :: [String] -> IO ()
     assertParserFailure arguments =
       case execParserPure defaultPrefs (info parser mempty) arguments of
         Failure _ -> pure ()
@@ -1934,15 +2036,65 @@ mutationCliContractTests =
       ScopeCommand
         "A0123456789ABCDEFGHJKMNPQRS" adds removes sets reason expected actor model input prompt context promptFile contextFile False
     withActorEnvironment actor action =
-      bracket (lookupEnv "ADRAI_ACTOR") restore $ \_ -> do
-        setEnv "ADRAI_ACTOR" actor
-        action
+      withMVar actorEnvironmentFixtureLock $ \_ ->
+        bracket (lookupEnv "ADRAI_ACTOR") restore $ \_ -> do
+          setEnv "ADRAI_ACTOR" actor
+          action
       where
         restore Nothing = unsetEnv "ADRAI_ACTOR"
         restore (Just prior) = setEnv "ADRAI_ACTOR" prior
+    assertCreateMaterialization label expected result =
+      result >>= \case
+        Left problem -> assertFailure (label <> " did not materialize: " <> T.unpack problem)
+        Right materializedRequest -> do
+          requestBody materializedRequest @?= expected
+          requestInputDigest materializedRequest @?= Just (sha256Digest (Text.Encoding.encodeUtf8 expected))
+    assertAmendMaterialization label expected result =
+      result >>= \case
+        Left problem -> assertFailure (label <> " did not materialize: " <> T.unpack problem)
+        Right materializedRequest -> do
+          amendRequestBody materializedRequest @?= expected
+          amendRequestInputDigest materializedRequest @?= Just (sha256Digest (Text.Encoding.encodeUtf8 expected))
     requireRight result = case result of
       Right value -> value
       Left problem -> error (show problem)
+
+-- ============================================================
+-- Integration CLI PATH harness tests
+-- ============================================================
+
+pathHarnessTests :: TestTree
+pathHarnessTests =
+  testGroup "integration CLI PATH harness"
+    [ testCase "prepends extras to a multi-entry inherited PATH intact" $
+        assertPathBuildsWithin
+          "C:\\Windows\\System32;D:\\tools"
+          "C:\\Program Files\\Git\\cmd;D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin;C:\\Windows\\System32;D:\\tools",
+      testCase "uses only extras when the inherited PATH is empty" $
+        assertPathBuildsWithin
+          ""
+          "C:\\Program Files\\Git\\cmd;D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin",
+      testCase "spawnAdraiWith gives a bounded child the exact constructed PATH" $ do
+        let inheritedPath = "C:\\Windows\\System32;D:\\tools"
+            expectedPath = prependExtraPathParts inheritedPath
+        testRunner <- getExecutablePath
+        -- 'readProcess' is async-exception-safe, so timeout interrupts the
+        -- pre-launch regression and terminates/reaps any started child.
+        completed <- timeout 3000000 $ spawnAdraiWith testRunner inheritedPath "." ["--integration-cli-path-probe"]
+        case completed of
+          Nothing -> assertFailure "spawnAdraiWith PATH probe exceeded its 3-second bound"
+          Just (exitCode, stdout, stderr) -> do
+            exitCode @?= ExitSuccess
+            stderr @?= ""
+            Text.Encoding.decodeUtf8 (BL.toStrict stdout) @?= T.pack expectedPath
+    ]
+  where
+    assertPathBuildsWithin inheritedPath expectedPath = do
+      completed <- timeout 1000000 $ evaluate (prependExtraPathParts inheritedPath == expectedPath)
+      case completed of
+        Nothing -> assertFailure "PATH construction exceeded its 1-second bound"
+        Just True -> pure ()
+        Just False -> assertFailure "PATH construction produced an unexpected value"
 
 -- ============================================================
 -- Top-level tests
@@ -1956,5 +2108,6 @@ tests =
        toAesonValueTests,
        cliTypeConstructorTests,
        schemaContractTests,
-       mutationCliContractTests
+       mutationCliContractTests,
+       pathHarnessTests
      ]

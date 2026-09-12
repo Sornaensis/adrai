@@ -89,7 +89,7 @@ import Data.Bits ((.&.), (.|.), shiftL, shiftR)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
-import Data.Char (digitToInt, isAsciiLower, isDigit, isSpace, ord)
+import Data.Char (isAsciiLower, isDigit, isSpace, ord)
 import Data.List (sort, sortOn)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -406,19 +406,6 @@ digestFromHash digest =
   case mkDigest (convert digest) of
     Right value -> value
     Left _ -> error "crypton returned a non-SHA-256 digest"
-
-hexToBytes :: Text -> Either String ByteString
-hexToBytes value
-  | T.length value /= 64 = Left "wrong SHA-256 hex length"
-  | otherwise = BS.pack <$> pairs (T.unpack value)
-  where
-    pairs [] = Right []
-    pairs (high : low : remaining)
-      | isHex high && isHex low =
-          (fromIntegral (digitToInt high * 16 + digitToInt low) :) <$> pairs remaining
-      | otherwise = Left "invalid SHA-256 hex"
-    pairs _ = Left "odd SHA-256 hex length"
-    isHex character = isDigit character || character >= 'a' && character <= 'f'
 
 normalizeSemantic :: Text -> Text
 normalizeSemantic input = T.intercalate "\n" retained <> "\n"

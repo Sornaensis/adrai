@@ -33,6 +33,10 @@ module Adrai.CliRunner
     parser,
     parseStructuredCreate,
     parseStructuredAmend,
+    materializeCreate,
+    materializeCreateWithStdin,
+    materializeAmend,
+    materializeAmendWithStdin,
     materializeScope,
     materializeDomain,
     materializeObsolete,
@@ -88,13 +92,17 @@ import Adrai.History
   )
 import Adrai.Retrieval (RetrievalMode (FtsRetrieval, HybridRetrieval, VectorRetrieval))
 import Adrai.Types (ViewMode (CollapsedView, ExplodedView))
-import Adrai.Domain (Domain, DomainRefinement, canonicalDomains, domainErrorText, domainText, domainRefinementText, mkDomain, parseDomainRefinement)
-import Adrai.Git (GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitBlobBytes, gitOidText, isShallowRepository, repositoryWorktreeRoot, systemGit)
+import Adrai.Domain (Domain, canonicalDomains, domainErrorText, domainText, domainRefinementText, mkDomain, parseDomainRefinement)
+import Adrai.Git (GitHeadState (..), GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitBlobBytes, gitOidText, isShallowRepository, repositoryHeadState, repositoryWorktreeRoot, resolveRevision, systemGit)
 import Adrai.Identity (sortableAdrId, sortableRecordId)
 import qualified Adrai.Format as Format
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
-import Adrai.Provenance (sha256Digest)
-import Adrai.Repository (RepositorySnapshot, repositorySnapshotEntries, repositorySnapshotManagedPaths, repositoryTreeBlob, resolvedCommitOid, resolveRepositoryRevision, repositorySnapshot)
+import Adrai.Provenance (OverlayFingerprint (..), normalizeLineEndings, sha256Digest)
+import Adrai.Provenance.Ensure (ProvenanceUpdate (..), configKey, ensureProvenanceWithRecoveryWitness, seedRegisteredOperationsFromSemanticCache)
+import Adrai.Provenance.RecoveryWitness (ProvenanceRecoveryWitness)
+import Adrai.Provenance.Lock (withOverlayLock)
+import Adrai.Provenance.Overlay (OverlaySchemaState (..), createOverlaySchema, overlaySchemaState, provenanceDatabasePath)
+import Adrai.Repository (RepositorySnapshot, repositoryObservedConfig, repositorySnapshotConfig, repositorySnapshotEntries, repositorySnapshotManagedPaths, repositoryTreeBlob, resolvedCommitOid, resolveRepositoryRevision, repositorySnapshot)
 import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
 import Adrai.Explorer.Interactive (interactiveSession)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
@@ -118,14 +126,15 @@ import Adrai.Service.Query
     showFailureText,
   )
 import Adrai.Service.PostCommitIndex
-  ( IndexWarning (..),
-    PostCommitIndexError (..),
+  ( PostCommitIndexError (..),
     PostCommitIndexResult (..),
-    clonePostCommitIndex,
-    clonePostCommitIndexWithHistoryCount,
+    clonePostCommitIndexFromLeaseWithHistoryCountAndRefresh,
     compilePostCommitIndex,
-    compilePostCommitIndexWithAttribution,
+    compilePostCommitIndexWithAttributionAndRefresh,
   )
+import Adrai.Service.PostCommitIndex.Internal (clonePostCommitIndexTrustedSource)
+import Adrai.Service.Transaction (TransactionError (..))
+import Adrai.Compiler.CacheSync (syncProvenanceSnapshot)
 import Adrai.Compiler.Attribution
   ( AttributionCounter (CounterBytes, CounterChanges, CounterCurrentEntries, CounterSelectedNodes),
     AttributionPhase (CacheReuseProof, CacheSelection, CliPreflight, CliRevisionResolution, CurrentAliasCopy, PreflightCurrentObservation),
@@ -139,21 +148,26 @@ import Adrai.Compiler.Attribution
     withAttributionPhase,
   )
 import Adrai.Compiler.CacheSelection
-  ( CacheMode (..),
-    IncrementalKind (..),
-    ReuseCacheInfo (..),
-    cachePathSelection,
-    boundedHistoryIrrelevantCount,
-    loadCacheMeta,
-    validateCachePublicationContract,
+  ( CacheLeaseReuseFacts (..),
+    CacheSelectionCascadeDecision (..),
+    CacheSelectionMetrics (..),
+    ExactArchiveCompileFacts (..),
+     boundedHistoryIrrelevantCount,
+      treeIdenticalCheck,
+      withExactArchiveAliasRepair,
+      withCacheSelectionCascade,
+   )
+import Adrai.Compiler.CacheLease.Internal
+  ( leaseAcceptedSourceRevision,
+    seedRegisteredOperationsFromLease,
   )
-import Adrai.Service.Transaction (TransactionError (..))
 import Adrai.Types
   ( Actor,
     ActorKind (..),
      Digest,
      AdrId,
      RecordId,
+     RepoPath,
      StateToken,
      ManagedPaths (..),
      ProvenanceInputs (..),
@@ -163,9 +177,12 @@ import Adrai.Types
      connectionIdText,
      mkActor,
      mkAdrId,
-    mkDigest,
-    recordIdText,
-    repoPathText,
+     recordIdText,
+     gitRefText,
+     configLogicalLines,
+     configManagedPaths,
+     logicalLineId,
+     repoPathText,
   )
 import Adrai.Query
   ( CompareProjection,
@@ -193,27 +210,26 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Scientific as Scientific
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Set as Set
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Read as TextRead
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import System.Directory (createDirectoryIfMissing, getFileSize)
+import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize, removeFile)
 import System.Environment (getArgs, lookupEnv)
 import System.FilePath ((</>), takeDirectory)
 import System.IO (Handle, hGetContents, stderr, stdin, stdout)
 import System.Random (randomRIO)
-import Control.Monad (replicateM)
+import Control.Monad (replicateM, when)
 import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, finally, fromException, throwIO, try)
-import Database.SQLite.Simple (Only (..), close, open, query, query_)
+import Database.SQLite.Simple (Connection, Only (..), close, execute, open, query_, withTransaction)
 import qualified Options.Applicative as Opt
 import Options.Applicative
   ( Parser,
-    execParser,
     (<|>),
     optional,
     many,
     info,
     subparser,
-    command,
     strArgument,
     flag',
     strOption,
@@ -221,13 +237,11 @@ import Options.Applicative
     switch,
     auto,
     eitherReader,
-    value,
     showDefault,
     showDefaultWith,
     metavar,
     help,
     long,
-    short,
     progDesc,
   )
 
@@ -414,21 +428,21 @@ type CliParser = Parser CliInvocation
 parser :: CliParser
 parser =
   CliInvocation <$> globalConfigParser <*> subparser
-    ( command "compile" (info (CmdCompile <$> compileParser) (progDesc "compile the repository"))
-     <> command "doctor" (info (CmdDoctor <$> doctorParser) (progDesc "diagnose the database"))
-     <> command "show" (info (CmdShow <$> showParser) (progDesc "show a single ADR"))
-     <> command "history" (info (CmdHistory <$> historyParser) (progDesc "show operation history"))
-     <> command "search" (info (CmdSearch <$> searchParser) (progDesc "search ADRs"))
-     <> command "relevant" (info (CmdRelevant <$> relevantParser) (progDesc "find relevant ADRs"))
-     <> command "compare" (info (CmdCompare <$> compareParser) (progDesc "compare revisions"))
-     <> command "init" (info (CmdInit <$> initParser) (progDesc "initialize an ADRAI repository"))
-      <> command "create" (info (CmdCreate <$> createParser) (progDesc "create an ADR"))
-       <> command "amend" (info (CmdAmend <$> amendParser) (progDesc "amend an ADR"))
-       <> command "obsolete" (info (CmdObsolete <$> obsoleteParser) (progDesc "mark an ADR obsolete"))
-       <> command "reactivate" (info (CmdReactivate <$> reactivateParser) (progDesc "reactivate an ADR"))
-       <> command "scope" (info (CmdScope <$> scopeParser) (progDesc "change an ADR scope"))
-       <> command "domain" (info (CmdDomain <$> domainParser) (progDesc "change an ADR domain"))
-       <> command "explore" (info (pure CmdExplore) (progDesc "open the terminal explorer"))
+    ( Opt.command "compile" (info (CmdCompile <$> compileParser) (progDesc "compile the repository"))
+     <> Opt.command "doctor" (info (CmdDoctor <$> doctorParser) (progDesc "diagnose the database"))
+     <> Opt.command "show" (info (CmdShow <$> showParser) (progDesc "show a single ADR"))
+     <> Opt.command "history" (info (CmdHistory <$> historyParser) (progDesc "show operation history"))
+     <> Opt.command "search" (info (CmdSearch <$> searchParser) (progDesc "search ADRs"))
+     <> Opt.command "relevant" (info (CmdRelevant <$> relevantParser) (progDesc "find relevant ADRs"))
+     <> Opt.command "compare" (info (CmdCompare <$> compareParser) (progDesc "compare revisions"))
+     <> Opt.command "init" (info (CmdInit <$> initParser) (progDesc "initialize an ADRAI repository"))
+      <> Opt.command "create" (info (CmdCreate <$> createParser) (progDesc "create an ADR"))
+       <> Opt.command "amend" (info (CmdAmend <$> amendParser) (progDesc "amend an ADR"))
+       <> Opt.command "obsolete" (info (CmdObsolete <$> obsoleteParser) (progDesc "mark an ADR obsolete"))
+       <> Opt.command "reactivate" (info (CmdReactivate <$> reactivateParser) (progDesc "reactivate an ADR"))
+       <> Opt.command "scope" (info (CmdScope <$> scopeParser) (progDesc "change an ADR scope"))
+       <> Opt.command "domain" (info (CmdDomain <$> domainParser) (progDesc "change an ADR domain"))
+       <> Opt.command "explore" (info (pure CmdExplore) (progDesc "open the terminal explorer"))
     )
 
 globalConfigParser :: Parser CliConfig
@@ -437,7 +451,7 @@ globalConfigParser =
     <$> strOption
       ( long "repo"
        <> metavar "PATH"
-       <> value "."
+       <> Opt.value "."
        <> showDefault
        <> help "repository directory (default: current directory)"
       )
@@ -445,13 +459,13 @@ globalConfigParser =
 compileParser :: Parser CompileCommand
 compileParser =
   CompileCommand
-    <$> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "revision to compile (default HEAD)")
+    <$> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "revision to compile (default HEAD)")
     <*> switch (long "json" <> help "output JSON")
 
 doctorParser :: Parser DoctorCommand
 doctorParser =
   DoctorCommand
-    <$> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "revision to diagnose (default HEAD)")
+    <$> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "revision to diagnose (default HEAD)")
     <*> switch (long "json" <> help "output JSON")
 
 initParser :: Parser InitCommand
@@ -590,8 +604,8 @@ showParser :: Parser ShowCommand
 showParser =
   ShowCommand
     <$> strArgument (metavar "ID" <> help "ADR identifier to show")
-    <*> option (Opt.eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> value CollapsedView <> showDefaultWith (const "collapsed") <> help "show collapsed (default) or exploded view")
-    <*> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "immutable revision to query (default: HEAD)")
+    <*> option (Opt.eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> Opt.value CollapsedView <> showDefaultWith (const "collapsed") <> help "show collapsed (default) or exploded view")
+    <*> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to query (default: HEAD)")
     <*> switch (long "json" <> help "output JSON")
     <*> switch (long "raw" <> help "include raw semantic data")
   where
@@ -605,8 +619,8 @@ historyParser :: Parser HistoryCommand
 historyParser =
   HistoryCommand
     <$> optional (strArgument (metavar "ADR_ID" <> help "optional ADR ID or prefix"))
-    <*> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "immutable revision to query (default: HEAD)")
-    <*> option auto (long "limit" <> value 20 <> showDefault <> help "max results (default 20)")
+    <*> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to query (default: HEAD)")
+    <*> option auto (long "limit" <> Opt.value 20 <> showDefault <> help "max results (default 20)")
     <*> optional (strOption (long "actor" <> metavar "KIND:IDENTIFIER" <> help "filter by actor"))
     <*> optional (option auto (long "since" <> metavar "MILLISECONDS" <> help "show entries at or after this Unix timestamp in milliseconds"))
     <*> optional (option auto (long "until" <> metavar "MILLISECONDS" <> help "show entries at or before this Unix timestamp in milliseconds"))
@@ -618,16 +632,16 @@ searchParser :: Parser SearchCommand
 searchParser =
   SearchCommand
     <$> (strArgument (metavar "QUERY" <> help "optional search query") <|> pure "")
-    <*> option (eitherReader parseMode) (long "mode" <> metavar "fts|vector|hybrid" <> value HybridRetrieval <> showDefaultWith retrievalModeText <> help "retrieval mode")
-    <*> option (eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> value CollapsedView <> showDefaultWith searchViewText <> help "result view")
+    <*> option (eitherReader parseMode) (long "mode" <> metavar "fts|vector|hybrid" <> Opt.value HybridRetrieval <> showDefaultWith retrievalModeText <> help "retrieval mode")
+    <*> option (eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> Opt.value CollapsedView <> showDefaultWith searchViewText <> help "result view")
     <*> optional (strOption (long "file" <> metavar "PATH" <> help "filter by file path"))
     <*> many (strOption (long "domain" <> metavar "DOMAIN" <> help "domain filter (repeatable)"))
     <*> optional (strOption (long "actor" <> metavar "KIND:IDENTIFIER" <> help "filter by actor"))
     <*> optional (option auto (long "since" <> metavar "MILLISECONDS" <> help "entries at or after this Unix timestamp in milliseconds"))
     <*> optional (option auto (long "until" <> metavar "MILLISECONDS" <> help "entries at or before this Unix timestamp in milliseconds"))
-    <*> strOption (long "at" <> metavar "REVISION" <> value "HEAD" <> showDefault <> help "immutable revision to query")
+    <*> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to query")
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
-    <*> option auto (long "limit" <> value 10 <> showDefault <> help "max results (default 10)")
+    <*> option auto (long "limit" <> Opt.value 10 <> showDefault <> help "max results (default 10)")
     <*> switch (long "json" <> help "output JSON")
   where
     parseMode value = case value of
@@ -653,7 +667,7 @@ relevantParser =
     <*> optional (strOption (long "at" <> metavar "REVISION" <> help "immutable revision containing FILE (default HEAD)"))
     <*> switch (long "worktree" <> help "read FILE from the worktree using HEAD as context")
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
-    <*> option auto (long "limit" <> value 10 <> showDefault <> help "max results (default 10)")
+    <*> option auto (long "limit" <> Opt.value 10 <> showDefault <> help "max results (default 10)")
     <*> switch (long "json" <> help "output JSON")
 
 -- | Compare command parser.
@@ -889,54 +903,54 @@ runProductionCompileWithAttribution attribution config command = do
                                   [ managedDecisionPath (repositorySnapshotManagedPaths snapshot)
                                   , managedConnectionPath (repositorySnapshotManagedPaths snapshot)
                                   ]
-                      -- The immutable revision archive is the sole authority for
-                      -- exact classification.  The mutable alias can only be a
-                      -- matching copy of that archive, never exact evidence in
-                      -- its own right.
-                      selection <-
-                        withAttributionPhase attribution CacheSelection $ do
-                          result <-
-                            cachePathSelection
-                              repository
-                              (takeDirectory cacheSnapshot)
-                              "index.sqlite"
-                              "adrai-cache/1"
+                      let coldCompileExactFallback witness = do
+                            indexed <- indexCommittedWithAttributionAndProvenance attribution cacheSnapshot repository requestedRevision snapshot witness
+                            consumeFreshIndex attribution database cacheSnapshot requestedRevision indexed
+                          recordCascadeMetrics metrics = do
+                            recordAttributionCounter attribution CounterSelectedNodes (cacheSelectedCount metrics)
+                            recordAttributionCounter attribution CounterBytes (cacheSelectedBytes metrics)
+                          exactRepair =
+                            withExactArchiveAliasRepair
+                              cacheSnapshot
                               (gitOidText requestedRevision)
-                              (Just cacheSnapshot)
-                              managedRoots
-                          recordCacheSelectionCounters attribution cacheSnapshot result
-                          pure result
-                      case selection of
-                        (Exact, _, _) -> do
-                          aliasMatchesArchive <- exactAliasMatchesArchive database cacheSnapshot requestedRevision
-                          if aliasMatchesArchive
-                            then loadExactCompileResult database requestedRevision
-                            else do
-                              recovered <- publishCurrentAlias cacheSnapshot requestedRevision database
-                              case recovered of
-                                Left problem -> pure (Left problem)
-                                Right () -> loadExactCompileResult database requestedRevision
-                        (Incremental TreeIdentical, _, Just candidate) -> do
-                          historyCount <-
-                            withAttributionPhase attribution CacheReuseProof $ do
-                              result <- boundedHistoryIrrelevantCount repository managedRoots (rcSourceRev candidate) (gitOidText requestedRevision)
-                              case result of
-                                Just count -> recordAttributionCounter attribution CounterChanges (fromIntegral count)
-                                Nothing -> pure ()
-                              pure result
-                          case historyCount of
-                            Nothing -> do
-                              indexed <- indexCommittedWithAttribution attribution cacheSnapshot repository requestedRevision
-                              consumeFreshIndex attribution database cacheSnapshot requestedRevision indexed
-                            Just count -> do
-                              reused <- capturePostCommitIndex (clonePostCommitIndexWithHistoryCount (rcPath candidate) requestedRevision cacheSnapshot (Just count))
-                              consumeTreeIdenticalSnapshot attribution database cacheSnapshot requestedRevision reused
-                        _ -> do
-                          -- Publish the revision-addressed snapshot first.  The
-                          -- shared index alias is a disposable convenience copy,
-                          -- never a source for archive recovery.
-                          indexed <- indexCommittedWithAttribution attribution cacheSnapshot repository requestedRevision
-                          consumeFreshIndex attribution database cacheSnapshot requestedRevision indexed
+                              database
+                              (const (publishCurrentAliasFromHeldExact cacheSnapshot requestedRevision database))
+                      withCacheSelectionCascade
+                         (withAttributionPhase attribution CacheSelection)
+                         recordCascadeMetrics
+                         exactRepair
+                         (if attributionEnabled attribution then getFileSize cacheSnapshot else pure 0)
+                         repository
+                         (takeDirectory cacheSnapshot)
+                         "adrai-cache/3"
+                         (gitOidText requestedRevision)
+                         (\decision -> case decision of
+                           CacheSelectionExact facts ->
+                             loadExactCompileResultFromFacts database requestedRevision facts
+                           CacheSelectionCold ->
+                             coldCompileExactFallback Nothing
+                           CacheSelectionReuse lease reuseFacts witness -> do
+                             let sourceRevision = leaseAcceptedSourceRevision (cacheLeaseAcceptedFacts reuseFacts)
+                             sameTree <- treeIdenticalCheck repository managedRoots sourceRevision (gitOidText requestedRevision)
+                             historyCount <-
+                               if sameTree
+                                 then boundedHistoryIrrelevantCount repository managedRoots sourceRevision (gitOidText requestedRevision)
+                                 else pure Nothing
+                             case historyCount of
+                               Just count | sameTree -> do
+                                 withAttributionPhase attribution CacheReuseProof $
+                                   recordAttributionCounter attribution CounterChanges (fromIntegral count)
+                                 reused <- capturePostCommitIndex $
+                                    clonePostCommitIndexFromLeaseWithHistoryCountAndRefresh lease requestedRevision cacheSnapshot Nothing $ \candidatePath -> do
+                                      refreshed <-
+                                        withRefreshedTreeIdenticalProvenance repository (seedRegisteredOperationsFromLease lease) requestedRevision snapshot witness $ \snapshotRefresh ->
+                                          syncProvenanceIntoCache candidatePath snapshotRefresh
+                                      case refreshed of
+                                        Left (CliUserFailure problem) -> ioError (userError (Text.unpack problem))
+                                        Left (CliConflictFailure problem) -> ioError (userError (Text.unpack problem))
+                                        Right () -> pure ()
+                                 consumeTreeIdenticalSnapshot attribution database cacheSnapshot requestedRevision reused
+                               _ -> coldCompileExactFallback witness)
 
 -- | The preflight snapshot is already needed to establish managed roots.  Only
 -- an explicit observer derives its cardinality and blob-byte evidence, keeping
@@ -954,51 +968,103 @@ recordCurrentObservationCounters attribution snapshot
         )
   | otherwise = pure ()
 
--- | Selection chooses at most one archive for an exact hit or reuse proof.
--- The selected byte count is taken only after the selection succeeds and only
--- in opt-in mode, so it is an exact caller-owned diagnostic rather than a new
--- cache-path dependency of normal compilation.
-recordCacheSelectionCounters :: ColdCompileAttribution -> FilePath -> (CacheMode, IncrementalKind, Maybe ReuseCacheInfo) -> IO ()
-recordCacheSelectionCounters attribution exactPath (mode, _, candidate)
-  | attributionEnabled attribution = do
-      let selectedPath =
-            case (mode, candidate) of
-              (Exact, _) -> Just exactPath
-              (_, Just info) -> Just (rcPath info)
-              _ -> Nothing
-      recordAttributionCounter attribution CounterSelectedNodes (maybe 0 (const 1) selectedPath)
-      bytes <- traverse getFileSize selectedPath
-      recordAttributionCounter attribution CounterBytes (maybe 0 fromIntegral bytes)
-  | otherwise = pure ()
+data ProvenanceRefresh = ProvenanceRefresh
+  { provenanceRefreshOverlay :: FilePath,
+    provenanceRefreshOperationIds :: [Text],
+    provenanceRefreshConfigKey :: Text,
+    provenanceRefreshTarget :: GitOid,
+    provenanceRefreshRefObservations :: [(Text, Text, Text)],
+    provenanceRefreshCurrentHead :: GitOid,
+    provenanceRefreshCurrentRef :: Text,
+    provenanceRefreshUpdate :: ProvenanceUpdate
+  }
 
--- | Check publication integrity independently of reuse eligibility.  The
--- mutable alias is expendable; an archived snapshot for this exact resolved
--- revision remains a valid recovery source even when its semantic state is a
--- conflict or history is incomplete.
-isExactPublishedSnapshot :: FilePath -> GitOid -> IO Bool
-isExactPublishedSnapshot path revision = do
-  valid <- validateCachePublicationContract path
-  if not valid
-    then pure False
-    else do
-      metadata <- loadCacheMeta path
-      pure $ case metadata of
-        Just rows -> Map.lookup "resolved_oid" rows == Just (gitOidText revision)
-        Nothing -> False
+-- | Refresh shared provenance from the cache's already materialized operation
+-- identities.  This deliberately does not deserialize managed sources: the
+-- cache rows are sufficient to reproduce registration signatures exactly.
+withRefreshedTreeIdenticalProvenance :: Repository -> (Connection -> IO ([Text], [Text])) -> GitOid -> RepositorySnapshot -> Maybe ProvenanceRecoveryWitness -> (ProvenanceRefresh -> IO a) -> IO (Either CliFailure a)
+withRefreshedTreeIdenticalProvenance repository seedRegistered target snapshot recoveryWitness useRefreshed =
+  case repositoryWorktreeRoot repository of
+    Nothing -> pure (Left (CliUserFailure "provenance refresh requires a worktree root"))
+    Just root -> do
+      -- The overlay is shared per worktree, rather than per immutable archive.
+      -- The archive supplies only immutable semantic rows for registration.
+      let sharedSemanticDatabase = root </> ".adrai" </> "index.sqlite"
+          overlay = provenanceDatabasePath sharedSemanticDatabase
+          managed = repositorySnapshotManagedPaths snapshot
+          config = repositoryObservedConfig (repositorySnapshotConfig snapshot)
+          configuredManaged = configManagedPaths config
+          decisions = repoPathText (managedDecisionPath managed)
+          connections = repoPathText (managedConnectionPath managed)
+          logicalLines = configLogicalLines config
+          lineIds = map logicalLineId logicalLines
+          lineKey = configKey decisions connections lineIds
+      refreshed <- try $ withOverlayLock (takeDirectory overlay) $ do
+        when (managed /= configuredManaged) $
+          throwIO (userError "snapshot managed paths disagree with its parsed configuration")
+        existing <- doesFileExist overlay
+        shape <- if not existing then pure Nothing else Just <$> bracket (open overlay) close overlaySchemaState
+        -- V1 has no target certificates and is rebuilt only when its frozen
+        -- sqlite_master facts match exactly.  Unknown/partial overlays are
+        -- evidence, not migration input.
+        case shape of
+          Just OverlaySchemaV1 -> removeFile overlay
+          Just OverlaySchemaInvalid -> throwIO (userError "existing provenance overlay schema is invalid")
+          _ -> pure ()
+        let exists = existing && shape /= Just OverlaySchemaV1
+        bracket (open overlay) close $ \connection -> do
+          if exists then pure () else createOverlaySchema connection
+          refreshedSnapshot <- withTransaction connection $ do
+            (operationIds, reseededChangedOperations) <- seedRegistered connection
+            ensured <- ensureProvenanceWithRecoveryWitness repository connection sharedSemanticDatabase lineIds decisions connections logicalLines Nothing operationIds Nothing target recoveryWitness reseededChangedOperations
+            case ensured of
+              Left problem -> throwIO problem
+              Right update -> do
+                refs <- query_ connection "SELECT ref_name,tip_oid,object_type FROM ref_observation ORDER BY ref_name"
+                  :: IO [(Text, Text, Text)]
+                (currentHead, currentRef) <- resolvedCurrentHeadAndRef repository
+                pure (ProvenanceRefresh overlay operationIds lineKey target refs currentHead currentRef update)
+          -- The overlay lock intentionally remains held while the caller copies
+          -- this snapshot into its private candidate.  Another target cannot
+          -- replace the shared rows between refresh and sync.
+          useRefreshed refreshedSnapshot
+      case refreshed of
+        Left exception -> case fromException exception of
+          Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+          Nothing ->
+            pure
+              (Left
+                (CliUserFailure
+                  ("provenance refresh failed: " <> Text.pack (displayException (exception :: SomeException)))))
+        Right value -> pure (Right value)
+  where
+    resolvedCurrentHeadAndRef currentRepository = do
+      currentHead <- resolveRevision currentRepository (RevisionSpec "HEAD")
+      headState <- repositoryHeadState currentRepository
+      case (currentHead, headState) of
+        (Left problem, _) -> throwIO (userError (show problem))
+        (_, Left problem) -> throwIO (userError (show problem))
+        (Right headOid, Right (GitHeadAttached ref)) -> pure (headOid, gitRefText ref)
+        (Right headOid, Right GitHeadDetached) -> pure (headOid, "HEAD")
 
--- | The alias may serve an exact result only when it is a complete copy of the
--- authoritative archive, including all canonical metadata.  Comparing the full
--- maps avoids accepting a readable alias whose reporting counters diverged.
-exactAliasMatchesArchive :: FilePath -> FilePath -> GitOid -> IO Bool
-exactAliasMatchesArchive alias archive revision = do
-  aliasExact <- isExactPublishedSnapshot alias revision
-  archiveExact <- isExactPublishedSnapshot archive revision
-  if aliasExact && archiveExact
-    then do
-      aliasMetadata <- loadCacheMeta alias
-      archiveMetadata <- loadCacheMeta archive
-      pure (aliasMetadata == archiveMetadata)
-    else pure False
+-- | Copy the refreshed overlay projection into a cache file.  Tree-identical
+-- callers run this against the clone candidate, before its atomic rename.
+syncProvenanceIntoCache :: FilePath -> ProvenanceRefresh -> IO ()
+syncProvenanceIntoCache cachePath refreshed =
+  bracket (open cachePath) close $ \connection -> do
+    let update = provenanceRefreshUpdate refreshed
+        OverlayFingerprint fingerprintText = fingerprint update
+    _ <- syncProvenanceSnapshot
+      connection connection (provenanceRefreshOverlay refreshed)
+      (Text.intercalate " " (provenanceRefreshOperationIds refreshed))
+      (provenanceRefreshConfigKey refreshed)
+       (provenanceRefreshRefObservations refreshed) fingerprintText (generation update) (observedCommitCount update)
+       (gitOidText (provenanceRefreshTarget refreshed))
+       (map gitOidText (Set.toAscList (targetReachableCommits update)))
+       (gitOidText (provenanceRefreshCurrentHead refreshed)) (provenanceRefreshCurrentRef refreshed) ""
+      (commitsScanned update) "incremental" "tree-identical"
+    execute connection "UPDATE meta SET value=? WHERE key='history_commits_scanned'" (Only (Text.pack (show (commitsScanned update))))
+    pure ()
 
 consumeFreshIndex :: ColdCompileAttribution -> FilePath -> FilePath -> GitOid -> PostCommitIndexResult -> IO (Either CliFailure CompileResult)
 consumeFreshIndex attribution database cacheSnapshot requestedRevision indexed =
@@ -1007,7 +1073,7 @@ consumeFreshIndex attribution database cacheSnapshot requestedRevision indexed =
       | published /= cacheSnapshot -> pure (Left (CliUserFailure "compile published an unexpected cache snapshot path"))
       | indexedRevision /= requestedRevision -> pure (Left (CliUserFailure "compile published an unexpected revision"))
       | otherwise -> do
-          aliased <- withAttributionEitherPhase attribution CurrentAliasCopy (publishCurrentAlias published requestedRevision database)
+          aliased <- withAttributionEitherPhase attribution CurrentAliasCopy (publishCurrentAliasChecked published requestedRevision database)
           case aliased of
             Left problem -> pure (Left problem)
             Right () -> loadPublishedCompileResult published indexedRevision
@@ -1021,7 +1087,7 @@ consumeTreeIdenticalSnapshot attribution database cacheSnapshot requestedRevisio
       | published /= cacheSnapshot -> pure (Left (CliUserFailure "tree-identical reuse published an unexpected cache snapshot path"))
       | indexedRevision /= requestedRevision -> pure (Left (CliUserFailure "tree-identical reuse published an unexpected revision"))
       | otherwise -> do
-          aliased <- withAttributionEitherPhase attribution CurrentAliasCopy (publishCurrentAlias published requestedRevision database)
+          aliased <- withAttributionEitherPhase attribution CurrentAliasCopy (publishCurrentAliasChecked published requestedRevision database)
           case aliased of
             Left problem -> pure (Left problem)
             Right () -> loadTreeIdenticalCompileResult published indexedRevision
@@ -1031,15 +1097,46 @@ consumeTreeIdenticalSnapshot attribution database cacheSnapshot requestedRevisio
 -- | Refresh the mutable current-index alias from an already published,
 -- revision-addressed snapshot.  The immutable snapshot is complete before the
 -- alias is exposed, so concurrent revisions cannot archive a moving target.
-publishCurrentAlias :: FilePath -> GitOid -> FilePath -> IO (Either CliFailure ())
-publishCurrentAlias cacheSnapshot revision database = do
-  archived <- capturePostCommitIndex (clonePostCommitIndex cacheSnapshot revision database)
+-- | This raw exact copy is deliberately private to the held-archive repair
+-- callback below.  It must never be called after its source transaction has
+-- closed: post-publication validation compares the published candidate against
+-- the held facts and rejects replacement rather than claiming a race-free copy.
+publishCurrentAliasFromHeldExact :: FilePath -> GitOid -> FilePath -> IO (Either CliFailure ())
+publishCurrentAliasFromHeldExact cacheSnapshot revision database = do
+  archived <- capturePostCommitIndex (clonePostCommitIndexTrustedSource cacheSnapshot revision database Nothing Nothing)
   pure $
     case (postCommitIndexed archived, postCommitDatabase archived, postCommitIndexRevision archived, postCommitIndexError archived) of
       (True, Just published, Just indexedRevision, Nothing)
         | published == database && indexedRevision == revision -> Right ()
       (_, _, _, Just problem) -> Left (CliUserFailure ("compile succeeded but current cache alias publish failed: " <> Text.pack (show problem)))
       _ -> Left (CliUserFailure "compile succeeded but current cache alias publication returned an incomplete result")
+
+-- | One held exact decision.  A source miss is data rather than a publication
+-- failure so doctor can take its ordinary cold-compile branch exactly once.
+publishCurrentAliasExactDecision :: FilePath -> GitOid -> FilePath -> IO (Either CliFailure Bool)
+publishCurrentAliasExactDecision cacheSnapshot revision database = do
+  repaired <-
+    withExactArchiveAliasRepair
+      cacheSnapshot
+      (gitOidText revision)
+      database
+      (const (publishCurrentAliasFromHeldExact cacheSnapshot revision database))
+  pure $
+    case repaired of
+      Left problem -> Left problem
+      Right (Just _) -> Right True
+      Right Nothing -> Right False
+
+-- | Production compile callers have no cold fallthrough at this point, so an
+-- exact source miss remains a compile failure for them.
+publishCurrentAliasChecked :: FilePath -> GitOid -> FilePath -> IO (Either CliFailure ())
+publishCurrentAliasChecked cacheSnapshot revision database = do
+  decision <- publishCurrentAliasExactDecision cacheSnapshot revision database
+  pure $
+    case decision of
+      Left problem -> Left problem
+      Right True -> Right ()
+      Right False -> Left (CliUserFailure "current cache alias source failed exact publication validation")
 
 runProductionDoctor :: CliConfig -> DoctorCommand -> IO (Either CliFailure DoctorOutput)
 runProductionDoctor config command = do
@@ -1059,14 +1156,32 @@ runProductionDoctor config command = do
               case databaseResult of
                 Left problem -> pure (Left (CliUserFailure problem))
                 Right database -> do
-                  indexed <- indexCommitted database repository (resolvedCommitOid revision)
-                  case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
-                    (True, Just published, Just indexedRevision, Nothing)
-                      | published /= database -> pure (Left (CliUserFailure "doctor published an unexpected database path"))
-                      | indexedRevision /= resolvedCommitOid revision -> pure (Left (CliUserFailure "doctor published an unexpected revision"))
-                      | otherwise -> loadDoctorOutput published indexedRevision shallow
-                    (_, _, _, Just problem) -> pure (Left (CliUserFailure ("doctor failed: " <> Text.pack (show problem))))
-                    _ -> pure (Left (CliUserFailure "doctor returned an incomplete index result"))
+                  let target = resolvedCommitOid revision
+                  snapshotResult <- prepareCacheSnapshotPath repository target
+                  case snapshotResult of
+                    Left problem -> pure (Left (CliUserFailure problem))
+                    Right archive -> do
+                      exactDecision <- publishCurrentAliasExactDecision archive target database
+                      case exactDecision of
+                        Left problem -> pure (Left problem)
+                        Right True -> loadDoctorOutput database target shallow
+                        Right False -> do
+                          snapshot <- repositorySnapshot repository (RevisionSpec (gitOidText target))
+                          case snapshot of
+                            Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+                            Right currentSnapshot -> do
+                              indexed <- indexCommittedWithAttributionAndProvenance inertColdCompileAttribution archive repository target currentSnapshot Nothing
+                              case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
+                                (True, Just published, Just indexedRevision, Nothing)
+                                  | published /= archive -> pure (Left (CliUserFailure "doctor published an unexpected cache snapshot path"))
+                                  | indexedRevision /= target -> pure (Left (CliUserFailure "doctor published an unexpected revision"))
+                                  | otherwise -> do
+                                      aliased <- publishCurrentAliasChecked published indexedRevision database
+                                      case aliased of
+                                        Left problem -> pure (Left problem)
+                                        Right () -> loadDoctorOutput database indexedRevision shallow
+                                (_, _, _, Just problem) -> pure (Left (CliUserFailure ("doctor failed: " <> Text.pack (show problem))))
+                                _ -> pure (Left (CliUserFailure "doctor returned an incomplete index result"))
 
 loadDoctorOutput :: FilePath -> GitOid -> Bool -> IO (Either CliFailure DoctorOutput)
 loadDoctorOutput database expectedRevision shallow = do
@@ -1161,9 +1276,12 @@ loadPublishedCompileResult database expectedRevision = do
 -- | Load the compile projection from an exact cache hit, reporting reuse of
 -- every document instead of parsing and leaving the published database file
 -- untouched.
-loadExactCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
-loadExactCompileResult database expectedRevision = do
-  facts <- readCompiledDatabaseFacts database
+-- | Exact authorization retains the immutable archive's validated SQLite
+-- snapshot.  Read facts from that same snapshot while reporting the mutable
+-- alias path in the unchanged CLI projection.
+loadExactCompileResultFromFacts :: FilePath -> GitOid -> ExactArchiveCompileFacts -> IO (Either CliFailure CompileResult)
+loadExactCompileResultFromFacts database expectedRevision exactFacts = do
+  let facts = compiledDatabaseFactsFromExactArchive exactFacts
   pure (first CliUserFailure (compileResultFromFacts CompileCacheExact database expectedRevision facts))
 
 loadTreeIdenticalCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
@@ -1173,12 +1291,6 @@ loadTreeIdenticalCompileResult database expectedRevision = do
 
 -- | Read the published database's meta table, translating IO problems into a
 -- user-facing failure.
-readCompiledMetaRows :: FilePath -> IO [(Text, Text)]
-readCompiledMetaRows database = do
-  bracket (open database) close readRows
-  where
-    readRows connection = query_ connection "SELECT key,value FROM meta ORDER BY key"
-
 data CompiledDatabaseFacts = CompiledDatabaseFacts
   { compiledMetaRows :: [(Text, Text)]
   , compiledManagedSources :: Int
@@ -1195,7 +1307,10 @@ data CompiledDatabaseFacts = CompiledDatabaseFacts
 -- metadata relationships.  This makes corrupt/stale metadata fail visibly
 -- instead of producing a plausible but fabricated CLI result.
 readCompiledDatabaseFacts :: FilePath -> IO CompiledDatabaseFacts
-readCompiledDatabaseFacts database = bracket (open database) close $ \connection -> do
+readCompiledDatabaseFacts database = bracket (open database) close readCompiledDatabaseFactsConnection
+
+readCompiledDatabaseFactsConnection :: Connection -> IO CompiledDatabaseFacts
+readCompiledDatabaseFactsConnection connection = do
   compiledMetaRows <- query_ connection "SELECT key,value FROM meta ORDER BY key"
   compiledManagedSources <- scalarCount connection "SELECT count(*) FROM managed_source"
   compiledIssues <- scalarCount connection "SELECT count(*) FROM issue"
@@ -1207,11 +1322,25 @@ readCompiledDatabaseFacts database = bracket (open database) close $ \connection
   compiledSearchSections <- scalarCount connection "SELECT count(*) FROM search_section"
   pure CompiledDatabaseFacts {..}
   where
-    scalarCount connection sql = do
-      rows <- query_ connection sql :: IO [Only Int]
+    scalarCount databaseConnection sql = do
+      rows <- query_ databaseConnection sql :: IO [Only Int]
       case rows of
         [Only count] -> pure count
         _ -> fail "compiled database count query returned an invalid result"
+
+compiledDatabaseFactsFromExactArchive :: ExactArchiveCompileFacts -> CompiledDatabaseFacts
+compiledDatabaseFactsFromExactArchive ExactArchiveCompileFacts {..} =
+  CompiledDatabaseFacts
+    { compiledMetaRows = exactArchiveCompileMetadata
+    , compiledManagedSources = exactArchiveCompileManagedSources
+    , compiledIssues = exactArchiveCompileIssues
+    , compiledErrors = exactArchiveCompileErrors
+    , compiledWarnings = exactArchiveCompileWarnings
+    , compiledOperations = exactArchiveCompileOperations
+    , compiledReducedAdrs = exactArchiveCompileReducedAdrs
+    , compiledSearchDocuments = exactArchiveCompileSearchDocuments
+    , compiledSearchSections = exactArchiveCompileSearchSections
+    }
 
 -- | Whether compile counters describe a fresh full compile or reuse of an exact
 -- cache hit.
@@ -1300,17 +1429,18 @@ compileResultFromMetaMode mode database expectedRevision rows = do
           }
     else Left "compiled database conflict count exceeds issue count"
   where
-    grouped = Map.fromListWith (<>) [(key, [value]) | (key, value) <- rows]
+    grouped = Map.fromListWith (<>) [(key, [metadataValue]) | (key, metadataValue) <- rows]
     one key =
       case Map.lookup key grouped of
-        Just [value] -> Right value
+        Just [metadataValue] -> Right metadataValue
         Just _ -> Left ("compiled database has duplicate metadata key: " <> key)
         Nothing -> Left ("compiled database is missing metadata key: " <> key)
+    count :: Text -> Either Text Int
     count key = do
       raw <- one key
       case TextRead.decimal raw of
-        Right (value, "")
-          | value <= fromIntegral (maxBound :: Int) -> Right value
+        Right (parsedValue, "")
+          | parsedValue <= maxBound -> Right parsedValue
         _ -> Left ("compiled database has invalid nonnegative integer metadata: " <> key)
 
 runProductionShow :: CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult)
@@ -1555,6 +1685,31 @@ transactionFailure problem
   | transactionConflict problem = CliConflictFailure (Text.pack (show problem))
   | otherwise = CliUserFailure (Text.pack (show problem))
 
+transactionConflict :: TransactionError -> Bool
+transactionConflict problem =
+  case problem of
+    Stage3ValidateState message -> "expected head mismatch" `Text.isInfixOf` message
+      || "stale ADR state:" `Text.isInfixOf` message
+      || "amend target ADR is conflicted" `Text.isInfixOf` message
+      || "amend decision conflict requires title, summary, and body" `Text.isInfixOf` message
+      || "amend target ADR is not active" `Text.isInfixOf` message
+      || "scope target ADR is conflicted" `Text.isInfixOf` message
+      || "scope target ADR has no unambiguous current scope" `Text.isInfixOf` message
+      || "scope target ADR is not active" `Text.isInfixOf` message
+      || "domain target ADR is conflicted" `Text.isInfixOf` message
+      || "domain target ADR has no unambiguous current domain" `Text.isInfixOf` message
+      || "domain target ADR is not active" `Text.isInfixOf` message
+      || "obsolete target ADR is already obsolete" `Text.isInfixOf` message
+      || "reactivate target ADR is already active" `Text.isInfixOf` message
+      || "status target ADR is conflicted" `Text.isInfixOf` message
+      || "status target ADR has no unambiguous current status" `Text.isInfixOf` message
+      || "status target ADR is not active" `Text.isInfixOf` message
+      || "status target ADR is not obsolete" `Text.isInfixOf` message
+      || "status resolve requires a conflicted status axis" `Text.isInfixOf` message
+      || "obsolete replacement ADR is conflicted" `Text.isInfixOf` message
+      || "obsolete replacement ADR is not unambiguously active" `Text.isInfixOf` message
+    _ -> False
+
 data CliFailure
   = CliUserFailure Text
   | CliConflictFailure Text
@@ -1652,8 +1807,14 @@ data StructuredAmend = StructuredAmend
   }
 
 materializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
-materializeCreate command = do
-  contentResult <- readContent command
+materializeCreate = materializeCreateWithStdin readStandardInput
+
+-- | Materialize a create request with an injectable standard-input reader.
+-- This keeps the production CLI bound to 'stdin' while allowing callers to
+-- exercise both stdin-backed content forms without mutating process state.
+materializeCreateWithStdin :: IO Text -> CreateCommand -> IO (Either Text CreateRequest)
+materializeCreateWithStdin readInput command = do
+  contentResult <- readContentWith readInput command
   case contentResult of
     Left problem -> pure (Left problem)
     Right (maybeStructured, body) -> do
@@ -1693,8 +1854,13 @@ materializeCreate command = do
            }
 
 materializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
-materializeAmend command = do
-  contentResult <- readAmendContent command
+materializeAmend = materializeAmendWithStdin readStandardInput
+
+-- | Materialize an amend request with an injectable standard-input reader.
+-- See 'materializeCreateWithStdin' for why this seam exists.
+materializeAmendWithStdin :: IO Text -> AmendCommand -> IO (Either Text AmendRequest)
+materializeAmendWithStdin readInput command = do
+  contentResult <- readAmendContentWith readInput command
   case contentResult of
     Left problem -> pure (Left problem)
     Right (maybeStructured, body) -> do
@@ -1854,47 +2020,56 @@ emptyStructured = StructuredCreate Nothing Nothing Nothing Nothing Nothing Nothi
 emptyStructuredAmend :: StructuredAmend
 emptyStructuredAmend = StructuredAmend Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
 
-readContent :: CreateCommand -> IO (Either Text (Maybe StructuredCreate, Text))
-readContent command =
+readContentWith :: IO Text -> CreateCommand -> IO (Either Text (Maybe StructuredCreate, Text))
+readContentWith readInput command =
   case createContentSources command of
     [] -> pure (Left "create requires exactly one of --body, --body-file, --stdin, or --input-json")
     [_first, _second, _third, _fourth] -> pure (Left "create accepts exactly one content source")
     source : [] ->
       case source of
-        BodyText body -> pure (Right (Nothing, body))
-        BodyFile path -> readUtf8 path >>= pure . fmap (\body -> (Nothing, body))
+        BodyText body -> pure (Right (Nothing, canonicalizeBody body))
+        BodyFile path -> readUtf8 path >>= pure . fmap (\body -> (Nothing, canonicalizeBody body))
         BodyStdin -> do
-          body <- Text.pack <$> hGetContents stdin
-          pure (Right (Nothing, body))
+          body <- readInput
+          pure (Right (Nothing, canonicalizeBody body))
         InputJson path -> do
-          raw <- if path == "-" then Right . Text.pack <$> hGetContents stdin else readUtf8 path
+          raw <- if path == "-" then Right <$> readInput else readUtf8 path
           pure $ do
             input <- raw
             structured <- parseStructuredCreate input
             body <- maybe (Left "structured create input requires string field body") Right (structuredBody structured)
-            Right (Just structured, body)
+            Right (Just structured, canonicalizeBody body)
     _ -> pure (Left "create accepts exactly one content source")
 
-readAmendContent :: AmendCommand -> IO (Either Text (Maybe StructuredAmend, Text))
-readAmendContent command =
+readAmendContentWith :: IO Text -> AmendCommand -> IO (Either Text (Maybe StructuredAmend, Text))
+readAmendContentWith readInput command =
   case amendContentSources command of
     [] -> pure (Left "amend requires exactly one of --body, --body-file, --stdin, or --input-json")
     [_first, _second, _third, _fourth] -> pure (Left "amend accepts exactly one content source")
     source : [] ->
       case source of
-        BodyText body -> pure (Right (Nothing, body))
-        BodyFile path -> readUtf8 path >>= pure . fmap (\body -> (Nothing, body))
+        BodyText body -> pure (Right (Nothing, canonicalizeBody body))
+        BodyFile path -> readUtf8 path >>= pure . fmap (\body -> (Nothing, canonicalizeBody body))
         BodyStdin -> do
-          body <- Text.pack <$> hGetContents stdin
-          pure (Right (Nothing, body))
+          body <- readInput
+          pure (Right (Nothing, canonicalizeBody body))
         InputJson path -> do
-          raw <- if path == "-" then Right . Text.pack <$> hGetContents stdin else readUtf8 path
+          raw <- if path == "-" then Right <$> readInput else readUtf8 path
           pure $ do
             input <- raw
             structured <- parseStructuredAmend input
             body <- maybe (Left "structured amend input requires string field body") Right (structuredAmendBody structured)
-            Right (Just structured, body)
+            Right (Just structured, canonicalizeBody body)
     _ -> pure (Left "amend accepts exactly one content source")
+
+-- | Canonicalize user-supplied content before it enters immutable documents.
+-- Managed documents require globally trimmed LF text ending in one newline,
+-- while CLI options, files, and stdin conventionally do not supply it.
+canonicalizeBody :: Text -> Text
+canonicalizeBody = (<> "\n") . Text.strip . normalizeLineEndings
+
+readStandardInput :: IO Text
+readStandardInput = Text.pack <$> hGetContents stdin
 
 readUtf8 :: FilePath -> IO (Either Text Text)
 readUtf8 path = do
@@ -1910,7 +2085,7 @@ readBytes path = do
 
 readDigestFile :: Text -> Maybe FilePath -> IO (Either Text (Maybe Digest))
 readDigestFile _ Nothing = pure (Right Nothing)
-readDigestFile label (Just path) = do
+readDigestFile _ (Just path) = do
   bytes <- readBytes path
   pure $ do
     content <- bytes
@@ -1988,8 +2163,8 @@ optionalStrings name object =
     toList = foldr (:) []
 
 parseActor :: Text -> Maybe Text -> Either Text Actor
-parseActor value model =
-  case Text.splitOn ":" value of
+parseActor actorText model =
+  case Text.splitOn ":" actorText of
     [kindText, identifier] -> do
       kind <- case kindText of
         "human" -> Right HumanActor
@@ -2004,11 +2179,11 @@ parseDigest = first (Text.pack . show) . Format.parseDigest
 
 freshCreateIdentifiers :: IO (Either Text (AdrId, RecordId))
 freshCreateIdentifiers = do
-  milliseconds <- floor . (* 1000) <$> getPOSIXTime
+  milliseconds <- (floor . (* 1000) <$> getPOSIXTime) :: IO Integer
   entropy <- ByteString.pack <$> replicateM 10 (randomRIO (0, 255))
   let timestamp = ByteString.pack
         [ fromIntegral ((milliseconds `div` (256 ^ offset)) `mod` 256)
-        | offset <- [5, 4 .. 0]
+        | offset <- [5 :: Int, 4 .. 0]
         ]
   pure $ do
     adr <- first (Text.pack . show) (sortableAdrId timestamp entropy)
@@ -2044,9 +2219,19 @@ indexCommitted :: FilePath -> Repository -> GitOid -> IO PostCommitIndexResult
 indexCommitted database repository commit =
   capturePostCommitIndex (compilePostCommitIndex repository commit database)
 
-indexCommittedWithAttribution :: ColdCompileAttribution -> FilePath -> Repository -> GitOid -> IO PostCommitIndexResult
-indexCommittedWithAttribution attribution database repository commit =
-  capturePostCommitIndex (compilePostCommitIndexWithAttribution attribution repository commit database)
+-- | Cold compilation and provenance refresh share one private candidate.  A
+-- refresh failure therefore cannot leave a semantic-only immutable archive
+-- eligible for later exact reuse.
+indexCommittedWithAttributionAndProvenance :: ColdCompileAttribution -> FilePath -> Repository -> GitOid -> RepositorySnapshot -> Maybe ProvenanceRecoveryWitness -> IO PostCommitIndexResult
+indexCommittedWithAttributionAndProvenance attribution database repository commit snapshot recoveryWitness =
+  capturePostCommitIndex $
+    compilePostCommitIndexWithAttributionAndRefresh attribution repository commit database $ \candidate -> do
+      refreshed <- withRefreshedTreeIdenticalProvenance repository (seedRegisteredOperationsFromSemanticCache candidate) commit snapshot recoveryWitness $ \provenanceRefresh ->
+        syncProvenanceIntoCache candidate provenanceRefresh
+      case refreshed of
+        Left (CliUserFailure problem) -> ioError (userError (Text.unpack problem))
+        Left (CliConflictFailure problem) -> ioError (userError (Text.unpack problem))
+        Right () -> pure ()
 
 -- | This is intentionally not a public CLI option.  The stress harness passes
 -- an exact, caller-owned path only to its spawned package-built child.  The
@@ -2344,10 +2529,12 @@ renderReactivateOutcome result indexResult jsonOutput =
            , ("resolved_status_conflict", JsonBool (reactivateResolvedConflict result))
            ]
 
+successOutcome :: Bool -> Text -> GitOid -> [Text] -> PostCommitIndexResult -> [(Text, JsonValue)] -> CliRendered
 successOutcome jsonOutput operation commit identifiers indexResult jsonFields
   | jsonOutput = CliRendered (renderCanonicalJson (JsonObject jsonFields)) "" ExitSuccess
   | otherwise = CliRendered (plainText operation commit identifiers indexResult) "" ExitSuccess
 
+mutationJsonFields :: String -> GitOid -> [RepoPath] -> Bool -> PostCommitIndexResult -> [(Text, JsonValue)]
 mutationJsonFields operation commit created indexUpdated indexResult =
   [ ("committed", JsonBool True)
   , ("operation", JsonString (Text.pack operation))
@@ -2357,6 +2544,7 @@ mutationJsonFields operation commit created indexUpdated indexResult =
   , ("indexed", JsonBool (postCommitIndexed indexResult))
   ] <> indexJsonFields indexResult
 
+indexJsonFields :: PostCommitIndexResult -> [(Text, JsonValue)]
 indexJsonFields indexResult
   | postCommitIndexed indexResult =
       [ ("database", maybe JsonNull (JsonString . Text.pack) (postCommitDatabase indexResult))
@@ -2387,50 +2575,11 @@ plainText operation commit identifiers indexResult =
         , adr <> "  " <> scope
         , indexLine
         ]
-    [adr, connection] ->
-      Text.unlines
-        [ "Committed " <> operation <> " as " <> gitOidText commit
-        , adr <> "  " <> connection
-        , indexLine
-        ]
     _ -> Text.unlines ["Committed " <> operation <> " as " <> gitOidText commit, indexLine]
   where
     indexLine
       | postCommitIndexed indexResult = "SQLite indexed."
       | otherwise = "SQLite indexing failed: " <> maybe "unknown failure" (Text.pack . show) (postCommitIndexError indexResult)
-
-renderTransactionFailure :: TransactionError -> IO ExitCode
-renderTransactionFailure = emitRendered . renderTransactionOutcome
-
-renderTransactionOutcome :: TransactionError -> CliRendered
-renderTransactionOutcome problem
-  | transactionConflict problem = renderFailureOutcome (CliConflictFailure (Text.pack (show problem)))
-  | otherwise = renderFailureOutcome (CliUserFailure (Text.pack (show problem)))
-
-transactionConflict :: TransactionError -> Bool
-transactionConflict problem =
-  case problem of
-    Stage3ValidateState message -> "expected head mismatch" `Text.isInfixOf` message
-      || "stale ADR state:" `Text.isInfixOf` message
-      || "amend target ADR is conflicted" `Text.isInfixOf` message
-      || "amend decision conflict requires title, summary, and body" `Text.isInfixOf` message
-      || "amend target ADR is not active" `Text.isInfixOf` message
-      || "scope target ADR is conflicted" `Text.isInfixOf` message
-      || "scope target ADR has no unambiguous current scope" `Text.isInfixOf` message
-      || "scope target ADR is not active" `Text.isInfixOf` message
-      || "domain target ADR is conflicted" `Text.isInfixOf` message
-      || "domain target ADR has no unambiguous current domain" `Text.isInfixOf` message
-      || "domain target ADR is not active" `Text.isInfixOf` message
-      || "obsolete target ADR is already obsolete" `Text.isInfixOf` message
-      || "reactivate target ADR is already active" `Text.isInfixOf` message
-      || "status target ADR is conflicted" `Text.isInfixOf` message
-      || "status target ADR has no unambiguous current status" `Text.isInfixOf` message
-      || "status target ADR is not active" `Text.isInfixOf` message
-      || "status target ADR is not obsolete" `Text.isInfixOf` message
-      || "status resolve requires a conflicted status axis" `Text.isInfixOf` message
-      || "obsolete replacement ADR is conflicted" `Text.isInfixOf` message
-      || "obsolete replacement ADR is not unambiguously active" `Text.isInfixOf` message
-    _ -> False
 
 renderFailure :: CliFailure -> IO ExitCode
 renderFailure = emitRendered . renderFailureOutcome

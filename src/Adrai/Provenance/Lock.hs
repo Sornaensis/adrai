@@ -7,6 +7,12 @@
 -- lock database with a single-row approach.  If the lock row already
 -- exists (held by another process), acquisition fails.
 --
+-- SQLite's busy timeout is configured on every lock connection.  Two
+-- processes can otherwise race while creating or reading the lock table
+-- before either has established the logical singleton row; that transient
+-- database writer contention is retried as lock contention rather than
+-- escaping as 'ErrorBusy'.
+--
 -- Mirrors the Python prototype's ``_overlay_lock()`` context manager
 -- in ``ADRAI_1_Source/adrai_core/provenance_cache.py``.
 module Adrai.Provenance.Lock
@@ -33,7 +39,6 @@ import Control.Exception
     throwIO,
     try,
   )
-import Data.String (fromString)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Int (Int64)
 import Data.Time.Clock (getCurrentTime)
@@ -42,6 +47,8 @@ import Database.SQLite.Simple
   ( Connection,
     Only (..),
     SQLData (SQLText),
+    SQLError (..),
+    Error (ErrorBusy),
     execute,
     execute_,
     open,
@@ -107,9 +114,16 @@ acquireOverlayLockWithToken provenanceDb holderPid afterClaim = mask $ \restore 
   let acquiredAt = holderPid
   connectionResult <- try @SomeException (open lockPath')
   case connectionResult of
-    Left problem -> throwIO problem
+    Left problem
+      | isSqliteBusy problem -> pure Nothing
+      | otherwise -> throwIO problem
     Right conn -> do
       acquisition <- try @SomeException $ do
+        -- This is connection-local.  A brief wait smooths normal writer
+        -- hand-off; a remaining busy result below becomes an outer bounded
+        -- retry, while an actual held lock is still represented by the
+        -- singleton row.
+        restore (execute_ conn "PRAGMA busy_timeout=100")
         restore (execute_ conn (asQuery (Text.pack lockTableDdl)))
         withTransaction conn $ restore $ do
           -- Use the fixed SQLite rowid as the singleton constraint.  The
@@ -130,10 +144,14 @@ acquireOverlayLockWithToken provenanceDb holderPid afterClaim = mask $ \restore 
           cleanupProblems <- cleanupConnection conn
           rethrowFirstCancellation (problem : cleanupProblems)
           case fromException problem of
-            Just LockAlreadyHeld -> case cleanupProblems of
-              cleanupProblem : _ -> throwIO cleanupProblem
-              [] -> pure Nothing
-            _ -> throwIO problem
+             Just LockAlreadyHeld -> case cleanupProblems of
+               cleanupProblem : _ -> throwIO cleanupProblem
+               [] -> pure Nothing
+             _
+               | isSqliteBusy problem -> case cleanupProblems of
+                   cleanupProblem : _ -> throwIO cleanupProblem
+                   [] -> pure Nothing
+               | otherwise -> throwIO problem
 
 -- | Release the overlay lock by deleting the owned singleton row and closing
 -- the connection.  Repeated calls are harmless; a genuine first-release
@@ -169,7 +187,7 @@ withOverlayLock provenanceDb action =
 -- 'withOverlayLock'.
 withOverlayLockWithReleaseHook :: FilePath -> IO a -> IO () -> IO a
 withOverlayLockWithReleaseHook provenanceDb action afterDelete = mask $ \restore -> do
-  lock <- acquireWithRetry restore 50
+  lock <- acquireWithRetry restore (50 :: Int)
   actionResult <- try @SomeException (restore action)
   releaseResult <- try @SomeException (releaseOverlayLockWith lock afterDelete)
   let problems = [problem | Left problem <- [voidResult actionResult, releaseResult]]
@@ -190,6 +208,16 @@ withOverlayLockWithReleaseHook provenanceDb action afterDelete = mask $ \restore
     voidResult result = case result of
       Left problem -> Left problem
       Right _ -> Right ()
+
+-- | SQLite writer contention is equivalent to a failed lock acquisition:
+-- release any partially opened connection and let the bounded outer retry
+-- attempt the singleton claim again.  It is deliberately narrower than a
+-- textual exception check so genuine schema and IO failures still surface.
+isSqliteBusy :: SomeException -> Bool
+isSqliteBusy problem =
+  case fromException problem of
+    Just SQLError{sqlError = ErrorBusy} -> True
+    _ -> False
 
 -- | Close a connection acquired by a failed lock attempt without allowing a
 -- synchronous close failure to replace the acquisition failure.  Cancellation

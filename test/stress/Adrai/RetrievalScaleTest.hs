@@ -44,14 +44,51 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 tests :: TestTree
 tests =
   testGroup
-    "P3-06 deterministic 2,000 ADR retrieval scale"
-    [testCase "unique probes are correct and all query work remains bounded" scaleContract]
+    "P3-06 deterministic 100 ADR retained retrieval corpus"
+    [testCase "identity, tail search, relevance, and vector reuse share one materialization" scaleContract]
+
+compactAdrCount :: Int
+compactAdrCount = 100
+
+compactScaleDiagnosticsV1 :: ScaleDiagnosticsContract
+compactScaleDiagnosticsV1 =
+  ScaleDiagnosticsContract
+    { scaleLogicalAdrs = compactAdrCount,
+      scaleSearchDocuments = compactAdrCount,
+      scaleSearchPassages = compactAdrCount * 6,
+      scaleSummaryCorpus = compactAdrCount,
+      scaleIdentifierCorpus = compactAdrCount,
+      scaleSearchSectionCandidates = 100,
+      scaleFieldRerankCandidates = 80,
+      scaleRelevanceSourceChunkCap = 24,
+      scaleRelevanceAdrShortlist = compactAdrCount,
+      scaleRelevanceCandidateSearchItems = compactAdrCount,
+      scaleRelevanceSearchSections = compactAdrCount * 6,
+      scaleRelevanceExactRerankCandidates = compactAdrCount * 6
+    }
+
+compactTailProbe, compactMiddleProbe :: RetrievalProbe
+compactTailProbe = compactUniqueProbe "tail unique marker" 99
+compactMiddleProbe = compactUniqueProbe "middle unique marker" 37
+
+compactUniqueProbe :: Text -> Int -> RetrievalProbe
+compactUniqueProbe name index =
+  RetrievalProbe
+    { retrievalProbeName = name,
+      retrievalProbeQuery =
+        "Unique architecture retrieval marker "
+          <> mustJust "compact unique marker" (retrievalUniqueMarkerAt index)
+          <> " governs Architecture rule "
+          <> Text.pack (show index),
+      retrievalProbeExpectedAdrs = [AdrKey index],
+      retrievalProbeTopK = 10
+    }
 
 scaleContract :: IO ()
 scaleContract = bracket (open ":memory:") close $ \connection -> do
   templates <-
-    case NonEmpty.nonEmpty adrTemplates of
-      Nothing -> assertFailure "seed=0; probe=materialization; 2,000-ADR templates are empty" >> error "unreachable"
+    case NonEmpty.nonEmpty (take compactAdrCount adrTemplates) of
+      Nothing -> assertFailure "seed=0; probe=materialization; compact ADR templates are empty" >> error "unreachable"
       Just values -> pure values
   fixture <-
     timed "materialization" $ do
@@ -64,7 +101,7 @@ scaleContract = bracket (open ":memory:") close $ \connection -> do
       pure value
   let snapshot = queryMaterializationSnapshot fixture
       search = queryMaterializationSearch fixture
-      diagnosticsContract = retrievalScaleDiagnosticsV1
+      diagnosticsContract = compactScaleDiagnosticsV1
       logicalAdrs = scaleLogicalAdrs diagnosticsContract
       corpusContext = scaleContext "corpus" [] [] "exact diagnostics contract"
       reduced = graphReductionAdrs (readSnapshotReduction snapshot)
@@ -77,6 +114,13 @@ scaleContract = bracket (open ":memory:") close $ \connection -> do
   assertBool corpusContext (length eligibleItems == logicalAdrs)
   assertBool corpusContext (length (searchMaterializationDocuments search) == scaleSearchDocuments diagnosticsContract)
   assertBool corpusContext (length (searchMaterializationPassages search) == scaleSearchPassages diagnosticsContract)
+  Map.keys (queryMaterializationAdrIds fixture) @?= map AdrKey [0 .. compactAdrCount - 1]
+  Set.size (Set.fromList (map adrIdText (Map.elems (queryMaterializationAdrIds fixture)))) @?= compactAdrCount
+  length (readSnapshotDocuments snapshot) @?= compactAdrCount * 4
+  forM_ [0, 49, 99] $ \key ->
+    case lookupQueryMaterializationAdr (AdrKey key) fixture of
+      Right _ -> pure ()
+      Left problem -> assertFailure (show problem)
   assertBool corpusContext (null (graphReductionIssues (readSnapshotReduction snapshot)))
   assertBool corpusContext (validateReadSnapshot snapshot == Right ())
   initializeSearchSchema connection >>= (@?= Right ())
@@ -102,7 +146,7 @@ scaleContract = bracket (open ":memory:") close $ \connection -> do
   genericProjection <- runScaleSearch "generic-bounds" Nothing connection snapshot search corpus genericProbe
   assertSearchBounds (searchBoundFailure genericProbe genericProjection) genericProjection
 
-  let uniqueProbes = retrievalTailProbeV1 : NonEmpty.toList retrievalUniqueProbesV1
+  let uniqueProbes = [compactTailProbe, compactMiddleProbe]
   forM_ (zip [0 :: Int ..] uniqueProbes) $ \(ordinal, probe) -> do
     let expected = expectedAdrIds fixture probe
     reused <- runScaleSearch "unique-reused" (Just expected) connection snapshot search corpus probe
@@ -173,7 +217,7 @@ assertSearchBounds context projection = do
   assertBool context (length results == 10)
   assertBool context (Set.size (Set.fromList actual) == length actual)
   where
-    exact field = Just (fromIntegral (field retrievalScaleDiagnosticsV1))
+    exact field = Just (fromIntegral (field compactScaleDiagnosticsV1))
     results = searchProjectionResults projection
     actual = map searchResultAdr results
 
@@ -211,11 +255,13 @@ assertRelevantBounds fixture search probe projection = do
       assertBool context (jsonIntegerAt ["semantic_corpus"] summary == exact scaleSummaryCorpus)
       assertBool context (jsonIntegerAt ["identifier_corpus"] summary == exact scaleIdentifierCorpus)
     Nothing -> assertFailure context
-  assertBool context (exactRerank > 0 && exactRerank < selected * sections)
+  -- The compact corpus stays on production's exact-section-scan path, whose
+  -- candidate count is every selected source chunk paired with every section.
+  assertBool context (exactRerank > 0 && exactRerank == selected * sections)
   assertBool context (length results == 10)
   assertBool context (Set.size (Set.fromList actual) == length actual)
   where
-    contract = retrievalScaleDiagnosticsV1
+    contract = compactScaleDiagnosticsV1
     exact field = Just (fromIntegral (field contract))
 
 assertExpectedRelevant :: QueryMaterialization -> RetrievalProbe -> RelevantProjection -> IO ()

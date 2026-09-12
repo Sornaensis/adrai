@@ -1,0 +1,453 @@
+{
+  "schemaVersion": 1,
+  "measurementPolicy": {
+    "completeRuntimeSeconds": 600,
+    "completeEvidence": null,
+    "timeoutIsPass": false,
+    "sourceCountsAreRuntimeClaims": false,
+    "overlappingStaticCountsMayBeSummed": false,
+    "note": "Only the final runner Complete result establishes executed invocation counts and wall time. Static counts below describe source structure and owner handoffs."
+  },
+  "components": [
+    {
+      "name": "adrai-test",
+      "registrationCount": 852,
+      "registrationState": "declared registry after all frozen round-nine source removals; bounded List verification is pending",
+      "staticEvidence": {
+        "nativeHelperRootProcessesRound6": 12,
+        "nativeHelperDescendantProcessesRound6": 1,
+        "nativeHelperProcessesTotalRound6": 13,
+        "nativeGitPreparationProcessesBeforeRound6": 1251,
+        "nativeGitPreparationProcessesRound6": 23,
+        "nativeObserverProcessMaximumBeforeRound6": 664,
+        "nativeObserverProcessMaximumRound6": 14,
+        "nativeObserverProbes": 51,
+        "nativeObserverDelays": 50,
+        "nativeSharedSeeds": 1,
+        "nativePrivateCopiesHistoricalRound6": 31,
+        "nativeImmutableFixtureUsesHistoricalRound6": 23,
+        "compilerHistoryConstructionProcessesBeforeRound6": 513,
+        "compilerHistoryConstructionProcessesRound6": 50,
+        "compilerHistoryConstructionDerivation": "Before: 13 healthy setups x 15 launches + 11 empty setups x 9 launches + 216 per-commit noise launches + one commitFiles operation that launches add, commit and rev-parse (3) = 513. After: healthy seed 15 + twelve private hook repairs + empty seed 9 + ten private hook repairs + two bulk imports + two resets = 50. This is the affected construction subset, not the whole suite or a runtime measurement.",
+        "residualCompilerDirectRepositoryInitializationsBeforeRound6": 29,
+        "residualCompilerDirectRepositoryInitializationsRound6": 6,
+        "residualCompilerSharedSeedsBeforeRound6": 0,
+        "residualCompilerSharedSeedsRound6": 4,
+        "residualCompilerPrivateCopiesBeforeRound6": 0,
+        "residualCompilerPrivateCopiesRound6": 22,
+        "residualCompilerColdCompilesBeforeRound6": 23,
+        "residualCompilerColdCompilesRound6": 16,
+        "residualCompilerExternalAdraiLaunches": 0,
+        "residualCompilerExplicitGitProcessesRemovedRound6": 274,
+        "newWorkerCleanupRegressionPrivateRepositorySetups": 1,
+        "newWorkerCleanupRegressionObjects": 1,
+        "newWorkerCleanupRegressionFreshGitSessions": 1,
+      "mutationServiceCasesRetained": 31,
+        "mutationServiceCasesRemovedRound5": 5,
+        "mutationServicePublicCallsRemovedRound5": 18,
+        "mutationServiceSuccessfulCompilerPathsRemovedRound5": 9,
+        "mutationServiceFreshHistoriesRemovedRound5": 4,
+        "mutationServiceRound6SetupCallsBefore": 219,
+        "mutationServiceRound6SetupCallsAfter": 40,
+        "mutationServiceRound6SetupCallsRemoved": 179,
+        "mutationServiceRound6FilesystemCopiesBefore": 33,
+        "mutationServiceRound6FilesystemCopiesAfter": 43,
+        "mutationServiceRound6SeedAcquisitions": 5,
+        "mutationServiceRound6ExternalAdraiLaunches": 0,
+        "mutationServicePartitionAColdCompilerExecutions": 5,
+        "exactQuerySharedSeedInitializations": 1,
+        "exactQueryPrivateCopies": 2,
+        "exactQuerySuccessfulFullFallbacksBeforeRound8": 5,
+        "exactQuerySuccessfulFullFallbacksRound8": 2,
+        "exactQueryTotalColdEntriesBeforeRound8": 8,
+        "exactQueryTotalColdEntriesRound8": 5,
+        "exactQueryDirectValidatorVariants": 11,
+        "exactQueryExplicitDiscoveriesBeforeRound8": 5,
+        "exactQueryExplicitDiscoveriesRound8": 2,
+        "exactQueryWholeCommitCreationsBeforeRound8": 11,
+        "exactQueryWholeCommitCreationsRound8": 7,
+        "overlaySharedSeedInitializations": 2,
+      "overlayPrivateCopies": 11,
+      "overlayOriginalSeedPrivateCopies": 8,
+      "overlayMergePlacementSeedPrivateCopies": 3,
+      "overlayEnsureCalls": 6,
+        "overlayDedicatedHistoriesAndResources": 2,
+      "mutationE2ERealCliLaunches": 6,
+        "overlap": "CLI-launch and compile-callsite counts overlap and are not added.",
+        "aggregateOrdinaryCliAndSeedCounts": "Unmeasured after Query seed consolidation and partition-specific resource construction; no obsolete partial subtotal is presented as current.",
+        "transactionRound7RegisteredCases": 52,
+        "transactionRound7SetupGitProcessesBefore": 601,
+        "transactionRound7SetupGitProcessesAfter": 101,
+        "transactionRound7RepositoryInitializationsBefore": 33,
+        "transactionRound7RepositoryInitializationsAfter": 5,
+        "transactionRound7RepositoryDiscoveriesBefore": 35,
+        "transactionRound7RepositoryDiscoveriesAfter": 7,
+        "nativeRound7RegistrationsRemoved": 2,
+        "nativeRound7AffectedInitializationsBefore": 8,
+        "nativeRound7AffectedInitializationsAfter": 5,
+        "nativeRound7AffectedDiscoveriesBefore": 8,
+        "nativeRound7AffectedDiscoveriesAfter": 8,
+        "nativeRound7AffectedCommitHelpersBefore": 7,
+        "nativeRound7AffectedCommitHelpersAfter": 3,
+        "nativeRound7AffectedIndependentClonesBefore": 3,
+        "nativeRound7AffectedIndependentClonesAfter": 2,
+        "nativeRound7AffectedSetupAcquisitionsBefore": 7,
+        "nativeRound7AffectedSetupAcquisitionsAfter": 5,
+        "gitDiscoveryRound7GitProcessesBefore": 21,
+        "gitDiscoveryRound7GitProcessesAfter": 13,
+        "compilerRound7RegisteredCasesBefore": 56,
+        "compilerRound7RegisteredCasesAfter": 45,
+        "compilerRound7RuntimeColdAttemptsBefore": 34,
+        "compilerRound7RuntimeColdAttemptsAfter": 25,
+        "compilerRound7SuccessfulFullCompilesAfter": 24,
+        "compilerRound7StorageWriterAttemptsOutsideRuntimeColdCount": 2,
+        "compilerRound7CombinedRuntimeAndWriterAttemptsAfter": 27,
+        "compilerRound7StandaloneAnalyzerCalls": 12,
+        "compilerRound7RepositoryDiscoveriesBefore": 67,
+        "compilerRound7RepositoryDiscoveriesAfter": 39,
+        "compilerRound7RevisionResolutionsBefore": 81,
+        "compilerRound7RevisionResolutionsAfter": 64,
+        "compilerRound7RepositoryInitializationsBefore": 17,
+        "compilerRound7RepositoryInitializationsAfter": 10,
+        "compilerRound7SeedConstructionsBefore": 6,
+        "compilerRound7SeedConstructionsAfter": 7,
+        "compilerRound7PrivateCopiesBefore": 44,
+        "compilerRound7PrivateCopiesAfter": 43,
+        "compilerRound7ResourceAcquisitions": 6,
+        "compilerRound8RegistrationsBefore": 39,
+        "compilerRound8RegistrationsAfter": 30,
+        "compilerRound8AnalyzerLaunchesRemoved": 8,
+        "compilerRound8HealthyRepositoryCopiesRemoved": 3,
+        "cacheSyncProductionCallsBeforeRound8": 15,
+        "cacheSyncProductionCallsRound8": 10,
+        "cacheSyncTestOwnedSqlCallsBeforeRound8": 344,
+        "cacheSyncTestOwnedSqlCallsRound8": 216,
+        "cacheSyncTestOwnedSqliteOpensBeforeRound8": 51,
+        "cacheSyncTestOwnedSqliteOpensRound8": 31,
+      "compilerSearchRealAdraiLaunchesBeforeRound8": 5,
+      "compilerSearchRealAdraiLaunchesRound8": 4,
+      "nativeRound9RegistrationsBefore": 77,
+      "nativeRound9RegistrationsAfter": 70,
+      "nativeRound9GitChildrenRemoved": 60,
+      "nativeRound9PrivateCopiesBefore": 31,
+      "nativeRound9PrivateCopiesAfter": 26,
+      "nativeRound9ImmutableFixtureUsesBefore": 23,
+      "nativeRound9ImmutableFixtureUsesAfter": 22,
+      "compilerRepositoryRound9RegistrationsBefore": 39,
+      "compilerRepositoryRound9RegistrationsAfter": 26,
+      "compilerRepositoryRound9RuntimeColdAttemptsBefore": 23,
+      "compilerRepositoryRound9RuntimeColdAttemptsAfter": 16,
+      "compilerRepositoryRound9RepositoryInitializationsBefore": 9,
+      "compilerRepositoryRound9RepositoryInitializationsAfter": 7,
+      "compilerRepositoryRound9PrivateCopiesBefore": 38,
+      "compilerRepositoryRound9PrivateCopiesAfter": 27,
+      "compilerRepositoryRound9TestOwnedSqliteOpensBefore": 25,
+      "compilerRepositoryRound9TestOwnedSqliteOpensAfter": 18,
+      "cacheIntegrationRound9RegistrationsBefore": 14,
+      "cacheIntegrationRound9RegistrationsAfter": 10,
+      "cacheIntegrationRound9RealCompileCliBefore": 12,
+      "cacheIntegrationRound9RealCompileCliAfter": 8,
+      "overlayRound9RegistrationsBefore": 43,
+      "overlayRound9RegistrationsAfter": 35,
+      "overlayRound9PrivateCopiesBefore": 14,
+      "overlayRound9PrivateCopiesAfter": 11,
+      "mutationE2EP602RealCliBeforeRound9": 5,
+      "mutationE2EP602RealCliAfterRound9": 3,
+      "mutationE2EP603RealCliBeforeRound9": 5,
+      "mutationE2EP603RealCliAfterRound9": 3,
+      "mutationE2EP602CompilerSqlitePathsBeforeRound9": 3,
+      "mutationE2EP602CompilerSqlitePathsAfterRound9": 2,
+      "mutationE2EP603CompilerSqlitePathsBeforeRound9": 5,
+      "mutationE2EP603CompilerSqlitePathsAfterRound9": 2
+      },
+      "constraints": {
+        "proposedCliTarget": 28,
+        "proposedNativeHelperTarget": 16,
+        "proposedSeedTarget": 8,
+        "targetsMet": false,
+        "justification": "The frozen design retains distinct public-command, cache publication, cancellation, EOF, reaping, transaction and competing-target boundaries. The hard acceptance criterion is the measured complete 600-second run."
+      }
+    },
+    {
+      "name": "adrai-cache-selection-test",
+      "registrationCount": 9,
+      "registrationState": "captured from the final bounded registry reconciliation",
+      "staticEvidence": {
+        "compileCalls": 6,
+        "sharedRealColdSeedInitializations": 1,
+        "namedCases": 9,
+        "acquisitionSeamScenarios": 7
+      }
+    },
+    {
+      "name": "adrai-stress-test",
+      "registrationCount": 28,
+      "registrationState": "captured with required --run-stress in the final bounded registry reconciliation",
+      "requiredArgs": [
+        "--run-stress"
+      ],
+      "materializedFixtures": {
+        "retrievalAdrs": 100,
+        "repositoryBaseCommits": 32,
+        "repositoryPostCacheNoiseCommits": 1,
+        "repositoryTotalExecutedCommits": 33,
+        "repositoryOperations": 16,
+        "repositoryMergeParents": 2
+      }
+    },
+    {
+      "name": "adrai-benchmark-registration-test",
+      "registrationCount": 6,
+      "registrationState": "captured from the final bounded registry reconciliation",
+      "benchmarkExecutions": 0
+    }
+  ],
+  "completeQueueDerivation": {
+    "queueOrder": [
+      "Q",
+      "N",
+      "R",
+      "T",
+      "Env",
+      "A",
+      "CompilerSearch",
+      "K",
+      "O",
+      "MutationE2E",
+      "D",
+      "cache",
+      "C",
+      "Rest",
+      "stress",
+      "E",
+      "registration",
+      "Krace",
+      "repeat-001-001"
+    ],
+    "maximumActiveJobs": 3,
+    "registrationProcessesBeforeDispatch": {
+      "exactCount": 19,
+      "derivation": "Four full-component --list-tests processes plus fifteen ordinary partition --list-tests processes; stress listing includes --run-stress."
+    },
+    "queuedSelectedProcesses": {
+      "exactCount": 19,
+      "derivation": "Fifteen disjoint ordinary partitions, three whole non-ordinary components, and one singleton ordinary repeat each launch one selected test process."
+    },
+    "jobs": [
+      {
+        "id": "A",
+        "component": "adrai-test",
+        "selectedTests": 23,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "Exactly two process resources are acquired once: the post-commit seed and mutation seed.",
+        "privateCopies": "Exactly 26 filesystem copies remain after three amend-rejection leaf copies consolidate into one; the post-commit and mutation seeds are each acquired once.",
+        "childProcesses": "Round eight consolidates three amend-rejection registrations into one while retaining four production service calls, four immediate complete-state equalities and seven snapshot points. Seven high-level per-leaf discoveries and their 42 native Git child processes are included in the affected mutation observer reduction from 125 to 44 Git processes; its genuine two-operation conflict setup remains. A launches no external ADRAI executable and retains exactly five full cold compiler executions; remaining Git totals are unmeasured."
+      },
+      {
+        "id": "D",
+        "component": "adrai-test",
+        "selectedTests": 2,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The mutation seed is acquired once; the post-commit seed is scoped only to partition A.",
+        "privateCopies": "Exactly five filesystem copies are used after local seed-identity relocation.",
+        "childProcesses": "Static fixture setup calls fell from 18 to 8 in the earlier D reduction. Round nine removes the domain-only reviewed-merge carrier, one private copy, four runDomain calls and two direct Git reset/cherry-pick operations. The mixed truthful update and representative delta/refine/stale-token carrier remain; other Git/CLI totals are unmeasured."
+      },
+      {
+        "id": "Q",
+        "component": "adrai-test",
+        "selectedTests": 2,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The shared ExactQuerySeed resource is acquired once in this selected process.",
+        "privateCopies": "Exactly two private seed copies serve the retained archive-hook and acquisition cases; the transferred two-target history and archive are constructed in the shared seed.",
+        "childProcesses": "Round eight reduces successful full fallbacks from five to two, total cold entries from eight to five, raw/analyzer entries from nine to six, queryColdCompile hooks from seven to four, archive CLI launches from three to two and total query SQLite constructions from eight to four. Direct corrupt classifications increase from nine to eleven. Explicit discoveries fall from five to two and whole-Q commit creations from eleven to seven; branch/cherry-pick and both target histories remain."
+      },
+      {
+        "id": "K",
+        "component": "adrai-test",
+        "selectedTests": 9,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "One selected process acquires two immutable production seed families: one rich six-document/two-operation seed and one simple four-document seed.",
+        "privateCopies": "Exactly nine private fixture executions remain in K after four removed CacheIntegration carriers; the competing-target race has moved to its own Krace process.",
+        "childProcesses": "Round nine removes four real compile CLI launches: the CacheIntegration source total falls from twelve to eight, of which the exclusive race owns two concurrent target children. K therefore retains six sequential compile calls including both seed compiles plus one doctor, for seven ADRAI launches. Direct helper Git subprocesses and compiler-internal Git children are additional; internal totals remain unmeasured."
+      },
+      {
+        "id": "Krace",
+        "component": "adrai-test",
+        "selectedTests": 1,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The exclusive race process acquires one duplicated simple immutable seed.",
+        "privateCopies": "Exactly one simple-seed private copy.",
+        "childProcesses": "Exactly three ADRAI launches: one duplicated simple-seed compile plus two simultaneous target compile children. Direct and internal Git-child totals remain unmeasured."
+      },
+      {
+        "id": "Env",
+        "component": "adrai-test",
+        "selectedTests": 2,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "No cross-group resource is duplicated; each retained Environment case owns its fixture within this selected process.",
+        "privateCopies": "Fixture-local and unmeasured.",
+        "childProcesses": "The retained rich linked-worktree carrier absorbs configured-root creation and lock assertions and keeps one genuine installed-executable compile before caller-index setup. Across that carrier and the five retired Transaction cases, CLI children fall from five to three (create four to two, compile one to one), successful children from three to two, rejected children from two to one, fresh repository initializations from five to one, configured-root commits from three to one, linked-worktree creations from four to one and repository discoveries from seven to two. Successful compile/SQLite builds fall from three to two; no cache copy or seed is added. Other fixture-local totals are unmeasured."
+      },
+      {
+        "id": "CompilerSearch",
+        "component": "adrai-test",
+        "selectedTests": 7,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The intact seven-case compiled-search SQLite group remains in one selected process; setup uses a genuine typed two-commit fixture and cache clearing instead of three production service setup transactions. Fixture construction makes seven new native Git calls plus the unchanged six-call createTestRepo bootstrap, for thirteen calls.",
+        "privateCopies": "Fixture-local and unmeasured.",
+        "childProcesses": "Exactly four real ADRAI launches remain in the executable carrier: current cold compile, historical cold compile, exact JSON compile and missing-ref failure. One explicit repository discovery and its six native Git child processes are removed; the replacement fixture's seven calls are one basis rev-parse plus two commitFiles operations, each launching add, commit and rev-parse. Two full cold compiles, one successful exact-reuse call, the unknown-ref failure, mutable-alias byte equality and authoritative current-archive byte equality remain; the plain-text smoke is mapped to typed render and dispatch contracts."
+      },
+      {
+        "id": "MutationE2E",
+        "component": "adrai-test",
+        "selectedTests": 3,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The intact compact real-command group remains in one selected process; repository setup is case-local.",
+        "privateCopies": "Fixture-local and unmeasured.",
+        "childProcesses": "Exactly six real ADRAI launches remain: the compact command carrier falls from five to three public calls (init/create/show), and reconciliation falls from five to three (incomplete rejection/success/stale rejection). The compact carrier's compiler/analyzer/SQLite paths fall three to two and explicit harness Git calls 34 to 29. Reconciliation keeps two compiler/SQLite builds, including a genuine prior-index compile, while explicit harness Git calls rise 78 to 87 because a sealed two-parent Git history replaces four setup transactions. It creates the repository-local .adrai parent before that seed compile, adding one directory creation without changing source, compile, Git, or CLI process counts. Production-command internal Git fanout remains unmeasured."
+      },
+      {
+        "id": "O",
+        "component": "adrai-test",
+        "selectedTests": 35,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "Two nested immutable overlay resources are initialized once each by the selected process: the original topology seed and the merge-placement seed.",
+        "privateCopies": "Eleven exact retained-seed private-copy executions remain after three legacy topology copies are removed; other fixture-local setup is unmeasured.",
+        "childProcesses": "Round nine removes eight legacy topology registrations, five temporary repositories, three retained-seed copies, nine discovery/resolution pairs, six runProvenanceEnsure calls and one runEnsureForConfig call. The removed fixtures account for 147 known GitTestSupport child processes. Git/compiler totals outside this source-derived scope remain unmeasured."
+      },
+      {
+        "id": "C",
+        "component": "adrai-test",
+        "selectedTests": 4,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The mutation seed is acquired once; the post-commit seed is scoped only to partition A.",
+        "privateCopies": "Exactly six filesystem copies are used after local seed-identity relocation.",
+        "childProcesses": "Static fixture setup calls fall from 24 to 8 in C, a reduction of 16. The removed scope Stage7 wrapper maps to the Transaction Stage7 contract; other Git/CLI totals are unmeasured."
+      },
+      {
+        "id": "T",
+        "component": "adrai-test",
+        "selectedTests": 47,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "Exactly two shared resources are acquired in the selected process: the committed transaction seed and the unborn-repository seed.",
+        "privateCopies": "Exactly 45 private copies remain after two redundant shared-seed per-case copies are removed: 43 copies of the committed transaction seed and two copies of the unborn-repository seed.",
+        "childProcesses": "Round eight removes five Transaction registrations after transferring linked index/branch, canonical common-lock, live contention, absolute-child rejection and Stage7 state assertions. In the affected Env/T scope, harness Git processes fall from 119 to 26, direct native transactions from three to zero, lock attempts from fourteen to five and releases from ten to three. The round-seven whole-T total of 101 setup Git children is historical and is not presented as the current whole-job count."
+      },
+      {
+        "id": "N",
+        "component": "adrai-test",
+        "selectedTests": 70,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "Two shared resources are acquired by this selected process: the native Git batch seed and the shared GitDiscovery seed. The round-seven sparse/shallow transfer and its combined R replacement are historical: round nine retires the combined carrier and explicitly accepts loss of that independent sparse/shallow composition.",
+        "privateCopies": "Twenty-six private fixture copies and 22 immutable fixture uses remain for the shared native seed after round nine; GitDiscovery no longer performs its former recursive private copy.",
+        "childProcesses": "Round nine removes seven native success/discovery registrations and 60 known Git children while preserving every cancellation, reaping, replay, framing and 513-object failure boundary. The two shared resource acquisitions and 35 seed-preparation calls remain. The cross-window replay fixture replaces its fake .cmd and PowerShell wrapper/descendant with one copied native adrai-test helper executable. That executable is launched directly for one bare object-info prerequisite invocation and one 257-request native tree-session invocation; the tree-session PID is recorded, proven absent after captured-handle cleanup, and followed by one genuine same-API real-Git retry. These static scopes are not whole-job runtime claims."
+      },
+      {
+        "id": "R",
+        "component": "adrai-test",
+        "selectedTests": 98,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The changed round-seven R scopes use six Tasty resource acquisitions constructing seven immutable seeds in the selected process.",
+        "privateCopies": "In the round-nine ColdCompiler, RepositorySnapshot, RepositoryIsolation and IntegrityAdversarial scope, private copy/hook-rebind executions fall from 38 to 27; two unchanged audit copies are included. Other R fixture copies remain outside this scoped count.",
+        "childProcesses": "Round nine removes thirteen R registrations. In the affected four-file scope repository initializations fall 9 to 7, temporary directories 10 to 7, runtime cold compiles 23 to 16, test-owned SQLite opens 25 to 18 and expanded queries 80 to 65; explicit analyzer calls remain four. Source sites for gitSuccess fall 48 to 23, commitFile 27 to 16, commitFiles 33 to 22 and hashObject 5 to 3; these are source-site counts, not runtime-child totals or measured seconds."
+      },
+      {
+        "id": "E",
+        "component": "adrai-test",
+        "selectedTests": 2,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The mutation seed is acquired once; the post-commit seed is scoped only to partition A.",
+        "privateCopies": "Exactly four filesystem copies are used after local seed-identity relocation.",
+        "childProcesses": "Static fixture setup calls fall from 12 to 8 in E, a reduction of four. Thirteen status public service calls and seven successful compiler paths were removed in round 5; other Git/CLI totals are unmeasured."
+      },
+      {
+        "id": "Rest",
+        "component": "adrai-test",
+        "selectedTests": 547,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "Selected-resource constructors outside the thirteen anchored groups are input dependent; exact construction count is unmeasured.",
+        "privateCopies": "Unmeasured; fixture-local private copies and temporary repositories are created by the selected cases.",
+        "childProcesses": "Unmeasured; this complement retains remaining unit, property, golden and integration cases after extracting Query, Environment, compiled-search SQLite and MutationE2E."
+      },
+      {
+        "id": "cache",
+        "component": "adrai-cache-selection-test",
+        "selectedTests": 9,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "Exactly one real-cold seed is initialized once for the selected component process.",
+        "privateCopies": "Private copies are used by corruption, race and acquisition cases; the exact executed copy count is unmeasured.",
+        "childProcesses": "Exactly six compile calls are declared statically; internal Git-child multiplicity is unmeasured."
+      },
+      {
+        "id": "stress",
+        "component": "adrai-stress-test",
+        "selectedTests": 28,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "Required --run-stress process materializes the retained 100-ADR retrieval corpus and compact repository fixtures once per owning resource.",
+        "privateCopies": "Fixture-specific and unmeasured.",
+        "childProcesses": "The compact repository executes 33 commits and 16 ADR operations. The Windows live process-tree sampler launches one directly owned ping.exe with -n 3 127.0.0.1 instead of a cmd wrapper plus ping child; its bracketed action closes stdin, samples, conditionally terminates, and waits that exact handle across failure and success. Existing sampler PowerShell/CIM calls and other sampler/helper launches remain unmeasured."
+      },
+      {
+        "id": "registration",
+        "component": "adrai-benchmark-registration-test",
+        "selectedTests": 6,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "No benchmark body or benchmark fixture is executed.",
+        "privateCopies": "None declared.",
+        "childProcesses": "No benchmark execution; only six registration assertions run."
+      },
+      {
+        "id": "repeat-001-001",
+        "component": "adrai-test",
+        "selectedTests": 1,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "A fresh selected process repeats the competing-target case with one duplicated simple immutable seed.",
+        "privateCopies": "Exactly one simple-seed private copy is acquired for the singleton repeat; other repository-copy filesystem operations are not process launches.",
+        "childProcesses": "Exactly three ADRAI launches: one duplicated simple-seed compile plus two concurrent target compile children. Additional Git setup/session multiplicity is unmeasured."
+      }
+    ],
+    "mutationSeedDuplication": {
+      "exactSelectedProcesses": 4,
+      "mutationSeedsPerProcess": 1,
+      "postCommitSeedsInPartitionA": 1,
+      "exactTotalSeedConstructions": 5,
+      "additionalVersusSingleOrdinaryProcess": 3,
+      "explanation": "A, C, D and E are separate selected processes and each acquires one mutation seed. Only A acquires the post-commit seed, for five total constructions rather than the two resources constructed once in a single ordinary process. Round six relocated audited seed identity into private copies. Round eight consolidates three A amend-rejection registrations into one while retaining all four rejection routes and their complete caller-state assertions."
+    },
+    "knownDirectProcessLowerBound": 38,
+    "knownDirectProcessLowerBoundDerivation": "Four full-component listings plus fifteen ordinary partition listings plus nineteen queued selected processes. Owned helper/Git/CLI descendants are additional and only the explicitly stated counts above are exact.",
+    "realCliExitCoverage": {
+      "realProcess": [
+        0,
+        2,
+        3
+      ],
+      "typedOnly": [
+        4
+      ],
+      "acceptedLoss": "The compact MutationE2E wiring retains real executable exits 0, 2 and 3. Unhealthy doctor exit 4 is retained only by typed CliContract rendering; the former real-process exit-4 matrix assurance is retired."
+    }
+  },
+  "targetedRepeats": [
+    {
+      "component": "adrai-test",
+      "test": "ADRAI.P4-07.Cache integration (P4-07).competing tree-identical targets retain their own provenance projections",
+      "additionalExecutions": 1,
+      "rationale": "Retains a genuine simultaneous-target publication and provenance isolation reliability repeat.",
+      "historicalSeconds": "31-37",
+      "includedInCompleteDeadline": true
+    }
+  ],
+  "capacityBoundaries": {
+    "gitObjectWindowSentinel": 513,
+    "gitObjectWindowImplementationBoundary": 256,
+    "gitObjectWindowRequestedObjects": 257,
+    "retrievalCandidateCaps": {
+      "summary": 100,
+      "identifier": 100,
+      "section": 100,
+      "field": 80,
+      "source": 24
+    }
+  }
+}

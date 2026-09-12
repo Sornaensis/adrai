@@ -479,30 +479,30 @@
                      "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
                      "pythonMethod":  "test_custom_committed_roots_compile_and_search",
                      "behaviorContract":  "Branch-committed custom managed roots are honored by creation, compilation, and search.",
-                     "haskellTestName":  "custom committed roots compile and search",
-                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "configured managed roots are physically distinct",
+                     "haskellTestPath":  "test/unit/Adrai/ManagedPathContractTest.hs",
+                     "haskellTestType":  "unit",
                      "phaseOwner":  "P6",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"custom committed roots compile and search\"",
-                                      "fixture":  "P4-01 GitBatchTest and P4-02 repository suites prove exact committed custom-root observation. P4-03 ColdCompilerTest relocates a complete sealed ADR into Unicode custom roots, compiles normalized/search rows, and persists those exact managed_source paths. Public creation and query commands remain P4-06; Python was reviewed statically and not executed.",
-                                      "result":  "P4-01 GitBatchTest and P4-02 repository suites prove exact committed custom-root observation. P4-03 ColdCompilerTest relocates a complete sealed ADR into Unicode custom roots, compiles normalized/search rows, and persists those exact managed_source paths. Public creation and query commands remain P4-06; Python was reviewed statically and not executed."
+                                       "command":  "stack test adrai:adrai-test --test-arguments='--pattern=\"configured managed roots are physically distinct\"'",
+                                       "fixture":  "The primary retained unit carrier validates physically distinct configured decision and connection roots. The retained rich linked-worktree Environment carrier is secondary evidence: it commits configured roots, executes a genuine installed-executable compile, and proves returned HEAD, one decision and three connection paths, physical files and matching SQLite identities. Query separately retains Unicode exact/cold search parity.",
+                                       "result":  "Coverage is partial. The former standalone Environment target and the retired ColdCompiler custom-root source-set target are historical. Current evidence is split across the distinct primary managed-root contract, the secondary linked Environment create/compile/SQLite carrier, and Query exact/cold parity; the combined branch-committed custom-root creation, compilation, and search composition, including independent Unicode-to-SQLite cold replay, is an explicit round-nine loss. Python was reviewed statically and not executed."
                                   }
                  },
                  {
                      "pythonPath":  "ADRAI_1_Source/tests/test_repository_environments.py",
                      "pythonMethod":  "test_unicode_content_round_trips_through_git_sqlite_fts_and_vector_search",
                      "behaviorContract":  "Unicode decision content round-trips unchanged through Git, SQLite, full-text search, and vector search.",
-                     "haskellTestName":  "unicode round trips through git sqlite fts and vector search",
-                     "haskellTestPath":  "test/e2e/Adrai/RepositoryEnvironmentsTest.hs",
-                     "haskellTestType":  "e2e",
+                     "haskellTestName":  "P6-08Q exact-v3 archive hooks and tamper fallback",
+                     "haskellTestPath":  "test/integration/Adrai/QueryIntegrationTest.hs",
+                     "haskellTestType":  "integration",
                      "phaseOwner":  "P6",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"unicode round trips through git sqlite fts and vector search\"",
-                                      "fixture":  "P4-01/P4-02 suites preserve exact Unicode Git paths, roots, and bytes. P4-03 ColdCompilerTest compiles Unicode custom roots through SQLite normalized/search/FTS storage. A Unicode decision-body and public vector-query round trip remain P4-06, so this row remains partial; Python was reviewed statically and not executed.",
-                                      "result":  "P4-01/P4-02 suites preserve exact Unicode Git paths, roots, and bytes. P4-03 ColdCompilerTest compiles Unicode custom roots through SQLite normalized/search/FTS storage. A Unicode decision-body and public vector-query round trip remain P4-06, so this row remains partial; Python was reviewed statically and not executed."
+                                       "command":  "stack test adrai:adrai-test --test-arguments='--pattern=\"P6-08Q exact-v3 archive hooks and tamper fallback\"'",
+                                      "fixture":  "QueryIntegration's shared exact/cold fixture retains RFC punctuation, København, Japanese, emoji and newline source bytes, materialization equality and vector-corpus parity without a second repository pipeline.",
+                                      "result":  "Current retained proof covers raw Git/source bytes, SQLite materialization and vector-corpus parity. The separate Japanese/emoji sentence-retrieval pipeline is an explicit accepted loss; Python was reviewed statically and not executed."
                                   }
                  },
                  {

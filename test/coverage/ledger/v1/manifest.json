@@ -44,13 +44,14 @@
   "closureStates": ["covered", "installed-haskell-equivalent", "not-applicable"],
   "gapStates": ["planned", "partial"],
   "allowedPhaseOwners": ["P2", "P3", "P4", "P5", "P6", "P7"],
-  "allowedHaskellTestTypes": ["unit", "property", "integration", "golden", "e2e"],
+  "allowedHaskellTestTypes": ["unit", "property", "integration", "golden", "e2e", "cache-selection"],
   "allowedHaskellTestDirectories": [
     "test/unit/",
     "test/property/",
     "test/integration/",
     "test/golden/",
-    "test/e2e/"
+    "test/e2e/",
+    "test/cache-selection/"
   ],
   "runtimeIndependence": {
     "requiresPrototypeAtTestRuntime": false,

@@ -9,7 +9,14 @@ import Adrai.Git
 import Adrai.GitTestSupport
 import Adrai.Provenance (mkGitOid)
 import Adrai.Repository
+import Adrai.RetainedNative.ResidualRepositorySeed
+  ( RepositorySeed,
+    createRepositorySeed,
+    removeRepositorySeed,
+    withRepositorySeedCopy,
+  )
 import Adrai.Sqlite
+import Control.Exception (bracket)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.String (fromString)
@@ -19,20 +26,20 @@ import qualified Data.Text.Encoding as TextEncoding
 import Database.SQLite.Simple (Connection, Only (..), Query, close, open, query_)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))
-import System.IO.Temp (withSystemTempDirectory)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit ((@?=), assertFailure, testCase)
 
 tests :: TestTree
 tests =
-  testGroup
-    "P4-03 cold compiler goldens"
-    [ testCase "declared cold SQLite schema is frozen" (assertGolden "schema.golden" schemaBytes),
-      testCase "actual placement-free SQLite logical rows and fingerprints are frozen" $
-        logicalDatabaseBytes >>= assertGolden "logical.golden",
-      testCase "actual diagnostic-only SQLite rows are frozen" $
-        diagnosticDatabaseBytes >>= assertGolden "diagnostics.golden"
-    ]
+  withResource createEmptyRepositorySeed removeRepositorySeed $ \getRepositorySeed ->
+    testGroup
+      "P4-03 cold compiler goldens"
+      [ testCase "declared cold SQLite schema is frozen" (assertGolden "schema.golden" schemaBytes),
+        testCase "actual placement-free SQLite logical rows and fingerprints are frozen" $
+          logicalDatabaseBytes getRepositorySeed >>= assertGolden "logical.golden",
+        testCase "actual diagnostic-only SQLite rows are frozen" $
+          diagnosticDatabaseBytes getRepositorySeed >>= assertGolden "diagnostics.golden"
+      ]
 
 schemaBytes :: ByteString
 schemaBytes =
@@ -41,19 +48,23 @@ schemaBytes =
       <> ["search|" <> schemaName component <> "|" <> ddl | (component, ddl) <- searchOrdinarySchemaDdl]
       <> ["fts|" <> ftsTargetName target <> "|" <> ftsTargetDdl target | target <- allFtsTargets]
 
-logicalDatabaseBytes :: IO ByteString
-logicalDatabaseBytes =
-  withCompiledFixture healthyCompilerFiles dumpLogicalDatabase
+logicalDatabaseBytes :: IO RepositorySeed -> IO ByteString
+logicalDatabaseBytes getRepositorySeed =
+  withCompiledFixture getRepositorySeed healthyCompilerFiles $ \connection -> do
+    semanticState <- query_ connection "SELECT value FROM meta WHERE key='semantic_state'" :: IO [Only Text]
+    semanticState @?= [Only "valid"]
+    issues <- query_ connection "SELECT code,severity FROM issue ORDER BY ordinal" :: IO [(Text, Text)]
+    issues @?= [("BASIS_COMMIT_UNAVAILABLE", "warning")]
+    dumpLogicalDatabase connection
 
-diagnosticDatabaseBytes :: IO ByteString
-diagnosticDatabaseBytes =
-  withCompiledFixture malformedCompilerFiles dumpLogicalDatabase
+diagnosticDatabaseBytes :: IO RepositorySeed -> IO ByteString
+diagnosticDatabaseBytes getRepositorySeed =
+  withCompiledFixture getRepositorySeed malformedCompilerFiles dumpLogicalDatabase
 
-withCompiledFixture :: (GitOid -> Either Text [(FilePath, ByteString)]) -> (Connection -> IO value) -> IO value
-withCompiledFixture fixture action =
-  withSystemTempDirectory "adrai p4-03 golden" $ \temporary -> do
-    let repository = temporary </> "repository"
-    initTestRepository repository
+withCompiledFixture :: IO RepositorySeed -> (GitOid -> Either Text [(FilePath, ByteString)]) -> (Connection -> IO value) -> IO value
+withCompiledFixture getRepositorySeed fixture action = do
+  seed <- getRepositorySeed
+  withRepositorySeedCopy seed "adrai p4-03 golden" $ \repository -> do
     let stableUnavailableBasis = requireOid (Text.replicate 40 "a")
     files <- requireFixture (fixture stableUnavailableBasis)
     _ <- commitFiles repository files
@@ -125,7 +136,7 @@ dumpSpecs =
     table "issue" ["ordinal", "code", "severity", "origin", "adr_id", "object_id", "operation_id", "commit_oid", "path", "message"] "ordinal",
     table "adr_conflict" ["adr_id", "code", "candidate_count", "state_token", "summaries"] "adr_id",
     table "operation" ["operation_id", "timestamp_ms", "actor_kind", "actor_id", "actor_model", "basis_oid", "branch_hint", "upstream_hint", "line_anchors", "tool_version", "input_digest", "prompt_digest", "context_digest"] "operation_id",
-    table "operation_member" ["operation_id", "object_id", "object_type", "event_kind", "semantic_digest", "path"] "operation_id,object_id",
+    table "operation_member" ["operation_id", "object_id", "object_type", "event_kind", "semantic_digest", "path", "blob_oid"] "operation_id,object_id",
     table "operation_member_parent" ["operation_id", "object_id", "ordinal", "parent_object_id"] "operation_id,object_id,ordinal",
     table "decision_record" ["record_id", "adr_id", "operation_id", "title", "summary", "domains", "body", "path"] "record_id",
     table "connection_record" ["connection_id", "adr_id", "operation_id", "relation_kind", "payload", "rationale", "path"] "connection_id",
@@ -156,16 +167,21 @@ assertGolden :: FilePath -> ByteString -> IO ()
 assertGolden name actual = BS.readFile (goldenRoot </> name) >>= (@?= actual)
 
 writeP403Goldens :: IO ()
-writeP403Goldens = do
-  createDirectoryIfMissing True goldenRoot
-  logical <- logicalDatabaseBytes
-  diagnostics <- diagnosticDatabaseBytes
-  BS.writeFile (goldenRoot </> "schema.golden") schemaBytes
-  BS.writeFile (goldenRoot </> "logical.golden") logical
-  BS.writeFile (goldenRoot </> "diagnostics.golden") diagnostics
+writeP403Goldens =
+  bracket createEmptyRepositorySeed removeRepositorySeed $ \repositorySeed -> do
+    createDirectoryIfMissing True goldenRoot
+    logical <- logicalDatabaseBytes (pure repositorySeed)
+    diagnostics <- diagnosticDatabaseBytes (pure repositorySeed)
+    BS.writeFile (goldenRoot </> "schema.golden") schemaBytes
+    BS.writeFile (goldenRoot </> "logical.golden") logical
+    BS.writeFile (goldenRoot </> "diagnostics.golden") diagnostics
 
 goldenRoot :: FilePath
 goldenRoot = "test/golden/p4-03"
+
+createEmptyRepositorySeed :: IO RepositorySeed
+createEmptyRepositorySeed =
+  createRepositorySeed "adrai-p4-03-golden-seed" initTestRepository
 
 requireFixture :: Either Text value -> IO value
 requireFixture result =

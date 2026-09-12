@@ -42,6 +42,7 @@ import Adrai.Compiler.Snapshot
     analyzedDiagnostics,
     analyzedDocuments,
     analyzedHistoryCommitsScanned,
+    analyzedRawObservation,
     analyzedReduction,
     analyzedSourceFingerprint,
     compilerDiagnosticCodeText,
@@ -58,7 +59,7 @@ import Adrai.Format.Document
     StatusState (StatusObsolete),
   )
 import Adrai.Format (renderDigest)
-import Adrai.Git (GitBlob (..))
+import Adrai.Git (GitBlob (..), gitTreeOid, gitTreePath)
 import Adrai.Graph
   ( AdrConflict (..),
     AxisResolution (..),
@@ -232,17 +233,23 @@ coldCompileRepositoryWithAttribution attribution connection revision = do
         result <- pure (coldMaterializationFingerprint analyzed materialization)
         forceAttributionValue attribution (\digest -> digestBytes digest `seq` ()) result
       stored <- writeColdDatabaseWithAttribution attribution connection analyzed materialization fingerprint
-      pure $ do
-        stats <- mapLeft ColdCompilerDatabaseError stored
-        Right
-          ColdCompilerResult
-            { coldCompilerDiagnostics = analyzedDiagnostics analyzed,
-              coldCompilerCompiledRevision = revision,
-              coldCompilerSearchMaterialization = materialization,
-              coldCompilerMaterializationFingerprint = fingerprint,
-              coldCompiledHistoryCommitsScanned = analyzedHistoryCommitsScanned analyzed,
-              coldCompilerDatabaseStats = stats
-            }
+      -- Force the database outcome while the caller still owns the open
+      -- connection.  Returning this through a lazy 'pure $ do' used to defer
+      -- the outcome until post-compile publication had already closed it.
+      case stored of
+        Left problem -> pure (Left (ColdCompilerDatabaseError problem))
+        Right stats ->
+          pure
+            ( Right
+                ColdCompilerResult
+                  { coldCompilerDiagnostics = analyzedDiagnostics analyzed,
+                    coldCompilerCompiledRevision = revision,
+                    coldCompilerSearchMaterialization = materialization,
+                    coldCompilerMaterializationFingerprint = fingerprint,
+                    coldCompiledHistoryCommitsScanned = analyzedHistoryCommitsScanned analyzed,
+                    coldCompilerDatabaseStats = stats
+                  }
+            )
     forceMaterialization materialization =
       length (searchMaterializationDocuments materialization)
         `seq` length (searchMaterializationPassages materialization)
@@ -263,7 +270,7 @@ coldMaterializationFingerprint analyzed materialization =
 coldMaterializationFingerprintFrames :: AnalyzedRepositorySnapshot -> Maybe SearchMaterialization -> [ByteString]
 coldMaterializationFingerprintFrames analyzed materialization =
   "adrai-cold-materialization/1\NUL"
-    : framedText "adrai-cache/1"
+    : framedText "adrai-cache/3"
     : framedText materializationImplementationFingerprint
     : framedBytes (digestBytes (analyzedSourceFingerprint analyzed))
     : map (framedText . diagnosticFingerprint) (analyzedDiagnostics analyzed)
@@ -277,9 +284,14 @@ coldMaterializationFingerprintFrames analyzed materialization =
       <> maybe [] semanticFingerprint materialization
   where
     semanticFingerprint searchMaterialization =
-      map (framedText . operationDocumentFingerprint) (sortOn operationDocumentKey (analyzedDocuments analyzed))
+      map (framedText . operationDocumentFingerprint memberBlobOids) (sortOn operationDocumentKey (analyzedDocuments analyzed))
         <> map (framedText . reducedFingerprint) (sortOn reducedAdrId (graphReductionAdrs (analyzedReduction analyzed)))
-        <> searchFingerprint searchMaterialization
+      <> searchFingerprint searchMaterialization
+    memberBlobOids =
+      Map.fromList
+        [ (repoPathText (gitTreePath (repositoryTreeEntry observation)), gitOidText (gitTreeOid (repositoryTreeEntry observation)))
+          | observation <- rawRepositorySnapshotEntries (analyzedRawObservation analyzed)
+        ]
 
 diagnosticFingerprint :: CompilerDiagnostic -> Text
 diagnosticFingerprint problem =
@@ -305,8 +317,8 @@ operationDocumentKey document =
   where
     capsule = parsedManagedCapsule document
 
-operationDocumentFingerprint :: ParsedManagedDocument -> Text
-operationDocumentFingerprint document =
+operationDocumentFingerprint :: Map Text Text -> ParsedManagedDocument -> Text
+operationDocumentFingerprint memberBlobOids document =
   Text.intercalate
     "\NUL"
     [ operationIdText (provenanceOperationId capsule),
@@ -322,6 +334,7 @@ operationDocumentFingerprint document =
       maybe "" id (provenanceUpstreamHint capsule),
       Text.intercalate "\n" [lineAnchorId anchor <> "@" <> gitOidText (lineAnchorCommit anchor) | anchor <- provenanceLineAnchors capsule],
       renderDigest (provenanceSemanticDigest capsule),
+      Map.findWithDefault (error "internal error: parsed operation member is absent from the requested revision tree") (repoPathText (parsedManagedPath document)) memberBlobOids,
       provenanceToolVersion capsule,
       maybe "" renderDigest (provenanceInputDigest inputs),
       maybe "" renderDigest (provenancePromptDigest inputs),
@@ -382,9 +395,10 @@ searchDocumentFingerprint document =
       searchDocumentContext document,
       searchDocumentDecision document,
       searchDocumentConsequences document,
-      Text.intercalate "\n" (searchDocumentDomains document),
-      searchDocumentRationale document,
-      searchDocumentIdentifiers document,
+       Text.intercalate "\n" (searchDocumentDomains document),
+       searchDocumentRationale document,
+       searchDocumentIdentifierSource document,
+       searchDocumentIdentifiers document,
       searchDocumentOther document,
       Text.intercalate "\n" (searchDocumentScope document),
       Text.intercalate "\n" (searchDocumentSourcePaths document),

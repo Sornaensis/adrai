@@ -42,7 +42,6 @@ import Adrai.Sqlite (initializeSearchSchema, replaceSearchMaterialization)
 import Adrai.Vector (DenseVector, dot)
 import Control.Exception (bracket, evaluate, onException)
 import Data.ByteString (ByteString)
-import Data.List (foldl')
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text

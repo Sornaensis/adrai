@@ -5,14 +5,40 @@
 -- paths, provenance recovery, noise-only reuse, merge-aware caching, and
 -- branch-scoped cache stability.
 --
--- Port of the 15 tests from
+-- Retained coverage from
 -- ``ADRAI_1_Source/tests/test_incremental_compiler.py`` and
 -- ``ADRAI_1_Source/tests/test_merge_aware_cache.py``.
 module Adrai.CacheIntegrationTest (tests) where
 
 import Adrai.Cli (CompileResult (..))
+import Adrai.Compiler.CacheSelection
+  ( validateCacheContract,
+    validateExactCacheTarget,
+    validateCachePublicationContract,
+    refreshCacheMaterializationFingerprint,
+  )
+import Adrai.Compiler.CacheSelection.TestSupport
+  ( PostCommitCloneCancellation (..),
+    PostCommitCloneObservation (..),
+    PostCommitRefreshPlan (..),
+    observeValidatedPostCommitCloneForTest,
+  )
+import Adrai.Git (GitOid (..))
 import Adrai.Integration.CLI
-import Control.Monad (forM_, void, when)
+import Adrai.Provenance (mkGitOid)
+import Adrai.RetainedCache.CacheFixture
+  ( additionalSimpleCompilerFiles,
+    healthyCompilerFiles,
+    healthySimpleCompilerFiles,
+  )
+import Adrai.RetainedCache.RepositorySeed
+  ( RepositorySeed,
+    createRepositorySeed,
+    removeRepositorySeed,
+    withPrivateRepositorySeed,
+  )
+import qualified Control.Concurrent.Async as Async
+import Control.Monad (forM, forM_, void)
 import qualified Data.Aeson
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as KM
@@ -21,22 +47,18 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.List (isSuffixOf)
 import Data.Text (Text, strip, unpack)
 import qualified Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
 import Data.Text.Encoding (decodeUtf8)
-import Data.Time.Clock (getCurrentTime)
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import Database.SQLite.Simple (Only (..), Query, close, execute_, open, query_)
 import System.Directory
   ( createDirectoryIfMissing,
+    copyFile,
     doesDirectoryExist,
     doesFileExist,
     getDirectoryContents,
-    getModificationTime,
     removeFile,
   )
 import System.FilePath (takeDirectory, (</>))
-import System.IO.Temp (withSystemTempDirectory)
-import System.IO (hFlush, hPutStrLn, stdout, stderr)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit
   ( (@?=),
     assertBool,
@@ -91,62 +113,6 @@ commitFilesWithMsg repo files message = do
   pure (last results)
 
 -- ---------------------------------------------------------------------------
--- ADR creation helpers
--- ---------------------------------------------------------------------------
-
-createCacheAdr :: FilePath -> IO Data.Aeson.Value
-createCacheAdr repo =
-  createAdr
-    repo
-    "Stable cache identity"
-    "Cache identity derives from semantic inputs."
-    "## Context\nBuilds move between workspaces.\n\n## Decision\nCache keys exclude absolute workspace paths and use source digests.\n\n## Consequences\nInputs must be normalized."
-    ["compiler.cache"]
-    ["src/compiler/cache/**"]
-
-createJobsAdr :: FilePath -> IO Data.Aeson.Value
-createJobsAdr repo =
-  createAdr
-    repo
-    "At-least-once job delivery"
-    "Workers acknowledge durable jobs only after successful execution."
-    "## Decision\nUse durable queues and idempotent job handlers."
-    ["runtime.jobs"]
-    ["src/jobs/**"]
-
-createReleaseAdr :: FilePath -> IO Data.Aeson.Value
-createReleaseAdr repo =
-  adraiJsonOrThrow repo
-    [ "create",
-      "--title", "Release-only compatibility shim",
-      "--summary", "The old release retains its compatibility shim.",
-      "--body", "## Decision\nKeep the compatibility shim on the old release line.",
-      "--domain", "release.compatibility",
-      "--applies-to", "src/legacy/**",
-      "--actor", "human:release-owner",
-      "--model", "demo-model",
-      "--json"
-    ]
-
-amendAdrViaCli
-  :: FilePath
-  -> Text
-  -> Maybe Text
-  -> Maybe Text
-  -> Maybe Text
-  -> IO Data.Aeson.Value
-amendAdrViaCli repo adrId maybeTitle maybeSummary maybeBody =
-  adraiJsonOrThrow repo
-    ( [ "amend-adr", unpack adrId ]
-        <> concat
-          [ maybe [] (\v -> ["--title", unpack v]) maybeTitle,
-            maybe [] (\v -> ["--summary", unpack v]) maybeSummary,
-            maybe [] (\v -> ["--body", unpack v]) maybeBody
-          ]
-        <> ["--actor", "human:architect", "--json"]
-    )
-
--- ---------------------------------------------------------------------------
 -- Compile result accessor
 -- ---------------------------------------------------------------------------
 
@@ -164,9 +130,6 @@ compileAdrsRebuilt = coldCompilerAdrsRebuilt
 
 compileAdrsReused :: CompileResult -> Int
 compileAdrsReused = coldCompilerAdrsReused
-
-compileHistScanned :: CompileResult -> Int
-compileHistScanned = coldCompilerHistoryCommitsScanned
 
 compileIncKind :: CompileResult -> Text
 compileIncKind = coldCompilerIncrementalKind
@@ -189,107 +152,103 @@ doctorIssuesFromCli repo = do
 
 tests :: TestTree
 tests =
-  testGroup "Cache integration (P4-07)"
-    [ -- From test_incremental_compiler.py
-      testCase "cold_compile_then_exact_cache_does_not_replace_database" testColdCompileThenExact,
-      testCase "exact_cache_does_not_deserialize_managed_documents" testExactCacheNoDeserialize,
-      testCase "corrupt_provenance_overlay_is_rebuilt_from_cache" testCorruptProvenanceRebuild,
-      testCase "noise_only_commit_reuses_documents" testNoiseOnlyReuse,
-      testCase "merge_delta_scans_only_provenance_delta" testMergeDelta,
-      testCase "hidden_reflog_commit_in_provenance_delta" testReflogCommit,
-      testCase "trailer_in_noise_commit_forces_provenance_rescan" testTrailerInNoise,
-      testCase "new_operations_parse_only_new_objects" testNewOperationsParseOnlyNew,
-      testCase "compile_cli_reports_cache_counters" testCompileCliReportsCounters,
-      testCase "corrupt_old_cache_is_rebuilt" testCorruptOldCacheRebuilt,
-      testCase "corrupt_current_db_does_not_invalidate_revision_cache" testCorruptCurrentDb,
-      -- From test_merge_aware_cache.py
-      testCase "stable_release_cache_survives_dev_merges" testStableReleaseSurvivesMerges,
-      testCase "nearest_cached_ancestor_beats_unrelated" testNearestCachedAncestor,
-      testCase "adr_bearing_merge_rebuilds_only_affected" testAdrBearingMerge,
-      testCase "divergent_adr_states_remain_consistent" testDivergentAdStates
-    ]
+  withResource (createRepositorySeed prepareSimpleIntegrationSeed) removeRepositorySeed $ \getSimpleSeed ->
+    testGroup "Cache integration (P4-07)"
+      [ -- From test_incremental_compiler.py
+        testCase "corrupt_provenance_overlay_is_rebuilt_from_cache" $ getSimpleSeed >>= testCorruptProvenanceRebuild,
+        testCase "v3 tree-identical seed reproduces parsed registration signatures from operation_member" $ getSimpleSeed >>= testV3TreeIdenticalSeedReproducesParsedSignatures,
+        withResource (createRepositorySeed prepareIntegrationSeed) removeRepositorySeed $ \getRichSeed ->
+          testCase "v3 exact archive rejects missing or mismatched target placement coverage" $ getRichSeed >>= testV3ExactArchiveRejectsInvalidTargetCoverage,
+        testCase "competing tree-identical targets retain their own provenance projections" $ getSimpleSeed >>= testCompetingTreeIdenticalRefreshes,
+        testCase "post-sync candidate without current ref is not published" $ getSimpleSeed >>= testPostSyncMissingCurrentRefIsNotPublished,
+        testCase "clone refresh cancellation cleans its private candidate" $ getSimpleSeed >>= testCloneRefreshCancellationCleansCandidate,
+        testCase "after-copy source replacement cannot alter private candidate validation" $ getSimpleSeed >>= testAfterCopySourceReplacementCannotAlterPrivateCandidate,
+        testCase "tree-identical zero-scan clone publishes a zero history counter" $ getSimpleSeed >>= testTreeIdenticalZeroScanClone,
+        testCase "trailer_in_noise_commit_forces_provenance_rescan" $ getSimpleSeed >>= testTrailerInNoise,
+        -- From test_merge_aware_cache.py
+        testCase "adr_bearing_merge_rebuilds_changed_managed_tree" $ getSimpleSeed >>= testAdrBearingMerge
+      ]
 
--- =====================================================================
--- Test 1: Cold compile then exact cache reuse
--- =====================================================================
+data IntegrationSeed = IntegrationSeed
+  { integrationSeedRevision :: Text
+  }
 
-testColdCompileThenExact :: IO ()
-testColdCompileThenExact =
-  withSystemTempDirectory "adrai cold exact" $ \tmpDir -> do
-    dbg "enter test"
-    repo <- do dbg "before createTestRepo"; createTestRepo tmpDir
-    dbg "after createTestRepo"
-    createCacheAdr repo >>= \_ -> pure ()
-    dbg "after createCacheAdr"
-    createAdraiInit repo
-    dbg "after createAdraiInit"
-    -- Delete all cache files
-    let adraiDir = repo </> ".adrai"
-        mainDb = adraiDir </> "adrai.sqlite"
-    removeIfExists mainDb
-    cacheDir <- getCacheDir repo
-    cacheFiles <- getCacheFiles cacheDir
-    mapM_ removeIfExists cacheFiles
-    -- Cold compile
-    dbg "before cold compile"
-    coldResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    dbg "after cold compile"
-    let coldRes = parseCompileResult coldResult
-    case coldRes of
-      Nothing -> assertFailure "could not parse cold compile result"
-      Just cr -> do
-        compileDocsParsed cr @?= 4
-        compileDocsReused cr @?= 0
+data SimpleIntegrationSeed = SimpleIntegrationSeed
+  { simpleIntegrationSeedRevision :: Text,
+    simpleIntegrationSeedOperationId :: Text
+  }
 
-    before <- getFileStat mainDb
+prepareIntegrationSeed :: FilePath -> IO (FilePath, IntegrationSeed)
+prepareIntegrationSeed root = do
+  repository <- createTestRepo root
+  basisText <- gitStdout repository ["rev-parse", "HEAD"]
+    >>= pure . strip . decodeUtf8 . LBS.toStrict
+  basis <- case mkGitOid basisText of
+    Left problem -> assertFailure (show problem) >> fail "unreachable"
+    Right oid -> pure oid
+  files <- case healthyCompilerFiles basis of
+    Left problem -> assertFailure (T.unpack problem) >> fail "unreachable"
+    Right value -> pure value
+  revision <- commitFiles repository files
+  compiled <- adraiJsonOrThrow repository ["compile", "--json"]
+  case parseCompileResult compiled of
+    Nothing -> assertFailure "production seed compile result did not decode" >> fail "unreachable"
+    Just result -> do
+      coldCompilerRevision result @?= revision
+      coldCompilerCacheMode result @?= "full"
+  cacheDir <- getCacheDir repository
+  archives <- getCacheFiles cacheDir
+  archive <- case archives of
+    [path] -> pure path
+    paths -> assertFailure ("expected one production seed archive, found " <> show paths) >> fail "unreachable"
+  validateCachePublicationContract archive >>= assertBool "production integration seed must satisfy the publication contract"
+  connection <- open archive
+  operationCount <- query_ connection "SELECT count(*) FROM operation" :: IO [Only Int]
+  provenanceCounts <- forM
+    [ "operation_commit",
+      "operation_target_coverage",
+      "target_reachable_commit"
+    ] $ \table -> query_ connection ("SELECT count(*) FROM " <> table) :: IO [Only Int]
+  close connection
+  operationCount @?= [Only 2]
+  assertBool "production integration seed must retain non-final provenance rows"
+    (all (\case [Only count] -> count > 1; _ -> False) provenanceCounts)
+  pure (repository, IntegrationSeed revision)
 
-    -- Exact compile (should reuse cache)
-    dbg "before exact compile"
-    exactResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    dbg "after exact compile"
-    let exactRes = parseCompileResult exactResult
-    case exactRes of
-      Nothing -> assertFailure "could not parse exact compile result"
-      Just cr -> do
-        compileCacheMode cr @?= "exact"
-        compileDocsParsed cr @?= 0
-        compileDocsReused cr @?= 4
-
-    after <- getFileStat mainDb
-    -- Database should not have changed between cold and exact
-    assertBool "DB file changed between cold and exact" (before == after)
-    dbg "TEST PASSED"
-
--- =====================================================================
--- Test 2: Exact cache skips document deserialization
--- =====================================================================
-
-testExactCacheNoDeserialize :: IO ()
-testExactCacheNoDeserialize =
-  withSystemTempDirectory "adrai exact no deserialize" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- First compile establishes cache
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-    -- Second compile should be exact
-    result <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult result of
-      Nothing -> assertFailure "could not parse result"
-      Just cr -> compileCacheMode cr @?= "exact"
+prepareSimpleIntegrationSeed :: FilePath -> IO (FilePath, SimpleIntegrationSeed)
+prepareSimpleIntegrationSeed root = do
+  repository <- createTestRepo root
+  basisText <- gitStdout repository ["rev-parse", "HEAD"]
+    >>= pure . strip . decodeUtf8 . LBS.toStrict
+  basis <- case mkGitOid basisText of
+    Left problem -> assertFailure (show problem) >> fail "unreachable"
+    Right oid -> pure oid
+  (operationId, files) <- case healthySimpleCompilerFiles basis of
+    Left problem -> assertFailure (T.unpack problem) >> fail "unreachable"
+    Right value -> pure value
+  revision <- commitFiles repository files
+  compiled <- adraiJsonOrThrow repository ["compile", "--json"]
+  result <- case parseCompileResult compiled of
+    Nothing -> assertFailure "production simple seed compile result did not decode" >> fail "unreachable"
+    Just value -> pure value
+  coldCompilerCacheMode result @?= "full"
+  coldCompilerDocumentsParsed result @?= 4
+  coldCompilerRevision result @?= revision
+  cacheDir <- getCacheDir repository
+  archives <- getCacheFiles cacheDir
+  archive <- case archives of
+    [path] -> pure path
+    paths -> assertFailure ("expected one simple production seed archive, found " <> show paths) >> fail "unreachable"
+  validateCachePublicationContract archive >>= assertBool "simple production seed must satisfy the publication contract"
+  pure (repository, SimpleIntegrationSeed revision operationId)
 
 -- =====================================================================
 -- Test 3: Corrupt provenance overlay rebuilds from cache
 -- =====================================================================
 
-testCorruptProvenanceRebuild :: IO ()
-testCorruptProvenanceRebuild =
-  withSystemTempDirectory "adrai corrupt provenance" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- Compile to establish cache
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
+testCorruptProvenanceRebuild :: RepositorySeed SimpleIntegrationSeed -> IO ()
+testCorruptProvenanceRebuild seed =
+  withPrivateRepositorySeed seed $ \_ repo -> do
     -- Corrupt the provenance database
     let provenanceDb = repo </> ".adrai" </> "provenance.sqlite"
     BS.writeFile provenanceDb "not sqlite data"
@@ -299,385 +258,430 @@ testCorruptProvenanceRebuild =
       Nothing -> assertFailure "could not parse result2"
       Just cr -> compileDocsParsed cr @?= 0
 
--- =====================================================================
--- Test 4: Noise-only commit reuses documents
--- =====================================================================
+-- | A complete v3 archive seeds an empty overlay from operation_member only.
+-- The source signature was originally registered from parsed documents, so an
+-- exact equality proves the persisted member tuple is a sufficient authority.
+testV3TreeIdenticalSeedReproducesParsedSignatures :: RepositorySeed SimpleIntegrationSeed -> IO ()
+testV3TreeIdenticalSeedReproducesParsedSignatures seed =
+  withPrivateRepositorySeed seed $ \_ repo -> do
+    let overlayPath = repo </> ".adrai" </> "provenance.sqlite"
+    parsedOverlay <- open overlayPath
+    parsedSignatures <- query_ parsedOverlay "SELECT op_id,signature FROM registered_operation ORDER BY op_id" :: IO [(Text, Text)]
+    close parsedOverlay
+    assertBool "cold parse must register at least one operation" (not (null parsedSignatures))
+    removeFile overlayPath
+    void (commitFilesWithMsg repo [("src/v3-tree-identical-noise.txt", "noise only\n")] "seed v3 provenance from archive")
+    result <- adraiJsonOrThrow repo ["compile", "--json"]
+    case parseCompileResult result of
+      Nothing -> assertFailure "could not parse v3 tree-identical seed result"
+      Just compiled -> do
+        compileCacheMode compiled @?= "incremental"
+        compileIncKind compiled @?= "tree-identical"
+        compileDocsParsed compiled @?= 0
+        compileDocsReused compiled @?= 4
+    seededOverlay <- open overlayPath
+    seededSignatures <- query_ seededOverlay "SELECT op_id,signature FROM registered_operation ORDER BY op_id" :: IO [(Text, Text)]
+    actualObserved <- query_ seededOverlay "SELECT count(*) FROM observed_commit" :: IO [Only Int]
+    close seededOverlay
+    seededSignatures @?= parsedSignatures
+    target <- strip . decodeUtf8 . LBS.toStrict <$> gitStdout repo ["rev-parse", "HEAD"]
+    cacheDir <- getCacheDir repo
+    archive <- open (cacheDir </> T.unpack target <> ".sqlite")
+    publishedObserved <- query_ archive "SELECT value FROM meta WHERE key='provenance.observed_commit_count'" :: IO [Only Text]
+    close archive
+    case (publishedObserved, actualObserved) of
+      ([Only publishedCount], [Only actualCount]) -> do
+        publishedCount @?= T.pack (show actualCount)
+        assertBool "post-refresh observed count must include discovered commits" (actualCount > 0)
+      _ -> assertFailure "observed commit count queries returned invalid results"
 
-testNoiseOnlyReuse :: IO ()
-testNoiseOnlyReuse =
-  withSystemTempDirectory "adrai noise reuse" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- First compile
-    baseline <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult baseline of
-      Nothing -> assertFailure "could not parse baseline"
-      Just cr -> compileCacheMode cr @?= "exact"
-
-    -- Add noise files (non-ADR)
-    _ <- commitFilesWithMsg repo
-      [ ( "src/noise/generated.txt", "unrelated build output metadata\n" ),
-        ( "docs/release-notes.md", "No architecture records changed.\n" )
+-- | A cache-v3 publication contains one target-bound certificate per
+-- registered operation.  These certificates are part of the archive
+-- authority, so an exact archive with either a missing or a forged one must
+-- fail validation before selection can reuse it.
+testV3ExactArchiveRejectsInvalidTargetCoverage :: RepositorySeed IntegrationSeed -> IO ()
+testV3ExactArchiveRejectsInvalidTargetCoverage seed =
+  withPrivateRepositorySeed seed $ \seedFacts repo -> do
+    cacheDir <- getCacheDir repo
+    archives <- getCacheFiles cacheDir
+    sourceArchive <- case archives of
+      [path] -> pure path
+      paths -> assertFailure ("expected one v3 archive, found " <> show paths) >> fail "unreachable"
+    -- The following checks mutate copies only; the authoritative cold archive
+    -- must first satisfy the full publication contract.
+    sourceValid <- validateCachePublicationContract sourceArchive
+    source <- open sourceArchive
+    resolvedRows <- query_ source "SELECT value FROM meta WHERE key='resolved_oid'" :: IO [Only Text]
+    coverage <- query_ source "SELECT op_id,target_oid,registration_signature FROM operation_target_coverage ORDER BY op_id" :: IO [(Text, Text, Text)]
+    members <- query_ source "SELECT operation_id,object_id,path,blob_oid,semantic_digest FROM operation_member ORDER BY operation_id,path,object_id" :: IO [(Text, Text, Text, Text, Text)]
+    operationCommits <- query_ source "SELECT op_id FROM operation_commit" :: IO [Only Text]
+    provenanceCounts <- forM
+      [ "operation_commit"
+      , "operation_target_coverage"
+      , "target_reachable_commit"
+      , "line_config"
       ]
-      "ordinary product work"
+      $ \table -> do
+        rows <- query_ source ("SELECT count(*) FROM " <> table) :: IO [Only Int]
+        pure (table, rows)
+    close source
+    assertBool ("cold archive is publishable before target-coverage corruption; coverage=" <> show coverage <> ", members=" <> show members) sourceValid
+    case resolvedRows of
+      [Only resolvedOid] ->
+        do
+          resolvedOid @?= integrationSeedRevision seedFacts
+          assertBool "the shared exact-target authority accepts the healthy archive"
+            =<< validateExactCacheTarget sourceArchive resolvedOid
+          assertBool "the shared exact-target authority rejects a different resolved revision"
+            . not =<< validateExactCacheTarget sourceArchive (resolvedOid <> "0")
+      _ -> assertFailure "fixture archive did not contain exactly one resolved_oid"
+    assertBool "fixture requires at least one exact target certificate" (not (null coverage))
+    assertBool "fixture requires an operation_commit payload to tamper" (not (null operationCommits))
+    let hasNonFinalProvenanceRow (table, rows)
+          | table == "line_config" = True
+          | otherwise = case rows of
+              [Only count] -> count > 1
+              _ -> False
+    assertBool "fixture requires non-final target-qualified provenance rows"
+      (all hasNonFinalProvenanceRow provenanceCounts)
 
-    -- Incremental compile
-    incResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult incResult of
-      Nothing -> assertFailure "could not parse incremental result"
-      Just cr -> do
-        compileCacheMode cr @?= "incremental"
-        compileDocsParsed cr @?= 0
-        compileDocsReused cr @?= 4
-        compileIncKind cr @?= "tree-identical"
+    let oldSchemaArchive = cacheDir </> "old-schema.sqlite"
+        missingCoverageArchive = cacheDir </> "missing-target-coverage.sqlite"
+        mismatchedCoverageArchive = cacheDir </> "mismatched-target-coverage.sqlite"
+        extraCoverageArchive = cacheDir </> "extra-target-coverage.sqlite"
+        tamperedCommitArchive = cacheDir </> "tampered-operation-commit.sqlite"
+        missingMemberArchive = cacheDir </> "missing-operation-member.sqlite"
+        malformedParentsArchive = cacheDir </> "malformed-operation-parents.sqlite"
+        invalidLandingArchive = cacheDir </> "invalid-line-landing.sqlite"
+        malformedConfigArchive = cacheDir </> "malformed-line-config.sqlite"
+        invalidReachabilityArchive = cacheDir </> "invalid-target-reachability.sqlite"
+        deletedCountArchives :: [(Text, Query, FilePath)]
+        deletedCountArchives =
+          [ ("operation_commit", "operation_commit", cacheDir </> "deleted-operation-commit.sqlite")
+          , ("operation_target_coverage", "operation_target_coverage", cacheDir </> "deleted-target-coverage.sqlite")
+          , ("target_reachable_commit", "target_reachable_commit", cacheDir </> "deleted-target-reachability.sqlite")
+          , ("line_config", "line_config", cacheDir </> "deleted-line-config.sqlite")
+          ]
+    copyFile sourceArchive oldSchemaArchive
+    oldSchema <- open oldSchemaArchive
+    execute_ oldSchema "UPDATE meta SET value='adrai-cache/1' WHERE key='schema'"
+    close oldSchema
+    assertBool "old-schema archive fails the production cache contract"
+      . not =<< validateCacheContract oldSchemaArchive
+    assertBool "old-schema archive fails exact-target authority for its healthy target"
+      . not =<< validateExactCacheTarget oldSchemaArchive (integrationSeedRevision seedFacts)
 
-    -- Next compile should be exact
-    exactResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult exactResult of
-      Nothing -> assertFailure "could not parse exact result"
-      Just cr -> compileCacheMode cr @?= "exact"
+    copyFile sourceArchive missingCoverageArchive
+    missing <- open missingCoverageArchive
+    execute_ missing "DELETE FROM operation_target_coverage"
+    close missing
+    assertBool "v3 exact archive rejects missing target placement coverage"
+      . not =<< validateCachePublicationContract missingCoverageArchive
 
--- =====================================================================
--- Test 5: Merge delta scanning
--- =====================================================================
+    copyFile sourceArchive mismatchedCoverageArchive
+    mismatched <- open mismatchedCoverageArchive
+    execute_ mismatched "UPDATE operation_target_coverage SET registration_signature='forged-signature'"
+    close mismatched
+    assertBool "v3 exact archive rejects mismatched target placement coverage"
+      . not =<< validateCachePublicationContract mismatchedCoverageArchive
 
-testMergeDelta :: IO ()
-testMergeDelta =
-  withSystemTempDirectory "adrai merge delta" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- Compile baseline
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
+    copyFile sourceArchive extraCoverageArchive
+    extra <- open extraCoverageArchive
+    execute_ extra "INSERT INTO operation_target_coverage VALUES('unknown-operation','forged-target','forged-signature')"
+    close extra
+    assertBool "v3 exact archive rejects coverage for an unknown operation"
+      . not =<< validateCachePublicationContract extraCoverageArchive
 
-    -- Create feature branch with noise
-    git repo ["switch", "-c", "feature/noise"]
-    _ <- commitFilesWithMsg repo
-      [ ( "src/feature.txt", "feature noise\n" ) ]
-      "feature noise"
+    copyFile sourceArchive tamperedCommitArchive
+    tampered <- open tamperedCommitArchive
+    execute_ tampered "UPDATE operation_commit SET classification='forged-classification'"
+    close tampered
+    -- Recompute the stored materialization digest: validation must still
+    -- reject a semantically invalid operation_commit payload rather than
+    -- trusting that self-reported fingerprint.
+    refreshCacheMaterializationFingerprint tamperedCommitArchive
+    assertBool "v3 exact archive rejects a tampered operation_commit after fingerprint refresh"
+      . not =<< validateCachePublicationContract tamperedCommitArchive
+
+    copyFile sourceArchive missingMemberArchive
+    missingMember <- open missingMemberArchive
+    execute_ missingMember "DELETE FROM operation_member WHERE operation_id=(SELECT operation_id FROM operation ORDER BY operation_id LIMIT 1)"
+    close missingMember
+    refreshCacheMaterializationFingerprint missingMemberArchive
+    assertBool "v3 exact archive rejects an operation with no member signature after fingerprint refresh"
+      . not =<< validateCachePublicationContract missingMemberArchive
+
+    copyFile sourceArchive malformedParentsArchive
+    malformedParents <- open malformedParentsArchive
+    execute_ malformedParents "UPDATE operation_commit SET parents_json='[\"not-an-oid\"]'"
+    close malformedParents
+    refreshCacheMaterializationFingerprint malformedParentsArchive
+    assertBool "v3 exact archive rejects noncanonical operation parents after fingerprint refresh"
+      . not =<< validateCachePublicationContract malformedParentsArchive
+
+    copyFile sourceArchive invalidLandingArchive
+    invalidLanding <- open invalidLandingArchive
+    execute_ invalidLanding "INSERT INTO line_landing(config_key,op_id,line_id,ref_name,commit_oid,complete) SELECT (SELECT config_key FROM line_config),op_id,'forged-line','forged-ref',commit_oid,2 FROM operation_commit LIMIT 1"
+    close invalidLanding
+    refreshCacheMaterializationFingerprint invalidLandingArchive
+    assertBool "v3 exact archive rejects non-boolean line landing completion after fingerprint refresh"
+      . not =<< validateCachePublicationContract invalidLandingArchive
+
+    copyFile sourceArchive malformedConfigArchive
+    malformedConfig <- open malformedConfigArchive
+    execute_ malformedConfig "UPDATE line_config SET config_json='{}'"
+    close malformedConfig
+    refreshCacheMaterializationFingerprint malformedConfigArchive
+    assertBool "v3 exact archive rejects a malformed active line config after fingerprint refresh"
+      . not =<< validateCachePublicationContract malformedConfigArchive
+
+    copyFile sourceArchive invalidReachabilityArchive
+    invalidReachability <- open invalidReachabilityArchive
+    execute_ invalidReachability "INSERT INTO target_reachable_commit(target_oid,commit_oid) VALUES((SELECT value FROM meta WHERE key='resolved_oid'),'not-an-oid')"
+    close invalidReachability
+    refreshCacheMaterializationFingerprint invalidReachabilityArchive
+    assertBool "v3 exact archive rejects malformed target reachability membership after fingerprint refresh"
+      . not =<< validateCachePublicationContract invalidReachabilityArchive
+
+    -- The materialization fingerprint deliberately excludes the metadata
+    -- commitments.  Recomputing it after a private row deletion must not make
+    -- a truncated v3 provenance projection publishable.
+    forM_ deletedCountArchives $ \(tableName, table, archive) -> do
+      copyFile sourceArchive archive
+      tamperedCount <- open archive
+      execute_ tamperedCount ("DELETE FROM " <> table <> " WHERE rowid=(SELECT rowid FROM " <> table <> " ORDER BY rowid LIMIT 1)")
+      close tamperedCount
+      refreshCacheMaterializationFingerprint archive
+      assertBool ("v3 exact archive rejects a deleted " <> unpack tableName <> " row after fingerprint refresh")
+        . not =<< validateCachePublicationContract archive
+
+-- | Refresh callbacks are allowed to mutate only a disposable candidate.  A
+-- missing observation for the advertised current ref must reject publication.
+testPostSyncMissingCurrentRefIsNotPublished :: RepositorySeed SimpleIntegrationSeed -> IO ()
+testPostSyncMissingCurrentRefIsNotPublished seed =
+  withPrivateRepositorySeed seed $ \_ repo -> do
+    cacheDir <- getCacheDir repo
+    sourceArchives <- getCacheFiles cacheDir
+    sourceArchive <- case sourceArchives of
+      [path] -> pure path
+      paths -> assertFailure ("expected one source archive, found " <> show paths) >> fail "unreachable"
+    void (commitFilesWithMsg repo [("src/invalid-refresh-noise.txt", "noise only\n")] "invalid refreshed candidate")
+    target <- strip . decodeUtf8 . LBS.toStrict <$> gitStdout repo ["rev-parse", "HEAD"]
+    observation <-
+      observeValidatedPostCommitCloneForTest
+        sourceArchive
+        (GitOid target)
+        (Just 1)
+        (PostCommitRefreshDeleteRef "refs/heads/main")
+        (pure ())
+    assertBool "invalid post-sync candidate must not publish" (not (postCommitCloneIndexed observation))
+    postCommitCloneTargetExisted observation @?= False
+    postCommitCloneCandidateResidue observation @?= False
+
+testCloneRefreshCancellationCleansCandidate :: RepositorySeed SimpleIntegrationSeed -> IO ()
+testCloneRefreshCancellationCleansCandidate seed =
+  withPrivateRepositorySeed seed $ \_ repo -> do
+    cacheDir <- getCacheDir repo
+    sourceArchives <- getCacheFiles cacheDir
+    sourceArchive <- case sourceArchives of
+      [path] -> pure path
+      paths -> assertFailure ("expected one source archive, found " <> show paths) >> fail "unreachable"
+    target <- strip . decodeUtf8 . LBS.toStrict <$> gitStdout repo ["rev-parse", "HEAD"]
+    observation <-
+      observeValidatedPostCommitCloneForTest sourceArchive (GitOid target) (Just 0) PostCommitRefreshCancel (pure ())
+    postCommitCloneCancellation observation @?= Just PostCommitCloneThreadKilled
+    postCommitCloneTargetExisted observation @?= False
+    postCommitCloneCandidateResidue observation @?= False
+
+-- | The validation authority is the owned copy, never a source pathname that
+-- can be changed after copy completion.  The test hook receives no candidate
+-- capability, only a chance to corrupt the independently owned public source.
+testAfterCopySourceReplacementCannotAlterPrivateCandidate :: RepositorySeed SimpleIntegrationSeed -> IO ()
+testAfterCopySourceReplacementCannotAlterPrivateCandidate seed =
+  withPrivateRepositorySeed seed $ \_ repo -> do
+    cacheDir <- getCacheDir repo
+    sourceArchives <- getCacheFiles cacheDir
+    sourceArchive <- case sourceArchives of
+      [path] -> pure path
+      paths -> assertFailure ("expected one source archive, found " <> show paths) >> fail "unreachable"
+    revision <- strip . decodeUtf8 . LBS.toStrict <$> gitStdout repo ["rev-parse", "HEAD"]
+    let corruptSource = do
+          connection <- open sourceArchive
+          execute_ connection "DELETE FROM meta"
+          close connection
+    observation <-
+      observeValidatedPostCommitCloneForTest
+        sourceArchive
+        (GitOid revision)
+        (Just 0)
+        PostCommitRefreshNoop
+        corruptSource
+    assertBool ("owned copied candidate must remain valid after public source corruption: " <> show observation) (postCommitCloneIndexed observation)
+    postCommitCloneTargetExisted observation @?= True
+    postCommitCloneCandidateResidue observation @?= False
+
+testTreeIdenticalZeroScanClone :: RepositorySeed SimpleIntegrationSeed -> IO ()
+testTreeIdenticalZeroScanClone seed =
+  withPrivateRepositorySeed seed $ \_ repo -> do
+    cacheDir <- getCacheDir repo
+    sourceArchives <- getCacheFiles cacheDir
+    sourceArchive <- case sourceArchives of
+      [path] -> pure path
+      paths -> assertFailure ("expected one source archive, found " <> show paths) >> fail "unreachable"
+    void (commitFilesWithMsg repo [("src/zero-scan-noise.txt", "noise only\n")] "zero scan clone")
+    target <- strip . decodeUtf8 . LBS.toStrict <$> gitStdout repo ["rev-parse", "HEAD"]
+    observation <- observeValidatedPostCommitCloneForTest sourceArchive (GitOid target) (Just 0) PostCommitRefreshNoop (pure ())
+    assertBool ("unrefreshed cross-revision v3 clone must fail closed: " <> show observation) (not (postCommitCloneIndexed observation))
+    postCommitCloneTargetExisted observation @?= False
+    postCommitCloneCandidateResidue observation @?= False
+
+-- | Two target revisions can share one overlay, but their copies must remain
+-- serialized through refresh and candidate sync.  Each private archive must
+-- receive a complete provenance projection rather than a later target's rows.
+type DecisionProjection = ([Only Text], [(Text, Text, Int)])
+
+readDecisionProjection :: FilePath -> IO DecisionProjection
+readDecisionProjection archivePath = do
+  connection <- open archivePath
+  adrs <- query_ connection "SELECT adr_id FROM reduced_adr ORDER BY adr_id" :: IO [Only Text]
+  -- search_document is projected from current decision heads. Its conflicted
+  -- flag is therefore narrower than reduced_adr.conflicted, which also covers
+  -- conflicts on non-decision axes.
+  decisions <- query_ connection "SELECT adr_id,candidate_record_id,conflicted FROM search_document ORDER BY adr_id,candidate_record_id,conflicted" :: IO [(Text, Text, Int)]
+  close connection
+  pure (adrs, decisions)
+
+testCompetingTreeIdenticalRefreshes :: RepositorySeed SimpleIntegrationSeed -> IO ()
+testCompetingTreeIdenticalRefreshes seed =
+  withPrivateRepositorySeed seed $ \seedFacts repo -> do
+    cacheDir <- getCacheDir repo
+    sourceArchives <- getCacheFiles cacheDir
+    assertBool "baseline archive must exist before competing refreshes" (not (null sourceArchives))
+    baselineProjection <- case sourceArchives of
+      [sourceArchive] -> readDecisionProjection sourceArchive
+      paths -> assertFailure ("expected one immutable baseline archive, found " <> show paths) >> fail "unreachable"
+    baselineBytes <- mapM (\sourceArchive -> do
+      bytes <- BS.readFile sourceArchive
+      pure (sourceArchive, bytes)) sourceArchives
+    git repo ["switch", "-c", "refresh-left"]
+    leftTarget <- commitFilesWithMsg repo [("src/refresh-left.txt", "left noise\n")] "left target"
     git repo ["switch", "main"]
-    -- Add noise on main
-    _ <- commitFilesWithMsg repo
-      [ ( "src/main.txt", "main noise\n" ) ]
-      "main noise"
-    -- Merge feature into main
-    git repo ["merge", "--no-ff", "feature/noise", "-m", "merge noise"]
-
-    -- Compile - should be incremental
-    result <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult result of
-      Nothing -> assertFailure "could not parse merge result"
-      Just cr -> do
-        compileCacheMode cr @?= "incremental"
-        compileDocsParsed cr @?= 0
-        compileDocsReused cr @?= 4
-        compileHistScanned cr <=? 3
-        compileIncKind cr @?= "tree-identical"
-
--- =====================================================================
--- Test 6: Reflog commit inclusion
--- =====================================================================
-
-testReflogCommit :: IO ()
-testReflogCommit =
-  withSystemTempDirectory "adrai reflog" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- Compile baseline
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-    -- Create ephemeral branch with noise
-    git repo ["switch", "-c", "ephemeral/noise"]
-    _ <- commitFilesWithMsg repo
-      [ ( "src/ephemeral-only.txt", "reachable only through the reflog\n" ) ]
-      "ephemeral product experiment"
+    git repo ["switch", "-c", "refresh-right"]
+    rightTarget <- commitFilesWithMsg repo [("src/refresh-right.txt", "right noise\n")] "right target"
     git repo ["switch", "main"]
-    -- Delete the ephemeral branch (removes ref but reflog retains it)
-    git repo ["branch", "-D", "ephemeral/noise"]
-    -- Add noise on main
-    _ <- commitFilesWithMsg repo
-      [ ( "src/main-noise.txt", "ordinary mainline work\n" ) ]
-      "ordinary mainline work"
-
-    -- Compile
-    result <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult result of
-      Nothing -> assertFailure "could not parse reflog compile result"
-      Just cr -> do
-        compileCacheMode cr @?= "incremental"
-        compileDocsParsed cr @?= 0
-        compileDocsReused cr @?= 4
-        compileHistScanned cr @?= 2
-        compileIncKind cr @?= "tree-identical"
+    (leftResult, rightResult) <- Async.concurrently
+      (adraiJson repo ["compile", "--at", T.unpack leftTarget, "--json"])
+      (adraiJson repo ["compile", "--at", T.unpack rightTarget, "--json"])
+    forM_ baselineBytes $ \(sourceArchive, expectedBytes) -> do
+      assertBool "concurrent refresh must retain the immutable baseline archive" =<< doesFileExist sourceArchive
+      assertBool "concurrent refresh must retain a reusable baseline archive" =<< validateCacheContract sourceArchive
+      actualBytes <- BS.readFile sourceArchive
+      actualBytes @?= expectedBytes
+    let assertTargetResult label target result =
+          case result >>= maybe (Left "could not parse compile result") Right . parseCompileResult of
+            Left problem -> assertFailure (T.unpack label <> ": " <> T.unpack problem)
+            Right compiled -> do
+              let mode = compileCacheMode compiled
+                  kind = compileIncKind compiled
+              coldCompilerRevision compiled @?= target
+              coldCompilerDatabase compiled @?= cacheDir </> T.unpack target <> ".sqlite"
+              case (mode, kind) of
+                ("incremental", "tree-identical") -> do
+                  compileDocsParsed compiled @?= 0
+                  assertBool (T.unpack label <> ": tree-identical reuse must reuse documents") (compileDocsReused compiled > 0)
+                  compileAdrsRebuilt compiled @?= 0
+                  assertBool (T.unpack label <> ": tree-identical reuse must reuse ADRs") (compileAdrsReused compiled > 0)
+                ("full", "full") -> do
+                  assertBool (T.unpack label <> ": full fallback must parse documents") (compileDocsParsed compiled > 0)
+                  compileDocsReused compiled @?= 0
+                  assertBool (T.unpack label <> ": full fallback must rebuild ADRs") (compileAdrsRebuilt compiled > 0)
+                  compileAdrsReused compiled @?= 0
+                _ -> assertFailure
+                  (T.unpack label <> ": expected either tree-identical reuse or a conservative full fallback, got mode="
+                    <> T.unpack mode <> ", kind=" <> T.unpack kind)
+              pure compiled
+    leftCompiled <- assertTargetResult "left target" leftTarget leftResult
+    rightCompiled <- assertTargetResult "right target" rightTarget rightResult
+    assertBool "competing targets must publish distinct immutable archive paths"
+      (coldCompilerDatabase leftCompiled /= coldCompilerDatabase rightCompiled)
+    assertBool "competing targets must differ from the immutable seed revision"
+      (leftTarget /= simpleIntegrationSeedRevision seedFacts && rightTarget /= simpleIntegrationSeedRevision seedFacts)
+    assertProvenanceProjection baselineProjection cacheDir leftTarget rightTarget
+    assertProvenanceProjection baselineProjection cacheDir rightTarget leftTarget
+  where
+    assertProvenanceProjection expectedDecisionProjection cacheDir target otherTarget = do
+      let archivePath = cacheDir </> T.unpack target <> ".sqlite"
+      assertBool "target archive must satisfy the public publication contract" =<< validateCachePublicationContract archivePath
+      assertBool "target archive must remain eligible for future reuse" =<< validateCacheContract archivePath
+      archive <- open archivePath
+      operationRows <- query_ archive "SELECT count(*) FROM operation_commit" :: IO [Only Int]
+      refRows <- query_ archive "SELECT ref_name FROM ref_observation WHERE ref_name IN ('refs/heads/main','refs/heads/refresh-left','refs/heads/refresh-right') ORDER BY ref_name" :: IO [Only Text]
+      mainTip <- query_ archive "SELECT tip_oid FROM ref_observation WHERE ref_name='refs/heads/main'" :: IO [Only Text]
+      currentHead <- query_ archive "SELECT value FROM meta WHERE key='provenance.current_head'" :: IO [Only Text]
+      currentRef <- query_ archive "SELECT value FROM meta WHERE key='provenance.current_ref'" :: IO [Only Text]
+      requestedRevision <- query_ archive "SELECT value FROM meta WHERE key='requested_revision'" :: IO [Only Text]
+      resolvedOid <- query_ archive "SELECT value FROM meta WHERE key='resolved_oid'" :: IO [Only Text]
+      close archive
+      readDecisionProjection archivePath >>= (@?= expectedDecisionProjection)
+      case operationRows of
+        [Only count] -> assertBool "operation provenance was not copied" (count > 0)
+        _ -> assertFailure "operation provenance count query returned an invalid result"
+      refRows @?= [Only "refs/heads/main", Only "refs/heads/refresh-left", Only "refs/heads/refresh-right"]
+      requestedRevision @?= [Only target]
+      resolvedOid @?= [Only target]
+      assertBool "archive requested revision must not belong to the competing target" (requestedRevision /= [Only otherTarget])
+      assertBool "archive resolved OID must not belong to the competing target" (resolvedOid /= [Only otherTarget])
+      currentHead @?= mainTip
+      assertBool "historical target must not be recorded as the current main HEAD" (currentHead /= [Only target])
+      currentRef @?= [Only "refs/heads/main"]
 
 -- =====================================================================
 -- Test 7: Trailer in noise commit
 -- =====================================================================
 
-testTrailerInNoise :: IO ()
-testTrailerInNoise =
-  withSystemTempDirectory "adrai trailer in noise" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    created <- createCacheAdr repo
-    let adrId = extractAdrId created
-    case adrId of
-      Nothing -> assertFailure "createAdr did not return an ADR ID"
-      Just adrId' -> do
-        createAdraiInit repo
-        -- Compile baseline
-        _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-        -- Commit with ADRAI-Op trailer but no real ADRAI files
-        _ <- commitFilesWithMsg repo
-          [ ( "src/misleading-trailer.txt", "not an ADRAI operation\n" ) ]
-          ("ordinary work\n\nADRAI-Op: " <> adrId')
-
-        -- Compile
-        result <- adraiJsonOrThrow repo ["compile", "--json"]
-        case parseCompileResult result of
-          Nothing -> assertFailure "could not parse trailer result"
-          Just cr -> do
-            compileCacheMode cr @?= "incremental"
-            compileDocsParsed cr @?= 0
-            -- Check that doctor finds REDUNDANT_OPERATION_TRAILER
-            issues <- doctorIssuesFromCli repo
-            let codes :: [Text]
-                codes = [ code
-                        | issue <- issues,
-                          Just o <- [_Object issue],
-                          Just code <- [o .: "code"]
-                        ]
-            assertBool "should find REDUNDANT_OPERATION_TRAILER in doctor output"
-              ("REDUNDANT_OPERATION_TRAILER" `elem` codes)
-
--- =====================================================================
--- Test 8: New operations parse only new objects
--- =====================================================================
-
-testNewOperationsParseOnlyNew :: IO ()
-testNewOperationsParseOnlyNew =
-  withSystemTempDirectory "adrai new operations" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    _ <- createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- Cold compile
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-    -- Create second ADR
-    _ <- createJobsAdr repo >>= \_ -> pure ()
-
-    -- Incremental compile
+testTrailerInNoise :: RepositorySeed SimpleIntegrationSeed -> IO ()
+testTrailerInNoise seed =
+  withPrivateRepositorySeed seed $ \seedFacts repo -> do
+    let operationId' = simpleIntegrationSeedOperationId seedFacts
+    -- Commit with ADRAI-Op trailer but no real ADRAI files.
+    _ <- commitFilesWithMsg repo
+      [ ( "src/misleading-trailer.txt", "not an ADRAI operation\n" ) ]
+      ("ordinary work\n\nADRAI-Op: " <> operationId')
     result <- adraiJsonOrThrow repo ["compile", "--json"]
     case parseCompileResult result of
-      Nothing -> assertFailure "could not parse new ops result"
+      Nothing -> assertFailure "could not parse trailer result"
       Just cr -> do
         compileCacheMode cr @?= "incremental"
-        compileDocsParsed cr @?= 4
-        compileDocsReused cr @?= 4
-        compileAdrsRebuilt cr @?= 1
-        compileAdrsReused cr @?= 1
-
--- =====================================================================
--- Test 9: Compile CLI reports counters
--- =====================================================================
-
-testCompileCliReportsCounters :: IO ()
-testCompileCliReportsCounters =
-  withSystemTempDirectory "adrai cli reports" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- First compile
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-    -- Second compile (should be exact)
-    result <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult result of
-      Nothing -> assertFailure "could not parse CLI report result"
-      Just cr -> do
-        compileCacheMode cr @?= "exact"
         compileDocsParsed cr @?= 0
-        compileDocsReused cr @?= 4
-
--- =====================================================================
--- Test 10: Corrupt old cache rebuilt
--- =====================================================================
-
-testCorruptOldCacheRebuilt :: IO ()
-testCorruptOldCacheRebuilt =
-  withSystemTempDirectory "adrai corrupt old cache" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- Compile to establish cache
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-    let adraiDir = repo </> ".adrai"
-        cacheDir = adraiDir </> "cache"
-        mainDb = adraiDir </> "adrai.sqlite"
-
-    -- Corrupt all .adrai/cache/*.sqlite
-    cacheFiles <- getCacheFiles cacheDir
-    mapM_ (\f -> BS.writeFile f "not sqlite") cacheFiles
-    -- Corrupt main DB
-    BS.writeFile mainDb "not sqlite"
-
-    -- Recompile should be full cold
-    result <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult result of
-      Nothing -> assertFailure "could not parse corrupt rebuild result"
-      Just cr -> do
-        compileCacheMode cr @?= "full"
-        compileDocsParsed cr @?= 4
-
--- =====================================================================
--- Test 11: Corrupt current DB doesn't invalidate revision cache
--- =====================================================================
-
-testCorruptCurrentDb :: IO ()
-testCorruptCurrentDb =
-  withSystemTempDirectory "adrai corrupt current db" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- Compile baseline
-    baseline <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult baseline of
-      Nothing -> assertFailure "could not parse baseline"
-      Just cr -> compileCacheMode cr @?= "exact"
-
-    -- Corrupt main database
-    let mainDb = repo </> ".adrai" </> "adrai.sqlite"
-    BS.writeFile mainDb "not sqlite"
-
-    -- Recompile should still be exact (cache in .adrai/cache/ survives)
-    result <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult result of
-      Nothing -> assertFailure "could not parse corrupt db result"
-      Just cr -> compileCacheMode cr @?= "exact"
-
--- =====================================================================
--- Test 12: Stable release cache survives dev merges
--- =====================================================================
-
-testStableReleaseSurvivesMerges :: IO ()
-testStableReleaseSurvivesMerges =
-  withSystemTempDirectory "adrai stable release" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    _ <- createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- Compile on main
-    mainResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult mainResult of
-      Nothing -> assertFailure "could not parse main compile"
-      Just cr -> compileCacheMode cr @?= "exact"
-
-    -- Create release branch
-    git repo ["switch", "-c", "release/stable"]
-    _ <- commitFilesWithMsg repo
-      [ ( "release/version.txt", "2025.08\n" ) ]
-      "cut stable release"
-
-    -- Compile on release
-    releaseResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult releaseResult of
-      Nothing -> assertFailure "could not parse release compile"
-      Just cr -> compileCacheMode cr @?= "exact"
-
-    let releaseDb = repo </> ".adrai" </> "adrai.sqlite"
-    releaseDbContent <- BS.readFile releaseDb
-
-    -- Switch back to main, create develop branch
-    git repo ["switch", "main"]
-    git repo ["switch", "-c", "develop"]
-
-    -- Merge 6 noise trains (2 commits each)
-    forM_ ([0 .. 5] :: [Int]) $ \train -> do
-      git repo ["switch", "-c", "feature/noise-" ++ show train]
-      _ <- commitFilesWithMsg repo
-        [ ( "src/noise/" ++ show train ++ "/change.txt",
-            encodeUtf8 (T.pack ("train=" ++ show train ++ "\n")) ) ]
-        (T.pack ("product noise " ++ show train))
-      git repo ["switch", "develop"]
-      git repo
-        [ "merge", "--no-ff", "feature/noise-" ++ show train,
-          "-m", "merge product train " ++ show train ]
-      git repo ["branch", "-D", "feature/noise-" ++ show train]
-
-    -- Compile on develop
-    developResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult developResult of
-      Nothing -> assertFailure "could not parse develop compile"
-      Just cr -> do
-        compileIncKind cr @?= "tree-identical"
-        compileDocsParsed cr @?= 0
-        compileAdrsRebuilt cr @?= 0
-        compileHistScanned cr <=? 24
-
-    -- Switch back to release
-    git repo ["switch", "release/stable"]
-    releaseAfterResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult releaseAfterResult of
-      Nothing -> assertFailure "could not parse release after compile"
-      Just cr -> compileIncKind cr @?= "provenance-sync"
-
-    -- Verify release DB content didn't change
-    afterReleaseDbContent <- BS.readFile releaseDb
-    afterReleaseDbContent @?= releaseDbContent
-
--- =====================================================================
--- Test 13: Nearest cached ancestor
--- =====================================================================
-
-testNearestCachedAncestor :: IO ()
-testNearestCachedAncestor =
-  withSystemTempDirectory "adrai nearest cached ancestor" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    _ <- createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- Compile on main
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-    -- Create second ADR on separate branch
-    git repo ["switch", "-c", "release/unrelated"]
-    _ <- createJobsAdr repo >>= \_ -> pure ()
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-    -- Switch back to main with noise
-    git repo ["switch", "main"]
-    forM_ ([0 .. 3] :: [Int]) $ \i -> do
-      commitFilesWithMsg repo
-        [ ( "src/main-noise/" ++ show i ++ ".txt",
-            encodeUtf8 (T.pack (show i ++ "\n")) ) ]
-        (T.pack ("main noise " ++ show i))
-
-    -- Compile - should use nearest cached ancestor
-    result <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult result of
-      Nothing -> assertFailure "could not parse nearest ancestor result"
-      Just cr -> do
-        compileIncKind cr @?= "tree-identical"
-        compileDocsParsed cr @?= 0
-        compileAdrsRebuilt cr @?= 0
+        issues <- doctorIssuesFromCli repo
+        let codes :: [Text]
+            codes = [ code
+                    | issue <- issues,
+                      Just o <- [_Object issue],
+                      Just code <- [o .: "code"]
+                    ]
+        assertBool "should find REDUNDANT_OPERATION_TRAILER in doctor output"
+          ("REDUNDANT_OPERATION_TRAILER" `elem` codes)
 
 -- =====================================================================
 -- Test 14: ADR-bearing merge
 -- =====================================================================
 
-testAdrBearingMerge :: IO ()
-testAdrBearingMerge =
-  withSystemTempDirectory "adrai adr bearing merge" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    _ <- createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-    -- Compile on main
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-    -- Create second ADR on develop
+testAdrBearingMerge :: RepositorySeed SimpleIntegrationSeed -> IO ()
+testAdrBearingMerge seed =
+  withPrivateRepositorySeed seed $ \_ repo -> do
+    -- Commit a second sealed production ADR on develop without invoking the
+    -- create command's post-commit compiler or an intermediate warmup.
     git repo ["switch", "-c", "develop"]
-    _ <- createJobsAdr repo >>= \_ -> pure ()
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
+    basisText <- gitStdout repo ["rev-parse", "HEAD"]
+      >>= pure . strip . decodeUtf8 . LBS.toStrict
+    basis <- case mkGitOid basisText of
+      Left problem -> assertFailure (show problem) >> fail "unreachable"
+      Right oid -> pure oid
+    files <- case additionalSimpleCompilerFiles basis of
+      Left problem -> assertFailure (T.unpack problem) >> fail "unreachable"
+      Right value -> pure value
+    _ <- commitFiles repo files
 
     -- Merge develop into main
     git repo ["switch", "main"]
@@ -685,100 +689,19 @@ testAdrBearingMerge =
       [ "merge", "--no-ff", "develop",
         "-m", "promote architecture and product work" ]
 
-    -- Compile - should be semantic-reuse
+    -- An ADR-bearing merge changes the managed tree.  The immutable archive
+    -- model therefore rebuilds the merged snapshot rather than exposing the
+    -- removed semantic-reuse mode.
     result <- adraiJsonOrThrow repo ["compile", "--json"]
     case parseCompileResult result of
       Nothing -> assertFailure "could not parse adr-merge result"
       Just cr -> do
-        compileCacheMode cr @?= "semantic-reuse"
-        compileDocsParsed cr @?= 4
-        compileDocsReused cr @?= 4
-        compileAdrsRebuilt cr @?= 1
-        compileAdrsReused cr @?= 1
-        compileHistScanned cr <=? 1
-
--- =====================================================================
--- Test 15: Divergent ADR states
--- =====================================================================
-
-testDivergentAdStates :: IO ()
-testDivergentAdStates =
-  withSystemTempDirectory "adrai divergent states" $ \tmpDir -> do
-    repo <- createTestRepo tmpDir
-    _ <- createCacheAdr repo >>= \_ -> pure ()
-    createAdraiInit repo
-
-    -- Compile on main (establish baseline)
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-    -- Create release branch with release-only ADR
-    git repo ["switch", "-c", "release/old"]
-    _ <- createReleaseAdr repo >>= \_ -> pure ()
-    _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-    -- Switch back to main and amend the original ADR
-    git repo ["switch", "main"]
-    created <- createCacheAdr repo
-    let adrId' = extractAdrId created
-    case adrId' of
-      Nothing -> assertFailure "no ADR ID"
-      Just id' -> do
-        void $ amendAdrViaCli repo id' Nothing
-          (Just "Main uses generation-two cache identity.")
-          (Just "## Decision\nUse generation-two cache identity on current development.")
-
-    -- Create develop with noise merges
-    git repo ["switch", "-c", "develop"]
-    forM_ ([0 .. 3] :: [Int]) $ \train -> do
-      git repo ["switch", "-c", "feature/noise-" ++ show train]
-      _ <- commitFilesWithMsg repo
-        [ ( "src/noise/" ++ show train ++ "/change.txt",
-             encodeUtf8 ("train=" <> T.pack (show train) <> "\n") ) ]
-        ("product noise " <> T.pack (show train))
-      git repo ["switch", "develop"]
-      git repo
-        [ "merge", "--no-ff", "feature/noise-" ++ show train,
-          "-m", "merge product train " ++ show train ]
-      git repo ["branch", "-D", "feature/noise-" ++ show train]
-
-    -- Switch back to main and merge develop
-    git repo ["switch", "main"]
-    git repo
-      [ "merge", "--no-ff", "develop",
-        "-m", "merge development trains" ]
-
-    -- Switch between branches and verify consistent states
-    -- Release branch
-    git repo ["switch", "release/old"]
-    releaseResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult releaseResult of
-      Nothing -> assertFailure "could not parse release state result"
-      Just cr -> compileCacheMode cr @?= "exact"
-
-    -- Main branch
-    git repo ["switch", "main"]
-    mainResult <- adraiJsonOrThrow repo ["compile", "--json"]
-    case parseCompileResult mainResult of
-      Nothing -> assertFailure "could not parse main state result"
-      Just cr -> compileCacheMode cr @?= "exact"
-
--- =====================================================================
--- Helper assertion helpers
--- =====================================================================
-
-infix 4 <=?
-(<=?) :: (Ord a, Show a) => a -> a -> IO ()
-a <=? b = assertBool (show a <> " should be <= " <> show b) (a <= b)
-
--- ---------------------------------------------------------------------------
--- File system helpers
--- ---------------------------------------------------------------------------
-
--- | Remove a file if it exists.
-removeIfExists :: FilePath -> IO ()
-removeIfExists path = do
-  exists <- doesFileExist path
-  when exists $ removeFile path
+        compileCacheMode cr @?= "full"
+        compileIncKind cr @?= "full"
+        compileDocsParsed cr @?= 8
+        compileDocsReused cr @?= 0
+        compileAdrsRebuilt cr @?= 2
+        compileAdrsReused cr @?= 0
 
 -- | Get the .adrai/cache directory path for a repository.
 getCacheDir :: FilePath -> IO FilePath
@@ -793,43 +716,3 @@ getCacheFiles dir = do
     else do
       entries <- getDirectoryContents dir
       pure $ map (dir </>) $ filter (".sqlite" `isSuffixOf`) entries
-
--- | Get a simple file stat (existence + modification time in ns).
-data FileStat = FileStat
-  { fileStatExists :: Bool,
-    fileStatSize :: Integer
-  }
-  deriving (Eq, Show)
-
-getFileStat :: FilePath -> IO FileStat
-getFileStat path = do
-  exists <- doesFileExist path
-  size <- if exists then getFileModTime path else pure 0
-  pure FileStat {fileStatExists = exists, fileStatSize = size}
-
-dbg :: Text -> IO ()
-dbg msg = do
-  now <- getCurrentTime
-  let secs = utcTimeToPOSIXSeconds now
-  let line = "DBG-EXACT-CACHE t=" <> show secs <> " " <> T.unpack msg
-  appendFile "D:\\Projects\\adrai\\exact_cache_debug.log" (line ++ "\n")
-  hPutStrLn stdout line
-  hFlush stdout
-  hPutStrLn stderr line
-  hFlush stderr
-
-getFileModTime :: FilePath -> IO Integer
-getFileModTime path = do
-  t <- getModificationTime path
-  let secs = realToFrac (utcTimeToPOSIXSeconds t) :: Double
-  pure $ ceiling (secs * 1e9 :: Double)
-
--- ---------------------------------------------------------------------------
--- Value extraction helpers
--- ---------------------------------------------------------------------------
-
--- | Extract ADR ID from a create-adr result.
-extractAdrId :: Data.Aeson.Value -> Maybe Text
-extractAdrId v = do
-  o <- _Object v
-  o .: "adr"

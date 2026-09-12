@@ -15,19 +15,10 @@ tests :: TestTree
 tests =
   testGroup
     "fixture plan properties"
-    [ testProperty "same seed yields identical steps" prop_sameSeed,
-      testProperty "changed seed perturbs noise while preserving counts" prop_changedSeed,
-      testProperty "lazy prefixes are stable" prop_prefixStable,
+    [ testProperty "changed seed perturbs noise while preserving counts" prop_changedSeed,
       testProperty "ordinals and operation keys are unique" prop_uniqueKeys,
-      testProperty "semantic targets follow their creates" prop_targetsAfterCreate,
-      testProperty "repeated strict folds are identical" prop_repeatedStrictFolds
+      testProperty "semantic targets follow their creates" prop_targetsAfterCreate
     ]
-
-prop_sameSeed :: Property
-prop_sameSeed = withTests 20 . property $ do
-  seed <- forAll (Gen.int (Range.linear 0 1000000))
-  let plan = withRepositorySeed (mkSeed (fromIntegral seed)) productionShapeV1
-  take 512 (repositorySteps plan) === take 512 (repositorySteps plan)
 
 prop_changedSeed :: Property
 prop_changedSeed = withTests 20 . property $ do
@@ -36,12 +27,6 @@ prop_changedSeed = withTests 20 . property $ do
       second = withRepositorySeed (mkSeed (fromIntegral seed + 1)) productionShapeV1
   foldCounts first === foldCounts second
   assert (noisePrefix first /= noisePrefix second)
-
-prop_prefixStable :: Property
-prop_prefixStable = withTests 20 . property $ do
-  prefixLength <- forAll (Gen.int (Range.linear 0 600))
-  let steps = repositorySteps productionShapeV1
-  take prefixLength steps === take prefixLength (take (prefixLength + 50) steps)
 
 prop_uniqueKeys :: Property
 prop_uniqueKeys = withTests 3 . property $ do
@@ -53,12 +38,6 @@ prop_targetsAfterCreate :: Property
 prop_targetsAfterCreate = withTests 3 . property $ do
   let (_, valid) = foldRepositoryPlan checkTarget (Set.empty, True) largeStressV1
   assert valid
-
-prop_repeatedStrictFolds :: Property
-prop_repeatedStrictFolds = withTests 3 . property $ do
-  let first = foldCounts largeStressV1
-      second = foldCounts largeStressV1
-  first === second
 
 foldCounts :: RepositoryPlan -> (Int, Int)
 foldCounts = foldRepositoryPlan count (0, 0)

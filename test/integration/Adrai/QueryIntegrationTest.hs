@@ -1,62 +1,115 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Integration tests for history, search, and compare commands via the
--- adrai CLI, porting the query tests from
--- ``ADRAI_1_Source/tests/test_history_command.py`` and
--- ``ADRAI_1_Source/tests/test_evolution_compare_ann.py``.
+-- | Integration tests for exact-cache query hooks and archive integrity.
 module Adrai.QueryIntegrationTest (tests) where
 
-import Adrai.Git (discoverRepository, systemGit)
+import Adrai.Compiler.CacheSelection (exactCacheArchivePath)
+import Adrai.Domain (mkDomain)
+import Adrai.Format.Document
+  ( AppliesToPayload (..),
+    ConnectionPayload (..),
+    ConnectionRecord (..),
+    DecisionRecord (..),
+    DomainsPayload (..),
+    ManagedRecord (..),
+    StatusPayload (..),
+    StatusState (..),
+    canonicalManagedPath,
+    renderManagedSemantic,
+    sealManagedDocument,
+  )
+import Adrai.Git (Repository, RevisionSpec (..), discoverRepository, gitOidText, systemGit)
 import Adrai.Integration.CLI hiding (parseCompareResults, parseHistory, parseSearchResults)
-import Adrai.History (HistoryOptions (..), HistoryOrder (..), renderHistoryProjection)
-import Adrai.Query (renderCollapsedProjection, renderCompareProjection)
-import Adrai.Service.Query (CompareRequest (..), HistoryRequest (..), ShowRequest (..), ShowResult (..), runCompare, runHistory, runShow)
-import Adrai.Types (ViewMode (..))
-import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException)
-import qualified Control.Exception as Exception
-import Control.Monad (forM_, unless, void)
-import qualified Data.Aeson
-import qualified Data.Aeson.Key as AesonKey
-import qualified Data.Aeson.KeyMap as KM
+import Adrai.Compiler (materializeCurrentSearch)
+import Adrai.History (CommitPlacementEvidence (..), LineLandingEvidence (..), PlacementEvidence (..), ReadSnapshot (..), RevisionIdentity (..))
+import Adrai.Query (RelevantProjection (..), RelevantRequest (..), SearchProjection (..), defaultRelevantRequest, defaultSearchRequest)
+import Adrai.Provenance
+  ( GitOid,
+    ProvenanceCapsuleInput (..),
+    ProvenanceObjectId (..),
+    mkEventKind,
+    mkGitOid,
+    mkProvenanceCapsule,
+    semanticDigest,
+  )
+import Adrai.Provenance.Ensure (openReadWriteExisting)
+import Adrai.Provenance.Overlay (provenanceDatabasePath)
+import Adrai.RetainedCache.RepositorySeed
+  ( RepositorySeed,
+    createRepositorySeed,
+    removeRepositorySeed,
+    withPrivateRepositorySeed,
+  )
+import Adrai.Repository (resolveRepositoryRevision, resolvedCommitOid)
+import Adrai.Retrieval (SearchDocument (..), SearchMaterialization (..))
+import Adrai.SearchVectorCorpus (buildSearchVectorCorpus)
+import Adrai.Scope (mkScopePattern)
+import Adrai.Service.Query
+  ( ExactQueryContext (..),
+    QueryExecutionHooks (..),
+    RelevantFailure (..),
+    SearchFailure,
+    SearchServiceRequest (..),
+    loadExactQueryContextForTest,
+    loadExactQueryContextWithAcquisitionHooksForTest,
+    readSnapshotAt,
+    runRelevantQueryWithHooks,
+    runSearchWithHooks,
+  )
+import Adrai.Types
+  ( ActorKind (HumanActor),
+    Actor,
+    AdrId,
+    ConnectionId,
+    OperationId,
+    ProvenanceInputs (..),
+    RevisionSelector (..),
+    adrIdText,
+    connectionIdText,
+    configManagedPaths,
+    defaultConfig,
+    mkActor,
+    mkAdrId,
+    mkConnectionId,
+    mkOperationId,
+    mkRecordId,
+    mkRepoPath,
+    operationIdText,
+    recordIdText,
+    repoPathText,
+  )
+import Control.Concurrent (newEmptyMVar, putMVar, takeMVar, throwTo)
+import qualified Control.Concurrent.Async as Async
+import Control.Exception (AsyncException (ThreadKilled), SomeAsyncException, SomeException, fromException, throwIO, try)
+import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
-import Data.List (find, isPrefixOf, sortOn)
-import Data.Maybe (isJust, listToMaybe, mapMaybe)
+import Data.List (find, sort, sortOn)
+import qualified Data.Map.Strict as Map
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Text (Text, strip)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import System.Directory (createDirectoryIfMissing)
-import System.Environment (getEnvironment, lookupEnv)
-import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
-import System.IO.Temp (withSystemTempDirectory)
-import System.Process.Typed (proc, readProcess, setEnv)
-import Test.Tasty (TestTree, testGroup)
+import Data.Time.Clock (UTCTime)
+import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize, getModificationTime, removeFile, renameFile)
+import Database.SQLite.Simple (Connection, Only (..), close, execute_, open, query, query_)
+import System.FilePath (takeDirectory, (</>))
+import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
--- ---------------------------------------------------------------------------
--- JSON helpers (mirrors GitProvenanceTest pattern)
--- ---------------------------------------------------------------------------
-
-_Object :: Data.Aeson.Value -> Maybe (KM.KeyMap Data.Aeson.Value)
-_Object (Data.Aeson.Object o) = Just o
-_Object _                     = Nothing
-
-(.:) :: Data.Aeson.FromJSON a => KM.KeyMap Data.Aeson.Value -> Text -> Maybe a
-(.:) km key =
-  case KM.lookup (AesonKey.fromText key) km of
-    Nothing -> Nothing
-    Just v  -> case Data.Aeson.eitherDecode (Data.Aeson.encode v) of
-      Left  _ -> Nothing
-      Right a -> Just a
-
--- | Extract the ADR ID from a create-adr result value.
-extractAdrId :: Data.Aeson.Value -> Maybe Text
-extractAdrId v = do
-  o <- _Object v
-  o .: "adr"
+cacheSidecarMetadata :: FilePath -> IO [(FilePath, Maybe (Integer, UTCTime))]
+cacheSidecarMetadata archive =
+  traverse snapshot [archive <> "-journal", archive <> "-wal", archive <> "-shm"]
+  where
+    snapshot path = do
+      exists <- doesFileExist path
+      if exists
+        then do
+          size <- getFileSize path
+          modified <- getModificationTime path
+          pure (path, Just (size, modified))
+        else pure (path, Nothing)
 
 -- | Get the HEAD commit hash of a repository.
 headCommit :: FilePath -> IO Text
@@ -64,1888 +117,690 @@ headCommit repo =
   gitStdout repo ["rev-parse", "HEAD"]
     >>= \h -> pure (strip (decodeUtf8 (LBS.toStrict h)))
 
--- | Parse a history JSON value into (schema, revision, order, operations).
-parseHistory :: Data.Aeson.Value -> Maybe (Text, Text, Text, [Data.Aeson.Value])
-parseHistory v = do
-  o <- _Object v
-  schema <- o .: "schema"
-  revision <- o .: "revision"
-  order <- o .: "order"
-  ops <- o .: "operations"
-  pure (schema, revision, order, ops)
-
--- | Parse a search JSON value into (schema, as_of, mode, limit, results).
-parseSearchResults :: Data.Aeson.Value -> Maybe (Text, Text, Text, Int, [Data.Aeson.Value])
-parseSearchResults v = do
-  o <- _Object v
-  schema <- o .: "schema"
-  as_of  <- o .: "as_of"
-  mode   <- o .: "mode"
-  limit  <- o .: "limit"
-  results <- o .: "results"
-  pure (schema, as_of, mode, limit, results)
-
--- | Parse a compare JSON value into (schema, from, to, entries).
-parseCompareResults :: Data.Aeson.Value -> Maybe (Text, Text, Text, [Data.Aeson.Value])
-parseCompareResults v = do
-  o <- _Object v
-  schema <- o .: "schema"
-  fromRev <- o .: "from"
-  toRev <- o .: "to"
-  entries <- o .: "entries"
-  pure (schema, fromRev, toRev, entries)
-
--- | Extract the "kind" field from a compare entry.
-compareEntryKind :: Data.Aeson.Value -> Maybe Text
-compareEntryKind v = do
-  o <- _Object v
-  o .: "kind"
-
--- | Extract the "label" from a history operation.
-historyLabel :: Data.Aeson.Value -> Maybe Text
-historyLabel v = do
-  o <- _Object v
-  o .: "label"
-
--- | Extract the "adr" from a history operation.
-historyAdr :: Data.Aeson.Value -> Maybe Text
-historyAdr v = do
-  o <- _Object v
-  o .: "adr"
-
--- | P6-02F launches the explicitly selected executable under the same small
--- Windows process environment used by mutation E2E.  It keeps Git discoverable
--- while excluding inherited Git/config controls from the parent process.
-p602fRaw :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
-p602fRaw repoPath args = do
-  maybeExe <- lookupEnv "ADRAI_EXE"
-  exe <- case maybeExe of
-    Nothing -> assertFailure "P6-02F requires ADRAI_EXE to name the executable under test" >> fail "unreachable"
-    Just "" -> assertFailure "P6-02F requires ADRAI_EXE to be non-empty" >> fail "unreachable"
-    Just path -> pure path
-  inherited <- getEnvironment
-  readProcess (setEnv (p602fEnvironment inherited) (proc exe (adraiTestArgs repoPath args)))
-
-p602fJsonOrThrow :: FilePath -> [String] -> IO Data.Aeson.Value
-p602fJsonOrThrow repoPath args = do
-  (exitCode, output, errors) <- p602fRaw repoPath args
-  case exitCode of
-    ExitSuccess -> case Data.Aeson.decode output of
-      Just value -> pure value
-      Nothing -> assertFailure "P6-02F executable emitted non-JSON success output" >> fail "unreachable"
-    ExitFailure code ->
-      assertFailure ("P6-02F executable failed with exit " <> show code <> ": " <> T.unpack (decodeUtf8 (LBS.toStrict errors))) >> fail "unreachable"
-
-p602fEnvironment :: [(String, String)] -> [(String, String)]
-p602fEnvironment inherited =
-  gitEnv
-    <> filter
-      ( \(key, _) ->
-          folded key `elem` required
-            && all ((/= folded key) . folded . fst) gitEnv
-      )
-      inherited
-  where
-    required = map folded ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"]
-    folded = T.toCaseFold . T.pack
-
 -- ---------------------------------------------------------------------------
 -- Test suite
 -- ---------------------------------------------------------------------------
 
 tests :: TestTree
 tests =
-  testGroup "Query integration (history / search / compare)"
-    [ testHistoryFullAndFiltered,
-      testHistoryFilterByActor,
-      testHistoryLimitAndTruncation,
-      testHistoryBranchSwitchRevisionLocal,
-      testHistoryConflictAndReconcile,
-      testHistoryEvolutionAxis,
-      testHistorySemanticParentOrder,
-      testHistoryLimitValidation,
-      testP602FRealExecutableShow,
-      testP602FRealExecutableConflict,
-      testP602FRealExecutableIntegrityFailure,
-      testP602GRealExecutableCompare,
-      testP602HRealExecutableHistory,
-      testP602JRealExecutableSearch,
-      testP602KRealExecutableRelevant,
-      testShowCollapsedEvolution,
-      testCompareBranchOnly,
-      testCompareReverseShowsRemoved,
-      testCompareJsonMatchesProgrammatic,
-      testSearchVectorMatchesSynonyms,
-      testSearchHybridPreservesLexical,
-      testExplodedNoWriterDigest,
-      testHistoryReverseTextOutput
+  withResource createExactQuerySeed removeRepositorySeed $ \getSeed ->
+    testGroup "Query integration (history / search / compare)"
+      [ testExactCacheQueryHooks getSeed,
+        testExactCacheAcquisitionCancellation getSeed
+      ]
+
+data ExactQuerySeed = ExactQuerySeed
+  { exactQuerySeedDecisionPath :: Text,
+    exactQuerySeedScopeOperation :: Text,
+    exactQuerySeedSourceRelativePath :: FilePath,
+    exactQuerySeedMainCommit :: Text,
+    exactQuerySeedFeatureCommit :: Text
+  }
+
+data ExactQueryCreateFixture = ExactQueryCreateFixture
+  { exactQueryFixtureAdr :: AdrId,
+    exactQueryFixtureInitialScope :: ConnectionId,
+    exactQueryFixtureExpandedScope :: ConnectionId,
+    exactQueryFixtureScopeOperation :: OperationId,
+    exactQueryFixtureDecisionPath :: FilePath,
+    exactQueryFixtureCreateObjects :: [Text],
+    exactQueryFixtureFiles :: [(FilePath, BS.ByteString)]
+  }
+
+requireRight :: Show problem => String -> Either problem value -> IO value
+requireRight label = either (\problem -> assertFailure (label <> ": " <> show problem) >> fail "unreachable") pure
+
+fixtureRight :: Show problem => Text -> Either problem value -> Either Text value
+fixtureRight label = first (\problem -> label <> ": " <> T.pack (show problem))
+
+fixtureId :: Char -> Char -> Text
+fixtureId prefix suffix = T.singleton prefix <> T.replicate 25 "0" <> T.singleton suffix
+
+fixtureObject :: ManagedRecord -> ProvenanceObjectId
+fixtureObject managed =
+  case managed of
+    ManagedDecision decision -> ProvenanceRecord (decisionRecord decision)
+    ManagedConnection connection -> ProvenanceConnection (connectionRecordId connection)
+
+sealFixtureMember :: Actor -> GitOid -> OperationId -> ManagedRecord -> Text -> [ProvenanceObjectId] -> Either Text (FilePath, BS.ByteString)
+sealFixtureMember actor basis operation managed eventText parents = do
+  semantic <- fixtureRight "render exact-query fixture member" (renderManagedSemantic managed)
+  event <- fixtureRight "create exact-query fixture event" (mkEventKind eventText)
+  capsule <-
+    fixtureRight "create exact-query fixture capsule" . mkProvenanceCapsule $
+      ProvenanceCapsuleInput
+        { capsuleInputOperationId = operation,
+          capsuleInputObjectId = fixtureObject managed,
+          capsuleInputEventKind = event,
+          capsuleInputActor = actor,
+          capsuleInputTimestampMs = 1700000000000,
+          capsuleInputBasis = basis,
+          capsuleInputParents = parents,
+          capsuleInputBranchHint = Just "main",
+          capsuleInputUpstreamHint = Nothing,
+          capsuleInputLineAnchors = [],
+          capsuleInputSemanticDigest = semanticDigest semantic,
+          capsuleInputToolVersion = "adrai/1.0.0",
+          capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
+        }
+  bytes <- fixtureRight "seal exact-query fixture member" (sealManagedDocument managed capsule)
+  path <- fixtureRight "resolve exact-query fixture path" (canonicalManagedPath (configManagedPaths defaultConfig) managed)
+  pure (T.unpack (repoPathText path), bytes)
+
+buildExactQueryCreateFixture :: GitOid -> Either Text ExactQueryCreateFixture
+buildExactQueryCreateFixture basis = do
+  adr <- fixtureRight "create exact-query ADR" (mkAdrId (fixtureId 'A' '1'))
+  record <- fixtureRight "create exact-query record" (mkRecordId (fixtureId 'R' '1'))
+  initialScope <- fixtureRight "create exact-query initial scope connection" (mkConnectionId (fixtureId 'C' '1'))
+  domainConnection <- fixtureRight "create exact-query domain connection" (mkConnectionId (fixtureId 'C' '2'))
+  statusConnection <- fixtureRight "create exact-query status connection" (mkConnectionId (fixtureId 'C' '3'))
+  expandedScope <- fixtureRight "create exact-query expanded scope connection" (mkConnectionId (fixtureId 'C' '4'))
+  createOperation <- fixtureRight "create exact-query operation" (mkOperationId (fixtureId 'O' '1'))
+  scopeOperation <- fixtureRight "create exact-query scope operation" (mkOperationId (fixtureId 'O' '2'))
+  actor <- fixtureRight "create exact-query actor" (mkActor HumanActor "query-fixture" Nothing)
+  domains <- traverse (fixtureRight "create exact-query domain" . mkDomain) ["cache", "platform.api", "unicode"]
+  scopes <- traverse (fixtureRight "create exact-query scope" . mkScopePattern) ["src/cache/**", "src/api/**"]
+  let decision =
+        ManagedDecision
+          DecisionRecord
+            { decisionAdr = adr,
+              decisionRecord = record,
+              decisionTitle = "RFC-HTTP/2 OAuth2 København cache",
+              decisionSummary = "Unicode punctuation and API_ACRONYM exact archive query context",
+              decisionDomains = domains,
+              decisionBody = "## Decision\nUse RFC-HTTP/2 OAuth2 tokens for København café clients. 日本語 🧭\n"
+            }
+      scope =
+        ManagedConnection
+          ConnectionRecord
+            { connectionRecordId = initialScope,
+              connectionPayload = AppliesToConnection (AppliesToPayload adr [] "initial" (sort scopes) [] (sort scopes)),
+              connectionRationale = "Initial exact-query scope.\n"
+            }
+      domain =
+        ManagedConnection
+          ConnectionRecord
+            { connectionRecordId = domainConnection,
+              connectionPayload = DomainsConnection (DomainsPayload adr [] "initial" domains [] domains []),
+              connectionRationale = "Initial exact-query domains.\n"
+            }
+      status =
+        ManagedConnection
+          ConnectionRecord
+            { connectionRecordId = statusConnection,
+              connectionPayload = StatusConnection (StatusPayload adr [] StatusActive [record] Nothing),
+              connectionRationale = "Initial active status.\n"
+            }
+      members =
+        [ (decision, "decision.create", []),
+          (scope, "scope.initial", [ProvenanceRecord record]),
+          (domain, "domain.initial", [ProvenanceRecord record]),
+          (status, "status.initial", [ProvenanceRecord record])
+        ]
+  files <- traverse (\(managed, event, parents) -> sealFixtureMember actor basis createOperation managed event parents) members
+  decisionPath <-
+    case find (T.isSuffixOf ".decision.md" . T.pack . fst) files of
+      Nothing -> Left "exact-query fixture has no managed decision path"
+      Just (path, _) -> Right path
+  pure
+    ExactQueryCreateFixture
+      { exactQueryFixtureAdr = adr,
+        exactQueryFixtureInitialScope = initialScope,
+        exactQueryFixtureExpandedScope = expandedScope,
+        exactQueryFixtureScopeOperation = scopeOperation,
+        exactQueryFixtureDecisionPath = decisionPath,
+        exactQueryFixtureCreateObjects = recordIdText record : map connectionIdText [initialScope, domainConnection, statusConnection],
+        exactQueryFixtureFiles = files
+      }
+
+buildExactQueryScopeFixture :: GitOid -> ExactQueryCreateFixture -> Either Text (FilePath, BS.ByteString)
+buildExactQueryScopeFixture basis fixture = do
+  actor <- fixtureRight "create exact-query scope actor" (mkActor HumanActor "query-fixture" Nothing)
+  initialScopes <- traverse (fixtureRight "create exact-query initial scope" . mkScopePattern) ["src/cache/**", "src/api/**"]
+  addedScopes <- traverse (fixtureRight "create exact-query expanded scope" . mkScopePattern) ["src/query-context/**", "src/feature-parity/**"]
+  let managed =
+        ManagedConnection
+          ConnectionRecord
+            { connectionRecordId = exactQueryFixtureExpandedScope fixture,
+              connectionPayload =
+                AppliesToConnection
+                  (AppliesToPayload (exactQueryFixtureAdr fixture) [exactQueryFixtureInitialScope fixture] "expand" (sort addedScopes) [] (sort (initialScopes <> addedScopes))),
+              connectionRationale = "Cover query context and branch placement sources.\n"
+            }
+  sealFixtureMember actor basis (exactQueryFixtureScopeOperation fixture) managed "scope.expand" [ProvenanceConnection (exactQueryFixtureInitialScope fixture)]
+
+commitFixtureFiles :: FilePath -> [(FilePath, BS.ByteString)] -> String -> IO ()
+commitFixtureFiles repository files message = do
+  mapM_ writeFixtureFile files
+  _ <- gitStdout repository ["add", "--all"]
+  _ <- gitStdout repository ["commit", "-m", message]
+  pure ()
+  where
+    writeFixtureFile (relativePath, bytes) = do
+      createDirectoryIfMissing True (takeDirectory (repository </> relativePath))
+      BS.writeFile (repository </> relativePath) bytes
+
+createExactQuerySeed :: IO (RepositorySeed ExactQuerySeed)
+createExactQuerySeed =
+  createRepositorySeed $ \tmpDir -> do
+    repoPath <- createTestRepo tmpDir
+    commitFixtureFiles repoPath
+      [ ( ".adrai.toml",
+          "schema = 1\n\n[[line]]\nid = \"main\"\nrefs = [\"refs/heads/main\"]\n\n[[line]]\nid = \"feature\"\nrefs = [\"refs/heads/query-context-feature\"]\n"
+        )
+      ]
+      "configure main and feature logical lines"
+    createBasis <- requireRight "parse exact-query create basis" . mkGitOid =<< headCommit repoPath
+    createFixture <- requireRight "build sealed exact-query create fixture" (buildExactQueryCreateFixture createBasis)
+    let sourceRelativePath = "src/cache/query-context.txt"
+        createMessage =
+          T.unpack . T.unlines $
+            [ "seed sealed exact-query create operation",
+              "",
+              "ADRAI-Op: " <> fixtureId 'O' '1',
+              "ADRAI-ADR: " <> adrIdText (exactQueryFixtureAdr createFixture),
+              "ADRAI-Objects: " <> T.intercalate "," (exactQueryFixtureCreateObjects createFixture)
+            ]
+    commitFixtureFiles
+      repoPath
+      (exactQueryFixtureFiles createFixture <> [(sourceRelativePath, encodeUtf8 "RFC-HTTP/2 OAuth2 København 日本語 🧭 API_ACRONYM exact cache relevance source\n")])
+      createMessage
+    branchPoint <- headCommit repoPath
+    scopeBasis <- requireRight "parse exact-query scope basis" (mkGitOid branchPoint)
+    scopeFile <- requireRight "build sealed exact-query scope fixture" (buildExactQueryScopeFixture scopeBasis createFixture)
+    let scopeOperation = operationIdText (exactQueryFixtureScopeOperation createFixture)
+        scopeMessage =
+          T.unpack . T.unlines $
+            [ "seed sealed exact-query scope operation",
+              "",
+              "ADRAI-Op: " <> scopeOperation,
+              "ADRAI-ADR: " <> adrIdText (exactQueryFixtureAdr createFixture),
+              "ADRAI-Objects: " <> connectionIdText (exactQueryFixtureExpandedScope createFixture)
+            ]
+    commitFixtureFiles repoPath [scopeFile] scopeMessage
+    mainCommit <- headCommit repoPath
+    _ <- gitStdout repoPath ["switch", "-c", "query-context-feature", T.unpack branchPoint]
+    _ <- gitStdout repoPath ["commit", "--allow-empty", "-m", "feature-only parent for shared operation copy"]
+    _ <- gitStdout repoPath ["cherry-pick", T.unpack mainCommit]
+    featureCommit <- headCommit repoPath
+    assertBool "cherry-picked feature placement has a distinct commit OID" (featureCommit /= mainCommit)
+    _ <- adraiJsonOrThrow repoPath ["compile", "--json"]
+    _ <- gitStdout repoPath ["switch", "main"]
+    _ <- adraiJsonOrThrow repoPath ["compile", "--json"]
+    pure
+      ( repoPath,
+        ExactQuerySeed
+          { exactQuerySeedDecisionPath = T.pack (exactQueryFixtureDecisionPath createFixture),
+            exactQuerySeedScopeOperation = scopeOperation,
+            exactQuerySeedSourceRelativePath = sourceRelativePath,
+            exactQuerySeedMainCommit = mainCommit,
+            exactQuerySeedFeatureCommit = featureCommit
+          }
+      )
+
+placementCommitOids :: ReadSnapshot -> [Text]
+placementCommitOids snapshot =
+  sortOn id
+    [ commitPlacementOid placement
+      | evidence <- Map.elems (readSnapshotPlacement snapshot),
+        placement <- placementCommits evidence
     ]
+
+landingCommitOids :: ReadSnapshot -> [Text]
+landingCommitOids snapshot =
+  sortOn id
+    [ landingCommit landing
+      | evidence <- Map.elems (readSnapshotPlacement snapshot),
+        landing <- placementLineLandings evidence
+    ]
+
+evidenceForOperation :: Text -> ReadSnapshot -> [PlacementEvidence]
+evidenceForOperation operation snapshot =
+  [ evidence
+    | (operationId, evidence) <- Map.toList (readSnapshotPlacement snapshot),
+      operationIdText operationId == operation
+  ]
+
+assertExactBranchPlacementParity :: ExactQuerySeed -> FilePath -> Repository -> ExactQueryContext -> IO ()
+assertExactBranchPlacementParity payload repoPath repository mainContext = do
+  let sharedOperation = exactQuerySeedScopeOperation payload
+      mainCommit = exactQuerySeedMainCommit payload
+      featureCommit = exactQuerySeedFeatureCommit payload
+      mainSnapshot = exactQuerySnapshot mainContext
+  overlayConnection <- open (provenanceDatabasePath (repoPath </> ".adrai" </> "index.sqlite"))
+  overlayPlacementOids <- query overlayConnection
+    "SELECT commit_oid FROM operation_commit WHERE op_id=? ORDER BY commit_oid"
+    (Only sharedOperation) :: IO [Only Text]
+  overlayLandingOids <- query overlayConnection
+    "SELECT commit_oid FROM line_landing WHERE op_id=? ORDER BY commit_oid"
+    (Only sharedOperation) :: IO [Only Text]
+  close overlayConnection
+  assertBool "shared overlay retains main placement" (Only mainCommit `elem` overlayPlacementOids)
+  assertBool "shared overlay retains feature placement" (Only featureCommit `elem` overlayPlacementOids)
+  assertBool "shared overlay retains main landing" (Only mainCommit `elem` overlayLandingOids)
+  assertBool "shared overlay retains feature landing" (Only featureCommit `elem` overlayLandingOids)
+  assertBool "main exact snapshot retains placement rows" (not (null (placementCommitOids mainSnapshot)))
+  assertBool "main exact snapshot retains landing rows" (not (null (landingCommitOids mainSnapshot)))
+  case evidenceForOperation sharedOperation mainSnapshot of
+    [mainEvidence] -> do
+      sortOn id (map commitPlacementOid (placementCommits mainEvidence)) @?= [mainCommit]
+      sortOn id (map landingCommit (placementLineLandings mainEvidence)) @?= [mainCommit]
+      assertBool "main target retains the shared operation placement" (mainCommit `elem` map commitPlacementOid (placementCommits mainEvidence))
+      assertBool "feature copy cannot win the preferred placement" (placementCommit mainEvidence /= Just featureCommit)
+      assertBool "feature copy is absent from main placement ordering" (featureCommit `notElem` map commitPlacementOid (placementCommits mainEvidence))
+      assertBool "feature copy is absent from main original ordering" (featureCommit `notElem` placementOriginalCommits mainEvidence)
+      assertBool "feature copy is absent from main introduction ordering" (featureCommit `notElem` placementIntroductions mainEvidence)
+      assertBool "feature copy is absent from main landing ordering" (featureCommit `notElem` map landingCommit (placementLineLandings mainEvidence))
+    other -> assertFailure ("expected exactly one main shared-operation evidence row, got " <> show other)
+  featureExact <- loadExactQueryContextForTest repository featureCommit
+  case featureExact of
+    Just context ->
+      case evidenceForOperation sharedOperation (exactQuerySnapshot context) of
+        [featureEvidence] -> do
+          sortOn id (map commitPlacementOid (placementCommits featureEvidence)) @?= [featureCommit]
+          sortOn id (map landingCommit (placementLineLandings featureEvidence)) @?= [featureCommit]
+          assertBool "feature target contains its copy placement" (featureCommit `elem` map commitPlacementOid (placementCommits featureEvidence))
+          assertBool "feature target contains its copy landing" (featureCommit `elem` map landingCommit (placementLineLandings featureEvidence))
+          assertBool "main copy is absent from feature placement ordering" (mainCommit `notElem` map commitPlacementOid (placementCommits featureEvidence))
+        other -> assertFailure ("expected exactly one feature shared-operation evidence row, got " <> show other)
+    Nothing -> assertFailure "valid feature exact archive was not accepted for target-qualified context"
 
 -- =====================================================================
 -- Test 1: Full history returns all operations for an ADR
 -- =====================================================================
 
-testHistoryFullAndFiltered :: TestTree
-testHistoryFullAndFiltered =
-  testCase "history_full_and_filtered_by_adr" $
-    withSystemTempDirectory "adrai history full" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-      result1 <- createAdr repo
-        "Cache layering"
-        "Layer caching at multiple levels"
-        "## Decision\nTwo-level cache with TTL."
-        ["cache"]
-        ["src/**"]
-
-      result2 <- createAdr repo
-        "Connection pooling"
-        "Database connection pool config"
-        "## Decision\nUse a pool of 10 connections."
-        ["database"]
-        ["src/db/**"]
-
-      case (extractAdrId result1, extractAdrId result2) of
-        (Nothing, _) -> assertFailure "first createAdr failed"
-        (_, Nothing) -> assertFailure "second createAdr failed"
-        (Just adr1, Just _) -> do
-          -- Compile to establish the database
-          _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-          -- Full history (no ADR filter) should list all operations
-          fullHist <- adraiJsonOrThrow repo ["history", "--json"]
-          case parseHistory fullHist of
-            Just (schema, _, order, ops) -> do
-              schema @?= "adrai/history/v1"
-              order @?= "newest-first"
-              assertBool "full history has multiple operations" (length ops >= 2)
-              let labels = mapMaybe historyLabel ops
-              assertBool "includes create operations" (any (`elem` labels) ["created"])
-            Nothing -> assertFailure "history parse failed"
-
-          -- Filter by specific ADR
-          adrHist <- adraiJsonOrThrow repo ["history", T.unpack adr1, "--json"]
-          case parseHistory adrHist of
-            Just (_, _, _, ops) -> do
-              let labels = mapMaybe historyLabel ops
-              assertBool "filtered history has at least one entry" (not (null labels))
-              -- All ops should be for the requested ADR
-              let adrs = mapMaybe historyAdr ops
-              assertBool "all operations match the filter" (all (== adr1) adrs)
-            Nothing -> assertFailure "filtered history parse failed"
-
--- =====================================================================
--- Test 2: History filter by actor
--- =====================================================================
-
-testHistoryFilterByActor :: TestTree
-testHistoryFilterByActor =
-  testCase "history_filter_by_actor" $
-    withSystemTempDirectory "adrai history actor" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADRs with different actors
-      _ <- createAdr repo
-        "Actor test ADR 1"
-        "Test actor filtering"
-        "## Decision\nFirst ADR."
-        ["test"]
-        ["src/**"]
-      _ <- createAdr repo
-        "Actor test ADR 2"
-        "Test actor filtering"
-        "## Decision\nSecond ADR."
-        ["test"]
-        ["src/**"]
-
-      _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-      -- Query with llm actor filter
-      llmHist <- adraiJsonOrThrow repo
-        [ "history", "--actor", "llm:planner", "--json" ]
-      case parseHistory llmHist of
-        Just (_, _, _, ops) ->
-          assertBool "LLM-filtered history has entries" (length ops >= 1)
-        Nothing -> assertFailure "LLM history parse failed"
-
--- =====================================================================
--- Test 3: History limit and truncation
--- =====================================================================
-
-testHistoryLimitAndTruncation :: TestTree
-testHistoryLimitAndTruncation =
-  testCase "history_limit_and_truncation" $
-    withSystemTempDirectory "adrai history limit" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create several ADRs
-      forM_ [1 :: Int .. 5] $ \i -> do
-        void $ createAdr repo
-          ("ADR number " <> T.pack (show i))
-          ("Test ADR " <> T.pack (show i))
-          ("## Decision\nADR #" <> T.pack (show i) <> ".")
-          ["test"]
-          ["src/**"]
-
-      _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-      -- Limit to 3: should return at most 3 operations and truncated=true
-      limitedHist <- adraiJsonOrThrow repo
-        [ "history", "--limit", "3", "--json" ]
-      case parseHistory limitedHist of
-        Just (_, _, _, ops) -> do
-          assertBool "limited history respects limit" (length ops <= 3)
-        Nothing -> assertFailure "limited history parse failed"
-
--- =====================================================================
--- Test 4: Revision-local history across branch switches
--- =====================================================================
-
-testHistoryBranchSwitchRevisionLocal :: TestTree
-testHistoryBranchSwitchRevisionLocal =
-  testCase "history_revision_local_across_branch_switch" $
-    withSystemTempDirectory "adrai history revision-local" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADR on main
-      result <- createAdr repo
-        "Main branch ADR"
-        "Test revision-local history"
-        "## Decision\nMain branch decision."
-        ["main"]
-        ["src/**"]
-
-      mainHead <- headCommit repo
-      case extractAdrId result of
-        Nothing -> assertFailure "createAdr failed"
-        Just adrId -> do
-          -- Switch to release branch and verify history is revision-local
-          git repo ["switch", "-c", "release"]
-          releaseHead <- headCommit repo
-
-          -- Create a different ADR on release
-          _ <- createAdr repo
-            "Release branch ADR"
-            "Release ADR"
-            "## Decision\nRelease decision."
-            ["release"]
-            ["src/**"]
-
-          -- History on release should show the release branch ADR
-          releaseHist <- adraiJsonOrThrow repo
-            [ "history", T.unpack adrId, "--json" ]
-          case parseHistory releaseHist of
-            Just (_, _, _, ops) -> do
-              -- The revision should differ from main
-              assertBool "release head differs from main"
-                (releaseHead /= mainHead)
-              -- On release, the ADR created on main should still exist
-              -- (it was part of the branch from main)
-              unless (null ops) $ do
-                let labels = mapMaybe historyLabel ops
-                assertBool "release history includes operations"
-                  (not (null labels))
-            Nothing -> assertFailure "release history parse failed"
-
--- =====================================================================
--- Test 5: Conflict and reconciliation in history
--- =====================================================================
-
-testHistoryConflictAndReconcile :: TestTree
-testHistoryConflictAndReconcile =
-  testCase "history_conflict_and_reconcile" $
-    withSystemTempDirectory "adrai history conflict" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADR on main
-      result <- createAdr repo
-        "Conflict test"
-        "Testing conflict detection"
-        "## Decision\nInitial decision."
-        ["test"]
-        ["src/**"]
-
-      case extractAdrId result of
-        Nothing -> assertFailure "createAdr failed"
-        Just adrId -> do
-          -- Amend on main
-          _ <- amendAdr repo adrId
-            (Just "Conflict test v2")
-            Nothing
-            Nothing
-
-          -- Create feature branch with different amend
-          git repo ["switch", "-c", "feature"]
-          _ <- amendAdr repo adrId
-            (Just "Conflict test v3")
-            Nothing
-            Nothing
-
-          -- Merge feature back (may create conflict)
-          git repo ["switch", "main"]
-          catchGitFailure $
-            git repo ["merge", "--no-ff", "feature", "-m", "merge feature"]
-
-          -- History should show the conflict operations
-          hist <- adraiJsonOrThrow repo
-            [ "history", T.unpack adrId, "--json" ]
-          case parseHistory hist of
-            Just (_, _, _, ops) ->
-              -- Should have multiple operations reflecting the conflict
-              assertBool "conflict history has multiple operations"
-                (length ops >= 2)
-            Nothing -> assertFailure "conflict history parse failed"
-
--- =====================================================================
--- Test 6: History evolution axis summarization
--- =====================================================================
-
-testHistoryEvolutionAxis :: TestTree
-testHistoryEvolutionAxis =
-  testCase "history_evolution_axis" $
-    withSystemTempDirectory "adrai history evolution" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADR
-      result <- createAdr repo
-        "Evolution test"
-        "Testing evolution tracking"
-        "## Decision\nInitial state."
-        ["test"]
-        ["src/**"]
-
-      case extractAdrId result of
-        Nothing -> assertFailure "createAdr failed"
-        Just adrId -> do
-          -- Amend to create "amended" label
-          _ <- amendAdr repo adrId
-            (Just "Evolution test v2")
-            Nothing
-            Nothing
-
-          -- Expand scope
-          _ <- amendAdr repo adrId
-            Nothing
-            (Just "Evolution test v2 with broader scope\n## Decision\nBroader scope.")
-            Nothing
-
-          -- Obsolete
-          _ <- amendAdr repo adrId Nothing Nothing Nothing
-
-          -- History should track the evolution steps
-          hist <- adraiJsonOrThrow repo
-            [ "history", T.unpack adrId, "--json" ]
-          case parseHistory hist of
-            Just (schema, _, _, ops) -> do
-              schema @?= "adrai/history/v1"
-              assertBool "evolution history tracks steps" (length ops >= 2)
-              let labels = mapMaybe historyLabel ops
-              -- Should contain 'created' at minimum
-              assertBool "includes created label"
-                ("created" `elem` labels)
-            Nothing -> assertFailure "evolution history parse failed"
-
--- =====================================================================
--- Test 7: Semantic parent ordering (not clock order)
--- =====================================================================
-
-testHistorySemanticParentOrder :: TestTree
-testHistorySemanticParentOrder =
-  testCase "history_semantic_parent_order" $
-    withSystemTempDirectory "adrai history semantic order" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADR
-      result <- createAdr repo
-        "Semantic order test"
-        "Testing semantic parent ordering"
-        "## Decision\nInitial."
-        ["test"]
-        ["src/**"]
-
-      case extractAdrId result of
-        Nothing -> assertFailure "createAdr failed"
-        Just adrId -> do
-          -- Amend
-          _ <- amendAdr repo adrId
-            (Just "Semantic order test v2")
-            Nothing
-            Nothing
-
-          -- History order follows semantic parents, not claimed_ms
-          hist <- adraiJsonOrThrow repo
-            [ "history", T.unpack adrId, "--json" ]
-          case parseHistory hist of
-            Just (_, _, order, ops) -> do
-              -- Order should be newest-first by default
-              order @?= "newest-first"
-              -- Operations should have a consistent ordering
-              let labels = mapMaybe historyLabel ops
-              assertBool "operations are ordered" (length labels >= 2)
-            Nothing -> assertFailure "semantic order history parse failed"
-
--- =====================================================================
--- Test 8: History limit validation
--- =====================================================================
-
-testHistoryLimitValidation :: TestTree
-testHistoryLimitValidation =
-  testCase "history_limit_validation" $
-    withSystemTempDirectory "adrai history limit validation" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create one ADR
-      _ <- createAdr repo
-        "Limit validation"
-        "Testing limit validation"
-        "## Decision\nLimit test."
-        ["test"]
-        ["src/**"]
-
-      _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-      -- Limit 0 should raise error
-      zeroResult <- adraiJson repo ["history", "--limit", "0", "--json"]
-      assertBool "limit=0 returns error" (isLeft zeroResult)
-
-      -- Valid limit should work
-      validResult <- adraiJson repo ["history", "--limit", "100", "--json"]
-      assertBool "valid limit works" (isRight validResult)
-
--- =====================================================================
--- Test 9: Collapsed view explains ADR evolution
--- =====================================================================
-
-testP602FRealExecutableShow :: TestTree
-testP602FRealExecutableShow =
-  testCase "P6-02F real executable show is revision-local, canonical, and read-only" $
-    withSystemTempDirectory "adrai p6-02f show" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-      _ <- p602fJsonOrThrow repo ["init", "--json"]
-      created <- p602fJsonOrThrow repo
-        [ "create"
-        , "--title", "Unicode snowman ☃ decision"
-        , "--summary", "A summary with spaces"
-        , "--body", "## Decision\nKeep the canonical show path.\n"
-        , "--domain", "platform"
-        , "--applies-to", "src/**"
-        , "--actor", "llm:planner"
-        , "--model", "demo-model"
-        , "--json"
-        ]
-      (adr, record, status) <-
-        case _Object created of
-          Just object ->
-            case (object .: "adr", object .: "record", object .: "status") of
-              (Just adrId, Just recordId, Just statusId) -> pure (adrId, recordId, statusId)
-              _ -> assertFailure "create result omitted ADR, record, or status identifier" >> fail "unreachable"
-          Nothing -> assertFailure "create result is not JSON object" >> fail "unreachable"
-      createdRevision <- headCommit repo
-      -- ADR prefixes contain a millisecond timestamp.  Cross a 10-character
-      -- bucket while remaining inside the coarser 8-character bucket so the
-      -- fixture proves both unique and ambiguous prefix outcomes.
-      threadDelay 50000
-      second <- p602fJsonOrThrow repo
-        [ "create"
-        , "--title", "Second decision for ambiguity"
-        , "--summary", "Shares a short identifier prefix"
-        , "--body", "## Decision\nKeep selector errors deterministic.\n"
-        , "--domain", "platform"
-        , "--applies-to", "test/**"
-        , "--actor", "llm:planner"
-        , "--model", "demo-model"
-        , "--json"
-        ]
-      secondAdr <-
-        case extractAdrId second of
-          Just value -> pure value
-          Nothing -> assertFailure "second create result omitted ADR identifier" >> fail "unreachable"
-      assertBool "fixture ADRs share the minimum accepted prefix" (T.take 8 secondAdr == T.take 8 adr)
-      threadDelay 50000
-      amended <- p602fJsonOrThrow repo
-        [ "amend", T.unpack adr
-        , "--title", "Unicode snowman ☃ decision v2"
-        , "--summary", "A summary with spaces"
-        , "--change-summary", "Verify revision-local show"
-        , "--body", "## Decision\nKeep the canonical show path.\n"
-        , "--actor", "llm:planner"
-        , "--model", "demo-model"
-        , "--json"
-        ]
-      amendConnection <-
-        case _Object amended >>= (.: "connection") of
-          Just value -> pure value
-          Nothing -> assertFailure "amend result omitted connection identifier" >> fail "unreachable"
-      repository <- do
-        discovered <- discoverRepository systemGit repo
-        case discovered of
-          Left problem -> assertFailure ("discover show fixture: " <> show problem) >> fail "unreachable"
-          Right value -> pure value
-      expectedText <- do
-        outcome <- runShow repository (ShowRequest adr CollapsedView "HEAD" False)
-        case outcome of
-          Right (ShowCollapsed projection) -> pure (LBS.fromStrict (renderCollapsedProjection projection))
-          other -> assertFailure ("programmatic collapsed show failed: " <> show other) >> fail "unreachable"
-
-      beforeHead <- headCommit repo
-      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-      beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-      let managedPaths =
-            filter ("architecture/adrai/" `isPrefixOf`)
-              (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
-      beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
-      BS.writeFile (repo </> "staged-show.bin") "\NUL\SOHstaged show bytes\255"
-      _ <- gitStdout repo ["add", "--", "staged-show.bin"]
-      BS.writeFile (repo </> "README.md") "# Test\ncaller dirty bytes\n"
-      BS.writeFile (repo </> "user-dirty.txt") "keep this worktree file"
-      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-      beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
-      beforeWorktree <- gitStdout repo ["diff", "--binary"]
-
-      (defaultExit, defaultOut, defaultErr) <- p602fRaw repo ["show", T.unpack adr]
-      defaultExit @?= ExitSuccess
-      defaultErr @?= ""
-      defaultOut @?= expectedText
-
-      (jsonExit, jsonOut, jsonErr) <- p602fRaw repo ["show", T.unpack record, "--json"]
-      jsonExit @?= ExitSuccess
-      jsonErr @?= ""
-      case Data.Aeson.decode jsonOut of
-        Just output -> case _Object output of
-          Just object -> do
-            (object .: "schema" :: Maybe Text) @?= Just "adrai/show-collapsed/v1"
-            (object .: "adr" :: Maybe Text) @?= Just adr
-            (object .: "as_of" :: Maybe Text) @?= Just beforeHead
-            provenance <- case KM.lookup "provenance" object >>= _Object of
-              Just value -> pure value
-              Nothing -> assertFailure "collapsed show omitted provenance" >> fail "unreachable"
-            createdProvenance <- case KM.lookup "created" provenance >>= _Object of
-              Just value -> pure value
-              Nothing -> assertFailure "collapsed show omitted created provenance" >> fail "unreachable"
-            originalCommits <- case createdProvenance .: "original_commits" of
-              Just value -> pure (value :: [Text])
-              Nothing -> assertFailure "created provenance omitted original commits" >> fail "unreachable"
-            assertBool "show exposes genuine placement evidence" (createdRevision `elem` originalCommits)
-            (object .: "title" :: Maybe Text) @?= Just "Unicode snowman ☃ decision v2"
-          Nothing -> assertFailure "collapsed show JSON is not an object"
-        Nothing -> assertFailure "collapsed show output is not JSON"
-
-      forM_ [T.toLower (T.take 10 adr), T.take 10 record, T.take 10 amendConnection] $ \reference -> do
-        (prefixExit, _, prefixErr) <- p602fRaw repo ["show", T.unpack reference, "--json"]
-        unless (prefixExit == ExitSuccess) $
-          assertFailure ("10-character show prefix failed for " <> T.unpack reference <> ": " <> show prefixErr)
-        prefixErr @?= ""
-
-      historicalWithoutRaw <- p602fJsonOrThrow repo ["show", T.unpack status, "--at", T.unpack createdRevision, "--view", "exploded", "--json"]
-      assertBool "exploded output omits raw semantic data by default"
-        (not ("\"raw_semantic\"" `BS.isInfixOf` LBS.toStrict (Data.Aeson.encode historicalWithoutRaw)))
-      historical <- p602fJsonOrThrow repo ["show", T.unpack status, "--at", T.unpack createdRevision, "--view", "exploded", "--raw", "--json"]
-      case _Object historical of
-        Just object -> do
-          (object .: "schema" :: Maybe Text) @?= Just "adrai/show-exploded/v1"
-          (object .: "as_of" :: Maybe Text) @?= Just createdRevision
-          operations <- case object .: "operations" of
-            Just value -> pure (value :: [Data.Aeson.Value])
-            Nothing -> assertFailure "historical exploded show omitted operations" >> fail "unreachable"
-          let historicalTitles =
-                [ title
-                | operation <- operations
-                , Just operationObject <- [_Object operation]
-                , Just items <- [operationObject .: "items" :: Maybe [Data.Aeson.Value]]
-                , item <- items
-                , Just itemObject <- [_Object item]
-                , Just title <- [itemObject .: "title" :: Maybe Text]
-                ]
-          assertBool "historical show retains the pre-amendment semantic title"
-            ("Unicode snowman ☃ decision" `elem` historicalTitles)
-          assertBool "historical show excludes the later amended title"
-            ("Unicode snowman ☃ decision v2" `notElem` historicalTitles)
-        Nothing -> assertFailure "exploded historical show JSON is not an object"
-      assertBool "--raw adds raw semantic item data"
-        ("\"raw_semantic\"" `BS.isInfixOf` LBS.toStrict (Data.Aeson.encode historical))
-
-      (rawExit, rawOut, rawErr) <- p602fRaw repo ["show", T.unpack adr, "--raw"]
-      rawExit @?= ExitFailure 2
-      rawOut @?= ""
-      rawErr @?= "adrai: --raw requires --view exploded\n"
-      (missingExit, missingOut, missingErr) <- p602fRaw repo ["show", "A00000000000000000000000000", "--json"]
-      missingExit @?= ExitFailure 2
-      missingOut @?= ""
-      missingErr @?= "adrai: ADRAI reference not found in this revision: A00000000000000000000000000\n"
-
-      (ambiguousExit, ambiguousOut, ambiguousErr) <- p602fRaw repo ["show", T.unpack (T.take 8 adr), "--json"]
-      ambiguousExit @?= ExitFailure 2
-      ambiguousOut @?= ""
-      let ambiguousIds = sortOn id [adr, secondAdr]
-          expectedAmbiguous =
-            "adrai: ambiguous ADRAI reference " <> T.take 8 adr <> ": "
-              <> T.intercalate ", " [identifier <> "->" <> identifier | identifier <- ambiguousIds]
-              <> "\n"
-      ambiguousErr @?= LBS.fromStrict (encodeUtf8 expectedAmbiguous)
-      (wrongKindExit, wrongKindOut, wrongKindErr) <- p602fRaw repo ["show", "O0000000", "--json"]
-      wrongKindExit @?= ExitFailure 2
-      wrongKindOut @?= ""
-      wrongKindErr @?= "adrai: unsupported ADRAI reference kind: O\n"
-      (shortExit, shortOut, shortErr) <- p602fRaw repo ["show", "A123456", "--json"]
-      shortExit @?= ExitFailure 2
-      shortOut @?= ""
-      shortErr @?= "adrai: malformed ADRAI reference A123456: IdPrefixWrongLength 7\n"
-      (revisionExit, revisionOut, revisionErr) <- p602fRaw repo ["show", T.unpack adr, "--at", "refs/heads/does-not-exist", "--json"]
-      revisionExit @?= ExitFailure 2
-      revisionOut @?= ""
-      assertBool "invalid revision is a user error" ("adrai: " `LBS.isPrefixOf` revisionErr)
-      (repositoryExit, repositoryOut, repositoryErr) <- p602fRaw (tmpDir </> "missing repository ü") ["show", T.unpack adr, "--json"]
-      repositoryExit @?= ExitFailure 2
-      repositoryOut @?= ""
-      assertBool "missing repository is a deterministic user error" ("adrai: " `LBS.isPrefixOf` repositoryErr)
-
-      afterHead <- headCommit repo
-      afterRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-      afterTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-      afterStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-      afterIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-      afterCached <- gitStdout repo ["diff", "--cached", "--binary"]
-      afterWorktree <- gitStdout repo ["diff", "--binary"]
-      afterManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
-      afterHead @?= beforeHead
-      afterRef @?= beforeRef
-      afterTree @?= beforeTree
-      afterStatus @?= beforeStatus
-      afterIndex @?= beforeIndex
-      afterCached @?= beforeCached
-      afterWorktree @?= beforeWorktree
-      afterManaged @?= beforeManaged
-
-testP602FRealExecutableConflict :: TestTree
-testP602FRealExecutableConflict =
-  testCase "P6-02F real executable show maps semantic conflicts to exit 3 without mutation" $
-    withSystemTempDirectory "adrai p6-02f show conflict" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-      _ <- p602fJsonOrThrow repo ["init", "--json"]
-      created <- p602fJsonOrThrow repo
-        [ "create"
-        , "--title", "Conflict base"
-        , "--summary", "Divergent records"
-        , "--body", "## Decision\nCreate two real decision heads.\n"
-        , "--domain", "platform"
-        , "--applies-to", "src/**"
-        , "--actor", "llm:planner"
-        , "--model", "demo-model"
-        , "--json"
-        ]
-      adr <-
-        case extractAdrId created of
-          Just value -> pure value
-          Nothing -> assertFailure "conflict create omitted ADR" >> fail "unreachable"
-      base <- headCommit repo
-      _ <- gitStdout repo ["switch", "-c", "show-left", T.unpack base]
-      _ <- p602fJsonOrThrow repo
-        [ "amend", T.unpack adr
-        , "--title", "Left decision"
-        , "--change-summary", "Left branch"
-        , "--body", "## Decision\nChoose the left alternative.\n"
-        , "--actor", "llm:planner"
-        , "--model", "demo-model"
-        , "--json"
-        ]
-      _ <- gitStdout repo ["switch", "-c", "show-right", T.unpack base]
-      _ <- p602fJsonOrThrow repo
-        [ "amend", T.unpack adr
-        , "--title", "Right decision"
-        , "--change-summary", "Right branch"
-        , "--body", "## Decision\nChoose the right alternative.\n"
-        , "--actor", "llm:planner"
-        , "--model", "demo-model"
-        , "--json"
-        ]
-      _ <- gitStdout repo ["switch", "main"]
-      _ <- gitStdout repo ["merge", "--no-ff", "-m", "merge divergent show fixture", "show-left", "show-right"]
-
-      beforeHead <- headCommit repo
-      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-      beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-      beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
-      beforeWorktree <- gitStdout repo ["diff", "--binary"]
-
-      (conflictExit, conflictOut, conflictErr) <- p602fRaw repo ["show", T.unpack adr, "--json"]
-      conflictExit @?= ExitFailure 3
-      conflictOut @?= ""
-      conflictErr @?= "adrai: conflict: ADR requires resolution: 2 decision heads\n"
-
-      headCommit repo >>= (@?= beforeHead)
-      gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
-      gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
-      gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
-      gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
-      gitStdout repo ["diff", "--cached", "--binary"] >>= (@?= beforeCached)
-      gitStdout repo ["diff", "--binary"] >>= (@?= beforeWorktree)
-
-testP602FRealExecutableIntegrityFailure :: TestTree
-testP602FRealExecutableIntegrityFailure =
-  testCase "P6-02F real executable show fails closed on repository integrity without mutation" $
-    withSystemTempDirectory "adrai p6-02f show integrity" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-      _ <- p602fJsonOrThrow repo ["init", "--json"]
-      created <- p602fJsonOrThrow repo
-        [ "create"
-        , "--title", "Integrity base"
-        , "--summary", "Malformed managed source"
-        , "--body", "## Decision\nFail closed on invalid source.\n"
-        , "--domain", "platform"
-        , "--applies-to", "src/**"
-        , "--actor", "llm:planner"
-        , "--model", "demo-model"
-        , "--json"
-        ]
-      (adr, decisionPath) <-
-        case _Object created of
-          Just object ->
-            case (object .: "adr", object .: "created") of
-              (Just adrId, Just paths) ->
-                case find (T.isSuffixOf ".decision.md") (paths :: [Text]) of
-                  Just path -> pure (adrId, path)
-                  Nothing -> assertFailure "create result omitted decision path" >> fail "unreachable"
-              _ -> assertFailure "create result omitted ADR or paths" >> fail "unreachable"
-          Nothing -> assertFailure "integrity create result is not an object" >> fail "unreachable"
-      BS.writeFile (repo </> T.unpack decisionPath) "schema: deliberately-invalid\n"
-      _ <- gitStdout repo ["add", "--", T.unpack decisionPath]
-      _ <- gitStdout repo ["commit", "-m", "commit malformed managed source"]
-
-      beforeHead <- headCommit repo
-      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-      (failureExit, failureOut, failureErr) <- p602fRaw repo ["show", T.unpack adr, "--json"]
-      failureExit @?= ExitFailure 2
-      failureOut @?= ""
-      assertBool "integrity failure is explicit" ("adrai: repository integrity failure: " `LBS.isPrefixOf` failureErr)
-      headCommit repo >>= (@?= beforeHead)
-      gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
-      gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
-      gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
-
-testP602GRealExecutableCompare :: TestTree
-testP602GRealExecutableCompare =
-  testCase "P6-02G real executable compare is directional, revision-local, canonical, and read-only" $
-    withSystemTempDirectory "adrai p6-02g compare ü" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-      _ <- p602fJsonOrThrow repo ["init", "--json"]
-      initialRevision <- headCommit repo
-      created <- p602fJsonOrThrow repo
-        [ "create"
-        , "--title", "Compare Unicode ü decision"
-        , "--summary", "Initial compare state"
-        , "--body", "## Decision\nCompare immutable snapshots.\n"
-        , "--domain", "platform"
-        , "--applies-to", "src/**"
-        , "--actor", "llm:planner"
-        , "--model", "compare-model"
-        , "--json"
-        ]
-      adr <- case extractAdrId created of
+testExactCacheQueryHooks :: IO (RepositorySeed ExactQuerySeed) -> TestTree
+testExactCacheQueryHooks getSeed =
+  testCase "P6-08Q exact-v3 archive hooks and tamper fallback" $ do
+    seed <- getSeed
+    withPrivateRepositorySeed seed $ \payload repoPath -> do
+      let decisionPath = exactQuerySeedDecisionPath payload
+          scopeOperation = exactQuerySeedScopeOperation payload
+          sourceRelativePath = exactQuerySeedSourceRelativePath payload
+          mainCommit = exactQuerySeedMainCommit payload
+      discovered <- discoverRepository systemGit repoPath
+      repository <- case discovered of
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right value -> pure value
+      resolved <- resolveRepositoryRevision repository (RevisionSpec "HEAD")
+      revision <- case resolved of
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right value -> pure value
+      let resolvedOid = gitOidText (resolvedCommitOid revision)
+      resolvedOid @?= mainCommit
+      archive <- case exactCacheArchivePath repository (resolvedCommitOid revision) of
+        Nothing -> assertFailure "compiled revision has no exact archive path" >> fail "unreachable"
         Just value -> pure value
-        Nothing -> assertFailure "compare create omitted ADR" >> fail "unreachable"
-      createdRevision <- headCommit repo
-      _ <- p602fJsonOrThrow repo
-        [ "amend", T.unpack adr
-        , "--title", "Compare Unicode ü decision v2"
-        , "--summary", "Changed compare state"
-        , "--change-summary", "Prove directional compare"
-        , "--body", "## Decision\nCompare immutable snapshots exactly.\n"
-        , "--actor", "llm:planner"
-        , "--model", "compare-model"
-        , "--json"
-        ]
-      amendedRevision <- headCommit repo
+      coldSnapshotResult <- readSnapshotAt repository "HEAD"
+      exactContext <- loadExactQueryContextForTest repository "HEAD"
+      case (coldSnapshotResult, exactContext) of
+        (Right coldSnapshot, Just context) -> do
+          coldMaterialization <- case materializeCurrentSearch coldSnapshot of
+            Left problem -> assertFailure ("cold identifier materialization failed: " <> show problem) >> fail "unreachable"
+            Right value -> pure value
+          let exactMaterialization = exactQueryMaterialization context
+              documents = searchMaterializationDocuments exactMaterialization
+              identifierSources = map searchDocumentIdentifierSource documents
+              identifiers = map searchDocumentIdentifiers documents
+          exactQuerySnapshot context @?= coldSnapshot
+          exactMaterialization @?= coldMaterialization
+          case (buildSearchVectorCorpus exactMaterialization, buildSearchVectorCorpus coldMaterialization) of
+            (Right exactCorpus, Right coldCorpus) -> exactCorpus @?= coldCorpus
+            (Left problem, _) -> assertFailure ("exact identifier corpus failed: " <> show problem)
+            (_, Left problem) -> assertFailure ("cold identifier corpus failed: " <> show problem)
+          assertBool "raw identifier source retains Unicode" (any (T.isInfixOf "København") identifierSources)
+          assertBool "raw identifier source retains Japanese text" (any (T.isInfixOf "日本語") identifierSources)
+          assertBool "raw identifier source retains emoji" (any (T.isInfixOf "🧭") identifierSources)
+          assertBool "raw identifier source retains punctuation" (any (T.isInfixOf "RFC-HTTP/2") identifierSources)
+          assertBool "raw identifier source is newline-delimited" (any (T.isInfixOf "\n") identifierSources)
+          assertBool "raw identifier source differs from normalized lexical identifiers" (identifierSources /= identifiers)
+          assertExactBranchPlacementParity payload repoPath repository context
+        (Left problem, _) -> assertFailure ("cold identifier snapshot failed: " <> show problem)
+        (_, Nothing) -> assertFailure "valid identifier archive was not accepted"
+      overlayConnection <- open (provenanceDatabasePath (repoPath </> ".adrai" </> "index.sqlite"))
+      registeredAdrRows <- query overlayConnection
+        "SELECT adr_id FROM registered_operation WHERE op_id=?"
+        (Only scopeOperation) :: IO [Only (Maybe Text)]
+      close overlayConnection
+      registeredAdrRows @?= [Only Nothing]
+      archiveConnection <- open archive
+      scopeMemberKinds <- query archiveConnection
+        "SELECT object_type FROM operation_member WHERE operation_id=? ORDER BY object_id"
+        (Only scopeOperation) :: IO [Only Text]
+      close archiveConnection
+      assertBool "scope operation must persist a connection member" (Only "connection" `elem` scopeMemberKinds)
+      assertBool "scope operation must not persist a decision member" (Only "decision" `notElem` scopeMemberKinds)
+      beforeBytes <- BS.readFile archive
+      beforeMtime <- getModificationTime archive
+      beforeSidecars <- cacheSidecarMetadata archive
+      let missingArchive = archive <> ".missing"
+      missingOpen <- try (openReadWriteExisting missingArchive) :: IO (Either SomeException Connection)
+      case missingOpen of
+        Left _ -> pure ()
+        Right connection -> close connection >> assertFailure "mode=rw opener unexpectedly created a missing archive"
+      assertBool "mode=rw opener must not create a missing archive" . not =<< doesFileExist missingArchive
+      counters <- newIORef ([] :: [Text])
+      let count label = modifyIORef' counters (label :)
+          hooks = QueryExecutionHooks
+            { queryArchiveLoad = count "archive",
+              queryArchiveRejected = \problem -> count ("rejected:" <> problem),
+              queryColdFallback = count "fallback",
+              queryRawObservation = count "raw",
+              querySnapshotAnalysis = count "analyze",
+              queryProvenanceHydration = count "hydrate",
+              queryColdCompile = count "cold"
+            }
+          request = SearchServiceRequest "HEAD" (defaultSearchRequest "RFC-HTTP/2")
+      hit <- runSearchWithHooks hooks repository request
+      case hit of
+        Left problem -> assertFailure (show problem)
+        Right projection -> assertBool "exact identifier search returns a result" (not (null (searchProjectionResults projection)))
+      readIORef counters >>= (@?= ["archive"])
+      BS.readFile archive >>= (@?= beforeBytes)
+      getModificationTime archive >>= (@?= beforeMtime)
+      cacheSidecarMetadata archive >>= (@?= beforeSidecars)
 
-      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-      beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-      let managedPaths =
-            filter ("architecture/adrai/" `isPrefixOf`)
-              (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
-      beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
-      BS.writeFile (repo </> "compare staged.bin") "\NUL\SOHcompare staged bytes\255"
-      _ <- gitStdout repo ["add", "--", "compare staged.bin"]
-      BS.writeFile (repo </> "README.md") "# Test\ncompare caller dirty bytes\n"
-      BS.writeFile (repo </> "compare untracked ü.txt") "keep this untracked file"
-      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-      beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
-      beforeWorktree <- gitStdout repo ["diff", "--binary"]
+      oidCounters <- newIORef ([] :: [Text])
+      let oidHooks = QueryExecutionHooks
+            { queryArchiveLoad = modifyIORef' oidCounters ("archive" :),
+              queryArchiveRejected = \problem -> modifyIORef' oidCounters (("rejected:" <> problem) :),
+              queryColdFallback = modifyIORef' oidCounters ("fallback" :),
+              queryRawObservation = modifyIORef' oidCounters ("raw" :),
+              querySnapshotAnalysis = modifyIORef' oidCounters ("analyze" :),
+              queryProvenanceHydration = modifyIORef' oidCounters ("hydrate" :),
+              queryColdCompile = modifyIORef' oidCounters ("cold" :)
+            }
+      oidHit <- runSearchWithHooks oidHooks repository (SearchServiceRequest resolvedOid (defaultSearchRequest "RFC-HTTP/2"))
+      case (hit, oidHit) of
+        (Right headProjection, Right oidProjection) -> do
+          searchProjectionResults oidProjection @?= searchProjectionResults headProjection
+          searchProjectionRevision headProjection @?= RevisionIdentity "HEAD" resolvedOid
+          searchProjectionRevision oidProjection @?= RevisionIdentity resolvedOid resolvedOid
+        _ -> assertFailure "HEAD or explicit-OID exact search did not produce a projection"
+      readIORef oidCounters >>= (@?= ["archive"])
 
-      added <- p602fJsonOrThrow repo ["compare", T.unpack initialRevision, T.unpack createdRevision, "--json"]
-      assertCompareEnvelope added adr initialRevision createdRevision initialRevision createdRevision (1, 0, 0, 0) ["added"]
+      relevantPath <- case mkRepoPath (T.pack sourceRelativePath) of
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right value -> pure value
+      relevantCounters <- newIORef ([] :: [Text])
+      let relevantHooks = QueryExecutionHooks
+            { queryArchiveLoad = modifyIORef' relevantCounters ("archive" :),
+              queryArchiveRejected = \problem -> modifyIORef' relevantCounters (("rejected:" <> problem) :),
+              queryColdFallback = modifyIORef' relevantCounters ("fallback" :),
+              queryRawObservation = modifyIORef' relevantCounters ("raw" :),
+              querySnapshotAnalysis = modifyIORef' relevantCounters ("analyze" :),
+              queryProvenanceHydration = modifyIORef' relevantCounters ("hydrate" :),
+              queryColdCompile = modifyIORef' relevantCounters ("cold" :)
+            }
+      relevantHit <- runRelevantQueryWithHooks relevantHooks repository (defaultRelevantRequest relevantPath)
+      case relevantHit of
+        Left problem -> assertFailure (show problem)
+        Right projection -> assertBool "exact identifier relevant returns a result" (not (null (relevantProjectionResults projection)))
+      readIORef relevantCounters >>= (@?= ["archive"])
+      BS.readFile archive >>= (@?= beforeBytes)
+      getModificationTime archive >>= (@?= beforeMtime)
+      cacheSidecarMetadata archive >>= (@?= beforeSidecars)
 
-      changed <- p602fJsonOrThrow repo ["compare", T.unpack createdRevision, "--json"]
-      assertCompareEnvelope changed adr createdRevision amendedRevision createdRevision "HEAD" (0, 0, 1, 0) ["changed"]
+      relevantOidCounters <- newIORef ([] :: [Text])
+      let relevantOidHooks = QueryExecutionHooks
+            { queryArchiveLoad = modifyIORef' relevantOidCounters ("archive" :),
+              queryArchiveRejected = \problem -> modifyIORef' relevantOidCounters (("rejected:" <> problem) :),
+              queryColdFallback = modifyIORef' relevantOidCounters ("fallback" :),
+              queryRawObservation = modifyIORef' relevantOidCounters ("raw" :),
+              querySnapshotAnalysis = modifyIORef' relevantOidCounters ("analyze" :),
+              queryProvenanceHydration = modifyIORef' relevantOidCounters ("hydrate" :),
+              queryColdCompile = modifyIORef' relevantOidCounters ("cold" :)
+            }
+          relevantOidRequest = (defaultRelevantRequest relevantPath) {relevantRequestRevision = AtRevision resolvedOid}
+      relevantOidHit <- runRelevantQueryWithHooks relevantOidHooks repository relevantOidRequest
+      case (relevantHit, relevantOidHit) of
+        (Right headProjection, Right oidProjection) -> do
+          relevantProjectionResults oidProjection @?= relevantProjectionResults headProjection
+          relevantProjectionRevision headProjection @?= RevisionIdentity "HEAD" resolvedOid
+          relevantProjectionRevision oidProjection @?= RevisionIdentity resolvedOid resolvedOid
+        _ -> assertFailure "HEAD or explicit-OID exact relevant query did not produce a projection"
+      readIORef relevantOidCounters >>= (@?= ["archive"])
 
-      unchangedHidden <- p602fJsonOrThrow repo ["compare", T.unpack amendedRevision, T.unpack amendedRevision, "--json"]
-      assertCompareEnvelope unchangedHidden adr amendedRevision amendedRevision amendedRevision amendedRevision (0, 0, 0, 1) []
-      unchangedShown <- p602fJsonOrThrow repo ["compare", T.unpack amendedRevision, T.unpack amendedRevision, "--include-unchanged", "--json"]
-      assertCompareEnvelope unchangedShown adr amendedRevision amendedRevision amendedRevision amendedRevision (0, 0, 0, 1) ["unchanged"]
+      missingRelevantPath <- case mkRepoPath "src/cache/missing-query-context.txt" of
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right value -> pure value
+      missingSourceCounters <- newIORef ([] :: [Text])
+      let missingSourceHooks = QueryExecutionHooks
+            { queryArchiveLoad = modifyIORef' missingSourceCounters ("archive" :),
+              queryArchiveRejected = \problem -> modifyIORef' missingSourceCounters (("rejected:" <> problem) :),
+              queryColdFallback = modifyIORef' missingSourceCounters ("fallback" :),
+              queryRawObservation = modifyIORef' missingSourceCounters ("raw" :),
+              querySnapshotAnalysis = modifyIORef' missingSourceCounters ("analyze" :),
+              queryProvenanceHydration = modifyIORef' missingSourceCounters ("hydrate" :),
+              queryColdCompile = modifyIORef' missingSourceCounters ("cold" :)
+            }
+      missingSource <- runRelevantQueryWithHooks missingSourceHooks repository (defaultRelevantRequest missingRelevantPath)
+      case missingSource of
+        Left (RelevantSourceFailure _) -> pure ()
+        other -> assertFailure ("valid exact archive did not preserve requested-source failure: " <> show other)
+      readIORef missingSourceCounters >>= (@?= ["archive"])
 
-      removed <- p602fJsonOrThrow repo ["compare", T.unpack createdRevision, T.unpack initialRevision, "--json"]
-      assertCompareEnvelope removed adr createdRevision initialRevision createdRevision initialRevision (0, 1, 0, 0) ["removed"]
+      let throwingExactHooks exception = QueryExecutionHooks
+            { queryArchiveLoad = throwIO exception,
+              queryArchiveRejected = \_ -> pure (),
+              queryColdFallback = pure (),
+              queryRawObservation = pure (),
+              querySnapshotAnalysis = pure (),
+              queryProvenanceHydration = pure (),
+              queryColdCompile = pure ()
+            }
+      synchronousExact <- try (runSearchWithHooks (throwingExactHooks (userError "query archive hook")) repository request) :: IO (Either SomeException (Either SearchFailure SearchProjection))
+      case synchronousExact of
+        Left _ -> pure ()
+        Right _ -> assertFailure "synchronous archive hook exception was converted into a query result or fallback"
+      asynchronousExact <- try (runSearchWithHooks (throwingExactHooks ThreadKilled) repository request) :: IO (Either SomeAsyncException (Either SearchFailure SearchProjection))
+      case asynchronousExact of
+        Left _ -> pure ()
+        Right _ -> assertFailure "asynchronous archive hook exception was swallowed or converted into a fallback"
 
-      repository <- do
-        discovered <- discoverRepository systemGit repo
-        case discovered of
-          Left problem -> assertFailure ("discover compare fixture: " <> show problem) >> fail "unreachable"
-          Right value -> pure value
-      expectedText <- do
-        outcome <- runCompare repository (CompareRequest createdRevision "HEAD" False)
-        case outcome of
-          Right projection -> pure (LBS.fromStrict (renderCompareProjection projection))
-          Left problem -> assertFailure ("programmatic compare failed: " <> show problem) >> fail "unreachable"
-      (textExit, textOut, textErr) <- p602fRaw repo ["compare", T.unpack createdRevision]
-      textExit @?= ExitSuccess
-      textErr @?= ""
-      textOut @?= expectedText
+      let assertArchiveFallback label mutate = do
+            BS.writeFile archive beforeBytes
+            _ <- mutate archive
+            fallbackCounters <- newIORef ([] :: [Text])
+            let fallbackHooks = QueryExecutionHooks
+                  { queryArchiveLoad = modifyIORef' fallbackCounters ("archive" :),
+                    queryArchiveRejected = \problem -> modifyIORef' fallbackCounters (("rejected:" <> problem) :),
+                    queryColdFallback = modifyIORef' fallbackCounters ("fallback" :),
+                    queryRawObservation = modifyIORef' fallbackCounters ("raw" :),
+                    querySnapshotAnalysis = modifyIORef' fallbackCounters ("analyze" :),
+                    queryProvenanceHydration = modifyIORef' fallbackCounters ("hydrate" :),
+                    queryColdCompile = modifyIORef' fallbackCounters ("cold" :)
+                  }
+            fallback <- runSearchWithHooks fallbackHooks repository request
+            fallback @?= hit
+            events <- readIORef fallbackCounters
+            assertBool (T.unpack label <> " is rejected before the archive-load callback") ("archive" `notElem` events)
+            events @?=
+              [ "cold",
+                "hydrate",
+                "analyze",
+                "raw",
+                "fallback",
+                "rejected:exact archive publication contract or metadata rejected"
+              ]
+            BS.writeFile archive beforeBytes
+            pure fallbackHooks
+          assertRelevantArchiveFallback label mutate = do
+            BS.writeFile archive beforeBytes
+            _ <- mutate archive
+            relevantFallbackCounters <- newIORef ([] :: [Text])
+            let relevantFallbackHooks = QueryExecutionHooks
+                  { queryArchiveLoad = modifyIORef' relevantFallbackCounters ("archive" :),
+                    queryArchiveRejected = \problem -> modifyIORef' relevantFallbackCounters (("rejected:" <> problem) :),
+                    queryColdFallback = modifyIORef' relevantFallbackCounters ("fallback" :),
+                    queryRawObservation = modifyIORef' relevantFallbackCounters ("raw" :),
+                    querySnapshotAnalysis = modifyIORef' relevantFallbackCounters ("analyze" :),
+                    queryProvenanceHydration = modifyIORef' relevantFallbackCounters ("hydrate" :),
+                    queryColdCompile = modifyIORef' relevantFallbackCounters ("cold" :)
+                  }
+            relevantFallback <- runRelevantQueryWithHooks relevantFallbackHooks repository (defaultRelevantRequest relevantPath)
+            relevantFallback @?= relevantHit
+            events <- readIORef relevantFallbackCounters
+            case events of
+              ["cold", "hydrate", "analyze", "raw", "fallback"] -> pure ()
+              other -> assertFailure (T.unpack label <> " relevant fallback hook order/count mismatch: " <> show other)
+            BS.writeFile archive beforeBytes
+          assertArchiveRejected label mutate = do
+            BS.writeFile archive beforeBytes
+            _ <- mutate archive
+            rejected <- loadExactQueryContextForTest repository "HEAD"
+            case rejected of
+              Nothing -> pure ()
+              Just _ -> assertFailure (T.unpack label <> " archive was accepted")
+            BS.writeFile archive beforeBytes
+          mutateArchive action path = do
+            connection <- open path
+            _ <- action connection
+            close connection
+      _ <- assertRelevantArchiveFallback "missing exact archive" $ \path ->
+        renameFile path missingArchive
+      removeFile missingArchive
+      _ <- assertArchiveRejected "wrong revision metadata" $ mutateArchive $ \connection ->
+        execute_ connection "UPDATE meta SET value='0000000000000000000000000000000000000000' WHERE key='requested_revision'"
+      _ <- assertArchiveRejected "v1 archive label" $ mutateArchive $ \connection ->
+        execute_ connection "UPDATE meta SET value='adrai-cache/1' WHERE key='schema'"
+      _ <- assertArchiveRejected "v2 archive label" $ mutateArchive $ \connection ->
+        execute_ connection "UPDATE meta SET value='adrai-cache/2' WHERE key='schema'"
+      _ <- assertArchiveRejected "missing required metadata" $ mutateArchive $ \connection ->
+        execute_ connection "DELETE FROM meta WHERE key='requested_revision'"
+      _ <- assertArchiveRejected "missing required materialization row" $ mutateArchive $ \connection ->
+        execute_ connection "DELETE FROM search_document"
+      _ <- assertArchiveRejected "invalid materialization fingerprint" $ mutateArchive $ \connection ->
+        execute_ connection "UPDATE meta SET value='0000000000000000000000000000000000000000000000000000000000000000' WHERE key='materialization_fingerprint'"
+      _ <- assertArchiveRejected "forged v3 old DDL" $ mutateArchive $ \connection ->
+        execute_ connection "ALTER TABLE search_document RENAME COLUMN identifier_source TO identifier_source_v2"
+      _ <- assertArchiveRejected "missing provenance line configuration" $ mutateArchive $ \connection ->
+        execute_ connection "DELETE FROM line_config"
+      _ <- assertArchiveRejected "foreign-key-invalid operation member" $ mutateArchive $ \connection -> do
+        execute_ connection "PRAGMA foreign_keys=OFF"
+        execute_ connection "UPDATE operation_member SET operation_id='O00000000000000000000000000' WHERE rowid=(SELECT min(rowid) FROM operation_member)"
+        foreignKeyRows <- query_ connection "PRAGMA foreign_key_check" :: IO [(Text, Int, Text, Int)]
+        assertBool "operation_member orphan produces a SQLite foreign-key violation" (not (null foreignKeyRows))
+      _ <- assertArchiveRejected "unknown operation placement row" $ mutateArchive $ \connection -> do
+        placementRows <- query_ connection "SELECT count(*) FROM operation_commit" :: IO [Only Int]
+        assertBool "fixture has an operation placement to corrupt" (placementRows /= [Only 0])
+        execute_ connection "PRAGMA foreign_keys=OFF"
+        execute_ connection "UPDATE operation_commit SET op_id='O00000000000000000000000000' WHERE rowid=(SELECT min(rowid) FROM operation_commit)"
+      _ <- assertArchiveRejected "invalid state-token archive" $ mutateArchive $ \connection ->
+        execute_ connection "UPDATE reduced_adr SET state_token='not-a-valid-state-token'"
+      let corruptFtsShadow connection = do
+            readableFtsRows <- query_ connection "SELECT count(*) FROM fts_search_exact" :: IO [Only Int]
+            readableFtsRows @?= [Only 1]
+            postingSegments <- query_ connection "SELECT count(*) FROM fts_search_exact_data WHERE id > 10" :: IO [Only Int]
+            assertBool "FTS fixture has a non-reserved posting segment" (postingSegments /= [Only 0])
+            execute_ connection "DELETE FROM fts_search_exact_data WHERE id=(SELECT max(id) FROM fts_search_exact_data WHERE id > 10)"
+            stillReadableFtsRows <- query_ connection "SELECT count(*) FROM fts_search_exact" :: IO [Only Int]
+            stillReadableFtsRows @?= [Only 1]
+      fallbackHooks <- assertArchiveFallback "FTS shadow corruption" $ mutateArchive corruptFtsShadow
 
-      (invalidExit, invalidOut, invalidErr) <- p602fRaw repo ["compare", "refs/heads/does-not-exist", "--json"]
-      invalidExit @?= ExitFailure 2
-      invalidOut @?= ""
-      assertBool "invalid compare revision is a user error" ("adrai: " `LBS.isPrefixOf` invalidErr)
+      connection <- open archive
+      execute_ connection "DELETE FROM line_config"
+      close connection
+      let throwingHooks exception = fallbackHooks { queryColdCompile = throwIO exception }
+      synchronous <- try (runSearchWithHooks (throwingHooks (userError "query cold hook")) repository request) :: IO (Either SomeException (Either SearchFailure SearchProjection))
+      case synchronous of
+        Left _ -> pure ()
+        Right _ -> assertFailure "synchronous cold hook exception was converted into a query result"
+      asynchronous <- try (runSearchWithHooks (throwingHooks ThreadKilled) repository request) :: IO (Either SomeAsyncException (Either SearchFailure SearchProjection))
+      case asynchronous of
+        Left _ -> pure ()
+        Right _ -> assertFailure "asynchronous cold hook exception was swallowed or converted into a query result"
+      BS.writeFile archive beforeBytes
 
-      afterHead <- headCommit repo
-      afterRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-      afterTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-      afterStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-      afterIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-      afterCached <- gitStdout repo ["diff", "--cached", "--binary"]
-      afterWorktree <- gitStdout repo ["diff", "--binary"]
-      afterManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
-      afterHead @?= amendedRevision
-      afterRef @?= beforeRef
-      afterTree @?= beforeTree
-      afterStatus @?= beforeStatus
-      afterIndex @?= beforeIndex
-      afterCached @?= beforeCached
-      afterWorktree @?= beforeWorktree
-      afterManaged @?= beforeManaged
-  where
-    assertCompareEnvelope value expectedAdr expectedFrom expectedTo requestedFrom requestedTo expectedCounts expectedKinds =
-      case _Object value of
-        Nothing -> assertFailure "compare output is not an object"
-        Just object -> do
-          sortOn id (map AesonKey.toText (KM.keys object))
-            @?= sortOn id ["cache", "counts", "entries", "from", "from_requested", "to", "to_requested", "view"]
-          (object .: "view" :: Maybe Text) @?= Just "compare"
-          (object .: "from" :: Maybe Text) @?= Just expectedFrom
-          (object .: "to" :: Maybe Text) @?= Just expectedTo
-          (object .: "from_requested" :: Maybe Text) @?= Just requestedFrom
-          (object .: "to_requested" :: Maybe Text) @?= Just requestedTo
-          counts <- case KM.lookup "counts" object >>= _Object of
-            Just result -> pure result
-            Nothing -> assertFailure "compare output omitted counts" >> fail "unreachable"
-          let (added, removed, changed, unchanged) = expectedCounts
-          (counts .: "added" :: Maybe Int) @?= Just added
-          (counts .: "removed" :: Maybe Int) @?= Just removed
-          (counts .: "changed" :: Maybe Int) @?= Just changed
-          (counts .: "unchanged" :: Maybe Int) @?= Just unchanged
-          entries <- case object .: "entries" of
-            Just result -> pure (result :: [Data.Aeson.Value])
-            Nothing -> assertFailure "compare output omitted entries" >> fail "unreachable"
-          mapMaybe compareEntryKind entries @?= expectedKinds
-          case entries of
-            [] -> pure ()
-            [entry] -> case _Object entry of
-              Nothing -> assertFailure "compare entry is not an object"
-              Just entryObject -> do
-                sortOn id (map AesonKey.toText (KM.keys entryObject))
-                  @?= sortOn id ["adr", "after", "before", "changes", "kind", "title"]
-                (entryObject .: "adr" :: Maybe Text) @?= Just expectedAdr
-                changes <- case entryObject .: "changes" of
-                  Just result -> pure (result :: [Data.Aeson.Value])
-                  Nothing -> assertFailure "compare entry omitted changes" >> fail "unreachable"
-                case expectedKinds of
-                  ["added"] -> do
-                    KM.lookup "before" entryObject @?= Just Data.Aeson.Null
-                    assertBool "added entry includes its after snapshot" (maybe False (/= Data.Aeson.Null) (KM.lookup "after" entryObject))
-                    changes @?= []
-                  ["removed"] -> do
-                    assertBool "removed entry includes its before snapshot" (maybe False (/= Data.Aeson.Null) (KM.lookup "before" entryObject))
-                    KM.lookup "after" entryObject @?= Just Data.Aeson.Null
-                    changes @?= []
-                  ["unchanged"] -> do
-                    assertBool "unchanged entry includes its before snapshot" (maybe False (/= Data.Aeson.Null) (KM.lookup "before" entryObject))
-                    assertBool "unchanged entry includes its after snapshot" (maybe False (/= Data.Aeson.Null) (KM.lookup "after" entryObject))
-                    changes @?= []
-                  ["changed"] -> do
-                    let fields =
-                          [ field
-                          | change <- changes
-                          , Just changeObject <- [_Object change]
-                          , Just field <- [changeObject .: "field" :: Maybe Text]
-                          ]
-                    fields @?= ["record", "title", "summary", "body", "record_heads"]
-                  _ -> assertFailure "unexpected compare entry expectation"
-            _ -> assertFailure "compare fixture expected at most one entry"
+      -- On a cache miss, snapshot integrity remains the first relevant-query
+      -- failure even when the requested source is also absent.
+      BS.writeFile (repoPath </> T.unpack decisionPath) "schema: deliberately-invalid\n"
+      _ <- gitStdout repoPath ["add", "--", T.unpack decisionPath]
+      _ <- gitStdout repoPath ["commit", "-m", "add invalid query context"]
+      precedenceCounters <- newIORef ([] :: [Text])
+      let precedenceHooks = QueryExecutionHooks
+            { queryArchiveLoad = modifyIORef' precedenceCounters ("archive" :),
+              queryArchiveRejected = \problem -> modifyIORef' precedenceCounters (("rejected:" <> problem) :),
+              queryColdFallback = modifyIORef' precedenceCounters ("fallback" :),
+              queryRawObservation = modifyIORef' precedenceCounters ("raw" :),
+              querySnapshotAnalysis = modifyIORef' precedenceCounters ("analyze" :),
+              queryProvenanceHydration = modifyIORef' precedenceCounters ("hydrate" :),
+              queryColdCompile = modifyIORef' precedenceCounters ("cold" :)
+            }
+      precedence <- runRelevantQueryWithHooks precedenceHooks repository (defaultRelevantRequest missingRelevantPath)
+      case precedence of
+        Left (RelevantIntegrityFailure _) -> pure ()
+        other -> assertFailure ("cache-miss relevant error precedence did not select snapshot failure: " <> show other)
+      precedenceEvents <- readIORef precedenceCounters
+      mapM_ (\event -> assertBool ("snapshot precedence runs " <> T.unpack event <> " once") (length (filter (== event) precedenceEvents) == 1)) ["fallback", "raw", "analyze"]
+      assertBool "snapshot integrity gating prevents provenance hydration" (not ("hydrate" `elem` precedenceEvents))
+      assertBool "snapshot failure prevents cold compilation" (not ("cold" `elem` precedenceEvents))
 
-testP602HRealExecutableHistory :: TestTree
-testP602HRealExecutableHistory =
-  testCase "P6-02H real executable history is filtered, revision-local, canonical, and read-only" $
-    withSystemTempDirectory "adrai p6-02h history ü" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-      _ <- p602fJsonOrThrow repo ["init", "--json"]
-      created <- p602fJsonOrThrow repo
-        [ "create"
-        , "--title", "History Unicode ü decision"
-        , "--summary", "Initial history state"
-        , "--body", "## Decision\nProject immutable history.\n"
-        , "--domain", "platform"
-        , "--applies-to", "src/**"
-        , "--actor", "llm:planner"
-        , "--model", "history-model"
-        , "--json"
-        ]
-      (adr, record) <- case _Object created of
-        Just object -> case (object .: "adr", object .: "record") of
-          (Just adrId, Just recordId) -> pure (adrId, recordId)
-          _ -> assertFailure "history create omitted ADR or record" >> fail "unreachable"
-        Nothing -> assertFailure "history create result is not an object" >> fail "unreachable"
-      createdRevision <- headCommit repo
-      amended <- p602fJsonOrThrow repo
-        [ "amend", T.unpack adr
-        , "--title", "History Unicode ü decision v2"
-        , "--summary", "Amended history state"
-        , "--change-summary", "Prove immutable history"
-        , "--body", "## Decision\nProject immutable history exactly.\n"
-        , "--actor", "human:architect"
-        , "--json"
-        ]
-      amendConnection <- case _Object amended >>= (.: "connection") of
+testExactCacheAcquisitionCancellation :: IO (RepositorySeed ExactQuerySeed) -> TestTree
+testExactCacheAcquisitionCancellation getSeed =
+  testCase "P6-08Q exact archive acquisition owns cancellation cleanup" $ do
+    seed <- getSeed
+    withPrivateRepositorySeed seed $ \_ repoPath -> do
+      discovered <- discoverRepository systemGit repoPath
+      repository <- case discovered of
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right value -> pure value
+      resolved <- resolveRepositoryRevision repository (RevisionSpec "HEAD")
+      revision <- case resolved of
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+        Right value -> pure value
+      archive <- case exactCacheArchivePath repository (resolvedCommitOid revision) of
+        Nothing -> assertFailure "compiled revision has no exact archive path" >> fail "unreachable"
         Just value -> pure value
-        Nothing -> assertFailure "history amend omitted connection" >> fail "unreachable"
-      amendedRevision <- headCommit repo
 
-      beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-      beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-      let managedPaths =
-            filter ("architecture/adrai/" `isPrefixOf`)
-              (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
-      beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
-      BS.writeFile (repo </> "history staged.bin") "\NUL\SOHhistory staged bytes\255"
-      _ <- gitStdout repo ["add", "--", "history staged.bin"]
-      BS.writeFile (repo </> "README.md") "# Test\nhistory caller dirty bytes\n"
-      BS.writeFile (repo </> "history untracked ü.txt") "keep this untracked file"
-      beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-      beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-      beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
-      beforeWorktree <- gitStdout repo ["diff", "--binary"]
-
-      full <- p602fJsonOrThrow repo ["history", "--json"]
-      assertHistoryEnvelope full Nothing amendedRevision "newest-first" 20 False ["amended", "created"]
-
-      forM_ [adr, T.toLower (T.take 10 record), T.toLower (T.take 10 amendConnection)] $ \reference -> do
-        filtered <- p602fJsonOrThrow repo ["history", T.unpack reference, "--json"]
-        assertHistoryEnvelope filtered (Just adr) amendedRevision "newest-first" 20 False ["amended", "created"]
-
-      reversed <- p602fJsonOrThrow repo ["history", T.unpack adr, "--reverse", "--json"]
-      assertHistoryEnvelope reversed (Just adr) amendedRevision "oldest-first" 20 False ["created", "amended"]
-      limited <- p602fJsonOrThrow repo ["history", T.unpack adr, "--limit", "1", "--json"]
-      assertHistoryEnvelope limited (Just adr) amendedRevision "newest-first" 1 True ["amended"]
-      actorFiltered <- p602fJsonOrThrow repo ["history", T.unpack adr, "--actor", "human:architect", "--json"]
-      assertHistoryEnvelope actorFiltered (Just adr) amendedRevision "newest-first" 20 False ["amended"]
-      sinceFiltered <- p602fJsonOrThrow repo ["history", T.unpack adr, "--since", "0", "--json"]
-      assertHistoryEnvelope sinceFiltered (Just adr) amendedRevision "newest-first" 20 False ["amended", "created"]
-      untilFiltered <- p602fJsonOrThrow repo ["history", T.unpack adr, "--until", "0", "--json"]
-      assertHistoryEnvelope untilFiltered (Just adr) amendedRevision "newest-first" 20 False []
-
-      historical <- p602fJsonOrThrow repo ["history", T.unpack adr, "--at", T.unpack createdRevision, "--json"]
-      assertHistoryEnvelope historical (Just adr) createdRevision "newest-first" 20 False ["created"]
-
-      repository <- do
-        discovered <- discoverRepository systemGit repo
-        case discovered of
-          Left problem -> assertFailure ("discover history fixture: " <> show problem) >> fail "unreachable"
-          Right value -> pure value
-      expectedText <- do
-        outcome <- runHistory repository (HistoryRequest (Just adr) "HEAD" (HistoryOptions NewestFirst 20 Nothing Nothing Nothing))
-        case outcome of
-          Right projection -> pure (LBS.fromStrict (renderHistoryProjection projection))
-          Left problem -> assertFailure ("programmatic history failed: " <> show problem) >> fail "unreachable"
-      (textExit, textOut, textErr) <- p602fRaw repo ["history", T.unpack adr]
-      textExit @?= ExitSuccess
-      textErr @?= ""
-      textOut @?= expectedText
-
-      (limitExit, limitOut, limitErr) <- p602fRaw repo ["history", "--limit", "0", "--json"]
-      limitExit @?= ExitFailure 2
-      limitOut @?= ""
-      limitErr @?= "adrai: history limit must be between 1 and 1000: 0\n"
-      (actorExit, actorOut, actorErr) <- p602fRaw repo ["history", "--actor", "planner", "--json"]
-      actorExit @?= ExitFailure 2
-      actorOut @?= ""
-      actorErr @?= "adrai: actor must have the form kind:identifier\n"
-      (selectorExit, selectorOut, selectorErr) <- p602fRaw repo ["history", "A00000000000000000000000000", "--json"]
-      selectorExit @?= ExitFailure 2
-      selectorOut @?= ""
-      selectorErr @?= "adrai: ADRAI reference not found in this revision: A00000000000000000000000000\n"
-      (revisionExit, revisionOut, revisionErr) <- p602fRaw repo ["history", "--at", "refs/heads/does-not-exist", "--json"]
-      revisionExit @?= ExitFailure 2
-      revisionOut @?= ""
-      assertBool "invalid history revision is a user error" ("adrai: " `LBS.isPrefixOf` revisionErr)
-
-      afterHead <- headCommit repo
-      afterRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-      afterTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-      afterStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-      afterIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-      afterCached <- gitStdout repo ["diff", "--cached", "--binary"]
-      afterWorktree <- gitStdout repo ["diff", "--binary"]
-      afterManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
-      afterHead @?= amendedRevision
-      afterRef @?= beforeRef
-      afterTree @?= beforeTree
-      afterStatus @?= beforeStatus
-      afterIndex @?= beforeIndex
-      afterCached @?= beforeCached
-      afterWorktree @?= beforeWorktree
-      afterManaged @?= beforeManaged
-  where
-    assertHistoryEnvelope value expectedAdr expectedRevision expectedOrder expectedLimit expectedTruncated expectedLabels =
-      case _Object value of
-        Nothing -> assertFailure "history output is not an object"
-        Just object -> do
-          sortOn id (map AesonKey.toText (KM.keys object))
-            @?= sortOn id ["adr", "as_of", "filters", "limit", "operations", "order", "schema", "truncated", "view"]
-          (object .: "schema" :: Maybe Text) @?= Just "adrai/history/v1"
-          (object .: "view" :: Maybe Text) @?= Just "history"
-          (object .: "adr" :: Maybe (Maybe Text)) @?= Just expectedAdr
-          (object .: "as_of" :: Maybe Text) @?= Just expectedRevision
-          (object .: "order" :: Maybe Text) @?= Just expectedOrder
-          (object .: "limit" :: Maybe Int) @?= Just expectedLimit
-          (object .: "truncated" :: Maybe Bool) @?= Just expectedTruncated
-          operations <- case object .: "operations" of
-            Just result -> pure (result :: [Data.Aeson.Value])
-            Nothing -> assertFailure "history output omitted operations" >> fail "unreachable"
-          mapMaybe historyLabel operations @?= expectedLabels
-          forM_ operations $ \operation -> case _Object operation of
-            Nothing -> assertFailure "history operation is not an object"
-            Just operationObject -> do
-              assertBool "history operation exposes actor" (KM.member "actor" operationObject)
-              assertBool "history operation exposes operation ID" (KM.member "operation" operationObject)
-              assertBool "history operation exposes canonical timestamp" (KM.member "claimed_at" operationObject)
-
-testP602JRealExecutableSearch :: TestTree
-testP602JRealExecutableSearch =
-  testGroup "P6-02J real executable search"
-    [ testCase "canonical search is revision-local, filtered, exact, and preserves caller state" $
-        withSystemTempDirectory "adrai p6-02j search ü" $ \tmpDir -> do
-          repo <- createTestRepo tmpDir
-          _ <- p602fJsonOrThrow repo ["init", "--json"]
-          first <- p602fJsonOrThrow repo
-            [ "create"
-            , "--title", "Quasar cache Unicode ü decision"
-            , "--summary", "Search the quasar cache exactly"
-            , "--body", "## Decision\nUse the searchable quasar cache.\n"
-            , "--domain", "platform"
-            , "--applies-to", "src/cache/**"
-            , "--actor", "llm:planner"
-            , "--model", "search-model"
-            , "--json"
-            ]
-          firstAdr <- case extractAdrId first of
-            Just value -> pure value
-            Nothing -> assertFailure "first search create omitted ADR" >> fail "unreachable"
-          firstRevision <- headCommit repo
-          second <- p602fJsonOrThrow repo
-            [ "create"
-            , "--title", "Legacy quasar cache decision"
-            , "--summary", "An obsolete searchable quasar cache"
-            , "--body", "## Decision\nRetire the legacy quasar cache.\n"
-            , "--domain", "legacy"
-            , "--applies-to", "legacy/cache/**"
-            , "--actor", "human:architect"
-            , "--json"
-            ]
-          secondAdr <- case extractAdrId second of
-            Just value -> pure value
-            Nothing -> assertFailure "second search create omitted ADR" >> fail "unreachable"
-          _ <- p602fJsonOrThrow repo
-            [ "obsolete", T.unpack secondAdr
-            , "--reason", "Retire the legacy search fixture"
-            , "--actor", "human:architect"
-            , "--json"
-            ]
-          currentRevision <- headCommit repo
-
-          -- Warm the recoverable provenance cache before taking the exact
-          -- caller-state baseline used by every success and failure below.
-          _ <- p602fJsonOrThrow repo ["search", "--json"]
-          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-          beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-          let managedPaths =
-                filter ("architecture/adrai/" `isPrefixOf`)
-                  (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
-          beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
-          BS.writeFile (repo </> "search staged.bin") "\NUL\SOHsearch staged bytes\255"
-          _ <- gitStdout repo ["add", "--", "search staged.bin"]
-          BS.writeFile (repo </> "README.md") "# Test\nsearch caller dirty bytes\n"
-          BS.writeFile (repo </> "search untracked ü.txt") "keep this untracked file"
-          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-          beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
-          beforeWorktree <- gitStdout repo ["diff", "--binary"]
-
-          defaultValue <- p602fJsonOrThrow repo ["search", "--json"]
-          assertSearchEnvelope defaultValue currentRevision "hybrid" "collapsed" 10 [firstAdr]
-
-          forM_ ["fts", "vector", "hybrid"] $ \mode -> do
-            value <- p602fJsonOrThrow repo ["search", "quasar", "--mode", mode, "--json"]
-            assertSearchEnvelope value currentRevision (T.pack mode) "collapsed" 10 [firstAdr]
-
-          exploded <- p602fJsonOrThrow repo ["search", "quasar", "--view", "exploded", "--json"]
-          assertSearchEnvelope exploded currentRevision "hybrid" "exploded" 10 [firstAdr]
-          case searchResults exploded of
-            [result] -> case _Object result of
-              Just object -> do
-                operations <- case object .: "operations" of
-                  Just value -> pure (value :: [Data.Aeson.Value])
-                  Nothing -> assertFailure "exploded search omitted operations" >> fail "unreachable"
-                assertBool "exploded search uses genuine operation history" (not (null operations))
-                assertBool "exploded search exposes resolution" (KM.member "resolution" object)
-              Nothing -> assertFailure "exploded search result is not an object"
-            _ -> assertFailure "exploded search fixture expected one result"
-
-          included <- p602fJsonOrThrow repo ["search", "--include-obsolete", "--json"]
-          assertSearchEnvelope included currentRevision "hybrid" "collapsed" 10 [firstAdr, secondAdr]
-          laterOnly <- p602fJsonOrThrow repo ["search", "Legacy", "--mode", "fts", "--include-obsolete", "--json"]
-          assertSearchEnvelope laterOnly currentRevision "fts" "collapsed" 10 [secondAdr]
-          domainFiltered <- p602fJsonOrThrow repo ["search", "--domain", "platform", "--json"]
-          assertSearchEnvelope domainFiltered currentRevision "hybrid" "collapsed" 10 [firstAdr]
-          obsoleteDomain <- p602fJsonOrThrow repo ["search", "--domain", "legacy", "--include-obsolete", "--json"]
-          assertSearchEnvelope obsoleteDomain currentRevision "hybrid" "collapsed" 10 [secondAdr]
-          fileFiltered <- p602fJsonOrThrow repo ["search", "--file", "src/cache/Main.hs", "--json"]
-          assertSearchEnvelope fileFiltered currentRevision "hybrid" "collapsed" 10 [firstAdr]
-          actorFiltered <- p602fJsonOrThrow repo ["search", "--actor", "llm:planner", "--json"]
-          assertSearchEnvelope actorFiltered currentRevision "hybrid" "collapsed" 10 [firstAdr]
-          sinceFiltered <- p602fJsonOrThrow repo ["search", "--since", "0", "--json"]
-          assertSearchEnvelope sinceFiltered currentRevision "hybrid" "collapsed" 10 [firstAdr]
-          untilFiltered <- p602fJsonOrThrow repo ["search", "--until", "0", "--json"]
-          assertSearchEnvelope untilFiltered currentRevision "hybrid" "collapsed" 10 []
-          limited <- p602fJsonOrThrow repo ["search", "--include-obsolete", "--limit", "1", "--json"]
-          assertBool "search limit is applied" (length (searchResults limited) == 1)
-          historical <- p602fJsonOrThrow repo ["search", "quasar", "--at", T.unpack firstRevision, "--json"]
-          assertSearchEnvelope historical firstRevision "hybrid" "collapsed" 10 [firstAdr]
-          historicalLaterOnly <- p602fJsonOrThrow repo ["search", "Legacy", "--mode", "fts", "--include-obsolete", "--at", T.unpack firstRevision, "--json"]
-          assertSearchEnvelope historicalLaterOnly firstRevision "fts" "collapsed" 10 []
-
-          (plainExit, plainOut, plainErr) <- p602fRaw repo ["search"]
-          (jsonExit, jsonOut, jsonErr) <- p602fRaw repo ["search", "--json"]
-          plainExit @?= ExitSuccess
-          jsonExit @?= ExitSuccess
-          plainErr @?= ""
-          jsonErr @?= ""
-          plainOut @?= jsonOut
-
-          (limitExit, limitOut, limitErr) <- p602fRaw repo ["search", "--limit", "0", "--json"]
-          limitExit @?= ExitFailure 2
-          limitOut @?= ""
-          limitErr @?= "adrai: SearchInvalidLimit 0\n"
-          (revisionExit, revisionOut, revisionErr) <- p602fRaw repo ["search", "--at", "refs/heads/does-not-exist", "--json"]
-          revisionExit @?= ExitFailure 2
-          revisionOut @?= ""
-          assertBool "invalid search revision is a user error" ("adrai: " `LBS.isPrefixOf` revisionErr)
-          (legacyExit, legacyOut, legacyErr) <- p602fRaw repo ["search", "--query", "quasar", "--json"]
-          legacyExit @?= ExitFailure 2
-          legacyOut @?= ""
-          assertBool "legacy search alias is rejected explicitly" ("--query" `T.isInfixOf` decodeUtf8 (LBS.toStrict legacyErr))
-          (repositoryExit, repositoryOut, repositoryErr) <- p602fRaw (repo </> "missing repository") ["search", "--json"]
-          repositoryExit @?= ExitFailure 2
-          repositoryOut @?= ""
-          assertBool "missing search repository is a user error" ("adrai: " `LBS.isPrefixOf` repositoryErr)
-
-          headCommit repo >>= (@?= currentRevision)
-          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
-          gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
-          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
-          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
-          gitStdout repo ["diff", "--cached", "--binary"] >>= (@?= beforeCached)
-          gitStdout repo ["diff", "--binary"] >>= (@?= beforeWorktree)
-          traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths >>= (@?= beforeManaged)
-    , testCase "semantic conflicts map to exit 3 without mutation" $
-        withSystemTempDirectory "adrai p6-02j search conflict" $ \tmpDir -> do
-          repo <- createTestRepo tmpDir
-          _ <- p602fJsonOrThrow repo ["init", "--json"]
-          created <- p602fJsonOrThrow repo
-            [ "create", "--title", "Search conflict base", "--summary", "Divergent searchable records"
-            , "--body", "## Decision\nCreate two searchable decision heads.\n"
-            , "--domain", "platform", "--applies-to", "src/**"
-            , "--actor", "llm:planner", "--model", "search-model", "--json"
-            ]
-          adr <- case extractAdrId created of
-            Just value -> pure value
-            Nothing -> assertFailure "search conflict create omitted ADR" >> fail "unreachable"
-          base <- headCommit repo
-          _ <- gitStdout repo ["switch", "-c", "search-left", T.unpack base]
-          _ <- p602fJsonOrThrow repo
-            [ "amend", T.unpack adr, "--title", "Left searchable decision", "--change-summary", "Left branch"
-            , "--body", "## Decision\nChoose the left searchable alternative.\n"
-            , "--actor", "llm:planner", "--model", "search-model", "--json"
-            ]
-          _ <- gitStdout repo ["switch", "-c", "search-right", T.unpack base]
-          _ <- p602fJsonOrThrow repo
-            [ "amend", T.unpack adr, "--title", "Right searchable decision", "--change-summary", "Right branch"
-            , "--body", "## Decision\nChoose the right searchable alternative.\n"
-            , "--actor", "llm:planner", "--model", "search-model", "--json"
-            ]
-          _ <- gitStdout repo ["switch", "main"]
-          _ <- gitStdout repo ["merge", "--no-ff", "-m", "merge divergent search fixture", "search-left", "search-right"]
-          beforeHead <- headCommit repo
-          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-          beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-          (conflictExit, conflictOut, conflictErr) <- p602fRaw repo ["search", "--json"]
-          conflictExit @?= ExitFailure 3
-          conflictOut @?= ""
-          conflictErr @?= "adrai: conflict: search results require resolution: 2 decision heads\n"
-          headCommit repo >>= (@?= beforeHead)
-          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
-          gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
-          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
-          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
-    , testCase "repository integrity failures are typed and preserve state" $
-        withSystemTempDirectory "adrai p6-02j search integrity" $ \tmpDir -> do
-          repo <- createTestRepo tmpDir
-          _ <- p602fJsonOrThrow repo ["init", "--json"]
-          created <- p602fJsonOrThrow repo
-            [ "create", "--title", "Search integrity base", "--summary", "Malformed searchable source"
-            , "--body", "## Decision\nFail search closed on invalid source.\n"
-            , "--domain", "platform", "--applies-to", "src/**"
-            , "--actor", "llm:planner", "--model", "search-model", "--json"
-            ]
-          decisionPath <- case _Object created >>= (.: "created") of
-            Just paths -> case find (T.isSuffixOf ".decision.md") (paths :: [Text]) of
-              Just path -> pure path
-              Nothing -> assertFailure "search integrity create omitted decision path" >> fail "unreachable"
-            Nothing -> assertFailure "search integrity create omitted paths" >> fail "unreachable"
-          BS.writeFile (repo </> T.unpack decisionPath) "schema: deliberately-invalid\n"
-          _ <- gitStdout repo ["add", "--", T.unpack decisionPath]
-          _ <- gitStdout repo ["commit", "-m", "commit malformed searchable source"]
-          beforeHead <- headCommit repo
-          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-          beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-          (failureExit, failureOut, failureErr) <- p602fRaw repo ["search", "--json"]
-          failureExit @?= ExitFailure 2
-          failureOut @?= ""
-          assertBool "search integrity failure is explicit" ("adrai: repository integrity failure: " `LBS.isPrefixOf` failureErr)
-          headCommit repo >>= (@?= beforeHead)
-          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
-          gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
-          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
-          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
-    ]
-  where
-    searchResults :: Data.Aeson.Value -> [Data.Aeson.Value]
-    searchResults value =
-      case _Object value >>= (.: "results") of
-        Just results -> results
-        Nothing -> []
-
-    assertSearchEnvelope value expectedRevision expectedMode expectedView expectedLimit expectedAdrs =
-      case _Object value of
-        Nothing -> assertFailure "search output is not an object"
-        Just object -> do
-          sortOn id (map AesonKey.toText (KM.keys object))
-            @?= sortOn id ["as_of", "limit", "mode", "results", "schema", "view"]
-          (object .: "schema" :: Maybe Text) @?= Just "adrai/search/v1"
-          (object .: "as_of" :: Maybe Text) @?= Just expectedRevision
-          (object .: "mode" :: Maybe Text) @?= Just expectedMode
-          (object .: "view" :: Maybe Text) @?= Just expectedView
-          (object .: "limit" :: Maybe Int) @?= Just expectedLimit
-          let results = searchResults value
-              ids = sortOn id
-                [ identifier
-                | result <- results
-                , Just resultObject <- [_Object result]
-                , Just identifier <- [resultObject .: "adr" :: Maybe Text]
-                ]
-          ids @?= sortOn id expectedAdrs
-          forM_ results $ \result -> case _Object result of
-            Nothing -> assertFailure "search result is not an object"
-            Just resultObject -> do
-              (resultObject .: "view" :: Maybe Text) @?= Just expectedView
-              (resultObject .: "as_of" :: Maybe Text) @?= Just expectedRevision
-              assertBool "search result exposes genuine retrieval metadata" (KM.member "retrieval" resultObject)
-              assertBool "search result exposes resolution state" (KM.member "resolution_required" resultObject)
-
-testP602KRealExecutableRelevant :: TestTree
-testP602KRealExecutableRelevant =
-  testGroup "P6-02K real executable relevant"
-    [ testCase "committed and worktree sources are truthful, revision-local, and preserve caller state" $
-        withSystemTempDirectory "adrai p6-02k relevant ü" $ \tmpDir -> do
-          repo <- createTestRepo tmpDir
-          _ <- p602fJsonOrThrow repo ["init", "--json"]
-          first <- p602fJsonOrThrow repo
-            [ "create", "--title", "Cache lease Unicode ü decision", "--summary", "Coordinate cache lease tokens"
-            , "--body", "## Decision\nUse a cache lease token for coordination.\n"
-            , "--domain", "platform", "--applies-to", "src/**"
-            , "--actor", "llm:planner", "--model", "relevant-model", "--json"
-            ]
-          firstAdr <- case extractAdrId first of
-            Just value -> pure value
-            Nothing -> assertFailure "first relevant create omitted ADR" >> fail "unreachable"
-          let sourcePath = "src/context ü file.txt"
-              historicalBytes = "cache lease token coordination ownership renewal fencing architecture decision\n"
-              currentBytes = "graphics shader texture widget layout animation rendering\n"
-          createDirectoryIfMissing True (repo </> "src")
-          BS.writeFile (repo </> sourcePath) historicalBytes
-          _ <- gitStdout repo ["add", "--", sourcePath]
-          _ <- gitStdout repo ["commit", "-m", "add historical relevance source"]
-          historicalRevision <- headCommit repo
-          historicalBlob <- gitObject repo (T.unpack historicalRevision <> ":" <> sourcePath)
-
-          second <- p602fJsonOrThrow repo
-            [ "create", "--title", "Legacy cache lease decision", "--summary", "Retire the legacy cache lease token"
-            , "--body", "## Decision\nReplace the legacy cache lease token.\n"
-            , "--domain", "legacy", "--applies-to", "src/**"
-            , "--actor", "human:architect", "--json"
-            ]
-          secondAdr <- case extractAdrId second of
-            Just value -> pure value
-            Nothing -> assertFailure "second relevant create omitted ADR" >> fail "unreachable"
-          _ <- p602fJsonOrThrow repo
-            [ "obsolete", T.unpack secondAdr, "--reason", "Retire the relevance fixture"
-            , "--actor", "human:architect", "--json"
-            ]
-          BS.writeFile (repo </> sourcePath) currentBytes
-          _ <- gitStdout repo ["add", "--", sourcePath]
-          _ <- gitStdout repo ["commit", "-m", "change current relevance source"]
-          currentRevision <- headCommit repo
-          currentBlob <- gitObject repo (T.unpack currentRevision <> ":" <> sourcePath)
-
-          -- The explicit worktree source intentionally differs from HEAD.
-          BS.writeFile (repo </> sourcePath) historicalBytes
-          _ <- p602fJsonOrThrow repo ["relevant", sourcePath, "--worktree", "--json"]
-          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-          beforeTree <- gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"]
-          let managedPaths =
-                filter ("architecture/adrai/" `isPrefixOf`)
-                  (map T.unpack (T.lines (decodeUtf8 (LBS.toStrict beforeTree))))
-          beforeManaged <- traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths
-          BS.writeFile (repo </> "relevant staged.bin") "\NUL\SOHrelevant staged bytes\255"
-          _ <- gitStdout repo ["add", "--", "relevant staged.bin"]
-          BS.writeFile (repo </> "relevant untracked ü.txt") "keep this untracked file"
-          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-          beforeCached <- gitStdout repo ["diff", "--cached", "--binary"]
-          beforeWorktree <- gitStdout repo ["diff", "--binary"]
-
-          current <- p602fJsonOrThrow repo ["relevant", sourcePath, "--json"]
-          assertRelevantEnvelope current currentRevision "revision" (Just currentBlob) []
-          historical <- p602fJsonOrThrow repo ["relevant", sourcePath, "--at", T.unpack historicalRevision, "--json"]
-          assertRelevantEnvelope historical historicalRevision "revision" (Just historicalBlob) [firstAdr]
-          worktree <- p602fJsonOrThrow repo ["relevant", sourcePath, "--worktree", "--json"]
-          assertRelevantEnvelope worktree currentRevision "worktree" Nothing [firstAdr]
-          relevantDigest worktree @?= relevantDigest historical
-          included <- p602fJsonOrThrow repo ["relevant", sourcePath, "--worktree", "--include-obsolete", "--json"]
-          assertRelevantEnvelope included currentRevision "worktree" Nothing [firstAdr, secondAdr]
-          limited <- p602fJsonOrThrow repo ["relevant", sourcePath, "--worktree", "--include-obsolete", "--limit", "1", "--json"]
-          assertBool "relevant limit is applied" (length (relevantResults limited) == 1)
-
-          (plainExit, plainOut, plainErr) <- p602fRaw repo ["relevant", sourcePath]
-          (jsonExit, jsonOut, jsonErr) <- p602fRaw repo ["relevant", sourcePath, "--json"]
-          plainExit @?= ExitSuccess
-          jsonExit @?= ExitSuccess
-          plainErr @?= ""
-          jsonErr @?= ""
-          plainOut @?= jsonOut
-
-          (exclusiveExit, exclusiveOut, exclusiveErr) <- p602fRaw repo ["relevant", sourcePath, "--at", "HEAD", "--worktree", "--json"]
-          exclusiveExit @?= ExitFailure 2
-          exclusiveOut @?= ""
-          exclusiveErr @?= "adrai: relevant --at and --worktree are mutually exclusive\n"
-          (limitExit, limitOut, limitErr) <- p602fRaw repo ["relevant", sourcePath, "--limit", "0", "--json"]
-          limitExit @?= ExitFailure 2
-          limitOut @?= ""
-          limitErr @?= "adrai: RelevantInvalidLimit 0\n"
-          (missingExit, missingOut, missingErr) <- p602fRaw repo ["relevant", "src/missing.txt", "--json"]
-          missingExit @?= ExitFailure 2
-          missingOut @?= ""
-          assertBool "missing committed relevance source is explicit" ("adrai: relevance source failure: " `LBS.isPrefixOf` missingErr)
-          (outsideExit, outsideOut, outsideErr) <- p602fRaw repo ["relevant", "../outside", "--worktree", "--json"]
-          outsideExit @?= ExitFailure 2
-          outsideOut @?= ""
-          assertBool "outside relevance path is rejected" ("adrai: invalid relevant file path: " `LBS.isPrefixOf` outsideErr)
-          (revisionExit, revisionOut, revisionErr) <- p602fRaw repo ["relevant", sourcePath, "--at", "refs/heads/does-not-exist", "--json"]
-          revisionExit @?= ExitFailure 2
-          revisionOut @?= ""
-          assertBool "invalid relevant revision is a user error" ("adrai: " `LBS.isPrefixOf` revisionErr)
-          (repositoryExit, repositoryOut, repositoryErr) <- p602fRaw (repo </> "missing repository") ["relevant", sourcePath, "--json"]
-          repositoryExit @?= ExitFailure 2
-          repositoryOut @?= ""
-          assertBool "missing relevant repository is a user error" ("adrai: " `LBS.isPrefixOf` repositoryErr)
-          BS.writeFile (repo </> sourcePath) "text\NULbinary"
-          (decodeExit, decodeOut, decodeErr) <- p602fRaw repo ["relevant", sourcePath, "--worktree", "--json"]
-          decodeExit @?= ExitFailure 2
-          decodeOut @?= ""
-          assertBool "binary relevance source fails explicitly" ("adrai: RelevantDecodeFailure " `LBS.isPrefixOf` decodeErr)
-          BS.writeFile (repo </> sourcePath) historicalBytes
-
-          headCommit repo >>= (@?= currentRevision)
-          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
-          gitStdout repo ["ls-tree", "-r", "--name-only", "HEAD"] >>= (@?= beforeTree)
-          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
-          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
-          gitStdout repo ["diff", "--cached", "--binary"] >>= (@?= beforeCached)
-          gitStdout repo ["diff", "--binary"] >>= (@?= beforeWorktree)
-          traverse (\path -> (,) path <$> BS.readFile (repo </> path)) managedPaths >>= (@?= beforeManaged)
-    , testCase "repository integrity failures are typed and preserve state" $
-        withSystemTempDirectory "adrai p6-02k relevant integrity" $ \tmpDir -> do
-          repo <- createTestRepo tmpDir
-          _ <- p602fJsonOrThrow repo ["init", "--json"]
-          created <- p602fJsonOrThrow repo
-            [ "create", "--title", "Relevant integrity base", "--summary", "Malformed relevance context"
-            , "--body", "## Decision\nFail relevance closed on invalid source.\n"
-            , "--domain", "platform", "--applies-to", "src/**"
-            , "--actor", "llm:planner", "--model", "relevant-model", "--json"
-            ]
-          decisionPath <- case _Object created >>= (.: "created") of
-            Just paths -> case find (T.isSuffixOf ".decision.md") (paths :: [Text]) of
-              Just path -> pure path
-              Nothing -> assertFailure "relevant integrity create omitted decision path" >> fail "unreachable"
-            Nothing -> assertFailure "relevant integrity create omitted paths" >> fail "unreachable"
-          createDirectoryIfMissing True (repo </> "src")
-          BS.writeFile (repo </> "src/integrity.txt") "cache lease relevance context\n"
-          BS.writeFile (repo </> T.unpack decisionPath) "schema: deliberately-invalid\n"
-          _ <- gitStdout repo ["add", "--", "src/integrity.txt", T.unpack decisionPath]
-          _ <- gitStdout repo ["commit", "-m", "commit malformed relevance fixture"]
-          beforeHead <- headCommit repo
-          beforeRef <- gitStdout repo ["symbolic-ref", "--quiet", "HEAD"]
-          beforeIndex <- gitStdout repo ["ls-files", "--stage", "-z"]
-          beforeStatus <- gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"]
-          (failureExit, failureOut, failureErr) <- p602fRaw repo ["relevant", "src/integrity.txt", "--json"]
-          failureExit @?= ExitFailure 2
-          failureOut @?= ""
-          assertBool "relevant integrity failure is explicit" ("adrai: repository integrity failure: " `LBS.isPrefixOf` failureErr)
-          headCommit repo >>= (@?= beforeHead)
-          gitStdout repo ["symbolic-ref", "--quiet", "HEAD"] >>= (@?= beforeRef)
-          gitStdout repo ["ls-files", "--stage", "-z"] >>= (@?= beforeIndex)
-          gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all", "-z"] >>= (@?= beforeStatus)
-    ]
-  where
-    gitObject repo spec =
-      gitStdout repo ["rev-parse", spec]
-        >>= pure . strip . decodeUtf8 . LBS.toStrict
-
-    relevantResults :: Data.Aeson.Value -> [Data.Aeson.Value]
-    relevantResults value =
-      case _Object value >>= (.: "results") of
-        Just results -> results
-        Nothing -> []
-
-    relevantDigest :: Data.Aeson.Value -> Maybe Text
-    relevantDigest value = do
-      object <- _Object value
-      fileValue <- KM.lookup "file" object
-      fileObject <- _Object fileValue
-      fileObject .: "digest"
-
-    assertRelevantEnvelope value expectedRevision expectedSource expectedBlob expectedAdrs =
-      case _Object value of
-        Nothing -> assertFailure "relevant output is not an object"
-        Just object -> do
-          sortOn id (map AesonKey.toText (KM.keys object))
-            @?= sortOn id ["as_of", "file", "results", "retrieval", "schema", "view"]
-          (object .: "schema" :: Maybe Text) @?= Just "adrai/relevant/v1"
-          (object .: "view" :: Maybe Text) @?= Just "relevant"
-          (object .: "as_of" :: Maybe Text) @?= Just expectedRevision
-          fileObject <- case KM.lookup "file" object >>= _Object of
-            Just result -> pure result
-            Nothing -> assertFailure "relevant output omitted file metadata" >> fail "unreachable"
-          (fileObject .: "source" :: Maybe Text) @?= Just expectedSource
-          (fileObject .: "revision" :: Maybe Text) @?= Just expectedRevision
-          (fileObject .: "blob" :: Maybe (Maybe Text)) @?= Just expectedBlob
-          assertBool "relevant file metadata exposes a digest" (KM.member "digest" fileObject)
-          assertBool "relevant output exposes retrieval evidence" (KM.member "retrieval" object)
-          let ids = sortOn id
-                [ identifier
-                | result <- relevantResults value
-                , Just resultObject <- [_Object result]
-                , Just identifier <- [resultObject .: "adr" :: Maybe Text]
-                ]
-          ids @?= sortOn id expectedAdrs
-          forM_ (relevantResults value) $ \result -> case _Object result of
-            Nothing -> assertFailure "relevant result is not an object"
-            Just resultObject -> do
-              assertBool "relevant result exposes confidence" (KM.member "confidence" resultObject)
-              assertBool "relevant result exposes evidence" (KM.member "evidence" resultObject)
-
-testShowCollapsedEvolution :: TestTree
-testShowCollapsedEvolution =
-  testCase "collapsed_view_explains_evolution" $
-    withSystemTempDirectory "adrai show collapsed" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADR
-      result <- createAdr repo
-        "Collapsed evolution"
-        "Testing collapsed view"
-        "## Decision\nInitial state."
-        ["test"]
-        ["src/**"]
-
-      case extractAdrId result of
-        Nothing -> assertFailure "createAdr failed"
-        Just adrId -> do
-          -- Amend
-          _ <- amendAdr repo adrId
-            (Just "Collapsed evolution v2")
-            Nothing
-            Nothing
-
-          -- Show collapsed
-          collapsed <- adraiJsonOrThrow repo
-            [ "show", T.unpack adrId, "--view", "collapsed", "--json" ]
-
-          -- Verify evolution is present
-          case _Object collapsed of
-            Just o -> do
-              case o .: "evolution" of
-                Just evolution ->
-                  case _Object evolution of
-                    Just ev ->
-                      case (ev .: "operation_count" :: Maybe Int, ev .: "summary" :: Maybe (Maybe Text)) of
-                        (Just count, Just summary) -> do
-                          assertBool "evolution has operation count" (count > 0)
-                          assertBool "evolution has summary" (isJust summary)
-                        _ -> assertFailure "could not parse evolution fields"
-                    Nothing -> assertFailure "could not parse evolution"
-                Nothing -> assertFailure "could not parse evolution"
-            Nothing -> assertFailure "could not parse collapsed"
-
-          -- Compare between revisions
-          git repo ["switch", "-c", "feature"]
-          _ <- amendAdr repo adrId
-            (Just "Collapsed evolution v3")
-            Nothing
-            Nothing
-
-          compareResult <- adraiJsonOrThrow repo
-            [ "compare", "refs/heads/main", "refs/heads/feature", "--json" ]
-          case parseCompareResults compareResult of
-            Just (schema, _, _, entries) -> do
-              schema @?= "adrai/compare/v1"
-              -- Should have at least one entry showing changes
-              assertBool "compare has entries" (length entries >= 1)
-              case listToMaybe entries of
-                Just entry -> do
-                  case compareEntryKind entry of
-                    Just "changed" -> pure ()
-                    Just _ -> pure ()  -- added/removed are also valid
-                    Nothing -> pure ()
-                Nothing -> pure ()
-            Nothing -> assertFailure "compare parse failed"
-
--- =====================================================================
--- Test 10: Compare reports branch-only ADRs
--- =====================================================================
-
-testCompareBranchOnly :: TestTree
-testCompareBranchOnly =
-  testCase "compare_reports_branch_only_adrs" $
-    withSystemTempDirectory "adrai compare branch-only" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADR on main
-      _ <- createAdr repo
-        "Main ADR"
-        "Decision on main branch"
-        "## Decision\nMain decision."
-        ["main"]
-        ["src/**"]
-
-      mainHead <- headCommit repo
-
-      -- Switch to feature and create second ADR
-      git repo ["switch", "-c", "feature"]
-      _ <- createAdr repo
-        "Feature ADR"
-        "Decision on feature branch"
-        "## Decision\nFeature decision."
-        ["feature"]
-        ["src/feature/**"]
-
-      featureHead <- headCommit repo
-
-      -- Compare from main to feature should show "added"
-      compareResult <- adraiJsonOrThrow repo
-        [ "compare",
-          T.unpack mainHead,
-          T.unpack featureHead,
-          "--json"
-        ]
-      case parseCompareResults compareResult of
-        Just (schema, _, _, entries) -> do
-          schema @?= "adrai/compare/v1"
-          let kinds = mapMaybe compareEntryKind entries
-          assertBool "compare from main to feature shows added"
-            ("added" `elem` kinds)
-
-          -- Reverse compare from feature to main should show "removed"
-          reverseCompare <- adraiJsonOrThrow repo
-            [ "compare",
-              T.unpack featureHead,
-              T.unpack mainHead,
-              "--json"
-            ]
-          case parseCompareResults reverseCompare of
-            Just (_, _, _, revEntries) -> do
-              let revKinds = mapMaybe compareEntryKind revEntries
-              assertBool "reverse compare shows removed"
-                ("removed" `elem` revKinds)
-            Nothing -> assertFailure "reverse compare parse failed"
-        Nothing -> assertFailure "compare parse failed"
-
--- =====================================================================
--- Test 11: Reverse compare reports branch-only ADRs as removed
--- =====================================================================
-
-testCompareReverseShowsRemoved :: TestTree
-testCompareReverseShowsRemoved =
-  testCase "compare_reverse_reports_removed_adrs" $
-    withSystemTempDirectory "adrai compare reverse" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-      _ <- createAdr repo
-        "Main ADR"
-        "Decision on main branch"
-        "## Decision\nMain decision."
-        ["main"]
-        ["src/**"]
-      mainHead <- headCommit repo
-
-      git repo ["switch", "-c", "feature"]
-      _ <- createAdr repo
-        "Feature ADR"
-        "Decision on feature branch"
-        "## Decision\nFeature decision."
-        ["feature"]
-        ["src/feature/**"]
-      featureHead <- headCommit repo
-
-      reverseCompare <- adraiJsonOrThrow repo
-        [ "compare",
-          T.unpack featureHead,
-          T.unpack mainHead,
-          "--json"
-        ]
-      case parseCompareResults reverseCompare of
-        Just (schema, _, _, entries) -> do
-          schema @?= "adrai/compare/v1"
-          let kinds = mapMaybe compareEntryKind entries
-          assertBool "reverse compare shows removed" ("removed" `elem` kinds)
-        Nothing -> assertFailure "reverse compare parse failed"
-
--- =====================================================================
--- Test 12: Compare CLI uses same read service
--- =====================================================================
-
-testCompareJsonMatchesProgrammatic :: TestTree
-testCompareJsonMatchesProgrammatic =
-  testCase "compare_cli_uses_same_read_service" $
-    withSystemTempDirectory "adrai compare consistent" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADR and change scope
-      result <- createAdr repo
-        "Scope comparison"
-        "Testing compare consistency"
-        "## Decision\nInitial scope."
-        ["test"]
-        ["src/**"]
-
-      case extractAdrId result of
-        Nothing -> assertFailure "createAdr failed"
-        Just adrId -> do
-          -- Amend scope
-          _ <- amendAdr repo adrId
-            Nothing
-            (Just "## Decision\nModified scope.\n\nAdopt the new service architecture.\nKeep the legacy architecture.\n")
-            Nothing
-
-          -- Get compare JSON
-          compareResult <- adraiJsonOrThrow repo
-            [ "compare", "HEAD~1", "HEAD", "--json" ]
-
-          case parseCompareResults compareResult of
-            Just (_, fromRev, toRev, entries) -> do
-              assertBool "compare has revisions" (not (T.null fromRev))
-              assertBool "compare has revisions" (not (T.null toRev))
-              -- Should have entries for the changed ADR
-              assertBool "compare has entries" (length entries >= 1)
-            Nothing -> assertFailure "compare parse failed"
-
--- =====================================================================
--- Test 12: Search finds ADRs by topic
--- =====================================================================
-
-testSearchHybridPreservesLexical :: TestTree
-testSearchHybridPreservesLexical =
-  testCase "search_hybrid_preserves_lexical_matches" $
-    withSystemTempDirectory "adrai search hybrid" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADRs with unique lexical markers
-      _ <- createAdr repo
-        "Cache layering strategy"
-        "Two-level cache with TTL"
-        "## Decision\nCache layer A."
-        ["cache"]
-        ["src/**"]
-
-      _ <- createAdr repo
-        "Connection pool configuration"
-        "Database connection pool"
-        "## Decision\nPool size 10."
-        ["database"]
-        ["src/db/**"]
-
-      _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-      -- Search for "cache" - should find the cache ADR
-      searchResult <- adraiJsonOrThrow repo
-        [ "search", "--query", "cache", "--mode", "hybrid", "--json" ]
-      case parseSearchResults searchResult of
-        Just (schema, _, mode, _, results) -> do
-          schema @?= "adrai/search/v1"
-          mode @?= "hybrid"
-          -- Should find at least the cache ADR
-          assertBool "search finds cache ADR" (length results >= 1)
-        Nothing -> assertFailure "search parse failed"
-
--- =====================================================================
--- Test 13: Vector search matches architecture synonyms
--- =====================================================================
-
-testSearchVectorMatchesSynonyms :: TestTree
-testSearchVectorMatchesSynonyms =
-  testCase "search_vector_matches_architecture_synonyms" $
-    withSystemTempDirectory "adrai search vector" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create multiple ADRs about caching
-      _ <- createAdr repo
-        "Cache layering strategy"
-        "Multi-level caching architecture"
-        "## Decision\nTwo-level cache with TTL."
-        ["cache", "architecture"]
-        ["src/**"]
-
-      _ <- createAdr repo
-        "Cache invalidation policy"
-        "Cache eviction and invalidation"
-        "## Decision\nLRU eviction policy."
-        ["cache", "performance"]
-        ["src/cache/**"]
-
-      _ <- createAdr repo
-        "Session caching mechanism"
-        "User session caching layer"
-        "## Decision\nRedis-backed session cache."
-        ["cache", "session"]
-        ["src/session/**"]
-
-      _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-      -- Search for "caching" - should match all cache-related ADRs
-      searchResult <- adraiJsonOrThrow repo
-        [ "search", "--query", "caching", "--mode", "vector", "--json" ]
-      case parseSearchResults searchResult of
-        Just (schema, _, _, _, results) -> do
-          schema @?= "adrai/search/v1"
-          -- Should find at least the cache ADRs
-          assertBool "vector search matches cache ADRs" (length results >= 1)
-        Nothing -> assertFailure "vector search parse failed"
-
--- =====================================================================
--- Test 14: New operations have no writer digest in provenance
--- =====================================================================
-
-testExplodedNoWriterDigest :: TestTree
-testExplodedNoWriterDigest =
-  testCase "exploded_no_writer_digest" $
-    withSystemTempDirectory "adrai exploded digest" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADR
-      result <- createAdr repo
-        "Digest test"
-        "Testing digest absence"
-        "## Decision\nInitial state."
-        ["test"]
-        ["src/**"]
-
-      case extractAdrId result of
-        Nothing -> assertFailure "createAdr failed"
-        Just adrId -> do
-          -- Show exploded
-          exploded <- adraiJsonOrThrow repo
-            [ "show", T.unpack adrId, "--view", "exploded", "--json" ]
-
-          -- Verify no "tool_digest" in the provenance
-          let resultText = LBS.toStrict (encode exploded)
-          assertBool "no tool_digest in exploded output"
-            (not (T.pack "tool_digest" `T.isInfixOf` decodeUtf8 resultText))
-
-          -- Verify no "tool" in full_provenance either
-          assertBool "no tool in full_provenance"
-            (not (T.pack "\"tool\"" `T.isInfixOf` decodeUtf8 resultText))
-
--- =====================================================================
--- Test 15: History reverse returns text output with "ADRAI history for"
--- =====================================================================
-
-testHistoryReverseTextOutput :: TestTree
-testHistoryReverseTextOutput =
-  testCase "history_reverse_text_output" $
-    withSystemTempDirectory "adrai history reverse" $ \tmpDir -> do
-      repo <- createTestRepo tmpDir
-
-      -- Create ADR
-      _ <- createAdr repo
-        "Reverse history"
-        "Testing reverse output"
-        "## Decision\nInitial."
-        ["test"]
-        ["src/**"]
-
-      _ <- adraiJsonOrThrow repo ["compile", "--json"] >>= \_ -> pure ()
-
-      -- Get reverse history output (without --json, text mode)
-      -- The --reverse flag changes order to oldest-first
-      reverseHist <- adraiJsonOrThrow repo
-        [ "history", "--reverse", "--json" ]
-      case parseHistory reverseHist of
-        Just (_, _, order, ops) -> do
-          order @?= "oldest-first"
-          assertBool "reverse history has operations" (length ops >= 1)
-        Nothing -> assertFailure "reverse history parse failed"
-
--- =====================================================================
--- Helpers
--- =====================================================================
-
--- | Check if an Either value is a Left (error).
-isLeft :: Either a b -> Bool
-isLeft (Left _)  = True
-isLeft (Right _) = False
-
-isRight :: Either a b -> Bool
-isRight (Left _)  = False
-isRight (Right _) = True
-
--- | Encode Aeson Value to Lazy ByteString (needed for Text checking).
-encode :: Data.Aeson.Value -> LBS.ByteString
-encode = Data.Aeson.encode
-
--- | Catch git failure and return unit (useful for merges that may fail).
-catchGitFailure :: IO () -> IO ()
-catchGitFailure action =
-  action `Exception.catch` (\(_ :: SomeException) -> pure ())
+      successfulAcquisitions <- newIORef (0 :: Int)
+      successfulCloses <- newIORef (0 :: Int)
+      successfulContext <-
+        loadExactQueryContextWithAcquisitionHooksForTest
+          repository
+          "HEAD"
+          (modifyIORef' successfulAcquisitions (+ 1))
+          (modifyIORef' successfulCloses (+ 1))
+      case successfulContext of
+        Nothing -> assertFailure "valid exact archive did not load through the acquisition seam"
+        Just _ -> pure ()
+      readIORef successfulAcquisitions >>= (@?= 1)
+      readIORef successfulCloses >>= (@?= 1)
+
+      acquired <- newEmptyMVar
+      neverRelease <- newEmptyMVar
+      cancellationCloses <- newIORef (0 :: Int)
+      acquisitionWorker <- Async.async $
+        loadExactQueryContextWithAcquisitionHooksForTest
+          repository
+          "HEAD"
+          (putMVar acquired () >> takeMVar neverRelease)
+          (modifyIORef' cancellationCloses (+ 1))
+      takeMVar acquired
+      throwTo (Async.asyncThreadId acquisitionWorker) ThreadKilled
+      cancelled <- Async.waitCatch acquisitionWorker
+      case cancelled of
+        Left exception ->
+          (fromException exception :: Maybe AsyncException) @?= Just ThreadKilled
+        Right _ -> assertFailure "acquisition handoff cancellation was swallowed"
+      readIORef cancellationCloses >>= (@?= 1)
+
+      let releasedArchive = archive <> ".released"
+      renameFile archive releasedArchive
+      reopened <- openReadWriteExisting releasedArchive
+      close reopened
+      failedAcquisitions <- newIORef (0 :: Int)
+      failedCloses <- newIORef (0 :: Int)
+      missingContext <-
+        loadExactQueryContextWithAcquisitionHooksForTest
+          repository
+          "HEAD"
+          (modifyIORef' failedAcquisitions (+ 1))
+          (modifyIORef' failedCloses (+ 1))
+      case missingContext of
+        Nothing -> pure ()
+        Just _ -> assertFailure "missing exact archive unexpectedly acquired a query context"
+      readIORef failedAcquisitions >>= (@?= 0)
+      readIORef failedCloses >>= (@?= 0)
+      removeFile releasedArchive
+      assertBool "released exact archive remains removable after cancellation" . not =<< doesFileExist releasedArchive

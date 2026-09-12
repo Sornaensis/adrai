@@ -8,23 +8,16 @@ import Adrai.Compiler.DocumentCache
     loadCachedCapsule,
     loadDocumentCache,
   )
-import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Text (Text)
 import Database.SQLite.Simple
-  ( Connection,
-    Only (..),
-    SQLData (SQLText),
-    execute_,
+  ( execute_,
     open,
-    query_,
     close,
   )
-import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase, (@?=), assertBool)
+import Test.Tasty.HUnit (testCase, (@?=))
 
 -- | Create a test document cache database with sample data.
 createTestCacheDB :: FilePath -> IO ()

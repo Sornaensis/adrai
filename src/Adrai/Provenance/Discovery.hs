@@ -674,9 +674,14 @@ boundedDiagnostic raw =
   where
     normalizeNewlines = Text.replace "\r" "\n" . Text.replace "\r\n" "\n"
 
--- | Convert a 'Digest' to a hex-encoded 'Text' (40-char SHA-256 hex string).
+-- | Convert a 'Digest' to a zero-padded 64-character SHA-256 hex string.
 digestToHex :: Digest -> Text
-digestToHex = Text.pack . concatMap (\b -> showHex b "") . BS.unpack . digestBytes
+digestToHex = Text.pack . concatMap byteToHex . BS.unpack . digestBytes
+  where
+    byteToHex byte =
+      case showHex byte "" of
+        [digit] -> ['0', digit]
+        digits -> digits
 
 -- | Return the first first-parent commit that adds each managed path on a
 -- logical line.  Mirrors the Python @first_parent_path_landings()@ from

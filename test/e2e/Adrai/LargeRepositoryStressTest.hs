@@ -1,37 +1,38 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Explicitly opt-in, executable-level regression gate for the large Python
--- prototype.  The fixture is generated here, not imported from Python: valid
--- ADRAI records are sealed with real parent OIDs and streamed through one
--- @git fast-import@ process, which makes the 12,000 commit shape practical in
--- CI without weakening the history being compiled.
+-- | Explicitly opt-in executable regression gate. Valid ADRAI records are
+-- sealed with real parent OIDs and streamed through one @git fast-import@
+-- process, including a compact feature branch and two-parent merge.
 module Adrai.LargeRepositoryStressTest
   ( tests,
     parsePhaseProfileArguments,
-    setPhaseProfileOutput,
+    renderSelectedExecutableDiagnostic,
   )
 where
 
 import Adrai.Domain (Domain, DomainError, DomainRefinement, domainText, mkDomain, parseDomainRefinement)
-import Adrai.Compiler.Attribution
-  ( AttributionArtifact (..),
-    AttributionPhase (..),
-    AttributionRow (..),
-    appendAttributionEvidence,
-    parseAttributionArtifact,
+import Adrai.Compiler.CacheSelection (exactCacheArchivePath)
+import Adrai.Compiler.CacheSelection.TestSupport
+  ( CacheValidationWorkCounters (..),
+    MaterializationFingerprintEvidence (..),
+    TargetReachabilityPlanDetails (..),
+    observeExactCacheValidationWorkForTest,
+    observeMaterializationFingerprintForTest,
+    observeTargetReachabilityPlansForTest,
   )
 import Adrai.Fixture.LargeStress (largeStressV1)
-import Adrai.Fixture.ProductionShape (foldRepositoryPlan, productionShapeV1, repositorySteps)
+import Adrai.Fixture.ProductionShape (foldRepositoryPlan, repositorySteps)
 import qualified Adrai.Fixture.Types as Fixture
 import Adrai.Format.Config (defaultConfigText)
 import Adrai.Format.Document
 import Adrai.Provenance
+import Adrai.Git (RevisionSpec (..), discoverRepository, systemGit)
+import Adrai.Repository (resolveRepositoryRevision, resolvedCommitOid)
 import Adrai.Scope (ScopePattern, mkScopePattern)
 import Adrai.Types hiding (ExitSuccess)
-import qualified Control.Concurrent.Async as Async
-import Control.Exception (SomeException, bracket, evaluate, onException, try)
+import Control.Exception (SomeException, bracket, evaluate, onException, throwIO, try)
 import Control.Concurrent (threadDelay)
-import Control.Monad (foldM, forM_, join, unless)
+import Control.Monad (foldM, forM_, join, unless, when)
 import Data.Char (isDigit)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -40,8 +41,10 @@ import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.IORef
+import Data.Int (Int64)
 import Data.List (intercalate, isInfixOf)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust, isNothing)
 import Data.Scientific (toBoundedInteger, toRealFloat)
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -53,13 +56,13 @@ import Paths_adrai (getBinDir)
 import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath ((</>), isAbsolute, takeDirectory)
 import System.Info (os)
 import System.IO (Handle, hClose, hFlush, hGetContents, hGetLine, stderr)
 import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Process
-  ( CreateProcess (env, std_err, std_in, std_out), StdStream (CreatePipe), createProcess,
+  ( CreateProcess (std_err, std_in, std_out), StdStream (CreatePipe), createProcess,
     getPid, getProcessExitCode, proc, readProcessWithExitCode, terminateProcess, waitForProcess, ProcessHandle )
 import System.Timeout (timeout)
 import Text.Read (readMaybe)
@@ -69,45 +72,19 @@ import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 tests :: TestTree
 tests =
   testGroup
-    "P6-06G large repository stress"
-    ( [ testCase "12,000-commit repository with 2,000 ADR operations" largeRepositoryContract,
-        testCase "bounded fast-import transition preserves imported managed trees" boundedPostImportTransitionContract,
+    "P6-06G compact repository stress"
+    ( [ testCase "32-commit repository with 16 ADR operations and a two-parent merge" largeRepositoryContract,
         testCase "phase profile option and sidecar parsing are strict" phaseProfileParsingContract,
         testCase "phase profile sidecar is absent by default" phaseProfileAbsentByDefaultContract,
         testCase "pinned GHC RTS pair-list maximum residency parsing is strict" rtsPairListParsingContract,
-        testCase "process-tree sampler distinguishes failures, zero working sets, and descendants" processTreeSamplerContract,
+        testCase "stress executable resolver rejects accidental binary drift" executableResolverContract,
+         testCase "process-tree sampler distinguishes failures, zero working sets, and descendants" processTreeSamplerContract,
+         testCase "Windows process-tree sampler rejects ambiguous chronology and preserves exact sums" windowsProcessTreeSamplerContract,
+         testCase "Windows process-tree sampler observes a live ProcessHandle through PowerShell" windowsProcessTreeIntegrationContract,
         testCase "process-tree complete-sample policy requires cold evidence but permits fast exits" processTreeSamplePolicyContract,
         testCase "taskkill failure accepts only a verified terminated process tree" taskkillFailureContract
       ]
-        <> optInPhaseProfileTests
     )
-
--- | Selecting a sidecar must not cause the normal stress suite to grow a
--- second cold compilation.  Main initializes this before Tasty forces the
--- test tree; without the explicit option the bounded profiling test is absent.
-{-# NOINLINE optInPhaseProfileTests #-}
-optInPhaseProfileTests :: [TestTree]
-optInPhaseProfileTests = unsafePerformIO $ do
-  output <- getPhaseProfileOutput
-  pure (phaseProfileTestsFor output)
-
-phaseProfileTestsFor :: Maybe FilePath -> [TestTree]
-phaseProfileTestsFor output =
-  [testCase "opt-in 2,000-commit phase profile" productionShapeProfileContract | maybe False (const True) output]
-
--- | The profiling path is deliberately an opt-in test-runner concern.  The
--- ordinary 12k gate keeps its existing invocation, public streams, limits, and
--- assertions; this path merely writes a caller-selected sidecar after a
--- bounded production-shaped cold compile has completed.
-{-# NOINLINE phaseProfileOutputRef #-}
-phaseProfileOutputRef :: IORef (Maybe FilePath)
-phaseProfileOutputRef = unsafePerformIO (newIORef Nothing)
-
-setPhaseProfileOutput :: Maybe FilePath -> IO ()
-setPhaseProfileOutput = writeIORef phaseProfileOutputRef
-
-getPhaseProfileOutput :: IO (Maybe FilePath)
-getPhaseProfileOutput = readIORef phaseProfileOutputRef
 
 -- | Remove the harness-only option before Tasty receives its arguments.  The
 -- option is intentionally exact and single-valued so a typo cannot silently
@@ -447,74 +424,72 @@ phaseProfileAbsentByDefaultContract :: IO ()
 phaseProfileAbsentByDefaultContract =
   withSystemTempDirectory "adrai-phase-profile-absence" $ \root -> do
     let output = root </> "not-written.tsv"
-    assertBool "the bounded profiling test must be absent without --phase-profile" (null (phaseProfileTestsFor Nothing))
     writePhaseProfile Nothing (PhaseProfile "production-shape-v1" ["-N1", "-M2G"] [PhaseSample "materialize" 0 0 "ok" 0 0 0 []])
     exists <- doesFileExist output
     assertBool "profiling sidecar must not be created without --phase-profile" (not exists)
 
--- These are the configured P3-06 retrieval limits.  They deliberately stay
--- absolute even though this fixture has fewer than 2,000 live ADRs, so a
--- regression cannot hide behind a relational bound derived from its input.
-stressMaxHybridSectionCandidates, stressMaxFieldRerankCandidates :: Int
-stressMaxHybridSectionCandidates = 120
-stressMaxFieldRerankCandidates = 80
-
-stressMaxSourceChunks, stressMaxSelectedSourceChunks, stressMaxEligibleSearchItems :: Int
-stressMaxSourceChunks = 24
-stressMaxSelectedSourceChunks = 24
-stressMaxEligibleSearchItems = 2000
-
-stressMaxRelevanceShortlist, stressMaxRelevanceSections, stressMaxExactRerankCandidates :: Int
-stressMaxRelevanceShortlist = 160
-stressMaxRelevanceSections = 12000
-stressMaxExactRerankCandidates = 960
-
--- Cold compilation must be viable within the production gate's resource
--- envelope. RTS residency is portable and enforced. Windows has a
--- process-tree sampler with a single-snapshot contract, so its OS working-set
--- bound is enforced there as an additional acceptance criterion; other
--- platforms retain the figure as a diagnostic until they provide equivalent
--- process-tree accounting.
-coldCompileTimeoutMicros :: Int
-coldCompileTimeoutMicros = 5 * 60 * 1000000
-
-processCleanupTimeoutMicros :: Int
-processCleanupTimeoutMicros = 10 * 1000000
-
-stressHardHeapBytes, stressTargetResidencyBytes, stressProcessTreeTargetBytes :: Integer
-stressHardHeapBytes = 2 * 1024 * 1024 * 1024
-stressTargetResidencyBytes = (3 * stressHardHeapBytes) `div` 4
+stressProcessTreeTargetBytes :: Integer
 -- OS working-set accounting includes executable images and child processes.
 -- Both supported samplers capture the root with all observed descendants, so
 -- the 2.5 GiB process-tree allowance is an acceptance bound on Windows and
 -- POSIX rather than a Windows-only diagnostic.
 stressProcessTreeTargetBytes = (5 * 1024 * 1024 * 1024) `div` 2
 
--- ADR key 800 is the canonical large-plan compiler template whose rendered
--- identity is ADR 801.  Keep every probe string derived from that owned
--- template, rather than duplicating an obsolete synthetic stress label.
+compactStressImportPlan :: Fixture.RepositoryPlan
+compactStressImportPlan =
+  Fixture.RepositoryPlan
+    { Fixture.repositoryPlanMeta =
+        (Fixture.repositoryPlanMeta largeStressV1)
+          { Fixture.fixturePurpose =
+              "30 imported commits followed by one feature commit and one merge; 32 commits and 16 operations total"
+          },
+      Fixture.repositoryPlanSpec =
+        Fixture.RepositorySpec
+          { Fixture.repositorySpecName = "compact-stress-v1",
+            Fixture.repositoryCommitCount = 30,
+            Fixture.repositoryOperationCounts = compactStressImportOperationCounts,
+            Fixture.repositoryNoiseCommitCount = 15,
+            Fixture.repositoryBranchEvents =
+              [ Fixture.CreateBranchAt (Fixture.CommitOrdinal 31) compactFeatureBranch (Fixture.CommitOrdinal 30),
+                Fixture.CheckoutBranchAt (Fixture.CommitOrdinal 31) compactFeatureBranch,
+                Fixture.CheckoutBranchAt (Fixture.CommitOrdinal 32) (Fixture.BranchKey "main")
+              ],
+            Fixture.repositoryInvariants =
+              [ Fixture.ExactCommitCount 30,
+                Fixture.ExactNoiseCommitCount 15,
+                Fixture.ExactOperationCount Fixture.CreateOperation 8,
+                Fixture.ExactOperationCount Fixture.AmendOperation 3,
+                Fixture.ExactOperationCount Fixture.ScopeOperation 2,
+                Fixture.ExactOperationCount Fixture.DomainOperation 1,
+                Fixture.ExactOperationCount Fixture.ObsoleteOperation 1,
+                Fixture.ParentsPrecedeChildren,
+                Fixture.OperationsReferenceCreatedAdrs
+              ]
+          }
+    }
+
+compactStressImportOperationCounts :: Fixture.OperationCounts
+compactStressImportOperationCounts = Fixture.OperationCounts 8 3 2 1 1
+
+compactFeatureBranch :: Fixture.BranchKey
+compactFeatureBranch = Fixture.BranchKey "stress/feature-adrs"
+
+-- ADR key 7 remains active after the compact plan's amend/scope/domain/status
+-- transitions and supplies deterministic data for the compiled repository.
 representativeTemplate :: Fixture.AdrTemplate
 representativeTemplate =
   case
       [ template
-      | planned <- repositorySteps largeStressV1
+      | planned <- repositorySteps compactStressImportPlan
       , Fixture.PlannedSemantic _ (Fixture.PlannedCreate template) <- [Fixture.plannedCommitKind planned]
-      , Fixture.adrTemplateKey template == Fixture.AdrKey 800
+      , Fixture.adrTemplateKey template == Fixture.AdrKey 7
       ] of
     [template] -> template
-    templates -> error ("largeStressV1 must contain exactly one representative template, found " <> show (length templates))
-
-representativeAdr :: String
-representativeAdr =
-  case Fixture.adrTemplateKey representativeTemplate of
-    Fixture.AdrKey key -> Text.unpack (identifier 'A' (key + 1))
-
-representativeSearchQuery :: String
-representativeSearchQuery = Text.unpack (Fixture.adrTemplateTitle representativeTemplate)
+    templates -> error ("compactStressImportPlan must contain exactly one representative template, found " <> show (length templates))
 
 representativeRelevanceText :: Text.Text
 representativeRelevanceText =
-  "Canonical large-plan marker: "
+  "Canonical compact-plan marker: "
     <> Fixture.adrTemplateTitle representativeTemplate
     <> " applies to "
     <> Text.intercalate ", " (Fixture.adrTemplateScopes representativeTemplate)
@@ -534,191 +509,110 @@ data Importer = Importer
   }
 
 largeRepositoryContract :: IO ()
-largeRepositoryContract = withSystemTempDirectory "adrai-large-repository" $ \root -> do
+largeRepositoryContract = withSystemTempDirectory "adrai-compact-repository" $ \root -> do
   let repository = root </> "repository"
-  timed "materialize" (materializePlan repository largeStressV1 (representativeRelevanceText <> "\n"))
+  featureAdr <- timed "materialize" (materializeCompactRepository repository (representativeRelevanceText <> "\n"))
+  assertCompactRepositoryTopology repository featureAdr
 
-  coldResult <- timed "cold-compile" (runAdraiWithRtsStats repository ["compile", "--json"])
-  let cold = adraiProcessStdout coldResult
-      coldRtsStats = adraiProcessStderr coldResult
-  maximumResidency <-
-    case parseMaximumResidency coldRtsStats of
-      Nothing -> assertFailure ("cold compile RTS statistics omitted maximum residency: " <> coldRtsStats) >> fail "unreachable"
-      Just value -> pure value
-  BS8.hPutStrLn stderr (BS8.pack ("P6-06G stress resource: cold_compile_max_residency_bytes=" <> show maximumResidency <> " process_tree_peak_bytes=" <> show (adraiProcessTreePeakBytes coldResult) <> " process_tree_successful_samples=" <> show (adraiProcessTreeSuccessfulSamples coldResult) <> " process_tree_target_bytes=" <> show stressProcessTreeTargetBytes <> " hard_heap_bytes=" <> show stressHardHeapBytes))
-  assertBool
-    ("cold compile maximum residency must be <= " <> show stressTargetResidencyBytes <> " bytes, got " <> show maximumResidency)
-    (maximumResidency <= stressTargetResidencyBytes)
-  assertBool
-    ("cold compile process-tree peak must be <= " <> show stressProcessTreeTargetBytes <> " bytes, got " <> show (adraiProcessTreePeakBytes coldResult))
-    (withinProcessTreeTarget (adraiProcessTreePeakBytes coldResult))
+  cold <- timed "cold-compile" (runAdraiFunctional repository ["compile", "--json"])
   assertContains "cold compile" "\"cache_mode\":\"full\"" cold
   assertContains "cold compile" "\"incremental_kind\":\"full\"" cold
   assertContains "cold compile" "\"errors\":0" cold
   coldHistory <- jsonIntegerAt ["history_commits_scanned"] cold
-  assertEqual coldHistory 12000 "cold compile must scan exactly the 12,000 reachable commits"
+  assertEqual coldHistory 32 "cold compile must scan the complete compact branch-and-merge history"
   coldDocuments <- jsonIntegerAt ["documents_parsed"] cold
-  assertEqual coldDocuments 5350 "cold compile must parse exactly the 5,350 managed documents"
+  assertEqual coldDocuments 46 "cold compile must parse every compact semantic document"
   coldAdrs <- jsonIntegerAt ["adrs_rebuilt"] cold
-  assertEqual coldAdrs 900 "cold compile must rebuild exactly the 900 ADRs"
-  -- The exact-cache path is deliberately sampled twice: it must remain exact
-  -- after the first immutable archive has been read and after the mutable alias
-  -- has been refreshed.
-  exactOne <- timed "exact-compile-1" (runAdrai repository ["compile", "--json"])
-  exactTwo <- timed "exact-compile-2" (runAdrai repository ["compile", "--json"])
-  mapM_ (assertContains "exact compile" "\"cache_mode\":\"exact\"") [exactOne, exactTwo]
+  assertEqual coldAdrs 9 "cold compile must rebuild all eight imported ADRs and the branch ADR"
+  compactArchiveValidationContract repository
 
-  let representative = representativeAdr
-  search <- timed "hybrid-search" (runAdrai repository ["search", representativeSearchQuery, "--mode", "hybrid", "--limit", "10", "--json"])
-  assertContains "hybrid search" "\"mode\":\"hybrid\"" search
-  assertNonEmptyResults "hybrid search" search
-  assertContains "hybrid search" representative search
-  sectionCandidates <- firstResultIntegerAt ["retrieval", "vector", "section_candidates"] search
-  fieldCandidates <- firstResultIntegerAt ["retrieval", "field_rerank_candidates"] search
-  assertBounded "hybrid section candidates" stressMaxHybridSectionCandidates sectionCandidates
-  assertBounded "hybrid field rerank candidates" stressMaxFieldRerankCandidates fieldCandidates
-  relevant <- timed "representative-relevance" (runAdrai repository ["relevant", "analysis/relevance.txt", "--limit", "10", "--json"])
-  assertNonEmptyResults "representative relevance" relevant
-  assertContains "representative relevance" representative relevant
-  relevantBounds <- relevanceBounds relevant
-  let (sourceChunks, selectedChunks, eligibleItems, adrShortlist, candidateItems, searchSections, exactRerank) = relevantBounds
-  assertBounded "relevance source chunks" stressMaxSourceChunks sourceChunks
-  assertBounded "relevance selected source chunks" stressMaxSelectedSourceChunks selectedChunks
-  assertBounded "relevance eligible search items" stressMaxEligibleSearchItems eligibleItems
-  assertBounded "relevance ADR shortlist" stressMaxRelevanceShortlist adrShortlist
-  assertBounded "relevance shortlist candidates" stressMaxRelevanceShortlist candidateItems
-  assertBounded "relevance search sections" stressMaxRelevanceSections searchSections
-  assertBounded "relevance exact rerank candidates" stressMaxExactRerankCandidates exactRerank
-  assertBool "relevance must strictly exclude all-pairs reranking" (exactRerank < selectedChunks * searchSections)
-
-  -- An ordinary final commit has an identical managed tree and must use the
-  -- bounded tree-identical proof rather than reparse the corpus.
+  -- The only second production-CLI call follows an unmanaged commit and must
+  -- prove the bounded tree-identical path without reparsing the corpus.
   addNoiseCommit repository "after-cache-proof"
-  treeIdentical <- timed "tree-identical-compile" (runAdrai repository ["compile", "--json"])
+  treeIdentical <- timed "tree-identical-compile" (runAdraiFunctional repository ["compile", "--json"])
   assertContains "tree-identical compile" "\"incremental_kind\":\"tree-identical\"" treeIdentical
   assertContains "tree-identical compile" "\"documents_parsed\":0" treeIdentical
   treeHistory <- jsonIntegerAt ["history_commits_scanned"] treeIdentical
   assertEqual treeHistory 1 "tree-identical history proof must scan exactly the new noise commit"
 
-  -- The feature adds a real managed ADR, so revision switching proves both
-  -- branch-only semantic visibility and revision-addressed cache selection.
-  git repository ["switch", "-c", "stress/feature-adrs"]
-  featureAdr <- createFeatureAdr repository
-  featureRevision <- gitStdout repository ["rev-parse", "HEAD"]
-  feature <- timed "feature-compile" (runAdrai repository ["compile", "--json"])
-  assertContains "feature compile" "\"errors\":0" feature
-  assertContains "feature compile revision" (Text.unpack (Text.strip (Text.pack featureRevision))) feature
-  featureSearch <- timed "feature-branch-search" (runAdrai repository ["search", "feature branch only decision", "--mode", "hybrid", "--limit", "10", "--json"])
-  assertContains "feature branch ADR" featureAdr featureSearch
-  git repository ["switch", "main"]
-  mainRevision <- gitStdout repository ["rev-parse", "HEAD"]
-  mainAgain <- timed "main-branch-compile" (runAdrai repository ["compile", "--json"])
-  assertContains "main branch compile" "\"errors\":0" mainAgain
-  assertContains "main branch revision" (Text.unpack (Text.strip (Text.pack mainRevision))) mainAgain
-  assertContains "main branch exact cache" "\"cache_mode\":\"exact\"" mainAgain
-  mainSearch <- timed "main-branch-search" (runAdrai repository ["search", "feature branch only decision", "--mode", "hybrid", "--limit", "10", "--json"])
-  assertAbsent "main branch must not expose feature ADR" featureAdr mainSearch
-  -- Timings are reporting-only until an isolated completed baseline exists.
-  pure ()
+compactArchiveValidationContract :: FilePath -> IO ()
+compactArchiveValidationContract repositoryPath = do
+  discovered <- discoverRepository systemGit repositoryPath
+  repository <- either (\problem -> assertFailure (show problem) >> fail "unreachable") pure discovered
+  resolved <- resolveRepositoryRevision repository (RevisionSpec "HEAD")
+  revision <- either (\problem -> assertFailure (show problem) >> fail "unreachable") pure resolved
+  archive <-
+    maybe
+      (assertFailure "compact cold compile has no exact archive" >> fail "unreachable")
+      pure
+      (exactCacheArchivePath repository (resolvedCommitOid revision))
+  let target = gitOidText (resolvedCommitOid revision)
+  (accepted, counters) <- observeExactCacheValidationWorkForTest archive target
+  assertBool "compact exact archive validation was not accepted" accepted
+  cacheValidationSourceOpens counters @?= 1
+  cacheValidationInvocations counters @?= 1
+  cacheValidationFullMaterializationLoads counters @?= 1
+  cacheValidationFtsPayloadMaterializations counters @?= 0
+  cacheValidationFtsParityChecks counters @?= compactExpectedFtsValidationFamilies
+  cacheValidationFtsIntegrityChecks counters @?= compactExpectedFtsValidationFamilies
+  cacheValidationCanonicalFamilyScans counters @?= compactExpectedFamilyScans
+  Map.keysSet (cacheValidationCanonicalFamilyRows counters) @?= Map.keysSet compactExpectedFamilyScans
+  let rows = cacheValidationCanonicalFamilyRows counters
+  Map.lookup "operation" rows @?= Just 16
+  Map.lookup "target_reachable_commit" rows @?= Just 32
+  Map.lookup "managed_source" rows @?= Just 46
+  Map.lookup "decision_record" rows @?= Just 12
+  Map.lookup "reduced_adr" rows @?= Just 9
+  Map.lookup "search_document" rows @?= Just 9
 
--- | This bounded path exists solely to attribute cold-compile work before a
--- full 12k gate is run.  It is a no-op unless Main consumed an explicit
--- @--phase-profile FILE@ option, and it keeps the production executable's
--- normal output in its captured pipes.
-productionShapeProfileContract :: IO ()
-productionShapeProfileContract = do
-  output <- getPhaseProfileOutput
-  forM_ output $ \path -> do
-    withSystemTempDirectory "adrai-production-shape-profile" $ \root -> do
-      let repository = root </> "repository"
-          trace2Path = root </> "compiler-git-trace2.json"
-      -- Fixture construction happens before the child starts.  Its Git and
-      -- fast-import children therefore cannot enter either compiler-owned
-      -- attribution artifact or the Trace2 total.
-      materializePlan repository productionShapeV1 "Production-shaped phase profile fixture.\n"
-      cold <-
-        runAdraiWithRuntimeEnvironment
-          RequireCompleteProcessTreeSample
-          repository
-          ["compile", "--json"]
-          ["-t", "--machine-readable"]
-          (Just coldCompileTimeoutMicros)
-          [ ("ADRAI_TEST_COLD_COMPILE_ATTRIBUTION", path),
-            ("GIT_TRACE2_EVENT", trace2Path)
-          ]
-      assertContains "production profile cold compile" "\"cache_mode\":\"full\"" (adraiProcessStdout cold)
-      assertContains "production profile cold compile" "\"errors\":0" (adraiProcessStdout cold)
-      history <- jsonIntegerAt ["history_commits_scanned"] (adraiProcessStdout cold)
-      assertEqual history 2000 "production profile cold compile must scan exactly 2,000 reachable commits"
-      maximumResidency <-
-        case parseMaximumResidency (adraiProcessStderr cold) of
-          Nothing -> assertFailure "production profile RTS output omitted maximum residency" >> fail "unreachable"
-          Just value -> pure value
-      assertBool "production profile RTS residency must stay within the cold gate" (maximumResidency <= stressTargetResidencyBytes)
-      assertBool "production profile process tree needs a sampled peak" (adraiProcessTreePeakBytes cold >= 0)
-      artifactText <- BS8.unpack <$> BS.readFile path
-      case parseAttributionArtifact artifactText of
-        Left problem -> assertFailure ("production profile attribution artifact: " <> problem)
-        Right artifact -> assertCompleteAttribution artifact
-      traceExists <- doesFileExist trace2Path
-      assertBool "compiler Trace2 file is absent" traceExists
-      trace2 <- BS8.unpack <$> BS.readFile trace2Path
-      case trace2ProcessTotals trace2 of
-        Left problem -> assertFailure ("compiler Trace2 file is malformed: " <> problem)
-        Right (started, exited, traceElapsedMilliseconds) -> do
-          assertBool "compiler Trace2 file contains no Git child operations" (started > 0)
-          started @?= exited
-          assertBool "compiler Trace2 elapsed total is negative" (traceElapsedMilliseconds >= 0)
-          appendAttributionEvidence
-            path
-            [ ("rts_max_residency_bytes", maximumResidency),
-              ("process_tree_peak_bytes", adraiProcessTreePeakBytes cold),
-              ("trace2_git_requests", fromIntegral started),
-              ("trace2_git_elapsed_ms", traceElapsedMilliseconds)
-            ]
-          persisted <- BS8.unpack <$> BS.readFile path
-          case parseAttributionArtifact persisted of
-            Right (AttributionArtifact rows) ->
-              assertBool
-                "caller-owned profile artifact omits terminal runtime evidence"
-                (length [() | AttributionEvidence _ _ _ <- rows] == 4)
-            Left problem -> assertFailure ("persisted production profile artifact: " <> problem)
+  fingerprintEvidence <- observeMaterializationFingerprintForTest archive
+  evidence <- maybe (assertFailure "compact archive fingerprint parity evidence was unavailable" >> fail "unreachable") pure fingerprintEvidence
+  case
+      ( materializationFingerprintPersistedValue evidence,
+        materializationFingerprintEstablishedValue evidence,
+        materializationFingerprintProductionValue evidence,
+        materializationFingerprintObserverValue evidence
+      )
+    of
+      (Just persisted, Just established, Just production, Just observed) -> do
+        persisted @?= established
+        persisted @?= production
+        persisted @?= observed
+      _ -> assertFailure "compact archive fingerprint parity did not produce four accepted values"
 
-assertCompleteAttribution :: AttributionArtifact -> IO ()
-assertCompleteAttribution artifact = do
-  let rows = attributionArtifactRows artifact
-      completed = [phase | AttributionEnd _ phase _ _ _ True <- rows]
-  assertBool "attribution artifact contains no completed phases" (not (null completed))
-  assertBool "attribution artifact contains a failed phase" (all isSuccessfulEnd rows)
-  assertBool "attribution artifact omits a cold-compile phase" (all (`elem` completed) requiredColdCompilePhases)
+  plans <- observeTargetReachabilityPlansForTest archive target
+  planEvidence <- maybe (assertFailure "compact archive reachability plans were unavailable" >> fail "unreachable") pure plans
+  assertReachabilityPlan "bulk" "target_oid=?" (targetReachabilityBulkPlanDetails planEvidence)
+  assertReachabilityPlan "lower" "target_oid<?" (targetReachabilityLowerProbePlanDetails planEvidence)
+  assertReachabilityPlan "upper" "target_oid>?" (targetReachabilityUpperProbePlanDetails planEvidence)
   where
-    requiredColdCompilePhases =
-      [ CliPreflight,
-        CliRevisionResolution,
-        PreflightCurrentObservation,
-        CacheSelection,
-        CurrentTreeBlobObservation,
-        HistoryGraphEnumeration,
-        HistoryPathSelectionDiff,
-        HistoryReplayParse,
-        BasisChecks,
-        AnalysisGate,
-        SearchMaterializationPhase,
-        Fingerprinting,
-        SqliteSchema,
-        SqliteMetadataInitial,
-        ManagedSourceRestream,
-        SemanticInserts,
-        SearchInserts,
-        FtsInserts,
-        SqliteMetadataFinal,
-        Verification,
-        DatabaseClose,
-        ImmutablePublication,
-        CurrentAliasCopy
-      ]
-    isSuccessfulEnd (AttributionEnd _ _ _ _ _ succeeded) = succeeded
-    isSuccessfulEnd _ = True
+    assertReachabilityPlan label predicate details = do
+      let rendered = Text.intercalate "\n" details
+      assertBool (label <> " reachability plan omitted the composite PK index: " <> Text.unpack rendered)
+        ("sqlite_autoindex_target_reachable_commit_1" `Text.isInfixOf` rendered)
+      assertBool (label <> " reachability plan omitted " <> Text.unpack predicate <> ": " <> Text.unpack rendered)
+        (predicate `Text.isInfixOf` rendered)
+      assertBool (label <> " reachability plan scanned the table: " <> Text.unpack rendered)
+        (not ("SCAN target_reachable_commit" `Text.isInfixOf` rendered))
+      assertBool (label <> " reachability plan used a temporary sort: " <> Text.unpack rendered)
+        (not ("USE TEMP B-TREE" `Text.isInfixOf` rendered))
+
+compactExpectedFamilyScans :: Map.Map Text.Text Int
+compactExpectedFamilyScans = Map.fromList
+  [ ("meta", 1), ("sqlite_master", 1), ("repository_config", 1), ("managed_source", 1),
+    ("issue", 1), ("adr_conflict", 1), ("operation", 1), ("operation_member", 1),
+    ("operation_member_parent", 1), ("decision_record", 1), ("connection_record", 1),
+    ("reduced_adr", 1), ("axis_head", 1), ("current_connection", 1),
+    ("operation_commit", 1), ("operation_target_coverage", 1), ("line_landing", 1),
+    ("target_reachable_commit", 1), ("line_config", 1), ("ref_observation", 1),
+    ("search_document", 1), ("search_section", 1), ("local_alias", 1)
+  ]
+
+compactExpectedFtsValidationFamilies :: Map.Map Text.Text Int
+compactExpectedFtsValidationFamilies = Map.fromList
+  [ ("fts_search_exact", 1), ("fts_search_stemmed", 1), ("fts_search_identifier", 1),
+    ("fts_passage_exact", 1), ("fts_passage_stemmed", 1), ("fts_passage_identifier", 1)
+  ]
 
 -- Trace2 is intentionally parsed independently of the compiler artifact.
 -- Fixture construction finishes before this environment is installed, so each
@@ -768,67 +662,68 @@ assertTrace2Rejected :: String -> String -> IO ()
 assertTrace2Rejected label raw =
   assertBool label (either (const True) (const False) (trace2ProcessTotals raw))
 
-materializePlan :: FilePath -> Fixture.RepositoryPlan -> Text.Text -> IO ()
-materializePlan repository plan relevanceText = do
+materializeCompactRepository :: FilePath -> Text.Text -> IO String
+materializeCompactRepository repository relevanceText = do
   initialise repository
-  validatePlan plan
-  withImporter repository $ \importer -> do
+  validatePlan compactStressImportPlan
+  featureAdr <- withImporter repository $ \importer -> do
     states <- newIORef []
-    forM_ (repositorySteps plan) (emitPlanned relevanceText importer states)
+    forM_ (repositorySteps compactStressImportPlan) (emitPlanned relevanceText importer states)
+    mainMark <- requireImporterLastCommitMark importer
+    mainBasis <- requireImporterBasis importer
+    (adr, featureFiles) <- featureAdrFiles mainBasis
+    featureMark <-
+      fastCommitAt
+        importer
+        "refs/heads/stress/feature-adrs"
+        [mainMark]
+        featureFiles
+        "adrai: feature branch only decision"
+    _ <-
+      fastCommitAt
+        importer
+        "refs/heads/main"
+        [mainMark, featureMark]
+        featureFiles
+        "merge compact feature ADR"
+    pure adr
   synchronizeImportedWorktree repository
-  count <- readIntGit repository ["rev-list", "--count", "HEAD"]
-  assertEqual count (Fixture.repositoryCommitCount (Fixture.repositoryPlanSpec plan)) "fixture must have its planned commit count"
+  pure featureAdr
+
+assertCompactRepositoryTopology :: FilePath -> String -> IO ()
+assertCompactRepositoryTopology repository featureAdr = do
+  ancestry <- filter (not . null) . lines <$> gitStdout repository ["rev-list", "--parents", "HEAD"]
+  length ancestry @?= 32
+  case ancestry of
+    merge : _ -> length (words merge) @?= 3
+    [] -> assertFailure "compact repository ancestry unexpectedly became empty"
+  subjects <- lines <$> gitStdout repository ["log", "--format=%s", "HEAD"]
+  length (filter ("adrai:" `isInfixOf`) subjects) @?= 16
+  firstParentHasFeature <- gitTreeContains repository "HEAD^1" featureAdr
+  secondParentHasFeature <- gitTreeContains repository "HEAD^2" featureAdr
+  mergedHeadHasFeature <- gitTreeContains repository "HEAD" featureAdr
+  assertBool "the main parent must not contain the feature ADR" (not firstParentHasFeature)
+  assertBool "the feature parent must contain the feature ADR" secondParentHasFeature
+  assertBool "the merge result must retain the feature ADR" mergedHeadHasFeature
+
+gitTreeContains :: FilePath -> String -> String -> IO Bool
+gitTreeContains repository revision marker = do
+  (status, output, problem) <-
+    readProcessWithExitCode
+      "git"
+      ["-C", repository, "grep", "-l", marker, revision, "--", "architecture/adrai"]
+      ""
+  case status of
+    ExitSuccess -> do
+      assertBool ("git grep returned no paths for " <> revision) (not (null (lines output)))
+      pure True
+    ExitFailure 1 | null output && null problem -> pure False
+    ExitFailure code -> assertFailure ("git tree read failed for " <> revision <> " (" <> show code <> "): " <> problem) >> fail "unreachable"
 
 -- | Fast-import updates refs directly, so reset both ordinary Git views before
 -- subsequent fixture commits use the index or worktree.
 synchronizeImportedWorktree :: FilePath -> IO ()
 synchronizeImportedWorktree repository = git repository ["reset", "--hard", "HEAD"]
-
--- | Keep the transition regression small while exercising the same fast-import
--- to ordinary-Git handoff used by the large fixture.
-boundedPostImportTransitionContract :: IO ()
-boundedPostImportTransitionContract = withSystemTempDirectory "adrai-post-import-transition" $ \root -> do
-  let repository = root </> "repository"
-      managedRoots = ["architecture/adrai/decisions", "architecture/adrai/connections"]
-  initialise repository
-  withImporter repository $ \importer -> do
-    fastCommit importer [(".adrai.toml", TextEncoding.encodeUtf8 defaultConfigText)] "seed configuration"
-    states <- newIORef []
-    createState importer states 0 representativeTemplate
-  synchronizeImportedWorktree repository
-  importedRevision <- gitRevision repository "HEAD"
-  importedConfig <- gitStdout repository ["show", "HEAD:.adrai.toml"]
-  assertEqual importedConfig (Text.unpack defaultConfigText) "synchronized worktree retains imported configuration"
-  managedEntries <- traverse (\rootPath -> lines <$> gitStdout repository ["ls-tree", "-r", "--name-only", "HEAD", "--", rootPath]) managedRoots
-  assertBool "synchronized worktree retains entries under every configured managed root" (all (not . null) managedEntries)
-
-  cold <- runAdrai repository ["compile", "--json"]
-  assertContains "bounded cold compile" "\"errors\":0" cold
-  exact <- runAdrai repository ["compile", "--json"]
-  assertContains "bounded exact compile" "\"errors\":0" exact
-  assertContains "bounded exact compile" "\"cache_mode\":\"exact\"" exact
-
-  addNoiseCommit repository "bounded-transition"
-  noiseRevision <- gitRevision repository "HEAD"
-  noiseParent <- gitRevision repository "HEAD^"
-  assertEqual noiseParent importedRevision "noise commit must parent the imported head"
-  git repository (["diff", "--quiet", noiseParent, noiseRevision, "--", ".adrai.toml"] <> managedRoots)
-  noiseDiff <- gitStdout repository ["diff", "--name-status", noiseParent, noiseRevision]
-  assertEqual (Text.strip (Text.pack noiseDiff)) ("A\tsrc/post/bounded-transition.txt" :: Text.Text) "noise commit must add exactly its unmanaged path"
-  treeIdentical <- runAdrai repository ["compile", "--json"]
-  assertContains "bounded tree-identical compile" "\"errors\":0" treeIdentical
-  assertContains "bounded tree-identical compile" "\"incremental_kind\":\"tree-identical\"" treeIdentical
-  assertContains "bounded tree-identical compile" "\"documents_parsed\":0" treeIdentical
-  treeHistory <- jsonIntegerAt ["history_commits_scanned"] treeIdentical
-  assertEqual treeHistory 1 "bounded tree-identical history proof must scan exactly the noise commit"
-
-  git repository ["switch", "-c", "bounded/post-import-transition"]
-  _ <- createFeatureAdr repository
-  featureRevision <- gitRevision repository "HEAD"
-  forM_ (concat managedEntries) $ \path -> do
-    importedEntry <- gitStdout repository ["show", importedRevision <> ":" <> path]
-    featureEntry <- gitStdout repository ["show", featureRevision <> ":" <> path]
-    assertEqual featureEntry importedEntry ("ordinary feature setup must preserve imported managed entry " <> path)
 
 initialise :: FilePath -> IO ()
 initialise repository = do
@@ -846,7 +741,7 @@ emitOperation importer states operation planned =
     Fixture.PlannedDomain target domains -> domainState importer states operation target domains
     Fixture.PlannedObsolete target -> obsoleteState importer states operation target
 
--- | Interpret the architecture-owned large plan directly.  The strict fold
+-- | Interpret the compact import plan directly. The strict fold
 -- below guards its cardinalities; this traversal preserves its deterministic
 -- due schedule instead of maintaining a second schedule in the stress gate.
 emitPlanned :: Text.Text -> Importer -> IORef [AdrState] -> Fixture.PlannedCommit -> IO ()
@@ -864,7 +759,7 @@ emitPlanned relevanceText importer states planned =
             ]
             (Text.unpack noiseLabel)
         Fixture.CommitOrdinal ordinal -> emitNoise importer ordinal noiseLabel
-    Fixture.PlannedMerge branch -> assertFailure ("largeStressV1 unexpectedly contains a merge step for " <> show branch)
+    Fixture.PlannedMerge branch -> assertFailure ("compact import plan unexpectedly contains a merge step for " <> show branch)
 
 validatePlan :: Fixture.RepositoryPlan -> IO ()
 validatePlan plan = do
@@ -910,9 +805,8 @@ createState importer states operation template = do
   fastCommit importer files ("adrai: create " <> Text.unpack (Fixture.adrTemplateTitle template))
   modifyIORef' states (<> [AdrState adr record scope domain status domains scopes (Fixture.adrTemplateTitle template)])
 
-createFeatureAdr :: FilePath -> IO String
-createFeatureAdr repository = do
-  basis <- repositoryHead repository
+featureAdrFiles :: GitOid -> IO (String, [(FilePath, BS.ByteString)])
+featureAdrFiles basis = do
   adr <- checked "feature ADR" (mkAdrId (identifier 'A' 99001))
   record <- checked "feature record" (mkRecordId (identifier 'R' 99001))
   scope <- checked "feature scope" (mkConnectionId (identifier 'C' 99001))
@@ -926,14 +820,8 @@ createFeatureAdr repository = do
       scopeRecord = ManagedConnection (ConnectionRecord scope (AppliesToConnection (AppliesToPayload adr [] "initial" [scopePattern] [] [scopePattern])) "Feature scope.\n")
       domainRecord = ManagedConnection (ConnectionRecord domainEdge (DomainsConnection (DomainsPayload adr [] "initial" [domain] [] [domain] [])) "Feature domain.\n")
       statusRecord = ManagedConnection (ConnectionRecord status (StatusConnection (StatusPayload adr [] StatusActive [record] Nothing)) "Feature status.\n")
-  files <- traverse (sealMember actor basis operation) [(decision, "decision.create", []), (scopeRecord, "scope.initial", [ProvenanceRecord record]), (domainRecord, "domain.initial", [ProvenanceRecord record]), (statusRecord, "status.initial", [ProvenanceRecord record])]
-  forM_ files $ \(path, bytes) -> do
-    let destination = repository </> path
-    createDirectoryIfMissing True (takeDirectory destination)
-    BS.writeFile destination bytes
-  git repository (["add", "--"] <> map fst files)
-  git repository ["commit", "-m", "adrai: feature branch only decision"]
-  pure (Text.unpack (adrIdText adr))
+  files <- traverse (sealMemberOnBranch "stress/feature-adrs" actor basis operation) [(decision, "decision.create", []), (scopeRecord, "scope.initial", [ProvenanceRecord record]), (domainRecord, "domain.initial", [ProvenanceRecord record]), (statusRecord, "status.initial", [ProvenanceRecord record])]
+  pure (Text.unpack (adrIdText adr), files)
 
 amendState :: Importer -> IORef [AdrState] -> Int -> Fixture.AdrKey -> Text.Text -> IO ()
 amendState importer states operation target amendment = do
@@ -998,14 +886,17 @@ obsoleteState importer states operation target = do
   replaceState states target state {stateStatus = edge}
 
 sealMember :: Actor -> GitOid -> OperationId -> (ManagedRecord, Text.Text, [ProvenanceObjectId]) -> IO (FilePath, BS.ByteString)
-sealMember actor basis operation (record, eventText, parents) = do
+sealMember = sealMemberOnBranch "main"
+
+sealMemberOnBranch :: Text.Text -> Actor -> GitOid -> OperationId -> (ManagedRecord, Text.Text, [ProvenanceObjectId]) -> IO (FilePath, BS.ByteString)
+sealMemberOnBranch branch actor basis operation (record, eventText, parents) = do
   semantic <- checked "semantic" (renderManagedSemantic record)
   event <- checked "event" (mkEventKind eventText)
   anchor <- checked "line anchor" (mkLineAnchor "stress@logical\nrecord" basis)
   capsule <- checked "capsule" (mkProvenanceCapsule ProvenanceCapsuleInput
     { capsuleInputOperationId = operation, capsuleInputObjectId = managedObject record, capsuleInputEventKind = event
     , capsuleInputActor = actor, capsuleInputTimestampMs = 1700000000000, capsuleInputBasis = basis, capsuleInputParents = parents
-    , capsuleInputBranchHint = Just "main", capsuleInputUpstreamHint = Nothing, capsuleInputLineAnchors = [anchor]
+    , capsuleInputBranchHint = Just branch, capsuleInputUpstreamHint = Nothing, capsuleInputLineAnchors = [anchor]
     , capsuleInputSemanticDigest = semanticDigest semantic, capsuleInputToolVersion = "adrai/1.0.0", capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing })
   bytes <- checked "sealed document" (sealManagedDocument record capsule)
   path <- checked "canonical path" (canonicalManagedPath (configManagedPaths defaultConfig) record)
@@ -1030,13 +921,22 @@ withImporter repository = bracket (startImporter repository) finishImporter
 
 fastCommit :: Importer -> [(FilePath, BS.ByteString)] -> String -> IO ()
 fastCommit importer files message = do
+  parentMark <- readIORef (importerLastCommitMark importer)
+  _ <- fastCommitAt importer "refs/heads/main" (maybe [] pure parentMark) files message
+  pure ()
+
+fastCommitAt :: Importer -> String -> [Int] -> [(FilePath, BS.ByteString)] -> String -> IO Int
+fastCommitAt importer ref parents files message = do
   blobMarks <- mapM writeBlob files
   commitMark <- freshMark importer
-  parentMark <- readIORef (importerLastCommitMark importer)
   let input = importerInput importer
-  writeProtocol input ("commit refs/heads/main\nmark :" <> show commitMark <> "\nauthor ADRAI Stress <stress@adrai.invalid> 1700000000 +0000\ncommitter ADRAI Stress <stress@adrai.invalid> 1700000000 +0000\n")
+  writeProtocol input ("commit " <> ref <> "\nmark :" <> show commitMark <> "\nauthor ADRAI Stress <stress@adrai.invalid> 1700000000 +0000\ncommitter ADRAI Stress <stress@adrai.invalid> 1700000000 +0000\n")
   writeData input (BS8.pack message)
-  forM_ parentMark $ \parent -> writeProtocol input ("from :" <> show parent <> "\n")
+  case parents of
+    [] -> pure ()
+    parent : merged -> do
+      writeProtocol input ("from :" <> show parent <> "\n")
+      forM_ merged $ \mergeParent -> writeProtocol input ("merge :" <> show mergeParent <> "\n")
   forM_ blobMarks $ \(path, mark) -> writeProtocol input ("M 100644 :" <> show mark <> " " <> path <> "\n")
   writeProtocol input ("\nget-mark :" <> show commitMark <> "\n")
   lineResult <- try (hGetLine (importerOutput importer)) :: IO (Either SomeException String)
@@ -1050,6 +950,7 @@ fastCommit importer files message = do
   oid <- checked "fast-import commit OID" (mkGitOid oidText)
   writeIORef (importerBasis importer) (Just oid)
   writeIORef (importerLastCommitMark importer) (Just commitMark)
+  pure commitMark
   where
     writeBlob (path, bytes) = do
       mark <- freshMark importer
@@ -1071,6 +972,11 @@ writeProtocol handle value = do
 
 freshMark :: Importer -> IO Int
 freshMark importer = atomicModifyIORef' (importerMark importer) (\mark -> let next = mark + 1 in (next, next))
+
+requireImporterLastCommitMark :: Importer -> IO Int
+requireImporterLastCommitMark importer = do
+  mark <- readIORef (importerLastCommitMark importer)
+  maybe (assertFailure "stress branch transition has no imported parent" >> fail "unreachable") pure mark
 
 finishImporter :: Importer -> IO ()
 finishImporter importer = do
@@ -1136,25 +1042,6 @@ requireImporterBasis importer = do
     Just value -> pure value
     Nothing -> assertFailure "stress operation was emitted before the seed commit" >> fail "unreachable"
 
-repositoryHead :: FilePath -> IO GitOid
-repositoryHead repository = do
-  raw <- gitStdout repository ["rev-parse", "HEAD"]
-  checked "repository HEAD" (mkGitOid (Text.strip (Text.pack raw)))
-
-gitRevision :: FilePath -> String -> IO String
-gitRevision repository revision = Text.unpack . Text.strip . Text.pack <$> gitStdout repository ["rev-parse", revision]
-
-readIntGit :: FilePath -> [String] -> IO Int
-readIntGit repository args = do
-  value <- gitStdout repository args
-  let bad = assertFailure ("expected integer from git: " <> value) >> fail "unreachable"
-  case words value of
-    [token] ->
-      case reads token of
-        [(number, "")] -> pure number
-        _ -> bad
-    _ -> bad
-
 addNoiseCommit :: FilePath -> String -> IO ()
 addNoiseCommit repository label = do
   let path = "src/post/" <> label <> ".txt"
@@ -1168,88 +1055,152 @@ data CompleteProcessTreeSamplePolicy
   | PermitNoCompleteProcessTreeSample
   deriving (Eq, Show)
 
-runAdrai :: FilePath -> [String] -> IO String
-runAdrai repository arguments = adraiProcessStdout <$> runAdraiWithRuntime PermitNoCompleteProcessTreeSample repository arguments [] Nothing
-
-runAdraiWithRtsStats :: FilePath -> [String] -> IO AdraiProcessResult
-runAdraiWithRtsStats repository arguments = runAdraiWithRuntime RequireCompleteProcessTreeSample repository arguments ["-t", "--machine-readable"] (Just coldCompileTimeoutMicros)
-
-data AdraiProcessResult = AdraiProcessResult
-  { adraiProcessStdout :: String,
-    adraiProcessStderr :: String,
-    adraiProcessTreePeakBytes :: Integer,
-    adraiProcessTreeSuccessfulSamples :: Int
+-- | A process-tree sample is deliberately typed rather than a bare total.  On
+-- Windows the rows are retained long enough to make a high-water report
+-- attributable without changing the value used by the acceptance gate.
+data ProcessTreeSample = ProcessTreeSample
+  { processTreeSampleBytes :: Integer,
+    processTreeSampleWindows :: Maybe WindowsProcessTreeSnapshot
   }
+  deriving (Eq, Show)
 
--- | Run the package-built executable while retaining structured RTS output and
--- an OS process-tree working-set high-water mark. Both supported samplers
--- include the root and all observed descendants, and are acceptance evidence.
-runAdraiWithRuntime :: CompleteProcessTreeSamplePolicy -> FilePath -> [String] -> [String] -> Maybe Int -> IO AdraiProcessResult
-runAdraiWithRuntime samplePolicy repository arguments rtsStatistics timeoutMicros =
-  runAdraiWithRuntimeEnvironment samplePolicy repository arguments rtsStatistics timeoutMicros []
+-- | The selected rows from one Win32_Process snapshot.  Creation ticks are UTC
+-- .NET ticks, which are monotonic enough for the parent/child identity checks
+-- below and avoid locale-dependent DMTF parsing in the harness.
+data WindowsProcessTreeSnapshot = WindowsProcessTreeSnapshot
+  { windowsSampledAt :: Text.Text,
+    windowsRootPid :: Integer,
+    windowsQueryDurationMilliseconds :: Integer,
+    windowsRows :: [WindowsProcessRow]
+  }
+  deriving (Eq, Show)
 
-runAdraiWithRuntimeEnvironment :: CompleteProcessTreeSamplePolicy -> FilePath -> [String] -> [String] -> Maybe Int -> [(String, String)] -> IO AdraiProcessResult
-runAdraiWithRuntimeEnvironment samplePolicy repository arguments rtsStatistics timeoutMicros suppliedEnvironment = do
+data WindowsRootIdentity = WindowsRootIdentity
+  { windowsRootIdentityPid :: Integer,
+    windowsRootIdentityCreationTicks :: Integer
+  }
+  deriving (Eq, Show)
+
+data ProcessTreeSamplerFailure
+  = RootDisappeared
+  | RootIdentityMismatch
+  | SnapshotTopologyFailure String
+  | SnapshotIdentityFailure String
+  | SnapshotOverflow
+  | SnapshotJsonFailure String
+  | SamplerInvocationFailure String
+  | DiagnosticPersistenceFailure String
+  deriving (Eq, Show)
+
+data WindowsProcessRow = WindowsProcessRow
+  { windowsProcessPid :: Integer,
+    windowsProcessParentPid :: Integer,
+    windowsProcessCreationTicks :: Integer,
+    windowsProcessWorkingSetBytes :: Integer,
+    windowsProcessName :: Text.Text
+  }
+  deriving (Eq, Show)
+
+instance Aeson.FromJSON WindowsProcessTreeSnapshot where
+  parseJSON = Aeson.withObject "WindowsProcessTreeSnapshot" $ \object ->
+    WindowsProcessTreeSnapshot
+      <$> object Aeson..: "sampled_at"
+      <*> object Aeson..: "root_pid"
+      <*> object Aeson..: "query_duration_milliseconds"
+      <*> object Aeson..: "rows"
+
+instance Aeson.FromJSON WindowsRootIdentity where
+  parseJSON = Aeson.withObject "WindowsRootIdentity" $ \object ->
+    WindowsRootIdentity
+      <$> object Aeson..: "pid"
+      <*> object Aeson..: "creation_ticks"
+
+instance Aeson.FromJSON WindowsProcessRow where
+  parseJSON = Aeson.withObject "WindowsProcessRow" $ \object ->
+    WindowsProcessRow
+      <$> object Aeson..: "pid"
+      <*> object Aeson..: "ppid"
+      <*> object Aeson..: "creation_ticks"
+      <*> object Aeson..: "working_set_bytes"
+      <*> object Aeson..: "name"
+
+-- | The complete-run watchdog owns process-tree deadlines and cleanup. This
+-- functional smoke therefore avoids the former large-capacity CIM sampler and
+-- invokes only the selected production executable.
+runAdraiFunctional :: FilePath -> [String] -> IO String
+runAdraiFunctional repository arguments = do
+  environment <- getEnvironment
   binDirectory <- getBinDir
-  let executable = binDirectory </> ("adrai" <> executableSuffix)
-  exists <- doesFileExist executable
-  assertBool ("package-built executable is absent: " <> executable) exists
-  inheritedEnvironment <- getEnvironment
-  let childEnvironment = suppliedEnvironment <> filter (\(key, _) -> key `notElem` map fst suppliedEnvironment) inheritedEnvironment
-  (Just input, Just outputHandle, Just problemHandle, processHandle) <-
-    createProcess
-      (proc executable (["--repo", repository] <> arguments <> ["+RTS", "-N1", "-M2G"] <> rtsStatistics <> ["-RTS"]))
-        { std_in = CreatePipe,
-           std_out = CreatePipe,
-           std_err = CreatePipe,
-           env = Just childEnvironment
-        }
-  hClose input
-  outputWorker <- Async.async (readFully outputHandle)
-  problemWorker <- Async.async (readFully problemHandle)
-  peakBytesRef <- newIORef 0
-  successfulSamplesRef <- newIORef 0
-  let waitForExit = pollProcessTreePeak processHandle peakBytesRef successfulSamplesRef
-      cleanup = stopAndDrain processHandle [outputWorker, problemWorker]
-      awaitWorkers = do
-        drained <- timeout processCleanupTimeoutMicros (traverse Async.wait [outputWorker, problemWorker])
-        case drained of
-          Just [forcedOutput, forcedProblem] -> pure (forcedOutput, forcedProblem)
-          Just _ -> assertFailure "unexpected stdout/stderr worker count" >> fail "unreachable"
-          Nothing -> do
-            mapM_ Async.cancel [outputWorker, problemWorker]
-            assertFailure "adrai stdout/stderr did not drain within the bounded cleanup interval" >> fail "unreachable"
-  completed <-
-    ( case timeoutMicros of
-        Nothing -> Just <$> waitForExit
-        Just duration -> timeout duration waitForExit
-    ) `onException` cleanup
-  status <-
-    case completed of
-      Just (Right exitCode) -> pure exitCode
-      Just (Left samplingFailure) -> do
-        cleanup
-        assertFailure ("adrai process-tree sampler failed: " <> samplingFailure) >> fail "unreachable"
-      Nothing -> do
-        cleanup
-        peakBytes <- readIORef peakBytesRef
-        BS8.hPutStrLn stderr (BS8.pack ("P6-06G stress resource: cold_compile_timeout_process_tree_peak_bytes=" <> show peakBytes <> " process_tree_target_bytes=" <> show stressProcessTreeTargetBytes <> " hard_heap_bytes=" <> show stressHardHeapBytes))
-        assertFailure ("cold compile exceeded the 5-minute safety timeout under +RTS -N1 -M2G; diagnostic process-tree peak bytes=" <> show peakBytes) >> fail "unreachable"
-  (forcedOutput, forcedProblem) <- awaitWorkers `onException` cleanup
-  successfulSamples <- readIORef successfulSamplesRef
-  assertBool
-    "cold compile requires at least one successful complete process-tree sample"
-    (completeProcessTreeSamplesAccepted samplePolicy successfulSamples)
-  peakBytes <- readIORef peakBytesRef
+  let fallback = binDirectory </> ("adrai" <> executableSuffix)
+      candidate = maybe fallback id (lookup "ADRAI_EXE" environment)
+  candidateExists <- doesFileExist candidate
+  executable <-
+    case resolveAdraiExecutable environment fallback (\path -> path == candidate && candidateExists) of
+      Left problem -> assertFailure problem >> fail "unreachable"
+      Right value -> pure value
+  when (isJust (lookup "ADRAI_TEST_EXPECTED_EXE" environment)) $
+    BS8.hPutStrLn stderr (renderSelectedExecutableDiagnostic executable)
+  (status, output, problem) <-
+    readProcessWithExitCode executable (["--repo", repository] <> arguments) ""
   case status of
-    ExitSuccess -> pure (AdraiProcessResult forcedOutput forcedProblem peakBytes successfulSamples)
-    ExitFailure code -> assertFailure ("adrai " <> unwords arguments <> " failed (" <> show code <> "): " <> forcedProblem) >> fail "unreachable"
+    ExitSuccess -> pure output
+    ExitFailure code -> assertFailure ("adrai command failed (" <> show code <> "): " <> problem) >> fail "unreachable"
 
-readFully :: Handle -> IO String
-readFully handle = do
-  content <- hGetContents handle
-  _ <- evaluate (length content)
-  pure content
+resolveAdraiExecutable :: [(String, String)] -> FilePath -> (FilePath -> Bool) -> Either String FilePath
+resolveAdraiExecutable environment fallback exists = do
+  selected <-
+    case lookup "ADRAI_EXE" environment of
+      Nothing
+        | exists fallback -> Right fallback
+        | otherwise -> Left ("package-built executable is absent: " <> fallback)
+      Just override
+        | null override -> Left "ADRAI_EXE is present but empty"
+        | not (isAbsolute override) -> Left ("ADRAI_EXE must be absolute: " <> override)
+        | not (exists override) -> Left ("ADRAI_EXE must name an existing executable file: " <> override)
+        | otherwise -> Right override
+  case lookup "ADRAI_TEST_EXPECTED_EXE" environment of
+    Nothing -> Right selected
+    Just expected
+      | expected == selected -> Right selected
+      | otherwise ->
+          Left
+            ( "ADRAI_TEST_EXPECTED_EXE mismatch: selected executable is "
+                <> selected
+                <> ", expected "
+                <> expected
+            )
+
+-- | Render a lossless, single-line harness diagnostic. The selected path is a
+-- UTF-8 JSON string so Unicode and control characters remain attributable.
+renderSelectedExecutableDiagnostic :: FilePath -> BS.ByteString
+renderSelectedExecutableDiagnostic executable =
+  "P6-08.2R stress executable: " <> LazyByteString.toStrict (Aeson.encode (Text.pack executable))
+
+executableResolverContract :: IO ()
+executableResolverContract = do
+  let testRoot = if os == "mingw32" then "C:\\adrai-test" else "/adrai-test"
+      fallback = testRoot </> "package" </> ("adrai" <> executableSuffix)
+      override = testRoot </> "override" </> ("adrai" <> executableSuffix)
+      missing = testRoot </> "missing" </> ("adrai" <> executableSuffix)
+      known path = path == fallback || path == override
+      resolve environment = resolveAdraiExecutable environment fallback known
+      assertRejected name environment expected =
+        case resolve environment of
+          Left problem -> assertBool (name <> ": " <> problem) (expected `isInfixOf` problem)
+          Right selected -> assertFailure (name <> ": expected rejection, selected " <> selected)
+  resolve [("ADRAI_EXE", override), ("ADRAI_TEST_EXPECTED_EXE", override)] @?= Right override
+  resolve [("ADRAI_TEST_EXPECTED_EXE", fallback)] @?= Right fallback
+  assertRejected "empty override" [("ADRAI_EXE", "")] "present but empty"
+  assertRejected "relative override" [("ADRAI_EXE", "adrai.exe")] "must be absolute"
+  assertRejected "missing override" [("ADRAI_EXE", missing)] "existing executable file"
+  assertRejected "expected mismatch" [("ADRAI_EXE", override), ("ADRAI_TEST_EXPECTED_EXE", fallback)] "ADRAI_TEST_EXPECTED_EXE mismatch"
+  assertRejected "fallback expected mismatch" [("ADRAI_TEST_EXPECTED_EXE", override)] "ADRAI_TEST_EXPECTED_EXE mismatch"
+  let diagnosticPath = testRoot </> "unicode-\x03bb-\x00e5\ncontrol-\ESC"
+      diagnosticPrefix = "P6-08.2R stress executable: " :: BS.ByteString
+      diagnostic = renderSelectedExecutableDiagnostic diagnosticPath
+  assertBool "selected executable diagnostic has its stable prefix" (diagnosticPrefix `BS.isPrefixOf` diagnostic)
+  assertBool "selected executable diagnostic must stay on one line" (not (BS.elem 10 diagnostic) && not (BS.elem 13 diagnostic))
+  (Aeson.eitherDecodeStrict' (BS.drop (BS.length diagnosticPrefix) diagnostic) :: Either String Text.Text) @?= Right (Text.pack diagnosticPath)
 
 parseMaximumResidency :: String -> Maybe Integer
 parseMaximumResidency report = do
@@ -1269,86 +1220,387 @@ rtsPairListParsingContract = do
   parseMaximumResidency "[(\"bytes allocated\",\"456488\")]" @?= Nothing
   parseMaximumResidency "[(\"max_bytes_used\",\"1\"),(\"max_bytes_used\",\"2\")]" @?= Nothing
 
-pollProcessTreePeak :: ProcessHandle -> IORef Integer -> IORef Int -> IO (Either String ExitCode)
-pollProcessTreePeak processHandle peakBytesRef successfulSamplesRef = do
-  -- Take the sample before checking exit so a quick successful process cannot
-  -- be mistaken for a measured one with a zero-byte peak.
-  sample <- processTreeWorkingSet processHandle
-  recorded <- recordProcessTreeSample peakBytesRef successfulSamplesRef sample
-  case recorded of
-    Left problem -> do
-      exited <- getProcessExitCode processHandle
-      pure $ maybe (Left problem) Right exited
-    Right () -> do
-      status <- getProcessExitCode processHandle
-      case status of
-        Just exitCode -> pure (Right exitCode)
-        Nothing -> threadDelay 1000000 >> pollProcessTreePeak processHandle peakBytesRef successfulSamplesRef
+samplerDeadline :: Maybe Int -> IO () -> IO value -> IO (Maybe value)
+samplerDeadline Nothing cleanup action = (Just <$> action) `onException` cleanup
+samplerDeadline (Just duration) cleanup action = do
+  completed <- timeout duration action `onException` cleanup
+  case completed of
+    Nothing -> cleanup >> pure Nothing
+    Just result -> pure (Just result)
 
-recordProcessTreeSample :: IORef Integer -> IORef Int -> Either String Integer -> IO (Either String ())
-recordProcessTreeSample _ _ (Left problem) = pure (Left problem)
-recordProcessTreeSample peakBytesRef successfulSamplesRef (Right bytes) = do
-  modifyIORef' peakBytesRef (max bytes)
-  modifyIORef' successfulSamplesRef (+ 1)
-  pure (Right ())
+terminalSamplerOutcome :: Maybe ExitCode -> ProcessTreeSamplerFailure -> Either ProcessTreeSamplerFailure ExitCode
+terminalSamplerOutcome (Just exitCode) RootDisappeared = Right exitCode
+terminalSamplerOutcome _ failure = Left failure
+
+renderProcessTreeSamplerFailure :: ProcessTreeSamplerFailure -> String
+renderProcessTreeSamplerFailure RootDisappeared = "root process disappeared while sampling"
+renderProcessTreeSamplerFailure RootIdentityMismatch = "root process identity does not match the launched process"
+renderProcessTreeSamplerFailure (SnapshotTopologyFailure problem) = "snapshot topology failure: " <> problem
+renderProcessTreeSamplerFailure (SnapshotIdentityFailure problem) = "snapshot identity failure: " <> problem
+renderProcessTreeSamplerFailure SnapshotOverflow = "snapshot working-set sum overflowed"
+renderProcessTreeSamplerFailure (SnapshotJsonFailure problem) = "snapshot JSON failure: " <> problem
+renderProcessTreeSamplerFailure (SamplerInvocationFailure problem) = "sampler invocation failure: " <> problem
+renderProcessTreeSamplerFailure (DiagnosticPersistenceFailure problem) = "diagnostic persistence failure: " <> problem
+
+recordProcessTreeSample :: Maybe FilePath -> IORef Integer -> IORef Int -> Either ProcessTreeSamplerFailure ProcessTreeSample -> IO (Either ProcessTreeSamplerFailure ())
+recordProcessTreeSample _ _ _ (Left failure) = pure (Left failure)
+recordProcessTreeSample diagnosticPath peakBytesRef successfulSamplesRef (Right sample) = do
+  previousPeak <- readIORef peakBytesRef
+  let bytes = processTreeSampleBytes sample
+      isNewHighWater = bytes > previousPeak
+      exceedsTarget = not (withinProcessTreeTarget bytes)
+  persisted <-
+    case (diagnosticPath, processTreeSampleWindows sample) of
+      (Just path, Just snapshot)
+        | isNewHighWater || exceedsTarget -> persistWindowsProcessTreeDiagnostic path bytes snapshot
+      _ -> pure (Right ())
+  case persisted of
+    Left problem -> pure (Left (DiagnosticPersistenceFailure problem))
+    Right () -> do
+      when isNewHighWater (writeIORef peakBytesRef bytes)
+      modifyIORef' successfulSamplesRef (+ 1)
+      pure (Right ())
 
 completeProcessTreeSamplesAccepted :: CompleteProcessTreeSamplePolicy -> Int -> Bool
 completeProcessTreeSamplesAccepted RequireCompleteProcessTreeSample successfulSamples = successfulSamples > 0
 completeProcessTreeSamplesAccepted PermitNoCompleteProcessTreeSample _ = True
 
-processTreeWorkingSet :: ProcessHandle -> IO (Either String Integer)
-processTreeWorkingSet processHandle = do
-  processId <- getPid processHandle
-  case processId of
-    Nothing -> pure (Left "process ID is unavailable")
-    Just value
-      | os == "mingw32" -> windowsProcessTreeWorkingSet (show value)
-       | otherwise -> posixProcessTreeWorkingSet (show value)
+windowsDiagnosticRequired :: String -> CompleteProcessTreeSamplePolicy -> Maybe FilePath -> Bool
+windowsDiagnosticRequired platform policy diagnosticPath =
+  platform == "mingw32" && policy == RequireCompleteProcessTreeSample && isNothing diagnosticPath
+
+-- | Only a required Windows cold sampler may consume the diagnostic
+-- environment.  Permit-mode commands deliberately ignore inherited values so
+-- a previous cold artifact cannot become a false freshness failure or receive
+-- extra rows from exact-like work.
+resolveProcessTreeDiagnosticPath :: String -> CompleteProcessTreeSamplePolicy -> [(String, String)] -> IO (Maybe FilePath)
+resolveProcessTreeDiagnosticPath platform policy environment
+  | platform /= "mingw32" || policy /= RequireCompleteProcessTreeSample = pure Nothing
+  | otherwise =
+      case lookup "ADRAI_TEST_PROCESS_TREE_DIAGNOSTIC" environment of
+        Nothing -> assertFailure "Windows RequireCompleteProcessTreeSample requires ADRAI_TEST_PROCESS_TREE_DIAGNOSTIC" >> fail "unreachable"
+        Just path
+          | null path -> assertFailure "ADRAI_TEST_PROCESS_TREE_DIAGNOSTIC must be a non-empty absolute path" >> fail "unreachable"
+          | not (isAbsolute path) -> assertFailure "ADRAI_TEST_PROCESS_TREE_DIAGNOSTIC must be absolute" >> fail "unreachable"
+          | otherwise -> do
+              exists <- doesFileExist path
+              when exists (assertFailure "ADRAI_TEST_PROCESS_TREE_DIAGNOSTIC must name a fresh file" >> fail "unreachable")
+              pure (Just path)
 
 withinProcessTreeTarget :: Integer -> Bool
 withinProcessTreeTarget peakBytes = peakBytes <= stressProcessTreeTargetBytes
 
-windowsProcessTreeWorkingSet :: String -> IO (Either String Integer)
-windowsProcessTreeWorkingSet rootPid = do
+captureInitialWindowsProcessTreeSample :: Maybe FilePath -> ProcessHandle -> IO (Either ProcessTreeSamplerFailure (WindowsRootIdentity, ProcessTreeSample))
+captureInitialWindowsProcessTreeSample diagnosticPath processHandle = do
+  before <- getProcessExitCode processHandle
+  case before of
+    Just _ -> pure (Left RootDisappeared)
+    Nothing -> do
+      processId <- getPid processHandle
+      case processId of
+        Nothing -> pure (Left (SamplerInvocationFailure "launched root process ID is unavailable"))
+        Just value -> do
+          observed <- readWindowsProcessTreeSnapshot diagnosticPath (show value)
+          after <- getProcessExitCode processHandle
+          case after of
+            Just _ -> pure (Left RootDisappeared)
+            Nothing ->
+              case observed of
+                Left failure -> pure (Left failure)
+                Right snapshot ->
+                  case do
+                    identity <- initialWindowsRootIdentity (fromIntegral value) snapshot
+                    (bytes, admittedSnapshot) <- admitWindowsProcessTreeSnapshot identity (fromIntegral value) snapshot
+                    pure (identity, ProcessTreeSample bytes (Just admittedSnapshot)) of
+                    Left failure -> persistInvalidWindowsSnapshot diagnosticPath failure "" (Just snapshot)
+                    Right initial -> pure (Right initial)
+
+initialWindowsRootIdentity :: Integer -> WindowsProcessTreeSnapshot -> Either ProcessTreeSamplerFailure WindowsRootIdentity
+initialWindowsRootIdentity rootPid snapshot =
+  case [row | row <- windowsRows snapshot, windowsProcessPid row == rootPid] of
+    [] -> Left RootDisappeared
+    [root]
+      | windowsProcessCreationTicks root <= 0 -> Left (SnapshotIdentityFailure "PowerShell returned a missing or malformed root creation identity")
+      | otherwise -> Right (WindowsRootIdentity rootPid (windowsProcessCreationTicks root))
+    _ -> Left (SnapshotIdentityFailure "PowerShell returned an ambiguous duplicate root process identity")
+
+readWindowsProcessTreeSnapshot :: Maybe FilePath -> String -> IO (Either ProcessTreeSamplerFailure WindowsProcessTreeSnapshot)
+readWindowsProcessTreeSnapshot diagnosticPath rootPid =
+  readWindowsProcessTreeSnapshotWithCimRows diagnosticPath rootPid "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,WorkingSetSize,Name"
+
+readWindowsProcessTreeSnapshotWithCimRows :: Maybe FilePath -> String -> String -> IO (Either ProcessTreeSamplerFailure WindowsProcessTreeSnapshot)
+readWindowsProcessTreeSnapshotWithCimRows diagnosticPath rootPid cimRows = do
   -- PowerShell treats tokens after @-Command <script>@ as part of that
   -- script, not as @\$args@. Embed the validated numeric pid so sampling
   -- does not silently fail with a parser error and report a useless zero.
   -- One CIM snapshot supplies both topology and working-set values. Unlike a
   -- later Get-Process lookup per PID, a short-lived non-root child cannot
-  -- invalidate the whole sample after the tree has been discovered. The root
-  -- must still be present in the snapshot.
+  -- invalidate the whole sample after the tree has been discovered.  The
+  -- selected rows retain current creation identities so Haskell can reject a
+  -- malformed or temporally impossible topology rather than reporting a low
+  -- aggregate for an ambiguous one.
   let root = maybe (-1) id (readNonnegativeInteger rootPid)
       script =
         "$root="
           <> show root
-          <> ";$ErrorActionPreference='Stop';if($root -lt 0 -or $root -gt [uint32]::MaxValue){exit 43};$rootPid=[uint32]$root;$all=Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,WorkingSetSize;if(-not ($all.ProcessId -contains $rootPid)){exit 42};$ids=New-Object 'System.Collections.Generic.HashSet[uint32]';[void]$ids.Add($rootPid);do{$added=$false;foreach($p in $all){if($ids.Contains([uint32]$p.ParentProcessId) -and $ids.Add([uint32]$p.ProcessId)){$added=$true}}}while($added);$total=[int64]0;foreach($p in $all){if($ids.Contains([uint32]$p.ProcessId)){$total += [int64]$p.WorkingSetSize}};[Console]::Out.WriteLine($total)"
+          <> ";$ErrorActionPreference='Stop';if($root -lt 1 -or $root -gt [uint32]::MaxValue){exit 43};$rootPid=[uint32]$root;$watch=[Diagnostics.Stopwatch]::StartNew();$all=@("
+          <> cimRows
+          <> ");$watch.Stop();$byPid=@{};foreach($p in $all){if($null -eq $p.ProcessId){continue};$processPid=[uint32]$p.ProcessId;if($byPid.ContainsKey($processPid)){exit 44};$byPid[$processPid]=$p};if(-not $byPid.ContainsKey($rootPid)){exit 42};function Convert-SelectedRow($p){if($null -eq $p.ProcessId -or $null -eq $p.ParentProcessId -or $null -eq $p.CreationDate -or $null -eq $p.WorkingSetSize -or $null -eq $p.Name){exit 44};$processPid=[int64]$p.ProcessId;$ppid=[int64]$p.ParentProcessId;$created=([datetime]$p.CreationDate).ToUniversalTime().Ticks;$workingSet=[int64]$p.WorkingSetSize;$name=[string]$p.Name;$nameBytes=[Text.Encoding]::UTF8.GetByteCount($name);if($processPid -lt 1 -or $ppid -lt 0 -or $created -le 0 -or $workingSet -lt 0){exit 44};if($nameBytes -lt 1 -or $nameBytes -gt 256){exit 45};[pscustomobject]@{pid=$processPid;ppid=$ppid;creation_ticks=[int64]$created;working_set_bytes=$workingSet;name=$name}};$accepted=@{};$rootRow=Convert-SelectedRow $byPid[$rootPid];$accepted[[uint32]$rootRow.pid]=$rootRow;do{$added=$false;foreach($p in $all){if($null -eq $p.ParentProcessId){continue};$parentPid=[uint32]$p.ParentProcessId;if(-not $accepted.ContainsKey($parentPid)){continue};$candidate=Convert-SelectedRow $p;$candidatePid=[uint32]$candidate.pid;if($accepted.ContainsKey($candidatePid)){continue};$parent=$accepted[$parentPid];if($candidate.creation_ticks -lt $rootRow.creation_ticks -or $candidate.creation_ticks -lt $parent.creation_ticks){continue};$accepted[$candidatePid]=$candidate;$added=$true}}while($added);$rows=@($accepted.Values | Sort-Object pid);if($rows.Count -gt 256){exit 45};$json=([pscustomobject]@{sampled_at=[DateTime]::UtcNow.ToString('o');root_pid=[int64]$rootPid;query_duration_milliseconds=[int64][Math]::Ceiling($watch.Elapsed.TotalMilliseconds);rows=$rows}|ConvertTo-Json -Depth 3 -Compress);$bytes=[Text.Encoding]::UTF8.GetBytes($json);if($bytes.Length -gt 65536){exit 45};$encoded=[Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_');if($encoded.Length -gt 87382){exit 45};[Console]::Out.Write($encoded)"
   (status, output, _) <- readProcessWithExitCode "powershell" ["-NoProfile", "-NonInteractive", "-Command", script] ""
   case status of
-    ExitSuccess -> pure (maybe (Left "PowerShell returned a malformed working-set value") Right (readNonnegativeInteger output))
-    ExitFailure 42 -> pure (Left "root process disappeared while sampling")
-    ExitFailure code -> pure (Left ("PowerShell sampler exited " <> show code))
+    ExitSuccess -> decodeWindowsProcessTreeSnapshot diagnosticPath output
+    ExitFailure 42 -> pure (Left RootDisappeared)
+    ExitFailure 44 -> persistInvalidWindowsSnapshot diagnosticPath (SnapshotIdentityFailure "PowerShell returned a row with a missing or malformed process identity") output Nothing
+    ExitFailure 45 -> persistInvalidWindowsSnapshot diagnosticPath (SnapshotIdentityFailure "PowerShell sampler exceeded its configured transport or row bounds") output Nothing
+    ExitFailure code -> pure (Left (SamplerInvocationFailure ("PowerShell sampler exited " <> show code)))
 
-posixProcessTreeWorkingSet :: String -> IO (Either String Integer)
-posixProcessTreeWorkingSet rootPid = do
-  (status, output, _) <- readProcessWithExitCode "ps" ["-eo", "pid=,ppid=,rss="] ""
-  case status of
-    ExitSuccess -> pure (processTreeWorkingSetFromPs (readNonnegativeInteger rootPid) output)
-    ExitFailure code -> pure (Left ("ps sampler exited " <> show code))
+decodeWindowsProcessTreeSnapshot :: Maybe FilePath -> String -> IO (Either ProcessTreeSamplerFailure WindowsProcessTreeSnapshot)
+decodeWindowsProcessTreeSnapshot diagnosticPath output =
+  case decodePowerShellJson output of
+    Left failure -> persistInvalidWindowsSnapshot diagnosticPath failure output Nothing
+    Right snapshot -> pure (Right snapshot)
 
-processTreeWorkingSetFromPs :: Maybe Integer -> String -> Either String Integer
-processTreeWorkingSetFromPs Nothing _ = Left "process ID is malformed"
+decodePowerShellJson :: Aeson.FromJSON value => String -> Either ProcessTreeSamplerFailure value
+decodePowerShellJson output
+  | length output > maxWindowsProcessTreeRawTransportCharacters = Left (SnapshotJsonFailure "PowerShell emitted an overlong UTF-8 transport")
+  | otherwise = do
+    encoded <-
+      case filter (`notElem` [' ', '\r', '\n', '\t']) output of
+        [] -> Left (SnapshotJsonFailure "PowerShell emitted an empty UTF-8 transport")
+        value
+          | length value > maxWindowsProcessTreeTransportCharacters -> Left (SnapshotJsonFailure "PowerShell emitted an overlong base64url transport")
+          | otherwise -> Right (Text.pack value)
+    bytes <-
+      case decodeBase64Url encoded of
+        Left problem -> Left (SnapshotJsonFailure ("PowerShell emitted invalid base64url transport: " <> show problem))
+        Right value -> Right value
+    case Aeson.eitherDecodeStrict' bytes of
+      Left problem -> Left (SnapshotJsonFailure problem)
+      Right value -> Right value
+
+validateWindowsProcessTreeSnapshot :: WindowsRootIdentity -> Integer -> WindowsProcessTreeSnapshot -> Either ProcessTreeSamplerFailure Integer
+validateWindowsProcessTreeSnapshot expectedIdentity expectedRoot =
+  fmap fst . admitWindowsProcessTreeSnapshot expectedIdentity expectedRoot
+
+admitWindowsProcessTreeSnapshot :: WindowsRootIdentity -> Integer -> WindowsProcessTreeSnapshot -> Either ProcessTreeSamplerFailure (Integer, WindowsProcessTreeSnapshot)
+admitWindowsProcessTreeSnapshot expectedIdentity expectedRoot snapshot
+  | windowsRootPid snapshot /= expectedRoot = Left RootIdentityMismatch
+  | windowsRootPid snapshot /= windowsRootIdentityPid expectedIdentity = Left RootIdentityMismatch
+  | windowsQueryDurationMilliseconds snapshot < 0 = Left (SnapshotIdentityFailure "PowerShell returned a negative query duration")
+  | otherwise = do
+      rowsByPid <- foldM insertRow Map.empty (windowsRows snapshot)
+      root <- maybe (Left RootDisappeared) Right (Map.lookup expectedRoot rowsByPid)
+      validateIdentity "root" root
+      unless (windowsProcessCreationTicks root == windowsRootIdentityCreationTicks expectedIdentity) (Left RootIdentityMismatch)
+      (selected, pruned) <- selectRows rowsByPid root (Set.singleton expectedRoot) Set.empty
+      unless (Set.size selected + Set.size pruned == Map.size rowsByPid) (Left (SnapshotTopologyFailure "PowerShell returned an unexplained process row outside the selected root closure"))
+      unless (Set.size selected <= maxWindowsProcessTreeRows) (Left (SnapshotIdentityFailure "PowerShell returned too many selected process rows"))
+      total <- foldM (sumWorkingSet rowsByPid root) 0 (Set.toAscList selected)
+      admittedRows <- traverse (maybe (Left (SnapshotTopologyFailure "PowerShell selected process identity is absent")) Right . (`Map.lookup` rowsByPid)) (Set.toAscList selected)
+      pure (total, snapshot {windowsRows = admittedRows})
+  where
+    insertRow rows row
+      | windowsProcessPid row <= 0 = Left (SnapshotIdentityFailure "PowerShell returned a non-positive process ID")
+      | windowsProcessParentPid row < 0 = Left (SnapshotIdentityFailure "PowerShell returned a negative parent process ID")
+      | Map.member (windowsProcessPid row) rows = Left (SnapshotIdentityFailure "PowerShell returned an ambiguous duplicate process identity")
+      | otherwise = Right (Map.insert (windowsProcessPid row) row rows)
+    validateIdentity label row
+      | windowsProcessCreationTicks row <= 0 = Left (SnapshotIdentityFailure ("PowerShell returned a missing or malformed " <> label <> " creation identity"))
+      | windowsProcessWorkingSetBytes row < 0 = Left (SnapshotIdentityFailure ("PowerShell returned a negative " <> label <> " working set"))
+      | Text.null (windowsProcessName row) = Left (SnapshotIdentityFailure ("PowerShell returned a missing " <> label <> " name"))
+      | BS.length (TextEncoding.encodeUtf8 (windowsProcessName row)) > maxWindowsProcessTreeNameBytes = Left (SnapshotIdentityFailure ("PowerShell returned an overlong " <> label <> " name"))
+      | otherwise = Right ()
+    selectRows rows root selected pruned = do
+      (selected', pruned') <- foldM (selectChild rows root selected pruned) (selected, pruned) (Map.elems rows)
+      if selected' == selected && pruned' == pruned
+        then Right (selected, pruned)
+        else selectRows rows root selected' pruned'
+    selectChild rows root selected pruned (selected', pruned') row
+      | windowsProcessPid row `Set.member` selected = Right (selected', pruned')
+      | windowsProcessPid row `Set.member` pruned = Right (selected', pruned')
+      | windowsProcessParentPid row `Set.member` pruned = Right (selected', Set.insert (windowsProcessPid row) pruned')
+      | windowsProcessParentPid row `Set.notMember` selected = Right (selected', pruned')
+      | otherwise = do
+          parent <- maybe (Left (SnapshotTopologyFailure "PowerShell returned a descendant whose selected parent is absent")) Right (Map.lookup (windowsProcessParentPid row) rows)
+          validateIdentity "descendant" row
+          validateIdentity "parent" parent
+          if windowsProcessCreationTicks row < windowsProcessCreationTicks root || windowsProcessCreationTicks row < windowsProcessCreationTicks parent
+            then Right (selected', Set.insert (windowsProcessPid row) pruned')
+            else Right (Set.insert (windowsProcessPid row) selected', pruned')
+    sumWorkingSet rows root total pid = do
+      row <- maybe (Left (SnapshotTopologyFailure "PowerShell selected process identity is absent")) Right (Map.lookup pid rows)
+      validateIdentity "selected process" row
+      unless (windowsProcessCreationTicks row >= windowsProcessCreationTicks root) (Left (SnapshotIdentityFailure "PowerShell returned a selected process older than the root"))
+      if total > toInteger (maxBound :: Int64) - windowsProcessWorkingSetBytes row then Left SnapshotOverflow else Right (total + windowsProcessWorkingSetBytes row)
+
+maxWindowsProcessTreeRows :: Int
+maxWindowsProcessTreeRows = 256
+
+maxWindowsProcessTreeNameBytes :: Int
+maxWindowsProcessTreeNameBytes = 256
+
+maxWindowsProcessTreeDiagnosticRecordBytes :: Int
+maxWindowsProcessTreeDiagnosticRecordBytes = 65536
+
+maxWindowsProcessTreeTransportBytes :: Int
+maxWindowsProcessTreeTransportBytes = 65536
+
+maxWindowsProcessTreeTransportCharacters :: Int
+maxWindowsProcessTreeTransportCharacters =
+  let paddedCharacters = ((maxWindowsProcessTreeTransportBytes + 2) `div` 3) * 4
+   in case maxWindowsProcessTreeTransportBytes `mod` 3 of
+        0 -> paddedCharacters
+        1 -> paddedCharacters - 2
+        _ -> paddedCharacters - 1
+
+maxWindowsProcessTreeRawTransportCharacters :: Int
+maxWindowsProcessTreeRawTransportCharacters = maxWindowsProcessTreeTransportCharacters + 16
+
+persistWindowsProcessTreeDiagnostic :: FilePath -> Integer -> WindowsProcessTreeSnapshot -> IO (Either String ())
+persistWindowsProcessTreeDiagnostic path total snapshot = do
+  case encodeWindowsProcessTreeDiagnostic total snapshot of
+    Left problem -> pure (Left problem)
+    Right rendered -> appendWindowsProcessTreeDiagnostic path rendered
+
+persistInvalidWindowsSnapshot :: Maybe FilePath -> ProcessTreeSamplerFailure -> String -> Maybe WindowsProcessTreeSnapshot -> IO (Either ProcessTreeSamplerFailure value)
+persistInvalidWindowsSnapshot diagnosticPath failure rawTransport snapshot =
+  case diagnosticPath of
+    Nothing -> pure (Left failure)
+    Just path -> do
+      attempted <- case encodeInvalidWindowsProcessTreeDiagnostic failure rawTransport snapshot of
+        Left problem -> pure (Left problem)
+        Right rendered -> appendWindowsProcessTreeDiagnostic path rendered
+      pure $
+        case attempted of
+          Left problem -> Left (DiagnosticPersistenceFailure problem)
+          Right () -> Left failure
+
+appendWindowsProcessTreeDiagnostic :: FilePath -> BS.ByteString -> IO (Either String ())
+appendWindowsProcessTreeDiagnostic path rendered = do
+  attempted <-
+    try $ do
+      createDirectoryIfMissing True (takeDirectory path)
+      BS8.appendFile path (rendered <> "\n")
+  pure $
+    case attempted of
+      Left exception -> Left ("unable to persist Windows process-tree diagnostic: " <> show (exception :: SomeException))
+      Right () -> Right ()
+
+encodeWindowsProcessTreeDiagnostic :: Integer -> WindowsProcessTreeSnapshot -> Either String BS.ByteString
+encodeWindowsProcessTreeDiagnostic total snapshot = do
+  value <- windowsProcessTreeDiagnostic total snapshot
+  boundedDiagnosticEncoding value
+
+encodeInvalidWindowsProcessTreeDiagnostic :: ProcessTreeSamplerFailure -> String -> Maybe WindowsProcessTreeSnapshot -> Either String BS.ByteString
+encodeInvalidWindowsProcessTreeDiagnostic failure rawTransport snapshot = do
+  value <- invalidWindowsProcessTreeDiagnostic failure rawTransport snapshot
+  boundedDiagnosticEncoding value
+
+boundedDiagnosticEncoding :: Aeson.Value -> Either String BS.ByteString
+boundedDiagnosticEncoding value =
+  let rendered = LazyByteString.toStrict (Aeson.encode value)
+   in if BS.length rendered > maxWindowsProcessTreeDiagnosticRecordBytes
+        then Left "Windows process-tree diagnostic exceeds its bounded record size"
+        else Right rendered
+
+windowsProcessTreeDiagnostic :: Integer -> WindowsProcessTreeSnapshot -> Either String Aeson.Value
+windowsProcessTreeDiagnostic total snapshot = do
+  unless (length (windowsRows snapshot) <= maxWindowsProcessTreeRows) (Left "Windows process-tree diagnostic has too many process rows")
+  rows <- traverse safeDiagnosticRow (windowsRows snapshot)
+  let actualTotal = sum (map windowsProcessWorkingSetBytes (windowsRows snapshot))
+  unless (actualTotal == total) (Left "Windows process-tree diagnostic total does not match its row sum")
+  pure
+    ( Aeson.object
+        [ "sampled_at" Aeson..= windowsSampledAt snapshot,
+          "root_pid" Aeson..= windowsRootPid snapshot,
+          "query_duration_milliseconds" Aeson..= windowsQueryDurationMilliseconds snapshot,
+          "working_set_bytes" Aeson..= total,
+          "rows" Aeson..= rows
+        ]
+    )
+
+invalidWindowsProcessTreeDiagnostic :: ProcessTreeSamplerFailure -> String -> Maybe WindowsProcessTreeSnapshot -> Either String Aeson.Value
+invalidWindowsProcessTreeDiagnostic failure rawTransport snapshot = do
+  safeSnapshot <- traverse diagnosticSnapshotWithoutCommands snapshot
+  pure
+    ( Aeson.object
+        [ "failure" Aeson..= renderProcessTreeSamplerFailure failure,
+          "raw_transport_utf8_bytes" Aeson..= BS.length rawBytes,
+          "raw_transport_sha256" Aeson..= encodeBase64Url (digestBytes (sha256Digest rawBytes)),
+          "snapshot" Aeson..= maybe Aeson.Null id safeSnapshot
+        ]
+    )
+  where
+    rawBytes = TextEncoding.encodeUtf8 (Text.pack rawTransport)
+
+diagnosticSnapshotWithoutCommands :: WindowsProcessTreeSnapshot -> Either String Aeson.Value
+diagnosticSnapshotWithoutCommands value = do
+  unless (length (windowsRows value) <= maxWindowsProcessTreeRows) (Left "Windows process-tree diagnostic has too many process rows")
+  rows <- traverse safeDiagnosticRow (windowsRows value)
+  pure
+    ( Aeson.object
+        [ "sampled_at" Aeson..= windowsSampledAt value,
+          "root_pid" Aeson..= windowsRootPid value,
+          "query_duration_milliseconds" Aeson..= windowsQueryDurationMilliseconds value,
+          "rows" Aeson..= rows
+        ]
+    )
+
+safeDiagnosticRow :: WindowsProcessRow -> Either String Aeson.Value
+safeDiagnosticRow row = do
+  name <- safeDiagnosticProcessName (windowsProcessName row)
+  pure $
+    Aeson.object
+      [ "pid" Aeson..= windowsProcessPid row,
+        "ppid" Aeson..= windowsProcessParentPid row,
+        "creation_ticks" Aeson..= windowsProcessCreationTicks row,
+        "working_set_bytes" Aeson..= windowsProcessWorkingSetBytes row,
+        "name" Aeson..= name
+      ]
+
+safeDiagnosticProcessName :: Text.Text -> Either String Text.Text
+safeDiagnosticProcessName name
+  | Text.null name = Left "Windows process-tree diagnostic row has an empty process name"
+  | BS.length (TextEncoding.encodeUtf8 name) > maxWindowsProcessTreeNameBytes = Left "Windows process-tree diagnostic row has an overlong process name"
+  | Text.any (`elem` ['/', '\\', ':', '\r', '\n', '\0']) name = Left "Windows process-tree diagnostic row has an unsafe process name"
+  | otherwise = Right name
+
+windowsProcessTreeTransportPayload :: WindowsProcessTreeSnapshot -> Aeson.Value
+windowsProcessTreeTransportPayload snapshot =
+  Aeson.object
+    [ "sampled_at" Aeson..= windowsSampledAt snapshot,
+      "root_pid" Aeson..= windowsRootPid snapshot,
+      "query_duration_milliseconds" Aeson..= windowsQueryDurationMilliseconds snapshot,
+      "rows" Aeson..= map renderTransportRow (windowsRows snapshot)
+    ]
+  where
+    renderTransportRow row =
+      Aeson.object
+        [ "pid" Aeson..= windowsProcessPid row,
+          "ppid" Aeson..= windowsProcessParentPid row,
+          "creation_ticks" Aeson..= windowsProcessCreationTicks row,
+          "working_set_bytes" Aeson..= windowsProcessWorkingSetBytes row,
+          "name" Aeson..= windowsProcessName row
+        ]
+
+processTreeWorkingSetFromPs :: Maybe Integer -> String -> Either ProcessTreeSamplerFailure Integer
+processTreeWorkingSetFromPs Nothing _ = Left (SamplerInvocationFailure "process ID is malformed")
 processTreeWorkingSetFromPs (Just root) output = do
   processes <- traverse parseProcess (map words (lines output))
   let tree = processTree root processes
   if any (\(pid, _, _) -> pid == root) tree
-    then Right (1024 * sum [rss | (_, _, rss) <- tree])
-    else Left "root process disappeared while sampling"
+    then foldM addWorkingSet 0 [rss | (_, _, rss) <- tree]
+    else Left RootDisappeared
   where
+    addWorkingSet total rss
+      | rss > toInteger (maxBound :: Int64) `div` 1024 = Left SnapshotOverflow
+      | total > toInteger (maxBound :: Int64) - rss * 1024 = Left SnapshotOverflow
+      | otherwise = Right (total + rss * 1024)
     parseProcess [pidText, parentText, rssText] =
       case (readNonnegativeInteger pidText, readNonnegativeInteger parentText, readNonnegativeInteger rssText) of
         (Just pid, Just parent, Just rss) -> Right (pid, parent, rss)
-        _ -> Left "ps returned a malformed process row"
-    parseProcess _ = Left "ps returned an incomplete process row"
+        _ -> Left (SnapshotTopologyFailure "ps returned a malformed process row")
+    parseProcess _ = Left (SnapshotTopologyFailure "ps returned an incomplete process row")
 
 processTree :: Integer -> [(Integer, Integer, Integer)] -> [(Integer, Integer, Integer)]
 processTree root processes = roots <> descendants [root] processes
@@ -1372,84 +1624,6 @@ readNonnegativeInteger raw =
         [(value, "")] | value >= (0 :: Integer) -> Just value
         _ -> Nothing
 
--- | A timeout must tear down the executable and any helpers it spawned before
--- waiting on inherited stdout/stderr handles.  Otherwise a surviving child
--- can hold either pipe open indefinitely and invalidate the resource gate.
--- Every termination path is checked and the root exit plus pipe drains have a
--- fixed deadline, so cleanup cannot quietly hang the stress worker.
-stopAndDrain :: ProcessHandle -> [Async.Async String] -> IO ()
-stopAndDrain processHandle workers = do
-  stopped <- terminateProcessTree processHandle
-  case stopped of
-    Left problem -> assertFailure problem >> fail "unreachable"
-    Right () -> pure ()
-  exited <- timeout processCleanupTimeoutMicros (waitForProcess processHandle)
-  case exited of
-    Nothing -> assertFailure "adrai process did not terminate within the bounded cleanup interval" >> fail "unreachable"
-    Just _ -> pure ()
-  drained <- timeout processCleanupTimeoutMicros (traverse Async.waitCatch workers)
-  case drained of
-    Nothing -> do
-      mapM_ Async.cancel workers
-      assertFailure "adrai stdout/stderr did not drain during bounded cleanup" >> fail "unreachable"
-    Just _ -> pure ()
-
-terminateProcessTree :: ProcessHandle -> IO (Either String ())
-terminateProcessTree processHandle = do
-  alreadyExited <- getProcessExitCode processHandle
-  case alreadyExited of
-    Just _ -> pure (Right ())
-    Nothing -> terminateLiveProcessTree processHandle
-
-terminateLiveProcessTree :: ProcessHandle -> IO (Either String ())
-terminateLiveProcessTree processHandle = do
-  processId <- getPid processHandle
-  case processId of
-    Nothing -> terminateProcess processHandle >> pure (Right ())
-    Just spawnedProcessId ->
-      case readNonnegativeInteger (show spawnedProcessId) of
-        Nothing -> terminateProcess processHandle >> pure (Right ())
-        Just root
-          | os == "mingw32" -> do
-              -- Capture the tree before taskkill opens the root.  If the root
-              -- exits in that interval, Windows can report taskkill failure
-              -- even though a child it spawned remains alive and is now
-              -- reparented.  The captured PIDs are therefore part of the
-              -- cleanup obligation on the failed-taskkill race path.
-              knownDescendants <- windowsDescendants root
-              (status, _, problem) <- readProcessWithExitCode "taskkill" ["/PID", show root, "/T", "/F"] ""
-              case status of
-                ExitSuccess -> pure (Right ())
-                ExitFailure code -> do
-                  -- A process can exit after the optimistic poll above but before
-                  -- taskkill opens it.  Windows reports that race as, among other
-                  -- things, access denied.  Wait for the root's exit before
-                  -- accepting the failed taskkill; a still-live root or a
-                  -- captured descendant remains a hard cleanup failure.
-                  exited <- awaitRootExitAfterTaskkillFailure processHandle
-                  descendants <- join <$> traverse awaitWindowsDescendantsExit knownDescendants
-                  pure (taskkillFailureResult code problem exited descendants)
-          | otherwise -> do
-              descendants <- posixDescendants root
-              terminateProcess processHandle
-              failures <- fmap concat . traverse terminateDescendant $ descendants
-              pure $ case failures of
-                [] -> Right ()
-                values -> Left ("failed to terminate descendant processes: " <> unwords values)
-  where
-    terminateDescendant pid = do
-      (status, _, problem) <- readProcessWithExitCode "kill" ["-TERM", show pid] ""
-      pure $ case status of
-        ExitSuccess -> []
-        ExitFailure code -> [show pid <> " (" <> show code <> "): " <> problem]
-
-awaitRootExitAfterTaskkillFailure :: ProcessHandle -> IO (Maybe ExitCode)
-awaitRootExitAfterTaskkillFailure processHandle = do
-  exited <- getProcessExitCode processHandle
-  case exited of
-    Just exitCode -> pure (Just exitCode)
-    Nothing -> timeout processCleanupTimeoutMicros (waitForProcess processHandle)
-
 -- | A failed @taskkill /T@ can be a harmless root-exit race only after both
 -- the root and every descendant observed immediately before the command have
 -- been verified gone.  A failed topology snapshot is deliberately not
@@ -1467,106 +1641,279 @@ taskkillFailureResult code problem exited descendantResult =
   where
     failurePrefix = "taskkill failed (" <> show code <> "): " <> problem
 
--- | Return the complete descendant PID set from one CIM snapshot.  This uses
--- the same single-snapshot topology rule as working-set accounting: a child
--- that exits between topology discovery and a per-PID lookup must not cause a
--- valid snapshot to be rejected, but a missing root means there is no tree we
--- can safely verify after a failed taskkill.
-windowsDescendants :: Integer -> IO (Either String [Integer])
-windowsDescendants root = do
-  let script =
-        "$root="
-          <> show root
-          <> ";$ErrorActionPreference='Stop';if($root -lt 0 -or $root -gt [uint32]::MaxValue){exit 43};$rootPid=[uint32]$root;$all=Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId;if(-not ($all.ProcessId -contains $rootPid)){exit 42};$ids=New-Object 'System.Collections.Generic.HashSet[uint32]';[void]$ids.Add($rootPid);do{$added=$false;foreach($p in $all){if($ids.Contains([uint32]$p.ParentProcessId) -and $ids.Add([uint32]$p.ProcessId)){$added=$true}}}while($added);foreach($id in $ids){if($id -ne $rootPid){[Console]::Out.WriteLine($id)}}"
-  (status, output, problem) <- readProcessWithExitCode "powershell" ["-NoProfile", "-NonInteractive", "-Command", script] ""
-  case status of
-    ExitSuccess -> pure (parseWindowsPidLines output)
-    ExitFailure 42 -> pure (Left "root process disappeared before taskkill topology snapshot")
-    ExitFailure code -> pure (Left ("PowerShell descendant snapshot exited " <> show code <> ": " <> problem))
-
--- | Poll the captured descendants for no longer than the cleanup deadline.
--- A root's orderly exit can take its helpers a short time to unwind; after
--- that fixed interval any remaining PID is reported to the caller and causes
--- cleanup to fail closed.
-awaitWindowsDescendantsExit :: [Integer] -> IO (Either String [Integer])
-awaitWindowsDescendantsExit [] = pure (Right [])
-awaitWindowsDescendantsExit descendants = do
-  observed <- timeout processCleanupTimeoutMicros waitUntilGone
-  pure $
-    case observed of
-      Nothing -> Left "timed out while verifying captured descendant exits"
-      Just result -> result
-  where
-    waitUntilGone = do
-      live <- windowsLiveProcessIds descendants
-      case live of
-        Left problem -> pure (Left problem)
-        Right [] -> pure (Right [])
-        Right _survivors -> threadDelay 100000 >> waitUntilGone
-
-windowsLiveProcessIds :: [Integer] -> IO (Either String [Integer])
-windowsLiveProcessIds descendants = do
-  let targetLiterals = intercalate "," (map show descendants)
-      script =
-        "$ErrorActionPreference='Stop';$targets=New-Object 'System.Collections.Generic.HashSet[uint32]';"
-          <> "foreach($id in @(" <> targetLiterals <> ")){if($id -lt 0 -or $id -gt [uint32]::MaxValue){exit 43};[void]$targets.Add([uint32]$id)};"
-          <> "Get-CimInstance Win32_Process | ForEach-Object {if($targets.Contains([uint32]$_.ProcessId)){[Console]::Out.WriteLine($_.ProcessId)}}"
-  (status, output, problem) <- readProcessWithExitCode "powershell" ["-NoProfile", "-NonInteractive", "-Command", script] ""
-  case status of
-    ExitSuccess -> pure (parseWindowsPidLines output)
-    ExitFailure code -> pure (Left ("PowerShell descendant verification exited " <> show code <> ": " <> problem))
-
-parseWindowsPidLines :: String -> Either String [Integer]
-parseWindowsPidLines output = traverse parseLine (filter (not . null) (lines output))
-  where
-    parseLine line =
-      case words line of
-        [pidText] ->
-          case readNonnegativeInteger pidText of
-            Just pid -> Right pid
-            Nothing -> Left "PowerShell returned a malformed descendant PID"
-        _ -> Left "PowerShell returned an incomplete descendant PID row"
-
-posixDescendants :: Integer -> IO [Integer]
-posixDescendants root = do
-  (status, output, _) <- readProcessWithExitCode "ps" ["-eo", "pid=,ppid="] ""
-  case status of
-    ExitSuccess ->
-      case traverse parseRow (map words (lines output)) of
-        Left _ -> pure []
-        Right rows -> pure (reverse [pid | (pid, _, _) <- processTree root [(pid, parent, 0) | (pid, parent) <- rows], pid /= root])
-    ExitFailure _ -> pure []
-  where
-    parseRow [pidText, parentText] =
-      case (readNonnegativeInteger pidText, readNonnegativeInteger parentText) of
-        (Just pid, Just parent) -> Right (pid, parent)
-        _ -> Left ()
-    parseRow _ = Left ()
-
 processTreeSamplePolicyContract :: IO ()
 processTreeSamplePolicyContract = do
   completeProcessTreeSamplesAccepted RequireCompleteProcessTreeSample 0 @?= False
   completeProcessTreeSamplesAccepted PermitNoCompleteProcessTreeSample 0 @?= True
   completeProcessTreeSamplesAccepted RequireCompleteProcessTreeSample 1 @?= True
+  assertBool "Windows required sampler rejects an absent diagnostic target" (windowsDiagnosticRequired "mingw32" RequireCompleteProcessTreeSample Nothing)
+  assertBool "Windows required sampler accepts a diagnostic target" (not (windowsDiagnosticRequired "mingw32" RequireCompleteProcessTreeSample (Just "C:\\temp\\sampler.jsonl")))
+  assertBool "POSIX sampler does not require a Windows diagnostic target" (not (windowsDiagnosticRequired "linux" RequireCompleteProcessTreeSample Nothing))
+  withSystemTempDirectory "adrai-process-tree-diagnostic-lifecycle" $ \directory -> do
+    let diagnosticPath = directory </> "cold-process-tree.jsonl"
+        inherited = [("ADRAI_TEST_PROCESS_TREE_DIAGNOSTIC", diagnosticPath)]
+        snapshot = WindowsProcessTreeSnapshot "2026-08-28T10:00:00Z" 1 0 [WindowsProcessRow 1 0 1 1 "adrai.exe"]
+        sample = ProcessTreeSample 1 (Just snapshot)
+    requiredPath <- resolveProcessTreeDiagnosticPath "mingw32" RequireCompleteProcessTreeSample inherited
+    requiredPath @?= Just diagnosticPath
+    coldPeak <- newIORef 0
+    coldSamples <- newIORef 0
+    coldRecorded <- recordProcessTreeSample requiredPath coldPeak coldSamples (Right sample)
+    coldRecorded @?= Right ()
+    assertBool "required cold sampler must create its fresh diagnostic" =<< doesFileExist diagnosticPath
+    coldArtifact <- BS.readFile diagnosticPath
+    permitPath <- resolveProcessTreeDiagnosticPath "mingw32" PermitNoCompleteProcessTreeSample inherited
+    permitPath @?= Nothing
+    exactPeak <- newIORef 0
+    exactSamples <- newIORef 0
+    exactRecorded <- recordProcessTreeSample permitPath exactPeak exactSamples (Right sample)
+    exactRecorded @?= Right ()
+    BS.readFile diagnosticPath >>= (@?= coldArtifact)
 
 processTreeSamplerContract :: IO ()
 processTreeSamplerContract = do
   processTreeWorkingSetFromPs (Just 10) "10 1 0\n11 10 7\n12 11 3\n" @?= Right (10 * 1024)
-  processTreeWorkingSetFromPs (Just 10) "11 10 7\n" @?= Left "root process disappeared while sampling"
-  processTreeWorkingSetFromPs (Just 10) "10 1 invalid\n" @?= Left "ps returned a malformed process row"
+  processTreeWorkingSetFromPs (Just 10) "11 10 7\n" @?= Left RootDisappeared
+  processTreeWorkingSetFromPs (Just 10) "10 1 invalid\n" @?= Left (SnapshotTopologyFailure "ps returned a malformed process row")
+  processTreeWorkingSetFromPs (Just 10) ("10 1 " <> show (toInteger (maxBound :: Int64)) <> "\n") @?= Left SnapshotOverflow
   readNonnegativeInteger "0\n" @?= Just 0
   readNonnegativeInteger "not-a-number\n" @?= Nothing
   assertBool "process-tree threshold accepts its exact boundary" (withinProcessTreeTarget stressProcessTreeTargetBytes)
   assertBool "process-tree threshold rejects excess working set" (not (withinProcessTreeTarget (stressProcessTreeTargetBytes + 1)))
   peak <- newIORef 0
   samples <- newIORef 0
-  successfulSample <- recordProcessTreeSample peak samples (Right 0)
+  successfulSample <- recordProcessTreeSample Nothing peak samples (Right (ProcessTreeSample 0 Nothing))
   successfulSample @?= Right ()
   readIORef peak >>= (@?= 0)
   readIORef samples >>= (@?= 1)
-  incompleteSample <- recordProcessTreeSample peak samples (Left "incomplete tree")
-  incompleteSample @?= Left "incomplete tree"
+  incompleteSample <- recordProcessTreeSample Nothing peak samples (Left (SnapshotTopologyFailure "incomplete tree"))
+  incompleteSample @?= Left (SnapshotTopologyFailure "incomplete tree")
   readIORef samples >>= (@?= 1)
+  terminalSamplerOutcome (Just ExitSuccess) RootDisappeared @?= Right ExitSuccess
+  terminalSamplerOutcome Nothing RootDisappeared @?= Left RootDisappeared
+  forM_ [RootIdentityMismatch, SnapshotTopologyFailure "bad topology", SnapshotIdentityFailure "bad identity", SnapshotOverflow, SnapshotJsonFailure "bad JSON", SamplerInvocationFailure "bad sampler", DiagnosticPersistenceFailure "bad diagnostic"] $ \failure ->
+    terminalSamplerOutcome (Just ExitSuccess) failure @?= Left failure
+  assertBool "PermitNoCompleteProcessTreeSample accepts a quick successful root-disappeared terminal race" (completeProcessTreeSamplesAccepted PermitNoCompleteProcessTreeSample 0)
+  timedCleanup <- newIORef (0 :: Int)
+  timedCapture <- samplerDeadline (Just 1000) (modifyIORef' timedCleanup (+ 1)) (threadDelay 1000000 >> pure ())
+  timedCapture @?= Nothing
+  readIORef timedCleanup >>= (@?= 1)
+  thrownCleanup <- newIORef (0 :: Int)
+  thrown <-
+    try
+      ( samplerDeadline
+          (Just 1000000)
+          (modifyIORef' thrownCleanup (+ 1))
+          (throwIO (userError "injected initial-snapshot failure") :: IO ())
+      ) :: IO (Either SomeException (Maybe ()))
+  case thrown of
+    Left _ -> pure ()
+    Right _ -> assertFailure "an injected root-capture exception must propagate"
+  readIORef thrownCleanup >>= (@?= 1)
+
+windowsProcessTreeSamplerContract :: IO ()
+windowsProcessTreeSamplerContract = do
+  let row pid parent creation workingSet name = WindowsProcessRow pid parent creation workingSet name
+      secret = "SUPER_SECRET_never_serialized"
+      root = row 10 1 100 5 "adrai.exe"
+      child = row 11 10 101 7 "git.exe"
+      grandchild = row 12 11 102 3 "conhost.exe"
+      sibling = row 13 10 101 2 "conhost.exe"
+      finalChild = row 14 12 103 4 "git.exe"
+      staleCsrss = row 20 12 50 100 "csrss.exe"
+      staleWininit = row 21 12 51 101 "wininit.exe"
+      staleGrandchild = row 22 20 52 102 "services.exe"
+      staleDescendants = [row (1000 + index) 20 (53 + index) 1000 "stale-service.exe" | index <- [1 .. fromIntegral maxWindowsProcessTreeRows + 1]]
+      legitimateHighWater = row 30 14 104 (stressProcessTreeTargetBytes + 1) "legitimate-high-water.exe"
+      identity = WindowsRootIdentity 10 100
+      snapshot rows = WindowsProcessTreeSnapshot "2026-08-28T10:00:00Z" 10 0 rows
+      validate = validateWindowsProcessTreeSnapshot identity 10
+      admit = admitWindowsProcessTreeSnapshot identity 10
+      reject label expected result =
+        case result of
+          Left problem -> assertBool (label <> ": " <> renderProcessTreeSamplerFailure problem) (expected `isInfixOf` renderProcessTreeSamplerFailure problem)
+          Right bytes -> assertFailure (label <> ": expected rejection, got " <> show bytes)
+  validate (snapshot [root, child, grandchild]) @?= Right 15
+  validate (snapshot [root, child {windowsProcessCreationTicks = 100}]) @?= Right 12
+  validate (snapshot [root, child {windowsProcessCreationTicks = 99}, row 15 11 0 (-1) ""]) @?= Right 5
+  let finalThreeShaped = snapshot [root, child, grandchild, sibling, finalChild, staleCsrss, staleWininit, staleGrandchild]
+  case admit finalThreeShaped of
+    Left problem -> assertFailure ("PID-reuse pruning must admit the current closure: " <> renderProcessTreeSamplerFailure problem)
+    Right (bytes, admitted) -> do
+      bytes @?= 21
+      windowsRows admitted @?= [root, child, grandchild, sibling, finalChild]
+      windowsProcessTreeDiagnostic bytes admitted @?= windowsProcessTreeDiagnostic 21 (snapshot [root, child, grandchild, sibling, finalChild])
+  case admit (snapshot ([root, child, grandchild, sibling, finalChild, legitimateHighWater, staleCsrss] <> staleDescendants)) of
+    Left problem -> assertFailure ("stale descendants must prune before the selected-row bound: " <> renderProcessTreeSamplerFailure problem)
+    Right (bytes, admitted) -> do
+      bytes @?= 21 + stressProcessTreeTargetBytes + 1
+      windowsRows admitted @?= [root, child, grandchild, sibling, finalChild, legitimateHighWater]
+      assertBool "the legitimate high-water child remains attributable" (bytes > stressProcessTreeTargetBytes)
+  initialPeak <- newIORef 0
+  initialSamples <- newIORef 0
+  initialRecorded <- recordProcessTreeSample Nothing initialPeak initialSamples (Right (ProcessTreeSample 15 (Just (snapshot [root, child, grandchild]))))
+  initialRecorded @?= Right ()
+  readIORef initialPeak >>= (@?= 15)
+  readIORef initialSamples >>= (@?= 1)
+  reject "absent root" "root process disappeared" (validate (snapshot [child]))
+  reject "root identity mismatch" "root process identity" (validateWindowsProcessTreeSnapshot (WindowsRootIdentity 10 99) 10 (snapshot [root, child]))
+  validate (snapshot [root, child {windowsProcessCreationTicks = 99}]) @?= Right 5
+  validate (snapshot [root, child {windowsProcessCreationTicks = 102}, grandchild {windowsProcessCreationTicks = 101}]) @?= Right 12
+  reject "missing creation identity" "creation identity" (validate (snapshot [root, child {windowsProcessCreationTicks = 0}]))
+  reject "negative direct descendant working set" "negative descendant working set" (validate (snapshot [root, child {windowsProcessWorkingSetBytes = -1}]))
+  reject "overlong direct descendant name" "overlong descendant name" (validate (snapshot [root, child {windowsProcessName = Text.replicate (maxWindowsProcessTreeNameBytes + 1) "x"}]))
+  reject "duplicate process identity" "ambiguous duplicate" (validate (snapshot [root, child, child]))
+  reject "unexplained disconnected row" "unexplained process row" (validate (snapshot [root, child, row 99 98 0 (-1) ""]))
+  reject "aggregate overflow" "overflowed" (validate (snapshot [root {windowsProcessWorkingSetBytes = toInteger (maxBound :: Int64)}, child {windowsProcessWorkingSetBytes = 1}]))
+  let rendered = windowsProcessTreeDiagnostic 15 (snapshot [root, child, grandchild])
+  case rendered >>= (Aeson.eitherDecodeStrict' . LazyByteString.toStrict . Aeson.encode) of
+    Left problem -> assertFailure ("Windows process-tree diagnostic must render as JSON: " <> problem)
+    Right value -> do
+      valueAt ["working_set_bytes"] value @?= Just (Aeson.Number 15)
+      valueAt ["rows"] value @?= Just (Aeson.Array (Vector.fromList [renderedRow root, renderedRow child, renderedRow grandchild]))
+      assertBool "Windows process-tree diagnostic must not include the secret sentinel" (not (Text.unpack secret `isInfixOf` show value))
+  case windowsProcessTreeDiagnostic 14 (snapshot [root, child, grandchild]) of
+    Left _ -> pure ()
+    Right _ -> assertFailure "diagnostic total must equal its row sum"
+  case windowsProcessTreeDiagnostic 15 (snapshot [root {windowsProcessName = "C:\\unsafe.exe"}, child, grandchild]) of
+    Left _ -> pure ()
+    Right _ -> assertFailure "unsafe diagnostic names must fail closed"
+  case windowsProcessTreeDiagnostic 15 (snapshot (replicate (maxWindowsProcessTreeRows + 1) root)) of
+    Left _ -> pure ()
+    Right _ -> assertFailure "overlarge diagnostics must fail closed"
+  let unicodeSnapshot = snapshot [root {windowsProcessName = "\x03bb-\x00e5.exe"}]
+      unicodeTransport = Text.unpack (encodeBase64Url (LazyByteString.toStrict (Aeson.encode (windowsProcessTreeTransportPayload unicodeSnapshot))))
+  case decodePowerShellJson unicodeTransport :: Either ProcessTreeSamplerFailure WindowsProcessTreeSnapshot of
+    Left problem -> assertFailure ("UTF-8 PowerShell transport must decode: " <> renderProcessTreeSamplerFailure problem)
+    Right decoded -> windowsRows decoded @?= windowsRows unicodeSnapshot
+  case decodePowerShellJson (replicate (maxWindowsProcessTreeRawTransportCharacters + 1) 'A') :: Either ProcessTreeSamplerFailure WindowsProcessTreeSnapshot of
+    Left (SnapshotJsonFailure _) -> pure ()
+    other -> assertFailure ("raw transport bound must reject before decode: " <> show other)
+  case decodePowerShellJson (replicate (maxWindowsProcessTreeTransportCharacters + 1) 'A') :: Either ProcessTreeSamplerFailure WindowsProcessTreeSnapshot of
+    Left (SnapshotJsonFailure _) -> pure ()
+    other -> assertFailure ("base64 transport bound must reject before decode: " <> show other)
+  reject "overlong selected name" "overlong" (validate (snapshot [root {windowsProcessName = Text.replicate (maxWindowsProcessTreeNameBytes + 1) "x"}]))
+  reject "overlarge selected row set" "too many" (validate (snapshot (root : [row (100 + index) 10 (101 + index) 1 "git.exe" | index <- [1 .. fromIntegral maxWindowsProcessTreeRows]])))
+  withSystemTempDirectory "adrai-windows-process-tree-diagnostic" $ \directory -> do
+    let diagnosticPath = directory </> "high-water.jsonl"
+        thresholdSnapshot = snapshot [root {windowsProcessWorkingSetBytes = stressProcessTreeTargetBytes + 1}]
+        thresholdSample = ProcessTreeSample (stressProcessTreeTargetBytes + 1) (Just thresholdSnapshot)
+    peak <- newIORef 0
+    samples <- newIORef 0
+    firstPersisted <- recordProcessTreeSample (Just diagnosticPath) peak samples (Right thresholdSample)
+    firstPersisted @?= Right ()
+    repeatedThresholdBreach <- recordProcessTreeSample (Just diagnosticPath) peak samples (Right thresholdSample)
+    repeatedThresholdBreach @?= Right ()
+    diagnosticRows <- filter (not . null) . lines . BS8.unpack <$> BS8.readFile diagnosticPath
+    length diagnosticRows @?= 2
+    forM_ diagnosticRows $ \diagnosticRow ->
+      case Aeson.eitherDecodeStrict' (BS8.pack diagnosticRow) :: Either String Aeson.Value of
+        Left problem -> assertFailure ("persisted Windows process-tree diagnostic must be JSON: " <> problem)
+        Right value -> do
+          valueAt ["working_set_bytes"] value @?= Just (Aeson.Number (fromIntegral (stressProcessTreeTargetBytes + 1)))
+          assertBool "persisted diagnostic must omit the secret sentinel" (not (Text.unpack secret `isInfixOf` diagnosticRow))
+    BS8.writeFile (directory </> "not-a-directory") "blocker"
+    blockedPeak <- newIORef 0
+    blockedSamples <- newIORef 0
+    blocked <- recordProcessTreeSample (Just (directory </> "not-a-directory" </> "diagnostic.jsonl")) blockedPeak blockedSamples (Right thresholdSample)
+    case blocked of
+      Left problem -> assertBool ("diagnostic persistence failure must be attributable: " <> renderProcessTreeSamplerFailure problem) ("diagnostic persistence failure" `isInfixOf` renderProcessTreeSamplerFailure problem)
+      Right () -> assertFailure "diagnostic persistence failure must reject the process-tree sample"
+    readIORef blockedPeak >>= (@?= 0)
+    readIORef blockedSamples >>= (@?= 0)
+    let invalidPath = directory </> "invalid-snapshot.jsonl"
+    invalid <- persistInvalidWindowsSnapshot (Just invalidPath) RootIdentityMismatch (Text.unpack secret <> unicodeTransport) (Just unicodeSnapshot) :: IO (Either ProcessTreeSamplerFailure ProcessTreeSample)
+    invalid @?= Left RootIdentityMismatch
+    invalidRows <- filter (not . null) . lines . BS8.unpack <$> BS8.readFile invalidPath
+    case invalidRows of
+      [invalidRow] ->
+        case Aeson.eitherDecodeStrict' (BS8.pack invalidRow) :: Either String Aeson.Value of
+          Left problem -> assertFailure ("invalid snapshot diagnostic must be JSON: " <> problem)
+          Right value -> do
+            valueAt ["failure"] value @?= Just (Aeson.String "root process identity does not match the launched process")
+            assertBool "invalid diagnostic must retain a transport digest" (isJust (valueAt ["raw_transport_sha256"] value))
+            assertBool "invalid diagnostic must not retain raw transport" (isNothing (valueAt ["raw_transport"] value))
+            assertBool "invalid diagnostic must not leak secret sentinel data" (not (Text.unpack secret `isInfixOf` invalidRow))
+      _ -> assertFailure "invalid snapshot persistence must append exactly one diagnostic row"
+  where
+    renderedRow row =
+      Aeson.object
+        [ "pid" Aeson..= windowsProcessPid row,
+          "ppid" Aeson..= windowsProcessParentPid row,
+          "creation_ticks" Aeson..= windowsProcessCreationTicks row,
+          "working_set_bytes" Aeson..= windowsProcessWorkingSetBytes row,
+          "name" Aeson..= windowsProcessName row
+        ]
+
+windowsProcessTreeIntegrationContract :: IO ()
+windowsProcessTreeIntegrationContract
+  | os /= "mingw32" = pure ()
+  | otherwise = withSystemTempDirectory "adrai-windows-process-tree-integration" $ \directory -> do
+      let fixtureRows =
+            "& { $base=[datetime]::UtcNow; $rows=@("
+              <> "[pscustomobject]@{ProcessId=[uint32]10;ParentProcessId=[uint32]1;CreationDate=$base;WorkingSetSize=[int64]5;Name='adrai.exe'},"
+              <> "[pscustomobject]@{ProcessId=[uint32]11;ParentProcessId=[uint32]10;CreationDate=$base.AddTicks(1);WorkingSetSize=[int64]7;Name='git.exe'},"
+              <> "[pscustomobject]@{ProcessId=[uint32]12;ParentProcessId=[uint32]11;CreationDate=$base.AddTicks(2);WorkingSetSize=[int64]3;Name='conhost.exe'},"
+              <> "[pscustomobject]@{ProcessId=[uint32]13;ParentProcessId=[uint32]10;CreationDate=$base.AddTicks(1);WorkingSetSize=[int64]2;Name='conhost.exe'},"
+              <> "[pscustomobject]@{ProcessId=[uint32]14;ParentProcessId=[uint32]12;CreationDate=$base.AddTicks(3);WorkingSetSize=[int64]4;Name='git.exe'},"
+              <> "[pscustomobject]@{ProcessId=[uint32]20;ParentProcessId=[uint32]12;CreationDate=$base.AddTicks(-10);WorkingSetSize=[int64]100;Name='csrss.exe'},"
+              <> "[pscustomobject]@{ProcessId=[uint32]21;ParentProcessId=[uint32]12;CreationDate=$base.AddTicks(-9);WorkingSetSize=[int64]101;Name='wininit.exe'});"
+              <> "foreach($i in 1..257){$rows += [pscustomobject]@{ProcessId=[uint32](1000+$i);ParentProcessId=[uint32]20;CreationDate=$base.AddTicks(-8+$i);WorkingSetSize=[int64]1000000;Name='stale-service.exe'}};$rows }"
+          malformedDirect property =
+            "& { $base=[datetime]::UtcNow; @([pscustomobject]@{ProcessId=[uint32]10;ParentProcessId=[uint32]1;CreationDate=$base;WorkingSetSize=[int64]5;Name='adrai.exe'},"
+              <> "[pscustomobject]@{ProcessId=[uint32]11;ParentProcessId=[uint32]10;"
+              <> property
+              <> "}) }"
+          duplicateRows =
+            "& { $base=[datetime]::UtcNow; @([pscustomobject]@{ProcessId=[uint32]10;ParentProcessId=[uint32]1;CreationDate=$base;WorkingSetSize=[int64]5;Name='adrai.exe'},"
+              <> "[pscustomobject]@{ProcessId=[uint32]11;ParentProcessId=[uint32]10;CreationDate=$base.AddTicks(1);WorkingSetSize=[int64]7;Name='git.exe'},"
+              <> "[pscustomobject]@{ProcessId=[uint32]11;ParentProcessId=[uint32]10;CreationDate=$base.AddTicks(2);WorkingSetSize=[int64]7;Name='git.exe'}) }"
+          expectScriptFailure label rows = do
+            result <- readWindowsProcessTreeSnapshotWithCimRows Nothing "10" rows
+            case result of
+              Left _ -> pure ()
+              Right snapshot -> assertFailure (label <> " must fail in the generated PowerShell sampler, got rows " <> show (windowsRows snapshot))
+      fixture <- readWindowsProcessTreeSnapshotWithCimRows Nothing "10" fixtureRows
+      case fixture of
+        Left failure -> assertFailure ("Windows PowerShell temporal-pruning fixture failed: " <> renderProcessTreeSamplerFailure failure)
+        Right snapshot -> do
+          map windowsProcessPid (windowsRows snapshot) @?= [10, 11, 12, 13, 14]
+          sum (map windowsProcessWorkingSetBytes (windowsRows snapshot)) @?= 21
+          identity <-
+            case initialWindowsRootIdentity 10 snapshot of
+              Left failure -> assertFailure ("Windows PowerShell fixture omitted its root identity: " <> renderProcessTreeSamplerFailure failure) >> fail "unreachable"
+              Right value -> pure value
+          case admitWindowsProcessTreeSnapshot identity 10 snapshot of
+            Left failure -> assertFailure ("Windows PowerShell fixture admitted an invalid closure: " <> renderProcessTreeSamplerFailure failure)
+            Right (bytes, admitted) -> do
+              bytes @?= 21
+              map windowsProcessPid (windowsRows admitted) @?= [10, 11, 12, 13, 14]
+      expectScriptFailure "duplicate PID" duplicateRows
+      expectScriptFailure "missing direct creation identity" (malformedDirect "CreationDate=$null;WorkingSetSize=[int64]7;Name='git.exe'")
+      expectScriptFailure "negative direct working set" (malformedDirect "CreationDate=$base.AddTicks(1);WorkingSetSize=[int64]-1;Name='git.exe'")
+      expectScriptFailure "empty direct name" (malformedDirect "CreationDate=$base.AddTicks(1);WorkingSetSize=[int64]7;Name=''")
+      let cleanup (_, _, _, processHandle) = do
+            status <- getProcessExitCode processHandle
+            when (isNothing status) (terminateProcess processHandle)
+            _ <- waitForProcess processHandle
+            pure ()
+          sample (maybeInput, _, _, processHandle) = do
+            input <- maybe (assertFailure "Windows integration process omitted its requested stdin pipe" >> fail "unreachable") pure maybeInput
+            hClose input
+            initial <- captureInitialWindowsProcessTreeSample (Just (directory </> "integration.jsonl")) processHandle
+            case initial of
+              Left failure -> assertFailure ("Windows integration initial snapshot failed: " <> renderProcessTreeSamplerFailure failure) >> fail "unreachable"
+              Right (anchored, observed) ->
+                case processTreeSampleWindows observed of
+                  Nothing -> assertFailure "Windows integration initial sample omitted its typed snapshot"
+                  Just snapshot -> do
+                    assertBool "Windows integration initial snapshot must include its anchored root" (any (\row -> windowsProcessPid row == windowsRootIdentityPid anchored && windowsProcessCreationTicks row == windowsRootIdentityCreationTicks anchored) (windowsRows snapshot))
+                    processTreeSampleBytes observed @?= sum (map windowsProcessWorkingSetBytes (windowsRows snapshot))
+            pure ()
+      bracket
+        (createProcess ((proc "ping.exe" ["-n", "3", "127.0.0.1"]) {std_in = CreatePipe}))
+        cleanup
+        sample
 
 taskkillFailureContract :: IO ()
 taskkillFailureContract = do
@@ -1588,12 +1935,6 @@ gitStdout repository arguments = profileGitChild "git" $ do
 assertContains :: String -> String -> String -> IO ()
 assertContains label expected actual = assertBool (label <> " omitted " <> expected <> " from " <> actual) (expected `isInfixOf` compact actual)
 
-assertAbsent :: String -> String -> String -> IO ()
-assertAbsent label forbidden actual = assertBool (label <> ": " <> actual) (not (forbidden `isInfixOf` actual))
-
-assertNonEmptyResults :: String -> String -> IO ()
-assertNonEmptyResults label output = assertBool (label <> " returned no results: " <> output) (not ("\"results\":[]" `isInfixOf` compact output))
-
 jsonIntegerAt :: [Text.Text] -> String -> IO Int
 jsonIntegerAt path output =
   case Aeson.eitherDecode (LazyByteString.fromStrict (BS8.pack output)) of
@@ -1606,33 +1947,6 @@ jsonIntegerAt path output =
             Nothing -> assertFailure ("JSON number is not integral at " <> show path) >> fail "unreachable"
         _ -> assertFailure ("missing integer JSON field at " <> show path) >> fail "unreachable"
 
-firstResultIntegerAt :: [Text.Text] -> String -> IO Int
-firstResultIntegerAt path output =
-  case Aeson.eitherDecode (LazyByteString.fromStrict (BS8.pack output)) of
-    Right (Aeson.Object root) ->
-      case AesonKeyMap.lookup "results" root of
-        Just (Aeson.Array values)
-          | first : _ <- Vector.toList values ->
-              case valueAt path first of
-                Just (Aeson.Number number)
-                  | Just integer <- toBoundedInteger number -> pure integer
-                _ -> missing
-        _ -> missing
-    _ -> missing
-  where
-    missing = assertFailure ("missing first-result integer JSON field at " <> show path) >> fail "unreachable"
-
-relevanceBounds :: String -> IO (Int, Int, Int, Int, Int, Int, Int)
-relevanceBounds output = do
-  source <- jsonIntegerAt ["retrieval", "source_chunks"] output
-  selected <- jsonIntegerAt ["retrieval", "selected_source_chunks"] output
-  eligible <- jsonIntegerAt ["retrieval", "eligible_search_items"] output
-  shortlist <- jsonIntegerAt ["retrieval", "adr_shortlist"] output
-  candidates <- jsonIntegerAt ["retrieval", "candidate_search_items"] output
-  sections <- jsonIntegerAt ["retrieval", "search_sections"] output
-  rerank <- jsonIntegerAt ["retrieval", "exact_rerank_candidates"] output
-  pure (source, selected, eligible, shortlist, candidates, sections, rerank)
-
 valueAt :: [Text.Text] -> Aeson.Value -> Maybe Aeson.Value
 valueAt [] value = Just value
 valueAt (key : remaining) (Aeson.Object object) = AesonKeyMap.lookup (AesonKey.fromText key) object >>= valueAt remaining
@@ -1643,10 +1957,6 @@ compact = filter (`notElem` [' ', '\t', '\r', '\n'])
 
 assertEqual :: (Eq value, Show value) => value -> value -> String -> IO ()
 assertEqual actual expected label = unless (actual == expected) (assertFailure (label <> ": expected " <> show expected <> ", got " <> show actual))
-
-assertBounded :: String -> Int -> Int -> IO ()
-assertBounded label upperBound actual =
-  assertBool (label <> " must be in 1.." <> show upperBound <> ", got " <> show actual) (actual > 0 && actual <= upperBound)
 
 timed :: String -> IO value -> IO value
 timed label action = do

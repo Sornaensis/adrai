@@ -53,11 +53,24 @@ validHalfNorms vector = all valid [leftNorm, rightNorm]
 
 propFloat32ByteRoundTrip :: Property
 propFloat32ByteRoundTrip = withTests 100 . property $ do
-  words32 <- forAll (Gen.list (Range.linear 0 80) genNonNanFloatWord)
-  let bytes = BS.concat (map word32LittleEndian words32)
+  randomWords <- forAll (Gen.list (Range.linear 0 80) genNonNanFloatWord)
+  let words32 = float32EdgeWords <> randomWords
+      bytes = BS.concat (map word32LittleEndian words32)
   case unpackVector bytes of
     Left failure -> Hedgehog.footnote (show failure) >> assert False
     Right vector -> packVector vector === bytes
+
+float32EdgeWords :: [Word32]
+float32EdgeWords =
+  [ 0x00000000,
+    0x80000000,
+    0x00000001,
+    0x80000001,
+    0x7f7fffff,
+    0xff7fffff,
+    0x7f800000,
+    0xff800000
+  ]
 
 genNonNanFloatWord :: Gen Word32
 genNonNanFloatWord = Gen.filter (\word -> word .&. 0x7f800000 /= 0x7f800000) (Gen.word32 Range.constantBounded)

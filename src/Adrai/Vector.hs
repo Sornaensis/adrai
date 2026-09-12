@@ -93,7 +93,7 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Char (isAlpha, isAscii, isDigit, isLower, isUpper, ord)
 import Data.Foldable (toList, traverse_)
-import GHC.Float (castFloatToWord32, castWord32ToFloat)
+import GHC.Float (castFloatToWord32, castWord32ToFloat, double2Float, float2Double)
 import Data.List (sortBy, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
@@ -708,7 +708,7 @@ packVector :: DenseVector -> ByteString
 packVector (DenseVector values) =
   LazyByteString.toStrict
     ( Builder.toLazyByteString
-        (Unboxed.foldl' (\builder value -> builder <> Builder.word32LE (castFloatToWord32 (realToFrac value))) mempty values)
+        (Unboxed.foldl' (\builder value -> builder <> Builder.word32LE (castFloatToWord32 (double2Float value))) mempty values)
     )
 
 -- | Canonicalize each component through the same IEEE-754 float32
@@ -719,8 +719,8 @@ canonicalFloat32Vector (DenseVector values) = DenseVector (Unboxed.map canonical
 
 canonicalizeFloat32 :: Double -> Double
 canonicalizeFloat32 value =
-  realToFrac
-    (castWord32ToFloat (castFloatToWord32 (realToFrac value :: Float)))
+  float2Double
+    (castWord32ToFloat (castFloatToWord32 (double2Float value)))
 
 unpackVector :: ByteString -> Either VectorError DenseVector
 unpackVector bytes
@@ -732,7 +732,7 @@ unpackVector bytes
       | otherwise =
           let (chunk, rest) = BS.splitAt 4 remaining
               word = littleEndianWord32 chunk
-           in realToFrac (castWord32ToFloat word) : go rest
+           in float2Double (castWord32ToFloat word) : go rest
 
 littleEndianWord32 :: ByteString -> Word32
 littleEndianWord32 bytes =

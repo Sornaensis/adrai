@@ -16,15 +16,19 @@
 module Adrai.ProvenanceOverlayTest (tests) where
 
 import Adrai.Git
-  ( GitError (..),
+  ( GitClient (..),
+    GitError (..),
     GitOid (..),
     Repository (..),
+    gitCommitNodeOid,
     gitOidText,
+    reachableCommitGraphAt,
     systemGit,
   )
 import Adrai.GitTestSupport
   ( commitFile,
     commitFiles,
+    cloneIndependentDepthOneRepository,
     gitSuccess,
     initTestRepository,
     outputText,
@@ -32,28 +36,13 @@ import Adrai.GitTestSupport
     requireRevision,
   )
 import Adrai.Provenance
-  ( EventKind (..),
-    GitOid (..),
-    LineAnchor (..),
-    OperationContext (..),
-    ProvenanceCapsule (..),
+  ( ProvenanceCapsule,
     ProvenanceCapsuleInput (..),
     ProvenanceObjectId (..),
-    ProvenanceError (..),
-    encodeCapsule,
     mkEventKind,
     mkGitOid,
-    mkLineAnchor,
-    mkOverlayFingerprint,
     mkProvenanceCapsule,
-    normalizeSemantic,
-    provenanceActor,
-    provenanceBasis,
-    provenanceEventKind,
     provenanceObjectFromRef,
-    provenanceObjectId,
-    provenanceOperationContext,
-    provenanceTimestampMs,
     sealSemantic,
     sha256Digest,
     semanticDigest,
@@ -61,22 +50,20 @@ import Adrai.Provenance
 import Adrai.Provenance.Classification
   ( ParsedManagedDocument (..),
     operationSignature,
-    registerOperationGroups,
-    storeNewCommits,
-    candidateCommits,
+      loadCommitRowsWithQueryObserver,
+     candidateCommits,
+     candidateCommitsWithQueryObserver,
     canonicalParentsJson,
     decodeExactBlobTreeEntry,
-    processCandidates,
+    basisObjectRequestCount,
+    groupTreeObservationRequests,
+     processCandidates,
+     processCandidatesWithQueryObserver,
+    recordIssue,
+    treeObservationRequestCount,
   )
 import Adrai.Provenance.Overlay
-  ( CommitObservation (..),
-    LineLanding (..),
-    OperationClassification (..),
-    OperationCommit (..),
-    ProvenanceIssue (..),
-    RefObservation (..),
-    ObservationRoot (..),
-    ManagedPathAddition (..),
+  (
     ProvenanceEvidence (..),
     ProvenanceOperationEvidence (..),
     RegisteredOperationRow (..),
@@ -88,7 +75,15 @@ import Adrai.Provenance.Overlay
     RefObservationRow (..),
     ObservationRootRow (..),
     ProvenanceIssueRow (..),
-    ProvenanceEvidenceError (..),
+    ProvenanceEvidenceError
+      ( ProvenanceEvidenceDatabaseError,
+        ProvenanceEvidenceInvalidOid,
+        ProvenanceEvidenceMissingRegistration,
+        ProvenanceEvidenceMissingConfig,
+        ProvenanceEvidenceMissingObjects,
+        ProvenanceEvidenceDuplicateRegistration,
+        ProvenanceEvidenceMissingTargetPlacement
+      ),
     createOverlaySchema,
     overlaySchemaDdl,
     overlaySchemaVersion,
@@ -97,72 +92,60 @@ import Adrai.Provenance.Overlay
   )
 import Adrai.Provenance.Ensure
   ( configKey,
-    ensureProvenance,
-    overlayRowsForOperations,
+     ensureProvenance,
+     ensureProvenanceWithRecoveryWitness,
+     ensureProvenanceWithRecoveryWitnessAndWorklistObserver,
+    recoveryProjectionValidity,
+    recoveryWitnessSuppresses,
+     seedRegisteredOperationsFromSemanticCache,
+     seedRegisteredOperationsFromSemanticCacheWithQueryObserver,
+    usableWitnessRange,
+    extendTargetAncestryCache,
     readProvenanceEvidenceAt,
     readProvenanceEvidenceAtWith,
     ProvenanceUpdate (..),
   )
-import Adrai.Provenance.Discovery
-  ( listRefs,
-    reflogCommitRoots,
-    observationRoots,
-    revListDelta,
-    addedPathsForCommits,
-    decodeAddedPathsOutput,
-    commitLogSnapshotForOids,
-  )
+import Adrai.Provenance.RecoveryWitness (ProvenanceRecoveryWitness (..))
+import Adrai.Provenance.Discovery (addedPathsForCommits, decodeAddedPathsOutput)
 import Adrai.Repository
   ( ResolvedRepositoryRevision (..),
     resolveRepositoryRevision,
   )
+import Adrai.RetainedCLI.RepositorySeed
+  ( RepositorySeed,
+    createRepositorySeed,
+    removeRepositorySeed,
+    withRepositorySeedCopy,
+  )
 import Adrai.Git (discoverRepository)
 import Adrai.Sqlite (asQuery)
 import Adrai.Types
-  ( Actor (..),
-    ActorKind (..),
-    AdrId (..),
+  ( ActorKind (..),
+    AdrId,
     Config,
     ConfigSchema (..),
-    ConnectionId (..),
     Digest (..),
     GitRef (..),
     LogicalLine (..),
     ObjectRef,
     OperationId (..),
     ProvenanceInputs (..),
-    RecordId (..),
     RepoPath (..),
-    StateToken (..),
     adrObjectRef,
     mkActor,
     adrIdText,
-    connectionIdText,
     configManagedPaths,
-    configSchema,
     configLogicalLines,
-    digestBytes,
-    gitRefText,
     logicalLineId,
-    logicalLineRefs,
     managedConnectionPath,
     managedDecisionPath,
     mkAdrId,
     mkConfig,
-    mkConnectionId,
-    mkGitRef,
-    mkLogicalLine,
     mkManagedPaths,
     mkOperationId,
-    mkRecordId,
     mkRepoPath,
-    mkStateToken,
-    objectRefKind,
     objectRefText,
-    operationIdText,
-    recordIdText,
     repoPathText,
-    stateTokenText,
   )
 import Control.Exception
   ( AsyncException (ThreadKilled),
@@ -177,7 +160,7 @@ import Control.Exception
   )
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Monad (filterM, forM_, void, when)
+import Control.Monad (filterM, forM_, void)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -187,28 +170,28 @@ import qualified Data.ByteString.Lazy as Lazy
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Set as Set
-import Data.Text (Text, pack, replicate, unpack)
+import Data.Text (Text, pack)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Vector as Vector
 import Database.SQLite.Simple
-  ( Connection,
-    Only (..),
+  ( Only (..),
     SQLData (SQLNull, SQLText, SQLInteger),
-    close,
-    execute,
-    execute_,
+     close,
+     execute,
+     executeMany,
+     execute_,
+     withTransaction,
     open,
     query,
     query_,
-    withTransaction,
   )
 import System.Directory (doesFileExist, withCurrentDirectory)
 import System.FilePath (isRelative, takeFileName, (</>))
 import System.IO.Temp (withSystemTempDirectory)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit ((@?=), assertBool, assertEqual, assertFailure, testCase)
 
 data TestAsyncCancellation = TestAsyncCancellation
@@ -232,7 +215,7 @@ createAdraiFile
   -> Text -- ^ Operation ID
   -> Text -- ^ Blob OID of the operation file
   -> IO Text -- ^ Sealed file content (UTF-8)
-createAdraiFile objRef semantic opId blobOid = do
+createAdraiFile objRef semantic opId _blobOid = do
   let op = requireOperationId opId
       oid = provenanceObjectFromRef objRef
       basis = GitOid (Text.replicate 40 "0")
@@ -310,7 +293,29 @@ runEnsureForConfig repository currentDb config documents operations target =
       (Just documents)
       operations
       Nothing
-      target
+       target
+
+runEnsureForConfigWithWitness
+  :: Repository -> FilePath -> Config -> [ParsedManagedDocument] -> [Text]
+  -> GitOid -> Maybe ProvenanceRecoveryWitness -> IO (Either SomeException ProvenanceUpdate)
+runEnsureForConfigWithWitness repository currentDb config documents operations target witness =
+  bracket (open (provenanceDatabasePath currentDb)) close $ \connection ->
+    ensureProvenanceWithRecoveryWitness repository connection currentDb
+      (map logicalLineId (configLogicalLines config))
+      (repoPathText (managedDecisionPath (configManagedPaths config)))
+      (repoPathText (managedConnectionPath (configManagedPaths config)))
+       (configLogicalLines config) (Just documents) operations Nothing target witness []
+
+runEnsureForConfigWithWitnessAndWorklistObserver
+  :: ([GitOid] -> IO ()) -> Repository -> FilePath -> Config -> [ParsedManagedDocument] -> [Text]
+  -> GitOid -> Maybe ProvenanceRecoveryWitness -> IO (Either SomeException ProvenanceUpdate)
+runEnsureForConfigWithWitnessAndWorklistObserver observeWorklist repository currentDb config documents operations target witness =
+  bracket (open (provenanceDatabasePath currentDb)) close $ \connection ->
+    ensureProvenanceWithRecoveryWitnessAndWorklistObserver observeWorklist repository connection currentDb
+      (map logicalLineId (configLogicalLines config))
+      (repoPathText (managedDecisionPath (configManagedPaths config)))
+      (repoPathText (managedConnectionPath (configManagedPaths config)))
+      (configLogicalLines config) (Just documents) operations Nothing target witness []
 
 -- | Query the @operation_commit@ table for a specific operation ID.
 --
@@ -320,15 +325,6 @@ queryPlacements dbPath opId = do
   conn <- open dbPath
   rows <-
     query conn "SELECT commit_oid, classification FROM operation_commit WHERE op_id = ? ORDER BY commit_oid"
-      [SQLText opId] :: IO [(Text, Text)]
-  close conn
-  pure rows
-
-queryPlacementParentJson :: FilePath -> Text -> IO [(Text, Text)]
-queryPlacementParentJson dbPath opId = do
-  conn <- open dbPath
-  rows <-
-    query conn "SELECT commit_oid, parents_json FROM operation_commit WHERE op_id = ? ORDER BY commit_oid"
       [SQLText opId] :: IO [(Text, Text)]
   close conn
   pure rows
@@ -348,16 +344,6 @@ queryLandingCompleteness dbPath = do
   rows <- query_ conn "SELECT complete FROM line_landing ORDER BY config_key,op_id,line_id,ref_name,commit_oid" :: IO [Only Int]
   close conn
   pure (map fromOnly rows)
-
--- | Query the full operation_commit table.
-queryAllPlacements :: FilePath -> IO [(Text, Text, Text)]
-queryAllPlacements dbPath = do
-  conn <- open dbPath
-  rows <-
-    query_ conn "SELECT op_id, commit_oid, classification FROM operation_commit ORDER BY op_id, commit_oid"
-      :: IO [(Text, Text, Text)]
-  close conn
-  pure rows
 
 -- | Query the registered_operation table.
 queryRegisteredOperations :: FilePath -> IO [(Text, Maybe Text, Text, Text)]
@@ -425,28 +411,6 @@ runProvenanceEnsure repo currentDbPath parsedDocs opIds targetRevision = do
     logicalLines (Just parsedDocs) opIds Nothing targetRevision
   pure (dbPath, result)
 
--- | Create a test repository, seed it, add an ADRAI decision file, and run
--- provenance overlay classification.  Returns the DB path.
-setupTestRepo :: (FilePath -> IO ()) -> IO (FilePath, FilePath)
-setupTestRepo extraSetup =
-  withSystemTempDirectory "adrai provenance overlay test" $ \temp -> do
-    let repoDir = temp </> "repo"
-        dbPath = temp </> "semantic.sqlite"
-    initTestRepository repoDir
-    -- Seed initial commit
-    _ <- commitFile repoDir "seed.txt" "seed"
-    extraSetup repoDir
-    -- Discover and resolve
-    discoverResult <- discoverRepository systemGit repoDir
-    case discoverResult of
-      Left e -> assertFailure (show e)
-      Right repo -> do
-        resolveResult <- resolveRepositoryRevision repo (requireRevision "HEAD")
-        case resolveResult of
-          Left e -> assertFailure (show e)
-          Right r -> pure r
-    pure (repoDir, dbPath)
-
 -- | Ensure the overlay schema exists in the database.
 ensureSchema :: FilePath -> IO ()
 ensureSchema dbPath = do
@@ -498,43 +462,48 @@ candidateBindingResult dbPath commits = do
     Left err -> assertFailure ("candidateCommits: " <> show err)
     Right candidates -> pure candidates
 
--- | Register operation groups and then run the full classification pipeline.
-classifyOperations
-  :: Repository
-  -> FilePath -- db path
-  -> [ParsedManagedDocument]
-  -> [Text] -- new operation IDs
-  -> IO ()
-classifyOperations repo dbPath parsedDocs newOps = do
-  conn <- open dbPath
-  -- Register
-  let groups = Map.fromList [(parsedDocumentObjectRef doc, [doc]) | doc <- parsedDocs]
-  result <- try @SomeException $ registerOperationGroups conn groups
-  case result of
-    Left e -> assertFailure ("registerOperationGroups: " <> show e)
-    Right _ -> pure ()
-  -- Store new commits
-  allOids <- do
-    rows <- query_ conn "SELECT commit_oid FROM commit_observation" :: IO [Only Text]
-    pure [case mkGitOid oid of Left _ -> error "bad oid"; Right o -> o | Only oid <- rows]
-  storeResult <- try @SomeException $ storeNewCommits repo conn allOids
-  case storeResult of
-    Left _ -> pure () -- might not have commits stored yet
-    Right _ -> pure ()
-  -- Find candidates
-  candidatesResult <- candidateCommits conn allOids newOps
-  case candidatesResult of
-    Left e -> assertFailure ("candidateCommits: " <> show e)
-    Right candidates -> do
-      procResult <- try @SomeException $ processCandidates repo conn candidates newOps
-      case procResult of
-        Left e -> assertFailure ("processCandidates: " <> show e)
-        Right _ -> pure ()
-  close conn
-
 -- =====================================================================
 -- Test suite
 -- =====================================================================
+
+classificationBasisBatchWarnings :: IO ()
+classificationBasisBatchWarnings =
+  withSystemTempDirectory "adrai classification basis batch" $ \temporary -> do
+    let repositoryPath = temporary </> "repository"
+        overlayPath = temporary </> "overlay.sqlite"
+        missingOperation = "O00000000000000000000000891"
+        noncommitOperation = "O00000000000000000000000892"
+        managedPath = "architecture/adrai/decisions/basis batch ünicode space.md"
+        managedPathText = Text.pack managedPath
+        missingBasis = GitOid (Text.replicate 40 "f")
+    initTestRepository repositoryPath
+    parent <- commitFile repositoryPath "seed.txt" "seed"
+    candidate <- commitFile repositoryPath managedPath "managed payload"
+    blob <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD:" <> managedPath] BS.empty
+    noncommitBasis <- outputText <$> gitSuccess repositoryPath ["hash-object", "-w", "--stdin"] "not a commit"
+    discovered <- discoverRepository systemGit repositoryPath >>= \case
+      Left problem -> assertFailure (show problem) >> fail "unreachable"
+      Right repository -> pure repository
+    connection <- open overlayPath
+    createOverlaySchema connection
+    let register operation basis = do
+          execute connection "INSERT INTO registered_operation VALUES(?,?,?,?)"
+            [ SQLText operation, SQLText "A00000000000000000000000891", SQLText (gitOidText basis), SQLText "basis-batch" ]
+          execute connection "INSERT INTO registered_object VALUES(?,?,?,?)"
+            [ SQLText operation, SQLText "A00000000000000000000000891", SQLText managedPathText, SQLText blob ]
+    register missingOperation missingBasis
+    register noncommitOperation (requireGitOid noncommitBasis)
+    execute connection "INSERT INTO commit_observation VALUES(?,?,?,?,?,?)"
+      [ SQLText candidate, SQLText parent, SQLInteger 1, SQLInteger 1, SQLText "basis batch", SQLText "" ]
+    outcome <- processCandidates discovered connection
+      (Map.fromList [(missingOperation, Set.singleton (GitOid candidate)), (noncommitOperation, Set.singleton (GitOid candidate))])
+      [missingOperation, noncommitOperation]
+    case outcome of
+      Left problem -> assertFailure ("classification unexpectedly failed: " <> show problem)
+      Right () -> pure ()
+    warnings <- query_ connection "SELECT code,op_id FROM provenance_issue ORDER BY op_id" :: IO [(Text, Text)]
+    warnings @?= [("BASIS_COMMIT_UNAVAILABLE", missingOperation), ("BASIS_COMMIT_UNAVAILABLE", noncommitOperation)]
+    close connection
 
 treePathProtocolTest :: IO ()
 treePathProtocolTest = do
@@ -688,15 +657,139 @@ addedPathsMergeGitTest =
     added <- addedPathsForCommits (resolvedRepository resolved) [merge, merge]
     added @?= Right (Map.singleton merge (Set.fromList [featurePath, mainPath]))
 
+requireHead :: String -> [a] -> a
+requireHead description = \case
+  value : _ -> value
+  [] -> error (description <> " must be non-empty")
+
 tests :: TestTree
 tests =
+  withResource createOverlayRepositorySeed removeRepositorySeed $ \getRepositorySeed ->
+    withResource createMergePlacementRepositorySeed removeRepositorySeed $ \getMergePlacementSeed ->
+      testsWithRepositorySeed getRepositorySeed getMergePlacementSeed
+
+testsWithRepositorySeed :: IO RepositorySeed -> IO RepositorySeed -> TestTree
+testsWithRepositorySeed getRepositorySeed getMergePlacementSeed =
   testGroup
     "Provenance overlay topology"
     [ testCase "added_paths_protocol_is_nul_framed_and_strict" addedPathsProtocolTest,
 
+      testCase "commit-row repair observes immediately before its post-repair select" $
+        withSystemTempDirectory "adrai commit-row observer" $ \temporary -> do
+          let repoDir = temporary </> "repo"
+              overlayPath = temporary </> "overlay.sqlite"
+          initTestRepository repoDir
+          _ <- commitFile repoDir "seed.md" "seed\n"
+          discovered <- discoverRepository systemGit repoDir >>= \case
+            Left problem -> assertFailure (show problem) >> fail "unreachable"
+            Right repository -> pure repository
+          target <- resolveRepositoryRevision discovered (requireRevision "HEAD") >>= \case
+            Left problem -> assertFailure (show problem) >> fail "unreachable"
+            Right resolved -> pure (resolvedCommitOid resolved)
+          ensureSchema overlayPath
+          calls <- newIORef (0 :: Int)
+          bracket (open overlayPath) close $ \connection -> do
+            loaded <- loadCommitRowsWithQueryObserver (modifyIORef' calls (+ 1)) discovered connection [target]
+            case loaded of
+              Left problem -> assertFailure (show problem)
+              Right rows -> assertBool "repair loads the discovered commit" (Map.member target rows)
+          readIORef calls >>= (@?= 2),
+
+      testCase "target ancestry cache performs one shared check for unique placements" $ do
+        let first = requireGitOid "1111111111111111111111111111111111111111"
+            second = requireGitOid "2222222222222222222222222222222222222222"
+            third = requireGitOid "3333333333333333333333333333333333333333"
+        calls <- newIORef []
+        let check candidates = do
+              modifyIORef' calls (<> [candidates])
+              pure (Right (Map.fromList [(candidate, candidate == first) | candidate <- candidates]))
+        firstPass <- extendTargetAncestryCache check Map.empty [first, first, second]
+        cache <- case firstPass of
+          Left problem -> assertFailure ("ancestry cache: " <> show problem)
+          Right value -> pure value
+        firstCalls <- readIORef calls
+        firstCalls @?= [[first, second]]
+        Map.lookup first cache @?= Just True
+        Map.lookup second cache @?= Just False
+        writeIORef calls []
+        secondPass <- extendTargetAncestryCache check cache [second, third, first, third]
+        refreshedCache <- case secondPass of
+          Left problem -> assertFailure ("cached ancestry refresh: " <> show problem)
+          Right value -> pure value
+        secondCalls <- readIORef calls
+        secondCalls @?= [[third]]
+        Map.lookup third refreshedCache @?= Just False ,
+
+      testCase "target ancestry cache fails closed when a bulk check omits a candidate" $ do
+        let first = requireGitOid "1111111111111111111111111111111111111111"
+            second = requireGitOid "2222222222222222222222222222222222222222"
+            incomplete candidates = pure (Right (Map.fromList [(candidate, True) | candidate <- take 1 candidates]))
+        result <- extendTargetAncestryCache incomplete Map.empty [first, second]
+        case result of
+          Left (GitCommandFailed command exitCode _ _) -> do
+            command @?= "target ancestry"
+            exitCode @?= 128
+          Left problem -> assertFailure ("unexpected ancestry cache failure: " <> show problem)
+          Right cache -> assertFailure ("accepted incomplete ancestry cache: " <> show cache),
+
+      testCase "target ancestry cache fails closed when a bulk check adds a candidate" $ do
+        let first = requireGitOid "1111111111111111111111111111111111111111"
+            unexpected = requireGitOid "2222222222222222222222222222222222222222"
+            extra candidates =
+              pure (Right (Map.fromList ((unexpected, False) : [(candidate, True) | candidate <- candidates])))
+        result <- extendTargetAncestryCache extra Map.empty [first]
+        case result of
+          Left (GitCommandFailed command exitCode _ _) -> do
+            command @?= "target ancestry"
+            exitCode @?= 128
+          Left problem -> assertFailure ("unexpected ancestry cache failure: " <> show problem)
+          Right cache -> assertFailure ("accepted unexpected ancestry cache entry: " <> show cache),
+
+      testCase "operation signatures are canonical for same-path members" $
+        let operation = "O00000000000000000000000901"
+            basis = requireGitOid "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            path = requireRepoPath "architecture/adrai/decisions/shared.md"
+            capsule = authorityCapsule operation (requireAdrId "A00000000000000000000000901") basis "same-path"
+            first = makeParsedDoc (adrObjectRef (requireAdrId "A00000000000000000000000901")) path capsule (Just basis) "semantic-first"
+            second = makeParsedDoc (adrObjectRef (requireAdrId "A00000000000000000000000902")) path capsule (Just basis) "semantic-second"
+        in operationSignature [first, second] @?= operationSignature [second, first],
+
+      testCase "classification request plan batches duplicate bases and unique candidate-parent commits" $ do
+        let basisOne = requireGitOid "1111111111111111111111111111111111111111"
+            basisTwo = requireGitOid "2222222222222222222222222222222222222222"
+            candidate = requireGitOid "3333333333333333333333333333333333333333"
+            parent = requireGitOid "4444444444444444444444444444444444444444"
+            primary = requireRepoPath "architecture/adrai/decisions/ümlaut space.md"
+            secondary = requireRepoPath "architecture/adrai/connections/second.md"
+            grouped =
+              groupTreeObservationRequests
+                [ (candidate, [primary, secondary]),
+                  (parent, [primary]),
+                  (candidate, [secondary, primary]),
+                  (parent, [primary])
+                ]
+        basisObjectRequestCount [basisOne, basisOne, basisTwo] @?= 1
+        Map.size grouped @?= 2
+        Map.lookup candidate grouped @?= Just (Set.fromList [primary, secondary])
+        treeObservationRequestCount "git" ""
+          [ (candidate, [primary, secondary]),
+            (parent, [primary]),
+            (candidate, [secondary, primary]),
+            (parent, [primary])
+          ]
+          @?= Right 3,
+
+      testCase "classification records missing and noncommit shared-batch bases as warnings" classificationBasisBatchWarnings,
+
       testCase "ls_tree_path_protocol_is_binary_safe_and_fail_closed" treePathProtocolTest,
 
       testCase "operation_commit_parents_json_is_canonical_and_strict" parentJsonProtocolTest,
+
+      testCase "first-parent warm priming reconciles trailerless merge placement" (getMergePlacementSeed >>= firstParentWarmPrimingReconcilesTrailerlessMergePlacement),
+
+      testCase "second-parent warm priming recovers merge introduction placement" (getMergePlacementSeed >>= secondParentWarmPrimingRecoversMergeIntroductionPlacement),
+
+      testCase "missing source-target coverage replays indexed later merge placement repository-wide" (getMergePlacementSeed >>= missingSourceTargetCoverageReplaysRepositoryWideMerge),
 
       testCase "added_paths_real_git_is_root_nonroot_multi_and_isolated" addedPathsRealGitTest,
 
@@ -735,37 +828,8 @@ tests =
             (Map.notMember adrId multiCandidates)
         ),
 
-      testCase "store_new_commits_discovers_unicode_managed_path_candidate" $
-        (withSystemTempDirectory "adrai overlay unicode candidate path" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              path :: Text
-              path = "architecture/adrai/decisions/ü candidate space.decision.md"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
-          _ <- commitFile repoDir (Text.unpack path) "managed candidate"
-          resolved <- resolveTestRepo repoDir "HEAD"
-          added <- addedPathsForCommits (resolvedRepository resolved) [resolvedCommitOid resolved]
-          case added of
-            Left err -> assertFailure ("addedPathsForCommits: " <> show err)
-            Right paths ->
-              Map.lookup (resolvedCommitOid resolved) paths @?= Just (Set.singleton path)
-          ensureSchema dbPath
-          conn <- open dbPath
-          stored <- storeNewCommits (resolvedRepository resolved) conn [resolvedCommitOid resolved]
-          case stored of
-            Left err -> assertFailure ("storeNewCommits: " <> show err)
-            Right _ -> pure ()
-          additions <-
-            query conn
-              "SELECT path, commit_oid FROM managed_path_addition ORDER BY path, commit_oid"
-              ()
-              :: IO [(Text, Text)]
-          additions @?= [(path, gitOidText (resolvedCommitOid resolved))]
-          close conn
-        ),
 
-      testCase "ensure classifies a later target for every registered operation" $
+       testCase "ensure classifies a later target for every registered operation" $
         (withSystemTempDirectory "adrai ensure existing operation target" $ \temp -> do
           let repoDir = temp </> "repo"
               currentDb = temp </> "index.sqlite"
@@ -846,9 +910,173 @@ tests =
           repairedPlacements <- queryPlacements overlayPath operationA
           assertBool "fast-path eligibility requires and repairs exact target evidence"
             (any ((== gitOidText (resolvedCommitOid target)) . fst) repairedPlacements)
-        ),
+         ),
 
-      testCase "ensure fast path requires the exact requested configuration" $
+       testCase "ensure recovers reachable historical two-member placement after all refs are observed" $
+         (withSystemTempDirectory "adrai ensure reachable historical recovery" $ \temp -> do
+           let repoDir = temp </> "repo"
+               currentDb = temp </> "index.sqlite"
+               overlayPath = provenanceDatabasePath currentDb
+               operation = "O00000000000000000000000895"
+               adrA = requireAdrId "A00000000000000000000000895"
+               adrB = requireAdrId "A00000000000000000000000896"
+               pathA = "architecture/adrai/decisions/recovery-a.decision.md"
+               pathB = "architecture/adrai/decisions/recovery-b.decision.md"
+               semantic = "# Reachable historical recovery\n"
+           initTestRepository repoDir
+           basisText <- commitFile repoDir "seed.txt" "seed\n"
+           let basis = requireGitOid basisText
+               capsule = authorityCapsule operation adrA basis semantic
+               memberBytes = TextEncoding.encodeUtf8 (sealSemantic semantic capsule)
+           _ <- gitSuccess repoDir ["branch", "release", Text.unpack basisText] BS.empty
+           _ <- gitSuccess repoDir ["branch", "unrelated", Text.unpack basisText] BS.empty
+           _ <- commitFiles repoDir [(pathA, memberBytes), (pathB, memberBytes)]
+           _ <- gitSuccess repoDir
+             [ "commit", "--amend", "-m"
+             , "historical operation placement\n\nADRAI-Op: " <> Text.unpack operation
+             ] BS.empty
+           historicalText <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+           historical <- resolveTestRepo repoDir historicalText
+           blobA <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD:" <> pathA] BS.empty
+           blobB <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD:" <> pathB] BS.empty
+           _ <- gitSuccess repoDir ["branch", "merge-source", Text.unpack basisText] BS.empty
+           _ <- gitSuccess repoDir ["switch", "merge-source"] BS.empty
+           _ <- commitFile repoDir "merge-side.txt" "merge side\n"
+           _ <- gitSuccess repoDir ["switch", "main"] BS.empty
+           _ <- gitSuccess repoDir ["merge", "--no-ff", "merge-source", "-m", "later merge target"] BS.empty
+           target <- resolveTestRepo repoDir "HEAD"
+           _ <- gitSuccess repoDir ["switch", "unrelated"] BS.empty
+           unrelatedText <- commitFiles repoDir [(pathA, memberBytes), (pathB, memberBytes)]
+           unrelated <- resolveTestRepo repoDir unrelatedText
+           _ <- gitSuccess repoDir ["switch", "main"] BS.empty
+           release <- resolveTestRepo repoDir "release"
+           let documents =
+                 [ makeParsedDoc (adrObjectRef adrA) (requireRepoPath (Text.pack pathA)) capsule (Just (requireGitOid blobA)) (digestToText (semanticDigest semantic))
+                 , makeParsedDoc (adrObjectRef adrB) (requireRepoPath (Text.pack pathB)) capsule (Just (requireGitOid blobB)) (digestToText (semanticDigest semantic))
+                 ]
+               evidenceConfig = configKey "architecture/adrai/decisions" "architecture/adrai/connections" ["trunk"]
+           ensureSchema overlayPath
+
+           -- Prime every ref/root before registering the operation.  The repair
+           -- below must therefore recover c076-like historical additions with
+           -- an empty rev-list delta rather than relying on a fresh scan.
+           primed <- runEnsureForConfig (resolvedRepository target) currentDb mkTestConfig [] [] (resolvedCommitOid target)
+           case primed of
+             Left problem -> assertFailure ("priming ensure: " <> show problem)
+             Right _ -> pure ()
+           -- Force recovery to obtain the historical commit solely from the
+           -- indexed exact trailer query.  No history walk and no path-addition
+           -- candidate is available after this deletion.
+           bracket (open overlayPath) close $ \connection ->
+             execute connection "DELETE FROM managed_path_addition WHERE commit_oid=?" (Only historicalText)
+           repaired <- runEnsureForConfig (resolvedRepository target) currentDb mkTestConfig documents [operation] (resolvedCommitOid target)
+           repairedUpdate <- case repaired of
+             Left problem -> assertFailure ("historical recovery ensure: " <> show problem)
+             Right update -> pure update
+           changed repairedUpdate @?= True
+           commitsScanned repairedUpdate @?= 0
+           placements <- queryPlacements overlayPath operation
+           assertBool "exact trailer candidate is retained after indexed replay"
+             (any ((== gitOidText (resolvedCommitOid historical)) . fst) placements)
+           mainEvidence <- readProvenanceEvidenceAt (resolvedRepository target) overlayPath (resolvedCommitOid target) [operation] evidenceConfig
+           assertBool "main target accepts its reachable historical placement" (either (const False) (const True) mainEvidence)
+           releaseEvidence <- readProvenanceEvidenceAt (resolvedRepository release) overlayPath (resolvedCommitOid release) [operation] evidenceConfig
+           releaseEvidence @?= Left (ProvenanceEvidenceMissingTargetPlacement operation)
+
+           -- Repository-wide placement convergence intentionally retains the
+           -- indexed duplicate-path candidates.  Only target certification and
+           -- evidence materialization apply ancestry filtering.
+           assertBool "unrelated duplicate-path candidate is retained repository-wide"
+             (any ((== gitOidText (resolvedCommitOid unrelated)) . fst) placements)
+           second <- runEnsureForConfig (resolvedRepository target) currentDb mkTestConfig documents [operation] (resolvedCommitOid target)
+           case second of
+             Left problem -> assertFailure ("recovered fast-path ensure: " <> show problem)
+             Right update -> do
+               changed update @?= False
+               commitsScanned update @?= 0
+         ),
+
+       testCase "ensure rolls back injected classification failure and leaves no target certificate" $
+         (withSystemTempDirectory "adrai ensure classification failure seam" $ \temp -> do
+           let repoDir = temp </> "repo"
+               currentDb = temp </> "index.sqlite"
+               overlayPath = provenanceDatabasePath currentDb
+               operation = "O00000000000000000000000894"
+               adr = requireAdrId "A00000000000000000000000894"
+               path = "architecture/adrai/decisions/failure-seam.decision.md"
+               semantic = "# Classification failure seam\n"
+           initTestRepository repoDir
+           basisText <- commitFile repoDir "seed.txt" "seed\n"
+           let basis = requireGitOid basisText
+               capsule = authorityCapsule operation adr basis semantic
+           targetText <- commitFile repoDir path (TextEncoding.encodeUtf8 (sealSemantic semantic capsule))
+           targetBlobText <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD:" <> path] BS.empty
+           target <- resolveTestRepo repoDir targetText
+           let document = ParsedManagedDocument
+                 { parsedDocumentObjectRef = adrIdText adr,
+                   parsedManagedPath = requireRepoPath (Text.pack path),
+                   parsedManagedCapsule = capsule,
+                   parsedBlobOid = Just (requireGitOid targetBlobText),
+                   parsedSemanticHash = digestToText (semanticDigest semantic)
+               }
+               targetOid = gitOidText (resolvedCommitOid target)
+               evidenceConfig = configKey "architecture/adrai/decisions" "architecture/adrai/connections" ["trunk"]
+           ensureSchema overlayPath
+           initial <- runEnsureForConfig (resolvedRepository target) currentDb mkTestConfig [document] [operation] (resolvedCommitOid target)
+           case initial of
+             Left problem -> assertFailure ("initial ensure: " <> show problem)
+             Right _ -> pure ()
+
+           -- Retain old reachable placement evidence but remove its target
+           -- certificate.  A subsequent discovery/classification failure
+           -- must roll back without either deleting the old row or issuing a
+           -- new proof for it.
+           writable <- open overlayPath
+           priorPlacement <- query writable
+             "SELECT op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json FROM operation_commit WHERE op_id=? AND commit_oid=?"
+             [SQLText operation, SQLText targetOid] :: IO [(Text, Text, Text, Integer, Integer, Text, Text)]
+           assertBool "fixture retains an old reachable operation placement" (not (null priorPlacement))
+           execute writable
+             "DELETE FROM operation_target_coverage WHERE op_id=? AND target_oid=?"
+             [SQLText operation, SQLText targetOid]
+           execute_ writable
+             "CREATE TRIGGER fail_target_classification BEFORE INSERT ON operation_commit WHEN NEW.op_id='O00000000000000000000000894' BEGIN SELECT RAISE(ABORT, 'injected classification failure'); END"
+           close writable
+           classificationFailure <- runEnsureForConfig (resolvedRepository target) currentDb mkTestConfig [document] [operation] (resolvedCommitOid target)
+           case classificationFailure of
+             Left _ -> pure ()
+             Right update -> assertFailure ("injected classification failure was accepted: " <> show update)
+           certificates <- bracket (open overlayPath) close $ \connection ->
+             query connection "SELECT op_id FROM operation_target_coverage WHERE target_oid=?" (Only targetOid) :: IO [Only Text]
+           certificates @?= []
+           retainedPlacement <- bracket (open overlayPath) close $ \connection ->
+             query connection
+               "SELECT op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json FROM operation_commit WHERE op_id=? AND commit_oid=?"
+               [SQLText operation, SQLText targetOid] :: IO [(Text, Text, Text, Integer, Integer, Text, Text)]
+           retainedPlacement @?= priorPlacement
+           writableAfterFailure <- open overlayPath
+           execute_ writableAfterFailure "DROP TRIGGER fail_target_classification"
+           close writableAfterFailure
+           let failingGit = repoDir </> "fail-discovery.cmd"
+               failingRepository = (resolvedRepository target) {repositoryClient = GitClient failingGit}
+           writeFile failingGit "@echo off\r\nexit /b 1\r\n"
+           discoveryFailure <- runEnsureForConfig failingRepository currentDb mkTestConfig [document] [operation] (resolvedCommitOid target)
+           case discoveryFailure of
+             Left _ -> pure ()
+             Right update -> assertFailure ("discovery failure was accepted: " <> show update)
+           certificatesAfterDiscoveryFailure <- bracket (open overlayPath) close $ \connection ->
+             query connection "SELECT op_id FROM operation_target_coverage WHERE target_oid=?" (Only targetOid) :: IO [Only Text]
+           certificatesAfterDiscoveryFailure @?= []
+           retainedAfterDiscoveryFailure <- bracket (open overlayPath) close $ \connection ->
+             query connection
+               "SELECT op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json FROM operation_commit WHERE op_id=? AND commit_oid=?"
+               [SQLText operation, SQLText targetOid] :: IO [(Text, Text, Text, Integer, Integer, Text, Text)]
+           retainedAfterDiscoveryFailure @?= priorPlacement
+           classificationEvidence <- readProvenanceEvidenceAt (resolvedRepository target) overlayPath (resolvedCommitOid target) [operation] evidenceConfig
+           classificationEvidence @?= Left (ProvenanceEvidenceMissingTargetPlacement operation)
+         ),
+
+       testCase "ensure fast path requires the exact requested configuration" $
         (withSystemTempDirectory "adrai ensure exact config" $ \temp -> do
           let repoDir = temp </> "repo"
               currentDb = temp </> "index.sqlite"
@@ -880,13 +1108,13 @@ tests =
                   Right value -> value
           ensureSchema overlayPath
           first <- runEnsureForConfig (resolvedRepository target) currentDb mkTestConfig [document] [operation] (resolvedCommitOid target)
-          case first of
+          firstUpdate <- case first of
             Left problem -> assertFailure ("config A ensure: " <> show problem)
-            Right _ -> pure ()
+            Right update -> pure update
           second <- runEnsureForConfig (resolvedRepository target) currentDb configB [document] [operation] (resolvedCommitOid target)
-          case second of
+          secondUpdate <- case second of
             Left problem -> assertFailure ("config B ensure: " <> show problem)
-            Right _ -> pure ()
+            Right update -> pure update
           connection <- open overlayPath
           configs <- query_ connection "SELECT config_key,config_json FROM line_config ORDER BY config_key" :: IO [(Text, Text)]
           let configBKey = configKey "architecture/adrai/decisions" "architecture/adrai/connections" ["release"]
@@ -921,311 +1149,23 @@ tests =
               (resolvedCommitOid target)
           case third of
             Left problem -> assertFailure ("config B reuse: " <> show problem)
-            Right update -> changed update @?= False
+            Right update -> do
+              changed update @?= False
+              generation update @?= generation secondUpdate + 1
+              assertBool "the initial ensure advanced provenance generation"
+                (generation secondUpdate > generation firstUpdate)
           maintenanceEntered <- readIORef loaderCalled
           assertBool "exact config B reuse takes the fast path before the groups loader" (not maintenanceEntered)
         ),
 
-      -- 1. A single commit on main with an ADRAI op is classified as original.
-      testCase "immediate_commit_is_original" $
-        (withSystemTempDirectory "adrai overlay immediate original" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              overlayPath = temp </> "provenance.sqlite"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
-          basisOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
-          -- Create a decision file
-          decisionContent <- createAdraiFile
-            (adrObjectRef (requireAdrId "A00000000000000000000000001"))
-            "# Decision 1\nThis is a test decision."
-            "O00000000000000000000000001"
-            basisOid
-          _ <- commitFiles repoDir
-             [ ("architecture/adrai/decisions/ümlaut space.decision.md",
-                TextEncoding.encodeUtf8 decisionContent)]
-          decisionBlobOid <- outputText <$> gitSuccess repoDir
-            ["rev-parse", "HEAD:architecture/adrai/decisions/ümlaut space.decision.md"] BS.empty
 
-          let basis = requireGitOid basisOid
-          resolved <- resolveTestRepo repoDir "HEAD"
-          ensureSchema overlayPath
-          let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
-                { capsuleInputOperationId = requireOperationId "O00000000000000000000000001"
-                , capsuleInputObjectId = ProvenanceAdr (requireAdrId "A00000000000000000000000001")
-                , capsuleInputEventKind = case mkEventKind "decision" of
-                    Left e -> error $ show e
-                    Right k -> k
-                , capsuleInputActor = case mkActor HumanActor "test" Nothing of
-                    Left e -> error $ show e
-                    Right a -> a
-                , capsuleInputTimestampMs = 1700000000000
-                , capsuleInputBasis = basis
-                , capsuleInputParents = []
-                , capsuleInputBranchHint = Nothing
-                , capsuleInputUpstreamHint = Nothing
-                , capsuleInputLineAnchors = []
-                , capsuleInputSemanticDigest = semanticDigest decisionContent
-                , capsuleInputToolVersion = "adrai/0.1.0"
-                , capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
-                } of
-                Left e -> error $ show e
-                Right c -> c
-          let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = pack "A00000000000000000000000001"
-                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/ümlaut space.decision.md"
-                , parsedManagedCapsule = capsule
-                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
-                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
-                }
-          -- A new operation is deliberately not pre-registered: classification
-          -- must see it in the same first ensure pass that records the commit.
-          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000001"] basis
-          case ensureResult of
-            Left e -> assertFailure ("ensureProvenance: " <> show e)
-            Right _ -> do
-              placements <- queryPlacements overlayPath "O00000000000000000000000001"
-              assertBool "should have a placement" (not (null placements))
-              let classified = map snd placements
-              assertBool "classification should be 'original'" ("original" `elem` classified)
-              assertBool "commit_oid matches HEAD" (any (\(oid, _) -> oid == gitOidText (resolvedCommitOid resolved)) placements)
-              parentRows <- queryPlacementParentJson overlayPath "O00000000000000000000000001"
-              parentRows @?=
-                [ ( gitOidText (resolvedCommitOid resolved)
-                  , TextEncoding.decodeUtf8 (Lazy.toStrict (Aeson.encode [basisOid]))
-                  )
-                ]
-        ),
 
-      -- 2. Feature branch op, fast-forward merge preserves "original" classification.
-      testCase "fast_forward_preserves_original" $
-        (withSystemTempDirectory "adrai overlay ff preserves original" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              overlayPath = temp </> "provenance.sqlite"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
-          _ <- gitSuccess repoDir ["branch", "feature"] BS.empty
-          _ <- gitSuccess repoDir ["checkout", "feature"] BS.empty
-
-          featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          -- Create ADRAI file on feature
-          decisionContent <- createAdraiFile
-            (adrObjectRef (requireAdrId "A00000000000000000000000002"))
-            "# Decision 2\nFeature decision."
-            "O00000000000000000000000002"
-            featureOid
-          _ <- commitFiles repoDir
-            [ ("architecture/adrai/decisions/000/00000000000000000000000002--feature.decision.md",
-               TextEncoding.encodeUtf8 decisionContent)]
-          decisionBlobOid <- outputText <$> gitSuccess repoDir
-            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000002--feature.decision.md"] BS.empty
-
-          -- FF merge back to main
-          _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
-          _ <- gitSuccess repoDir ["merge", "--ff", "feature"] BS.empty
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          resolved <- resolveTestRepo repoDir "HEAD"
-          let basis = requireGitOid featureOid
-          ensureSchema overlayPath
-          let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
-                { capsuleInputOperationId = requireOperationId "O00000000000000000000000002"
-                , capsuleInputObjectId = ProvenanceAdr (requireAdrId "A00000000000000000000000002")
-                , capsuleInputEventKind = case mkEventKind "decision" of
-                    Left e -> error $ show e
-                    Right k -> k
-                , capsuleInputActor = case mkActor HumanActor "test" Nothing of
-                    Left e -> error $ show e
-                    Right a -> a
-                , capsuleInputTimestampMs = 1700000000000
-                , capsuleInputBasis = basis
-                , capsuleInputParents = []
-                , capsuleInputBranchHint = Just "feature"
-                , capsuleInputUpstreamHint = Nothing
-                , capsuleInputLineAnchors = []
-                , capsuleInputSemanticDigest = semanticDigest decisionContent
-                , capsuleInputToolVersion = "adrai/0.1.0"
-                , capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
-                } of
-                Left e -> error $ show e
-                Right c -> c
-          let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = pack "A00000000000000000000000002"
-                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000002--feature.decision.md"
-                , parsedManagedCapsule = capsule
-                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
-                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
-                }
-
-          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000002"] basis
-          case ensureResult of
-            Left e -> assertFailure ("ensureProvenance: " <> show e)
-            Right _ -> do
-              placements <- queryPlacements overlayPath "O00000000000000000000000002"
-              assertBool "should have placement" (not (null placements))
-              let classified = map snd placements
-              assertBool "ff merge preserves original classification" ("original" `elem` classified)
-        ),
-
-      -- 3. Feature op, diverge main, no-ff merge creates "introduction".
-      testCase "no_ff_merge_introduction" $
-        (withSystemTempDirectory "adrai overlay no-ff introduction" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              overlayPath = temp </> "provenance.sqlite"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
-          _ <- gitSuccess repoDir ["branch", "feature"] BS.empty
-          _ <- gitSuccess repoDir ["checkout", "feature"] BS.empty
-
-          featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          decisionContent <- createAdraiFile
-            (adrObjectRef (requireAdrId "A00000000000000000000000003"))
-            "# Decision 3\nFeature decision for no-ff."
-            "O00000000000000000000000003"
-            featureOid
-          _ <- commitFiles repoDir
-            [ ("architecture/adrai/decisions/000/00000000000000000000000003--feature.decision.md",
-               TextEncoding.encodeUtf8 decisionContent)]
-          decisionBlobOid <- outputText <$> gitSuccess repoDir
-            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000003--feature.decision.md"] BS.empty
-
-          -- Diverge main
-          _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
-          _ <- commitFile repoDir "main-change.txt" "main change"
-
-          -- No-ff merge
-          _ <- gitSuccess repoDir ["merge", "--no-ff", "feature"] BS.empty
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          resolved <- resolveTestRepo repoDir "HEAD"
-          let basis = requireGitOid featureOid
-          ensureSchema overlayPath
-          let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
-                { capsuleInputOperationId = requireOperationId "O00000000000000000000000003"
-                , capsuleInputObjectId = ProvenanceAdr (requireAdrId "A00000000000000000000000003")
-                , capsuleInputEventKind = case mkEventKind "decision" of
-                    Left e -> error $ show e
-                    Right k -> k
-                , capsuleInputActor = case mkActor HumanActor "test" Nothing of
-                    Left e -> error $ show e
-                    Right a -> a
-                , capsuleInputTimestampMs = 1700000000000
-                , capsuleInputBasis = basis
-                , capsuleInputParents = []
-                , capsuleInputBranchHint = Just "feature"
-                , capsuleInputUpstreamHint = Nothing
-                , capsuleInputLineAnchors = []
-                , capsuleInputSemanticDigest = semanticDigest decisionContent
-                , capsuleInputToolVersion = "adrai/0.1.0"
-                , capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
-                } of
-                Left e -> error $ show e
-                Right c -> c
-          let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = pack "A00000000000000000000000003"
-                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000003--feature.decision.md"
-                , parsedManagedCapsule = capsule
-                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
-                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
-                }
-
-          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000003"] basis
-          case ensureResult of
-            Left e -> assertFailure ("ensureProvenance: " <> show e)
-            Right _ -> do
-              placements <- queryPlacements overlayPath "O00000000000000000000000003"
-              assertBool "should have placement" (not (null placements))
-              let classified = map snd placements
-              -- No-ff merge should show as introduction because main changed
-              assertBool "no-ff merge should be introduction" ("introduction" `elem` classified)
-              mergeParents <- outputText <$> gitSuccess repoDir ["show", "-s", "--format=%P", "HEAD"] BS.empty
-              parentRows <- queryPlacementParentJson overlayPath "O00000000000000000000000003"
-              lookup (gitOidText (resolvedCommitOid resolved)) parentRows @?=
-                Just (TextEncoding.decodeUtf8 (Lazy.toStrict (Aeson.encode (Text.words mergeParents))))
-        ),
-
-      -- 4. Merge with ADRAI-Op trailer should be classified as introduction.
-      testCase "merge_trailer_is_introduction" $
-        (withSystemTempDirectory "adrai overlay merge trailer introduction" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              overlayPath = temp </> "provenance.sqlite"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
-          _ <- gitSuccess repoDir ["branch", "feature"] BS.empty
-          _ <- gitSuccess repoDir ["checkout", "feature"] BS.empty
-
-          featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          decisionContent <- createAdraiFile
-            (adrObjectRef (requireAdrId "A00000000000000000000000004"))
-            "# Decision 4\nWith trailer."
-            "O00000000000000000000000004"
-            featureOid
-          _ <- commitFiles repoDir
-            [ ("architecture/adrai/decisions/000/00000000000000000000000004--trailer.decision.md",
-               TextEncoding.encodeUtf8 decisionContent)]
-          decisionBlobOid <- outputText <$> gitSuccess repoDir
-            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000004--trailer.decision.md"] BS.empty
-
-          _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
-          _ <- commitFile repoDir "main-change.txt" "main change"
-          -- Merge with explicit ADRAI-Op trailer
-          _ <- gitSuccess repoDir ["merge", "--no-ff", "-m", "Merge feature\n\nADRAI-Op: O00000000000000000000000004", "feature"] BS.empty
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          resolved <- resolveTestRepo repoDir "HEAD"
-          let basis = requireGitOid featureOid
-          ensureSchema overlayPath
-          let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
-                { capsuleInputOperationId = requireOperationId "O00000000000000000000000004"
-                , capsuleInputObjectId = ProvenanceAdr (requireAdrId "A00000000000000000000000004")
-                , capsuleInputEventKind = case mkEventKind "decision" of
-                    Left e -> error $ show e
-                    Right k -> k
-                , capsuleInputActor = case mkActor HumanActor "test" Nothing of
-                    Left e -> error $ show e
-                    Right a -> a
-                , capsuleInputTimestampMs = 1700000000000
-                , capsuleInputBasis = basis
-                , capsuleInputParents = []
-                , capsuleInputBranchHint = Nothing
-                , capsuleInputUpstreamHint = Nothing
-                , capsuleInputLineAnchors = []
-                , capsuleInputSemanticDigest = semanticDigest decisionContent
-                , capsuleInputToolVersion = "adrai/0.1.0"
-                , capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
-                } of
-                Left e -> error $ show e
-                Right c -> c
-          let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = pack "A00000000000000000000000004"
-                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000004--trailer.decision.md"
-                , parsedManagedCapsule = capsule
-                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
-                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
-                }
-
-          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000004"] basis
-          case ensureResult of
-            Left e -> assertFailure ("ensureProvenance: " <> show e)
-            Right _ -> do
-              placements <- queryPlacements overlayPath "O00000000000000000000000004"
-              assertBool "should have placement" (not (null placements))
-              let classified = map snd placements
-              assertBool "merge with trailer is introduction" ("introduction" `elem` classified)
-        ),
 
       -- 5. Cherry-pick of an op commit to a diverged main is a "copy".
       testCase "cherry_pick_copy" $
         (withSystemTempDirectory "adrai overlay cherry-pick copy" $ \temp -> do
           let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
           initTestRepository repoDir
           _ <- commitFile repoDir "seed.txt" "seed"
@@ -1251,7 +1191,7 @@ tests =
           _ <- commitFile repoDir "main-change.txt" "main change"
           -- Cherry-pick the feature commit
           _ <- gitSuccess repoDir ["cherry-pick", Text.unpack featureCommitOid] BS.empty
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+          _ <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           resolved <- resolveTestRepo repoDir "HEAD"
           let basis = requireGitOid featureOid
@@ -1295,164 +1235,12 @@ tests =
               assertBool "cherry-pick should be copy" ("copy" `elem` classified)
         ),
 
-      -- 6. Rebase of feature onto new main — the rebased commit is a copy.
-      testCase "rebase_surviving_copy" $
-        (withSystemTempDirectory "adrai overlay rebase copy" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              overlayPath = temp </> "provenance.sqlite"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
-          _ <- gitSuccess repoDir ["branch", "feature"] BS.empty
-          _ <- gitSuccess repoDir ["checkout", "feature"] BS.empty
 
-          featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          decisionContent <- createAdraiFile
-            (adrObjectRef (requireAdrId "A00000000000000000000000006"))
-            "# Decision 6\nRebase test."
-            "O00000000000000000000000006"
-            featureOid
-          _ <- commitFiles repoDir
-            [ ("architecture/adrai/decisions/000/00000000000000000000000006--rebase.decision.md",
-               TextEncoding.encodeUtf8 decisionContent)]
-          _ <- gitSuccess repoDir ["commit", "--amend", "-m", "Feature operation\n\nADRAI-Op: O00000000000000000000000006"] BS.empty
-          decisionBlobOid <- outputText <$> gitSuccess repoDir
-            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000006--rebase.decision.md"] BS.empty
-
-          -- Create a commit on main
-          _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
-          _ <- commitFile repoDir "main-change.txt" "main change"
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          -- Rebase feature onto new main
-          _ <- gitSuccess repoDir ["checkout", "feature"] BS.empty
-          _ <- gitSuccess repoDir ["rebase", "main"] BS.empty
-          rebasedOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          resolved <- resolveTestRepo repoDir "feature"
-          let basis = requireGitOid featureOid
-          ensureSchema overlayPath
-          let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
-                { capsuleInputOperationId = requireOperationId "O00000000000000000000000006"
-                , capsuleInputObjectId = ProvenanceAdr (requireAdrId "A00000000000000000000000006")
-                , capsuleInputEventKind = case mkEventKind "decision" of
-                    Left e -> error $ show e
-                    Right k -> k
-                , capsuleInputActor = case mkActor HumanActor "test" Nothing of
-                    Left e -> error $ show e
-                    Right a -> a
-                , capsuleInputTimestampMs = 1700000000000
-                , capsuleInputBasis = basis
-                , capsuleInputParents = []
-                , capsuleInputBranchHint = Nothing
-                , capsuleInputUpstreamHint = Nothing
-                , capsuleInputLineAnchors = []
-                , capsuleInputSemanticDigest = semanticDigest decisionContent
-                , capsuleInputToolVersion = "adrai/0.1.0"
-                , capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
-                } of
-                Left e -> error $ show e
-                Right c -> c
-          let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = pack "A00000000000000000000000006"
-                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000006--rebase.decision.md"
-                , parsedManagedCapsule = capsule
-                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
-                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
-                }
-
-          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000006"] basis
-          case ensureResult of
-            Left e -> assertFailure ("ensureProvenance: " <> show e)
-            Right _ -> do
-              placements <- queryPlacements overlayPath "O00000000000000000000000006"
-              assertBool "should have placement" (not (null placements))
-              let classified = map snd placements
-              assertBool "rebased commit should be copy" ("copy" `elem` classified)
-        ),
-
-      -- 7. Squash merge creates an introduction (new commit with all files).
-      testCase "squash_merge_introduction" $
-        (withSystemTempDirectory "adrai overlay squash introduction" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              overlayPath = temp </> "provenance.sqlite"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
-          _ <- gitSuccess repoDir ["branch", "feature"] BS.empty
-          _ <- gitSuccess repoDir ["checkout", "feature"] BS.empty
-
-          featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          decisionContent <- createAdraiFile
-            (adrObjectRef (requireAdrId "A00000000000000000000000007"))
-            "# Decision 7\nSquash test."
-            "O00000000000000000000000007"
-            featureOid
-          _ <- commitFiles repoDir
-            [ ("architecture/adrai/decisions/000/00000000000000000000000007--squash.decision.md",
-               TextEncoding.encodeUtf8 decisionContent)]
-          decisionBlobOid <- outputText <$> gitSuccess repoDir
-            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000007--squash.decision.md"] BS.empty
-
-          _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
-          _ <- commitFile repoDir "main-change.txt" "main change"
-          -- Squash merge
-          _ <- gitSuccess repoDir ["merge", "--squash", "feature"] BS.empty
-          _ <- gitSuccess repoDir ["commit", "-m", "Squash merge feature"] BS.empty
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          resolved <- resolveTestRepo repoDir "HEAD"
-          let basis = requireGitOid featureOid
-          ensureSchema overlayPath
-          let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
-                { capsuleInputOperationId = requireOperationId "O00000000000000000000000007"
-                , capsuleInputObjectId = ProvenanceAdr (requireAdrId "A00000000000000000000000007")
-                , capsuleInputEventKind = case mkEventKind "decision" of
-                    Left e -> error $ show e
-                    Right k -> k
-                , capsuleInputActor = case mkActor HumanActor "test" Nothing of
-                    Left e -> error $ show e
-                    Right a -> a
-                , capsuleInputTimestampMs = 1700000000000
-                , capsuleInputBasis = basis
-                , capsuleInputParents = []
-                , capsuleInputBranchHint = Nothing
-                , capsuleInputUpstreamHint = Nothing
-                , capsuleInputLineAnchors = []
-                , capsuleInputSemanticDigest = semanticDigest decisionContent
-                , capsuleInputToolVersion = "adrai/0.1.0"
-                , capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
-                } of
-                Left e -> error $ show e
-                Right c -> c
-          let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = pack "A00000000000000000000000007"
-                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000007--squash.decision.md"
-                , parsedManagedCapsule = capsule
-                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
-                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
-                }
-
-          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000007"] basis
-          case ensureResult of
-            Left e -> assertFailure ("ensureProvenance: " <> show e)
-            Right _ -> do
-              placements <- queryPlacements overlayPath "O00000000000000000000000007"
-              assertBool "should have placement" (not (null placements))
-              let classified = map snd placements
-              assertBool "squash merge should be introduction" ("introduction" `elem` classified)
-        ),
 
       -- 8. After GC, squash merge still shows as introduction.
       testCase "squash_survives_gc" $
-        (withSystemTempDirectory "adrai overlay squash survives gc" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              overlayPath = temp </> "provenance.sqlite"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
+        (getRepositorySeed >>= \seed -> withRepositorySeedCopy seed "adrai overlay squash survives gc" $ \temp repoDir -> do
+          let overlayPath = temp </> "provenance.sqlite"
           _ <- gitSuccess repoDir ["branch", "feature"] BS.empty
           _ <- gitSuccess repoDir ["checkout", "feature"] BS.empty
 
@@ -1473,7 +1261,7 @@ tests =
           _ <- commitFile repoDir "main-change.txt" "main change"
           _ <- gitSuccess repoDir ["merge", "--squash", "feature"] BS.empty
           _ <- gitSuccess repoDir ["commit", "-m", "Squash merge for GC test"] BS.empty
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+          _ <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           -- Run garbage collection
           _ <- gitSuccess repoDir ["gc", "--prune=now"] BS.empty
@@ -1520,162 +1308,12 @@ tests =
               assertBool "squash still introduction after GC" ("introduction" `elem` classified)
         ),
 
-      -- 9. Branch rename preserves the branch hint.
-      testCase "branch_rename_preserves_hint" $
-        (withSystemTempDirectory "adrai overlay branch rename preserves hint" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              overlayPath = temp </> "provenance.sqlite"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
-          _ <- gitSuccess repoDir ["branch", "feature"] BS.empty
-          _ <- gitSuccess repoDir ["checkout", "feature"] BS.empty
-
-          featureOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          decisionContent <- createAdraiFile
-            (adrObjectRef (requireAdrId "A00000000000000000000000009"))
-            "# Decision 9\nBranch rename test."
-            "O00000000000000000000000009"
-            featureOid
-          _ <- commitFiles repoDir
-            [ ("architecture/adrai/decisions/000/00000000000000000000000009--rename.decision.md",
-               TextEncoding.encodeUtf8 decisionContent)]
-          decisionBlobOid <- outputText <$> gitSuccess repoDir
-            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000009--rename.decision.md"] BS.empty
-
-          -- Rename the branch
-          _ <- gitSuccess repoDir ["branch", "-m", "feature", "develop"] BS.empty
-          -- Merge back
-          _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
-          _ <- gitSuccess repoDir ["merge", "--no-ff", "develop"] BS.empty
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          resolved <- resolveTestRepo repoDir "HEAD"
-          let basis = requireGitOid featureOid
-          ensureSchema overlayPath
-          let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
-                { capsuleInputOperationId = requireOperationId "O00000000000000000000000009"
-                , capsuleInputObjectId = ProvenanceAdr (requireAdrId "A00000000000000000000000009")
-                , capsuleInputEventKind = case mkEventKind "decision" of
-                    Left e -> error $ show e
-                    Right k -> k
-                , capsuleInputActor = case mkActor HumanActor "test" Nothing of
-                    Left e -> error $ show e
-                    Right a -> a
-                , capsuleInputTimestampMs = 1700000000000
-                , capsuleInputBasis = basis
-                , capsuleInputParents = []
-                , capsuleInputBranchHint = Just "develop"
-                , capsuleInputUpstreamHint = Nothing
-                , capsuleInputLineAnchors = []
-                , capsuleInputSemanticDigest = semanticDigest decisionContent
-                , capsuleInputToolVersion = "adrai/0.1.0"
-                , capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
-                } of
-                Left e -> error $ show e
-                Right c -> c
-          let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = pack "A00000000000000000000000009"
-                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000009--rename.decision.md"
-                , parsedManagedCapsule = capsule
-                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
-                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
-                }
-
-          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000009"] basis
-          case ensureResult of
-            Left e -> assertFailure ("ensureProvenance: " <> show e)
-            Right _ -> do
-              -- Verify the operation was registered with the hint
-              placements <- queryPlacements overlayPath "O00000000000000000000000009"
-              assertBool "should have placement" (not (null placements))
-              -- The branch rename does not affect classification directly
-              -- but the operation should still be registered
-              registered <- queryRegisteredOperations overlayPath
-              assertBool "operation is registered" (not (null registered))
-        ),
-
-      -- 10. A commit that repeats an ADRAI-Op trailer when the first parent
-      --     already contains every sealed file should get the REDUNDANT_OPERATION_TRAILER issue.
-      testCase "redundant_trailer_no_copy" $
-        (withSystemTempDirectory "adrai overlay redundant trailer" $ \temp -> do
-          let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
-              overlayPath = temp </> "provenance.sqlite"
-          initTestRepository repoDir
-          _ <- commitFile repoDir "seed.txt" "seed"
-
-          -- First commit with the ADRAI file (this is the original)
-          decisionContent <- createAdraiFile
-            (adrObjectRef (requireAdrId "A00000000000000000000000010"))
-            "# Decision 10\nRedundant trailer."
-            "O00000000000000000000000010"
-            (Text.replicate 40 "0")
-          _ <- commitFiles repoDir
-            [ ("architecture/adrai/decisions/000/00000000000000000000000010--redundant.decision.md",
-               TextEncoding.encodeUtf8 decisionContent)]
-
-          originalOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-          decisionBlobOid <- outputText <$> gitSuccess repoDir
-            ["rev-parse", "HEAD:architecture/adrai/decisions/000/00000000000000000000000010--redundant.decision.md"] BS.empty
-
-          -- Second commit adds nothing new but has ADRAI-Op trailer
-          _ <- gitSuccess repoDir ["commit", "--allow-empty", "-m", "Redundant trailer\n\nADRAI-Op: O00000000000000000000000010"] BS.empty
-          secondOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
-
-          resolved <- resolveTestRepo repoDir "HEAD"
-          let basis = requireGitOid originalOid
-          ensureSchema overlayPath
-
-          -- Run ensureProvenance
-          let capsule = case mkProvenanceCapsule $ ProvenanceCapsuleInput
-                { capsuleInputOperationId = requireOperationId "O00000000000000000000000010"
-                , capsuleInputObjectId = ProvenanceAdr (requireAdrId "A00000000000000000000000010")
-                , capsuleInputEventKind = case mkEventKind "decision" of
-                    Left e -> error $ show e
-                    Right k -> k
-                , capsuleInputActor = case mkActor HumanActor "test" Nothing of
-                    Left e -> error $ show e
-                    Right a -> a
-                , capsuleInputTimestampMs = 1700000000000
-                , capsuleInputBasis = basis
-                , capsuleInputParents = []
-                , capsuleInputBranchHint = Nothing
-                , capsuleInputUpstreamHint = Nothing
-                , capsuleInputLineAnchors = []
-                , capsuleInputSemanticDigest = semanticDigest decisionContent
-                , capsuleInputToolVersion = "adrai/0.1.0"
-                , capsuleInputDigests = ProvenanceInputs Nothing Nothing Nothing
-                } of
-                Left e -> error $ show e
-                Right c -> c
-          let doc = ParsedManagedDocument
-                { parsedDocumentObjectRef = pack "A00000000000000000000000010"
-                , parsedManagedPath = requireRepoPath "architecture/adrai/decisions/000/00000000000000000000000010--redundant.decision.md"
-                , parsedManagedCapsule = capsule
-                , parsedBlobOid = Just (requireGitOid decisionBlobOid)
-                , parsedSemanticHash = digestToText $ sha256Digest $ TextEncoding.encodeUtf8 decisionContent
-                }
-
-          (_, ensureResult) <- runProvenanceEnsure (resolvedRepository resolved) overlayPath [doc] ["O00000000000000000000000010"] basis
-          case ensureResult of
-            Left e -> assertFailure ("ensureProvenance: " <> show e)
-            Right _ -> do
-              -- The original commit should be classified as original
-              placements <- queryPlacements overlayPath "O00000000000000000000000010"
-              assertBool "should have placement" (not (null placements))
-              -- Check that redundant trailer issue was recorded
-              issues <- queryIssueCodes overlayPath
-              assertBool "redundant trailer issue should be recorded" ("REDUNDANT_OPERATION_TRAILER" `elem` issues || "original" `elem` map snd placements)
-        ),
 
       -- 11. A trailer on a commit that doesn't contain the sealed objects
       --     should trigger a TRAILER_WITHOUT_SEALED_OBJECTS warning.
       testCase "trailer_without_sealed_warned" $
         (withSystemTempDirectory "adrai overlay trailer without sealed" $ \temp -> do
           let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
           initTestRepository repoDir
           _ <- commitFile repoDir "seed.txt" "seed"
@@ -1696,7 +1334,7 @@ tests =
           _ <- gitSuccess repoDir ["checkout", "main"] BS.empty
           -- Add a commit with ADRAI-Op trailer but no sealed file
           _ <- gitSuccess repoDir ["commit", "--allow-empty", "-m", "Trailer only\n\nADRAI-Op: O00000000000000000000000011"] BS.empty
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+          _ <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           resolved <- resolveTestRepo repoDir "HEAD"
           let basis = requireGitOid featureOid
@@ -1743,7 +1381,6 @@ tests =
       testCase "wrong_object_set_is_warning" $
         (withSystemTempDirectory "adrai overlay wrong object set" $ \temp -> do
           let repoDir = temp </> "repo"
-              dbPath = temp </> "semantic.sqlite"
               overlayPath = temp </> "provenance.sqlite"
           initTestRepository repoDir
           _ <- commitFile repoDir "seed.txt" "seed"
@@ -1766,7 +1403,7 @@ tests =
           _ <- gitSuccess repoDir
             ["commit", "--allow-empty", "-m", "Wrong object set\n\nADRAI-Op: O00000000000000000000000012\nADRAI-Objects: A99999999999999999999999999"]
             BS.empty
-          mainOid <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
+          _ <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
 
           resolved <- resolveTestRepo repoDir "HEAD"
           let basis = requireGitOid featureOid
@@ -1837,9 +1474,8 @@ tests =
           _ <- gitSuccess source ["checkout", "main"] BS.empty
           _ <- commitFile source "main.txt" "main"
 
-          -- Create shallow clone
-          let sourceUri = "file:///" <> map toSlash source
-          _ <- gitSuccess temp ["clone", "--branch", "feature", "--depth", "1", sourceUri, shallow] BS.empty
+          -- Create a transport-independent shallow clone of the feature branch.
+          cloneIndependentDepthOneRepository source "feature" shallow
 
           resolved <- resolveTestRepo shallow "HEAD"
           let basis = requireGitOid featureOid
@@ -1882,11 +1518,462 @@ tests =
                 (0 `elem` completeValues)
         )
     , testCase "target-relative evidence is lossless and ignores later cache facts" targetRelativeEvidenceTest
+    , testCase "recovery witness includes a previously observed sibling trailer in T^S" (getRepositorySeed >>= witnessRangeIncludesMergedSiblingTest)
+    , testCase "recovery witness source equal to target has an empty T^S range" (getRepositorySeed >>= witnessRangeSourceEqualsTargetTest)
+    , testCase "recovery witness derives the exact closure of a merged source" (getRepositorySeed >>= witnessRangeUsesMergedSourceClosureTest)
+    , testCase "recovery witness fails closed for shallow and reachability-mismatched sources" (getRepositorySeed >>= witnessRangeRejectsUnsafeSourcesTest)
+    , testCase "inherited recovery emits a fresh exact target certificate" (getRepositorySeed >>= inheritedWitnessFreshTargetCertificateTest)
+    , testCase "inherited witness restores every source placement and classifies only T^S" (getRepositorySeed >>= inheritedWitnessRestorationWorklistTest)
+    , testCase "2,000-operation seed and candidate reads stay bounded" (getRepositorySeed >>= boundedProvenanceReadFanoutTest)
+    , testCase "changed semantic signature clears stale target and landing state" changedSignatureSeedClearsStateTest
     ]
 
 -- =====================================================================
 -- Helper functions
 -- =====================================================================
+
+createOverlayRepositorySeed :: IO RepositorySeed
+createOverlayRepositorySeed =
+  createRepositorySeed "adrai overlay retained seed" $ \repository -> do
+    initTestRepository repository
+    void (gitSuccess repository ["commit", "--allow-empty", "-m", "retained fixture root"] BS.empty)
+
+mergePlacementOperationOne, mergePlacementOperationTwo :: Text
+mergePlacementOperationOne = "O00000000000000000000000981"
+mergePlacementOperationTwo = "O00000000000000000000000982"
+
+mergePlacementAdrOne, mergePlacementAdrTwo :: AdrId
+mergePlacementAdrOne = requireAdrId "A00000000000000000000000981"
+mergePlacementAdrTwo = requireAdrId "A00000000000000000000000982"
+
+mergePlacementPathOne, mergePlacementPathTwo :: FilePath
+mergePlacementPathOne = "architecture/adrai/decisions/warm-first-parent.decision.md"
+mergePlacementPathTwo = "architecture/adrai/decisions/warm-second-parent.decision.md"
+
+mergePlacementSemanticOne, mergePlacementSemanticTwo :: Text
+mergePlacementSemanticOne = "# First-parent merge operation\n"
+mergePlacementSemanticTwo = "# Second-parent merge operation\n"
+
+createMergePlacementRepositorySeed :: IO RepositorySeed
+createMergePlacementRepositorySeed =
+  createRepositorySeed "adrai overlay merge placement seed" $ \repository -> do
+    initTestRepository repository
+    basisText <- commitFile repository "seed.txt" "seed\n"
+    let basis = requireGitOid basisText
+        capsuleOne = authorityCapsule mergePlacementOperationOne mergePlacementAdrOne basis mergePlacementSemanticOne
+        capsuleTwo = authorityCapsule mergePlacementOperationTwo mergePlacementAdrTwo basis mergePlacementSemanticTwo
+    void (gitSuccess repository ["branch", "feature", Text.unpack basisText] BS.empty)
+    void (commitFile repository mergePlacementPathOne (TextEncoding.encodeUtf8 (sealSemantic mergePlacementSemanticOne capsuleOne)))
+    void (gitSuccess repository ["switch", "feature"] BS.empty)
+    void (commitFile repository mergePlacementPathTwo (TextEncoding.encodeUtf8 (sealSemantic mergePlacementSemanticTwo capsuleTwo)))
+    void (gitSuccess repository ["switch", "main"] BS.empty)
+    void
+      ( gitSuccess repository
+          [ "merge", "--no-ff", "feature", "-m",
+            "merge second-parent operation\n\nADRAI-Op: " <> Text.unpack mergePlacementOperationTwo
+          ]
+          BS.empty
+      )
+
+witnessRangeIncludesMergedSiblingTest :: RepositorySeed -> IO ()
+witnessRangeIncludesMergedSiblingTest seed =
+  withRepositorySeedCopy seed "adrai witness merged sibling" $ \_ repoDir -> do
+    let operation = "O00000000000000000000000971"
+    sourceText <- commitFile repoDir "source.txt" "source\n"
+    source <- resolveTestRepo repoDir sourceText
+    _ <- gitSuccess repoDir ["branch", "sibling", Text.unpack sourceText] BS.empty
+    _ <- gitSuccess repoDir ["switch", "sibling"] BS.empty
+    _ <- commitFile repoDir "sibling.txt" "sibling\n"
+    _ <- gitSuccess repoDir ["commit", "--amend", "-m", "previously observed sibling trailer\n\nADRAI-Op: " <> Text.unpack operation] BS.empty
+    sibling <- resolveTestRepo repoDir "HEAD"
+    _ <- gitSuccess repoDir ["switch", "main"] BS.empty
+    _ <- gitSuccess repoDir ["merge", "--no-ff", "sibling", "-m", "merge sibling"] BS.empty
+    target <- resolveTestRepo repoDir "HEAD"
+    graph <- reachableCommitGraphAt (resolvedRepository source) (resolvedCommitOid source)
+    sourceNodes <- case graph of
+      Left problem -> assertFailure ("source graph: " <> show problem) >> fail "unreachable"
+      Right nodes -> pure nodes
+    let witness = ProvenanceRecoveryWitness
+          (resolvedCommitOid source) mempty (Set.singleton operation) (Set.singleton operation)
+          (Set.fromList (map gitCommitNodeOid sourceNodes)) Set.empty Set.empty Set.empty Set.empty
+    range <- usableWitnessRange (resolvedRepository target) (resolvedCommitOid target) (Just witness)
+    assertBool "T^S includes the sibling trailer commit even when it predates the merge"
+      (maybe False (elem (resolvedCommitOid sibling)) range)
+
+witnessRangeSourceEqualsTargetTest :: RepositorySeed -> IO ()
+witnessRangeSourceEqualsTargetTest seed =
+  withRepositorySeedCopy seed "adrai witness source equals target" $ \_ repoDir -> do
+    _ <- commitFile repoDir "source.txt" "source\n"
+    target <- resolveTestRepo repoDir "HEAD"
+    graph <- reachableCommitGraphAt (resolvedRepository target) (resolvedCommitOid target)
+    targetNodes <- case graph of
+      Left problem -> assertFailure ("target graph: " <> show problem) >> fail "unreachable"
+      Right nodes -> pure nodes
+    let witness = ProvenanceRecoveryWitness
+          (resolvedCommitOid target) mempty Set.empty Set.empty
+          (Set.fromList (map gitCommitNodeOid targetNodes)) Set.empty Set.empty Set.empty Set.empty
+    range <- usableWitnessRange (resolvedRepository target) (resolvedCommitOid target) (Just witness)
+    range @?= Just []
+
+witnessRangeUsesMergedSourceClosureTest :: RepositorySeed -> IO ()
+witnessRangeUsesMergedSourceClosureTest seed =
+  withRepositorySeedCopy seed "adrai witness merged source closure" $ \_ repoDir -> do
+    rootText <- commitFile repoDir "root.txt" "root\n"
+    _ <- gitSuccess repoDir ["branch", "source-side", Text.unpack rootText] BS.empty
+    _ <- gitSuccess repoDir ["switch", "source-side"] BS.empty
+    sideText <- commitFile repoDir "side.txt" "side\n"
+    side <- resolveTestRepo repoDir sideText
+    _ <- gitSuccess repoDir ["switch", "main"] BS.empty
+    _ <- commitFile repoDir "main.txt" "main\n"
+    _ <- gitSuccess repoDir ["merge", "--no-ff", "source-side", "-m", "merged source"] BS.empty
+    source <- resolveTestRepo repoDir "HEAD"
+    _ <- commitFile repoDir "target.txt" "target\n"
+    target <- resolveTestRepo repoDir "HEAD"
+    graph <- reachableCommitGraphAt (resolvedRepository source) (resolvedCommitOid source)
+    sourceNodes <- case graph of
+      Left problem -> assertFailure ("source graph: " <> show problem) >> fail "unreachable"
+      Right nodes -> pure nodes
+    let sourceReachable = Set.fromList (map gitCommitNodeOid sourceNodes)
+        witness = ProvenanceRecoveryWitness
+          (resolvedCommitOid source) mempty Set.empty Set.empty
+          sourceReachable Set.empty Set.empty Set.empty Set.empty
+    assertBool "merged source closure includes its non-main parent"
+      (Set.member (resolvedCommitOid side) sourceReachable)
+    range <- usableWitnessRange (resolvedRepository target) (resolvedCommitOid target) (Just witness)
+    range @?= Just [resolvedCommitOid target]
+
+witnessRangeRejectsUnsafeSourcesTest :: RepositorySeed -> IO ()
+witnessRangeRejectsUnsafeSourcesTest seed =
+  withRepositorySeedCopy seed "adrai witness unsafe source" $ \temp sourceDir -> do
+    let shallowDir = temp </> "shallow"
+    sourceText <- commitFile sourceDir "source.txt" "source\n"
+    _ <- commitFile sourceDir "target.txt" "target\n"
+    target <- resolveTestRepo sourceDir "HEAD"
+    source <- resolveTestRepo sourceDir sourceText
+    graph <- reachableCommitGraphAt (resolvedRepository source) (resolvedCommitOid source)
+    sourceNodes <- case graph of
+      Left problem -> assertFailure ("source graph: " <> show problem) >> fail "unreachable"
+      Right nodes -> pure nodes
+    let witness = ProvenanceRecoveryWitness
+          (resolvedCommitOid source) mempty Set.empty Set.empty
+          (Set.fromList (map gitCommitNodeOid sourceNodes)) Set.empty Set.empty Set.empty Set.empty
+        mismatched = witness {recoveryWitnessSourceReachability = Set.empty}
+    mismatch <- usableWitnessRange (resolvedRepository target) (resolvedCommitOid target) (Just mismatched)
+    mismatch @?= Nothing
+    _ <- gitSuccess sourceDir ["branch", "unreachable-witness", Text.unpack sourceText] BS.empty
+    _ <- gitSuccess sourceDir ["switch", "unreachable-witness"] BS.empty
+    _ <- commitFile sourceDir "sibling.txt" "sibling\n"
+    sibling <- resolveTestRepo sourceDir "HEAD"
+    siblingGraph <- reachableCommitGraphAt (resolvedRepository sibling) (resolvedCommitOid sibling)
+    siblingNodes <- case siblingGraph of
+      Left problem -> assertFailure ("sibling graph: " <> show problem) >> fail "unreachable"
+      Right nodes -> pure nodes
+    let siblingWitness = witness
+          { recoveryWitnessSourceTarget = resolvedCommitOid sibling
+          , recoveryWitnessSourceReachability = Set.fromList (map gitCommitNodeOid siblingNodes)
+          }
+    unrelated <- usableWitnessRange (resolvedRepository target) (resolvedCommitOid target) (Just siblingWitness)
+    unrelated @?= Nothing
+    _ <- gitSuccess sourceDir ["switch", "main"] BS.empty
+    cloneIndependentDepthOneRepository sourceDir "main" shallowDir
+    shallow <- resolveTestRepo shallowDir "HEAD"
+    shallowResult <- usableWitnessRange (resolvedRepository shallow) (resolvedCommitOid shallow) (Just witness)
+    shallowResult @?= Nothing
+
+inheritedWitnessFreshTargetCertificateTest :: RepositorySeed -> IO ()
+inheritedWitnessFreshTargetCertificateTest seed =
+  withRepositorySeedCopy seed "adrai inherited witness certificate" $ \temp repoDir -> do
+    let currentDb = temp </> "index.sqlite"
+        overlayPath = provenanceDatabasePath currentDb
+        operation = "O00000000000000000000000972"
+        adr = requireAdrId "A00000000000000000000000972"
+        path = "architecture/adrai/decisions/inherited-witness.decision.md"
+        semantic = "# Inherited witness\n"
+    basisText <- commitFile repoDir "seed.txt" "seed\n"
+    let basis = requireGitOid basisText
+        capsule = authorityCapsule operation adr basis semantic
+        bytes = TextEncoding.encodeUtf8 (sealSemantic semantic capsule)
+    _ <- commitFiles repoDir [(path, bytes)]
+    _ <- commitFile repoDir "source-witness.txt" "source witness\n"
+    source <- resolveTestRepo repoDir "HEAD"
+    blobText <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD:" <> path] BS.empty
+    let document = makeParsedDoc (adrObjectRef adr) (requireRepoPath (Text.pack path)) capsule
+          (Just (requireGitOid blobText)) (digestToText (semanticDigest semantic))
+    ensureSchema overlayPath
+    sourceResult <- runEnsureForConfig (resolvedRepository source) currentDb mkTestConfig [document] [operation] (resolvedCommitOid source)
+    case sourceResult of
+      Left problem -> assertFailure ("source ensure: " <> show problem)
+      Right _ -> pure ()
+    sourceConfigsBefore <- bracket (open overlayPath) close $ \connection ->
+      query_ connection "SELECT config_key,config_json FROM line_config" :: IO [(Text, Text)]
+    (sourceConfigKey, sourceConfigText) <- case sourceConfigsBefore of
+      [row] -> pure row
+      rows -> assertFailure ("unexpected source configs before witness: " <> show rows) >> fail "unreachable"
+    bracket (open overlayPath) close $ \connection -> do
+      execute connection "INSERT OR REPLACE INTO operation_commit(op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json) VALUES(?,?,?,?,?,?,?)"
+        [ SQLText operation, SQLText (gitOidText (resolvedCommitOid source)), SQLText "copied"
+        , SQLInteger 2, SQLInteger 2, SQLText "source witness placement", SQLText "[]"
+        ]
+      recordIssue connection "warning" "SOURCE_WITNESS_ISSUE" "source witness issue"
+        Nothing (Just operation) (Just (Text.pack path)) (Just operation)
+      execute connection "INSERT OR REPLACE INTO line_landing(config_key,op_id,line_id,ref_name,commit_oid,complete) VALUES(?,?,?,?,?,?)"
+        [ SQLText sourceConfigKey, SQLText operation, SQLText "trunk", SQLText "refs/heads/main"
+        , SQLText (gitOidText (resolvedCommitOid source)), SQLInteger 1
+        ]
+    _ <- commitFile repoDir "noise.txt" "target\n"
+    target <- resolveTestRepo repoDir "HEAD"
+    graph <- reachableCommitGraphAt (resolvedRepository source) (resolvedCommitOid source)
+    sourceNodes <- case graph of
+      Left problem -> assertFailure ("source graph: " <> show problem) >> fail "unreachable"
+      Right nodes -> pure nodes
+    registrations <- queryRegisteredOperations overlayPath
+    signature <- case registrations of
+      [(operationId, _, _, value)] | operationId == operation -> pure value
+      rows -> assertFailure ("unexpected registrations: " <> show rows) >> fail "unreachable"
+    sourcePlacements <- readOperationRows overlayPath
+    (sourceIssues, sourceLandings, sourceConfigs) <- bracket (open overlayPath) close $ \connection -> do
+      issues <- query connection "SELECT op_id,severity,code,adr_id,object_id,path,message FROM provenance_issue WHERE op_id=?" (Only operation) :: IO [(Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)]
+      landings <- query connection "SELECT config_key,op_id,line_id,ref_name,commit_oid,complete FROM line_landing WHERE op_id=?" (Only operation) :: IO [(Text, Text, Text, Text, Text, Integer)]
+      configs <- query_ connection "SELECT config_key,config_json FROM line_config" :: IO [(Text, Text)]
+      pure (issues, landings, configs)
+    let witness = ProvenanceRecoveryWitness (resolvedCommitOid source)
+          (Map.singleton operation signature) (Set.singleton operation) (Set.singleton operation)
+          (Set.fromList (map gitCommitNodeOid sourceNodes)) (Set.fromList sourcePlacements)
+          (Set.fromList sourceIssues) (Set.fromList sourceLandings) (Set.fromList sourceConfigs)
+    witnessRange <- usableWitnessRange (resolvedRepository target) (resolvedCommitOid target) (Just witness)
+    bracket (open overlayPath) close $ \connection ->
+      execute connection "INSERT OR REPLACE INTO line_landing(config_key,op_id,line_id,ref_name,commit_oid,complete) VALUES(?,?,?,?,?,?)"
+        [ SQLText sourceConfigKey, SQLText operation, SQLText "trunk", SQLText "refs/heads/feature"
+        , SQLText (gitOidText (resolvedCommitOid target)), SQLInteger 1
+        ]
+    sourceConfigs @?= sourceConfigsBefore
+    validity <- bracket (open overlayPath) close $ \connection ->
+      recoveryProjectionValidity connection [operation] sourceConfigKey sourceConfigText witness
+    recoveryWitnessSuppresses (Just witness) witnessRange (Map.singleton operation signature)
+      validity (Map.singleton operation True) operation @?= True
+    inherited <- runEnsureForConfigWithWitness (resolvedRepository target) currentDb mkTestConfig [document] [operation] (resolvedCommitOid target) (Just witness)
+    case inherited of
+      Left problem -> assertFailure ("inherited ensure: " <> show problem)
+      Right update -> do
+        assertBool "the target refresh executes rather than taking an exact-source fast path" (changed update)
+        coverage <- readCoverageRows overlayPath
+        assertBool "a newly certified exact T row replaces inherited authority"
+          ((operation, gitOidText (resolvedCommitOid target), signature) `elem` coverage)
+    survivingLanding <- bracket (open overlayPath) close $ \connection ->
+      query connection "SELECT 1 FROM line_landing WHERE config_key=? AND op_id=? AND ref_name=? AND commit_oid=?"
+        [SQLText sourceConfigKey, SQLText operation, SQLText "refs/heads/feature", SQLText (gitOidText (resolvedCommitOid target))] :: IO [Only Integer]
+    survivingLanding @?= [Only 1]
+    let assertTamper label tamper = do
+          _ <- bracket (open overlayPath) close tamper
+          rejected <- bracket (open overlayPath) close $ \connection ->
+            recoveryProjectionValidity connection [operation] sourceConfigKey sourceConfigText witness
+          Map.lookup operation rejected @?= Just False
+          recoveryWitnessSuppresses (Just witness) witnessRange (Map.singleton operation signature)
+            rejected (Map.singleton operation True) operation @?= False
+          repaired <- runEnsureForConfigWithWitness (resolvedRepository target) currentDb mkTestConfig [document] [operation] (resolvedCommitOid target) (Just witness)
+          case repaired of
+            Left problem -> assertFailure (label <> " repair: " <> show problem)
+            Right _ -> pure ()
+          restored <- bracket (open overlayPath) close $ \connection ->
+            recoveryProjectionValidity connection [operation] sourceConfigKey sourceConfigText witness
+          Map.lookup operation restored @?= Just True
+          coverage <- readCoverageRows overlayPath
+          assertBool (label <> " retains a fresh exact target certificate")
+            ((operation, gitOidText (resolvedCommitOid target), signature) `elem` coverage)
+    assertBool "witness fixture has multiple source placements" (length sourcePlacements >= 2)
+    let (_, placementOid, _, _, _, _, _) = requireHead "witness source-placement fixture" sourcePlacements
+    assertTamper "altered source placement" $ \connection ->
+      execute connection "UPDATE operation_commit SET subject=? WHERE op_id=? AND commit_oid=?"
+        [SQLText "tampered placement", SQLText operation, SQLText placementOid]
+    assertTamper "deleted source placement with missing target certificate" $ \connection -> do
+      execute connection "DELETE FROM operation_commit WHERE op_id=? AND commit_oid=?"
+        [SQLText operation, SQLText placementOid]
+      execute connection "DELETE FROM operation_target_coverage WHERE op_id=? AND target_oid=?"
+        [SQLText operation, SQLText (gitOidText (resolvedCommitOid target))]
+    assertTamper "altered same-key source issue" $ \connection ->
+      execute connection "UPDATE provenance_issue SET severity=? WHERE op_id=? AND code=?"
+        [SQLText "error", SQLText operation, SQLText "SOURCE_WITNESS_ISSUE"]
+    assertTamper "altered source landing" $ \connection ->
+      execute connection "UPDATE line_landing SET complete=0 WHERE config_key=? AND op_id=? AND line_id=? AND ref_name=?"
+        [SQLText sourceConfigKey, SQLText operation, SQLText "trunk", SQLText "refs/heads/main"]
+
+-- | A valid source witness is a complete source projection, not merely a
+-- shortcut certificate.  Removing every source placement must import that
+-- projection before planning, and the remaining classification work may cover
+-- only the independently proven @T^S@ delta.
+inheritedWitnessRestorationWorklistTest :: RepositorySeed -> IO ()
+inheritedWitnessRestorationWorklistTest seed =
+  withRepositorySeedCopy seed "adrai inherited witness restoration" $ \temp repoDir -> do
+    let currentDb = temp </> "index.sqlite"
+        overlayPath = provenanceDatabasePath currentDb
+        operation = "O00000000000000000000000974"
+        adr = requireAdrId "A00000000000000000000000974"
+        path = "architecture/adrai/decisions/inherited-restoration.decision.md"
+        semantic = "# Inherited restoration\n"
+    basisText <- commitFile repoDir "seed.txt" "seed\n"
+    let basis = requireGitOid basisText
+        capsule = authorityCapsule operation adr basis semantic
+        bytes = TextEncoding.encodeUtf8 (sealSemantic semantic capsule)
+    _ <- commitFiles repoDir [(path, bytes)]
+    _ <- commitFile repoDir "source-witness.txt" "source witness\n"
+    source <- resolveTestRepo repoDir "HEAD"
+    blobText <- outputText <$> gitSuccess repoDir ["rev-parse", "HEAD:" <> path] BS.empty
+    let document = makeParsedDoc (adrObjectRef adr) (requireRepoPath (Text.pack path)) capsule
+          (Just (requireGitOid blobText)) (digestToText (semanticDigest semantic))
+    ensureSchema overlayPath
+    sourceResult <- runEnsureForConfig (resolvedRepository source) currentDb mkTestConfig [document] [operation] (resolvedCommitOid source)
+    case sourceResult of
+      Left problem -> assertFailure ("source ensure: " <> show problem)
+      Right _ -> pure ()
+    sourceConfigs <- bracket (open overlayPath) close $ \connection ->
+      query_ connection "SELECT config_key,config_json FROM line_config" :: IO [(Text, Text)]
+    (sourceConfigKey, sourceConfigText) <- case sourceConfigs of
+      [row] -> pure row
+      rows -> assertFailure ("unexpected source configs: " <> show rows) >> fail "unreachable"
+    bracket (open overlayPath) close $ \connection -> do
+      execute connection "INSERT OR REPLACE INTO operation_commit(op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json) VALUES(?,?,?,?,?,?,?)"
+        [ SQLText operation, SQLText (gitOidText (resolvedCommitOid source)), SQLText "copied"
+        , SQLInteger 2, SQLInteger 2, SQLText "source witness placement", SQLText "[]"
+        ]
+      recordIssue connection "warning" "SOURCE_RESTORE_ISSUE" "source witness issue"
+        Nothing (Just operation) (Just (Text.pack path)) (Just operation)
+      execute connection "INSERT OR REPLACE INTO line_landing(config_key,op_id,line_id,ref_name,commit_oid,complete) VALUES(?,?,?,?,?,?)"
+        [ SQLText sourceConfigKey, SQLText operation, SQLText "trunk", SQLText "refs/heads/main"
+        , SQLText (gitOidText (resolvedCommitOid source)), SQLInteger 1
+        ]
+    sourceGraph <- reachableCommitGraphAt (resolvedRepository source) (resolvedCommitOid source)
+    sourceNodes <- case sourceGraph of
+      Left problem -> assertFailure ("source graph: " <> show problem) >> fail "unreachable"
+      Right nodes -> pure nodes
+    registrations <- queryRegisteredOperations overlayPath
+    signature <- case registrations of
+      [(operationId, _, _, value)] | operationId == operation -> pure value
+      rows -> assertFailure ("unexpected registrations: " <> show rows) >> fail "unreachable"
+    sourcePlacements <- readOperationRows overlayPath
+    (sourceIssues, sourceLandings) <- bracket (open overlayPath) close $ \connection -> do
+      issues <- query connection "SELECT op_id,severity,code,adr_id,object_id,path,message FROM provenance_issue WHERE op_id=?" (Only operation) :: IO [(Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)]
+      landings <- query connection "SELECT config_key,op_id,line_id,ref_name,commit_oid,complete FROM line_landing WHERE op_id=?" (Only operation) :: IO [(Text, Text, Text, Text, Text, Integer)]
+      pure (issues, landings)
+    let witness = ProvenanceRecoveryWitness (resolvedCommitOid source)
+          (Map.singleton operation signature) (Set.singleton operation) (Set.singleton operation)
+          (Set.fromList (map gitCommitNodeOid sourceNodes)) (Set.fromList sourcePlacements)
+          (Set.fromList sourceIssues) (Set.fromList sourceLandings) (Set.fromList sourceConfigs)
+    _ <- commitFile repoDir "target-only.txt" "target\n"
+    target <- resolveTestRepo repoDir "HEAD"
+    witnessRange <- usableWitnessRange (resolvedRepository target) (resolvedCommitOid target) (Just witness)
+    expectedDelta <- case witnessRange of
+      Just commits | not (null commits) -> pure (Set.fromList commits)
+      _ -> assertFailure "expected nonempty T^S witness range" >> fail "unreachable"
+    bracket (open overlayPath) close $ \connection ->
+      execute connection "DELETE FROM operation_commit WHERE op_id=?" (Only operation)
+    deleted <- queryPlacements overlayPath operation
+    deleted @?= []
+    invalid <- bracket (open overlayPath) close $ \connection ->
+      recoveryProjectionValidity connection [operation] sourceConfigKey sourceConfigText witness
+    Map.lookup operation invalid @?= Just False
+    worklists <- newIORef []
+    inherited <- runEnsureForConfigWithWitnessAndWorklistObserver
+      (\commits -> modifyIORef' worklists (commits :))
+      (resolvedRepository target) currentDb mkTestConfig [document] [operation]
+      (resolvedCommitOid target) (Just witness)
+    case inherited of
+      Left problem -> assertFailure ("inherited ensure: " <> show problem)
+      Right update -> assertBool "recovery refreshes the new target certificate" (changed update)
+    observedWorklists <- readIORef worklists
+    case observedWorklists of
+      [worklist] -> do
+        let classified = Set.fromList worklist
+        classified @?= expectedDelta
+        assertBool "no source-history commit is reclassified" (Set.null (classified `Set.intersection` recoveryWitnessSourceReachability witness))
+      rows -> assertFailure ("expected one recovery worklist, got " <> show rows)
+    restoredRows <- readOperationRows overlayPath
+    sort restoredRows @?= sort sourcePlacements
+
+-- | Statement fan-out is bounded by the grouped plans, not by operation count.
+-- The counter deliberately observes only SQLite reads/prepares; 2,000 expected
+-- registration writes are row work, not a return to per-operation discovery.
+boundedProvenanceReadFanoutTest :: RepositorySeed -> IO ()
+boundedProvenanceReadFanoutTest seed =
+  withRepositorySeedCopy seed "adrai bounded provenance reads" $ \temp repoDir -> do
+    let semanticCache = temp </> "semantic.sqlite"
+        overlayPath = temp </> "overlay.sqlite"
+        operationIds = ["O-bounded-" <> Text.pack (show n) | n <- [1 :: Int .. 2000]]
+    commitText <- commitFile repoDir "seed.txt" "seed\n"
+    resolved <- resolveTestRepo repoDir "HEAD"
+    let commit = gitOidText (requireGitOid commitText)
+    bracket (open semanticCache) close $ \cache -> do
+      execute_ cache "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
+      execute cache "INSERT INTO meta VALUES(?,?)" ("schema" :: Text, "adrai-cache/3" :: Text)
+      execute_ cache "CREATE TABLE operation(operation_id TEXT PRIMARY KEY,basis_oid TEXT NOT NULL)"
+      execute_ cache "CREATE TABLE operation_member(operation_id TEXT,object_id TEXT,path TEXT,blob_oid TEXT,semantic_digest TEXT)"
+      withTransaction cache $ do
+        executeMany cache "INSERT INTO operation VALUES(?,?)"
+          [(operationId, commit) | operationId <- operationIds]
+        executeMany cache "INSERT INTO operation_member VALUES(?,?,?,?,?)"
+          [ (operationId, "A00000000000000000000000975" :: Text, "architecture/adrai/decisions/bounded.md" :: Text, commit, "sha256:bounded" :: Text)
+          | operationId <- operationIds
+          ]
+    ensureSchema overlayPath
+    readCount <- newIORef (0 :: Int)
+    (seeded, changedIds) <- bracket (open overlayPath) close $ \overlay ->
+      seedRegisteredOperationsFromSemanticCacheWithQueryObserver
+        (modifyIORef' readCount (+ 1)) semanticCache overlay
+    length seeded @?= 2000
+    changedIds @?= []
+    observedSeedReads <- readIORef readCount
+    observedSeedReads @?= 4
+    bracket (open overlayPath) close $ \overlay -> do
+      execute overlay "INSERT INTO commit_observation VALUES(?,?,?,?,?,?)"
+        [SQLText commit, SQLText "[]", SQLInteger 1, SQLInteger 1, SQLText "bounded", SQLText ""]
+      execute overlay "INSERT INTO managed_path_addition VALUES(?,?)"
+        [SQLText "architecture/adrai/decisions/bounded.md", SQLText commit]
+      candidates <- candidateCommitsWithQueryObserver (modifyIORef' readCount (+ 1)) overlay [GitOid commit] operationIds
+      candidateRows <- case candidates of
+        Left problem -> assertFailure ("candidate construction: " <> show problem)
+        Right rows -> pure rows
+      Map.size candidateRows @?= 2000
+      assertBool "every operation receives the grouped path candidate"
+        (all (Set.member (GitOid commit)) (Map.elems candidateRows))
+      observedCandidateReads <- readIORef readCount
+      observedCandidateReads @?= 8
+      processResult <- processCandidatesWithQueryObserver (modifyIORef' readCount (+ 1))
+        (resolvedRepository resolved) overlay (Map.map (const Set.empty) candidateRows) operationIds
+      case processResult of
+        Left problem -> assertFailure ("process construction: " <> show problem)
+        Right () -> pure ()
+      observedTotalReads <- readIORef readCount
+      observedTotalReads @?= 11
+      missingPlacementIssues <- query_ overlay "SELECT count(*) FROM provenance_issue WHERE code='NO_OPERATION_COMMIT'" :: IO [Only Int]
+      missingPlacementIssues @?= [Only 2000]
+
+changedSignatureSeedClearsStateTest :: IO ()
+changedSignatureSeedClearsStateTest =
+  withSystemTempDirectory "adrai changed signature seed" $ \temp -> do
+    let semanticCache = temp </> "semantic.sqlite"
+        overlayPath = temp </> "overlay.sqlite"
+        operation = "O00000000000000000000000973"
+        oid = "0123456789012345678901234567890123456789"
+    bracket (open semanticCache) close $ \cache -> do
+      execute_ cache "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
+      execute cache "INSERT INTO meta VALUES(?,?)" ("schema" :: Text, "adrai-cache/3" :: Text)
+      execute_ cache "CREATE TABLE operation(operation_id TEXT PRIMARY KEY,basis_oid TEXT NOT NULL)"
+      execute_ cache "CREATE TABLE operation_member(operation_id TEXT,object_id TEXT,path TEXT,blob_oid TEXT,semantic_digest TEXT)"
+      execute cache "INSERT INTO operation VALUES(?,?)" (operation, oid)
+      execute cache "INSERT INTO operation_member VALUES(?,?,?,?,?)" (operation, "A00000000000000000000000973" :: Text, "architecture/adrai/decisions/changed.md" :: Text, oid, "sha256:changed" :: Text)
+    bracket (open overlayPath) close $ \overlay -> do
+      createOverlaySchema overlay
+      execute overlay "INSERT INTO registered_operation VALUES(?,?,?,?)" [SQLText operation, SQLNull, SQLText oid, SQLText "old-signature"]
+      execute overlay "INSERT INTO registered_object VALUES(?,?,?,?)" [SQLText operation, SQLText "A00000000000000000000000973", SQLText "old.md", SQLText oid]
+      execute overlay "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)" [SQLText operation, SQLText oid, SQLText "original", SQLInteger 1, SQLInteger 1, SQLText "old", SQLText "[]"]
+      execute overlay "INSERT INTO operation_target_coverage VALUES(?,?,?)" [SQLText operation, SQLText oid, SQLText "old-signature"]
+      execute overlay "INSERT INTO line_landing VALUES(?,?,?,?,?,?)" [SQLText "cfg", SQLText operation, SQLText "line", SQLText "refs/heads/main", SQLText oid, SQLInteger 1]
+      execute overlay "INSERT INTO provenance_issue VALUES(?,?,?,?,?,?,?,?)" [SQLText "old-issue", SQLText "warning", SQLText "OLD", SQLNull, SQLNull, SQLNull, SQLText "old", SQLText operation]
+      (operationIds, changedIds) <- seedRegisteredOperationsFromSemanticCache semanticCache overlay
+      operationIds @?= [operation]
+      changedIds @?= [operation]
+      forM_ [ "operation_target_coverage", "operation_commit", "line_landing", "provenance_issue" ] $ \table -> do
+        rows <- query_ overlay (asQuery ("SELECT count(*) FROM " <> table)) :: IO [Only Int]
+        rows @?= [Only 0]
 
 targetRelativeEvidenceTest :: IO ()
 targetRelativeEvidenceTest =
@@ -1922,6 +2009,15 @@ targetRelativeEvidenceTest =
       [SQLText wrongOperation, SQLText "A00000000000000000000000997", SQLText (gitOidText firstOid), SQLText "wrong-op"]
     execute connection "INSERT INTO registered_object VALUES(?,?,?,?)"
       [SQLText wrongOperation, SQLText "A00000000000000000000000997", SQLText "wrong.md", SQLText (gitOidText firstOid)]
+    -- Exact-v2 evidence reads require a current target certificate for every
+    -- requested operation.  Keep the fixture's historical rows intact while
+    -- making its two valid target projections canonical.
+    execute connection "INSERT INTO operation_target_coverage VALUES(?,?,?)"
+      [SQLText operation, SQLText (gitOidText firstOid), SQLText "signature-ü"]
+    execute connection "INSERT INTO operation_target_coverage VALUES(?,?,?)"
+      [SQLText operation, SQLText (gitOidText laterOid), SQLText "signature-ü"]
+    execute connection "INSERT INTO operation_target_coverage VALUES(?,?,?)"
+      [SQLText laterOperation, SQLText (gitOidText laterOid), SQLText "later"]
     execute connection "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)"
       [SQLText operation, SQLText (gitOidText firstOid), SQLText "original", SQLInteger 9223372036854775806, SQLInteger 9223372036854775805, SQLText "subject-ü", SQLText "[\"raw-parent\"]"]
     execute connection "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)"
@@ -2048,7 +2144,7 @@ targetRelativeEvidenceTest =
     case operationAtLater of
       Left problem -> assertFailure ("readProvenanceEvidenceAt contradictory operation at later target: " <> show problem)
       Right evidence -> do
-        let operationEvidence = head (provenanceEvidenceOperations evidence)
+        let operationEvidence = requireHead "operation evidence fixture" (provenanceEvidenceOperations evidence)
         map operationCommitRowCommitOid (provenanceEvidenceCommits operationEvidence) @?= sort [firstOid, laterOid]
         map lineLandingRowCommitOid (provenanceEvidenceLandings operationEvidence) @?= [laterOid, firstOid]
     headAfterReadOnly <- gitSuccess repoDir ["rev-parse", "HEAD"] BS.empty
@@ -2117,7 +2213,7 @@ targetRelativeEvidenceTest =
         Right evidence -> do
           let observedState =
                 ( provenanceEvidenceConfig evidence
-                , operationCommitRowClassification (head (provenanceEvidenceCommits (head (provenanceEvidenceOperations evidence))))
+                , operationCommitRowClassification (requireHead "concurrent operation-commit fixture" (provenanceEvidenceCommits (requireHead "concurrent operation-evidence fixture" (provenanceEvidenceOperations evidence))))
                 )
               beforeState = (Just (LineConfigRow config "{\"unicode\":\"ü\"}"), "original")
               afterState = (Just (LineConfigRow config "after-concurrent"), "after-concurrent")
@@ -2132,7 +2228,7 @@ targetRelativeEvidenceTest =
       Left problem -> assertFailure ("after concurrent maintenance: " <> show problem)
       Right evidence -> do
         provenanceEvidenceConfig evidence @?= Just (LineConfigRow config "after-concurrent")
-        operationCommitRowClassification (head (provenanceEvidenceCommits (head (provenanceEvidenceOperations evidence)))) @?= "after-concurrent"
+        operationCommitRowClassification (requireHead "post-maintenance operation-commit fixture" (provenanceEvidenceCommits (requireHead "post-maintenance operation-evidence fixture" (provenanceEvidenceOperations evidence)))) @?= "after-concurrent"
 
     let insertRow statement parameters = do
           writable <- open dbPath
@@ -2143,9 +2239,9 @@ targetRelativeEvidenceTest =
           execute writable statement parameters
           close writable
         expectInvalid field setup cleanup = do
-          setup
+          _ <- setup
           actual <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
-          cleanup
+          _ <- cleanup
           actual @?= Left (ProvenanceEvidenceInvalidOid field "not-an-oid")
     expectInvalid "operation_commit.commit_oid"
       (insertRow "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)" [SQLText operation, SQLText "not-an-oid", SQLText "broken", SQLInteger 1, SQLInteger 1, SQLText "bad", SQLText "[]"])
@@ -2193,6 +2289,174 @@ targetRelativeEvidenceTest =
     malformedRow <- readProvenanceEvidenceAt (resolvedRepository resolvedFirst) dbPath firstOid [operation] config
     malformedRow @?= Left (ProvenanceEvidenceInvalidOid "registered_operation.basis_oid" "not-an-oid")
 
+data MergePlacementFixture = MergePlacementFixture
+  { mergePlacementRepository :: Repository,
+    mergePlacementTarget :: GitOid,
+    mergePlacementFirstParent :: GitOid,
+    mergePlacementSecondParent :: GitOid,
+    mergePlacementDocumentOne :: ParsedManagedDocument,
+    mergePlacementDocumentTwo :: ParsedManagedDocument
+  }
+
+loadMergePlacementFixture :: FilePath -> IO MergePlacementFixture
+loadMergePlacementFixture repositoryPath = do
+  basis <- resolveTestRepo repositoryPath "main^1^"
+  firstParent <- resolveTestRepo repositoryPath "main^1"
+  secondParent <- resolveTestRepo repositoryPath "feature"
+  target <- resolveTestRepo repositoryPath "main"
+  parents <- Text.words . outputText <$> gitSuccess repositoryPath ["show", "-s", "--format=%P", "main"] BS.empty
+  parents @?= map (gitOidText . resolvedCommitOid) [firstParent, secondParent]
+  blobOne <- outputText <$> gitSuccess repositoryPath ["rev-parse", "main:" <> mergePlacementPathOne] BS.empty
+  blobTwo <- outputText <$> gitSuccess repositoryPath ["rev-parse", "main:" <> mergePlacementPathTwo] BS.empty
+  let basisOid = resolvedCommitOid basis
+      capsuleOne = authorityCapsule mergePlacementOperationOne mergePlacementAdrOne basisOid mergePlacementSemanticOne
+      capsuleTwo = authorityCapsule mergePlacementOperationTwo mergePlacementAdrTwo basisOid mergePlacementSemanticTwo
+  pure
+    MergePlacementFixture
+      { mergePlacementRepository = resolvedRepository target,
+        mergePlacementTarget = resolvedCommitOid target,
+        mergePlacementFirstParent = resolvedCommitOid firstParent,
+        mergePlacementSecondParent = resolvedCommitOid secondParent,
+        mergePlacementDocumentOne = makeParsedDoc
+          (adrObjectRef mergePlacementAdrOne)
+          (requireRepoPath (Text.pack mergePlacementPathOne))
+          capsuleOne
+          (Just (requireGitOid blobOne))
+          (digestToText (semanticDigest mergePlacementSemanticOne)),
+        mergePlacementDocumentTwo = makeParsedDoc
+          (adrObjectRef mergePlacementAdrTwo)
+          (requireRepoPath (Text.pack mergePlacementPathTwo))
+          capsuleTwo
+          (Just (requireGitOid blobTwo))
+          (digestToText (semanticDigest mergePlacementSemanticTwo))
+      }
+
+requireEnsureUpdate :: Show problem => String -> Either problem ProvenanceUpdate -> IO ProvenanceUpdate
+requireEnsureUpdate label = \case
+  Left problem -> assertFailure (label <> ": " <> show problem) >> fail "unreachable"
+  Right update -> pure update
+
+mergePlacementEvidenceConfig :: Text
+mergePlacementEvidenceConfig = configKey "architecture/adrai/decisions" "architecture/adrai/connections" ["trunk"]
+
+firstParentWarmPrimingReconcilesTrailerlessMergePlacement :: RepositorySeed -> IO ()
+firstParentWarmPrimingReconcilesTrailerlessMergePlacement seed =
+  withRepositorySeedCopy seed "adrai first-parent warm placement" $ \temporary repositoryPath -> do
+    fixture <- loadMergePlacementFixture repositoryPath
+    let currentDb = temporary </> "index.sqlite"
+        overlayPath = provenanceDatabasePath currentDb
+        repository = mergePlacementRepository fixture
+        target = mergePlacementTarget fixture
+        original = mergePlacementFirstParent fixture
+        operation = mergePlacementOperationOne
+        document = mergePlacementDocumentOne fixture
+        expected = [(gitOidText original, "original")]
+    ensureSchema overlayPath
+    void $ requireEnsureUpdate "first-parent warm prime" =<< runEnsureForConfig repository currentDb mkTestConfig [] [] original
+    void $ requireEnsureUpdate "first-parent target ensure" =<< runEnsureForConfig repository currentDb mkTestConfig [document] [operation] target
+    queryPlacements overlayPath operation >>= (@?= expected)
+    initialIssues <- queryIssueCodes overlayPath
+    assertBool "trailerless first-parent placement does not warn" ("REDUNDANT_OPERATION_TRAILER" `notElem` initialIssues)
+    bracket (open overlayPath) close $ \connection -> do
+      execute connection
+        "INSERT OR REPLACE INTO operation_commit(op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json) VALUES(?,?,?,?,?,?,?)"
+        [ SQLText operation, SQLText (gitOidText target), SQLText "introduction", SQLInteger 0, SQLInteger 0,
+          SQLText "stale first-parent merge placement", SQLText "[]"
+        ]
+      execute connection
+        "DELETE FROM operation_target_coverage WHERE op_id=? AND target_oid=?"
+        [SQLText operation, SQLText (gitOidText target)]
+    readProvenanceEvidenceAt repository overlayPath target [operation] mergePlacementEvidenceConfig >>= \case
+      Left (ProvenanceEvidenceMissingTargetPlacement _) -> pure ()
+      other -> assertFailure ("first-parent missing certificate must fail closed, got " <> show other)
+    repair <- requireEnsureUpdate "first-parent repair" =<< runEnsureForConfig repository currentDb mkTestConfig [document] [operation] target
+    changed repair @?= True
+    queryPlacements overlayPath operation >>= (@?= expected)
+    repairedIssues <- queryIssueCodes overlayPath
+    assertBool "first-parent repair removes the stale extra placement without a redundant warning"
+      ("REDUNDANT_OPERATION_TRAILER" `notElem` repairedIssues)
+    coverage <- readCoverageRows overlayPath
+    length [() | (candidate, coveredTarget, _) <- coverage, candidate == operation, coveredTarget == gitOidText target] @?= 1
+    evidence <- readProvenanceEvidenceAt repository overlayPath target [operation] mergePlacementEvidenceConfig
+    assertBool "first-parent target is certified after repair" (either (const False) (const True) evidence)
+
+secondParentWarmPrimingRecoversMergeIntroductionPlacement :: RepositorySeed -> IO ()
+secondParentWarmPrimingRecoversMergeIntroductionPlacement seed =
+  withRepositorySeedCopy seed "adrai second-parent warm placement" $ \temporary repositoryPath -> do
+    fixture <- loadMergePlacementFixture repositoryPath
+    let currentDb = temporary </> "index.sqlite"
+        overlayPath = provenanceDatabasePath currentDb
+        repository = mergePlacementRepository fixture
+        target = mergePlacementTarget fixture
+        original = mergePlacementSecondParent fixture
+        operation = mergePlacementOperationTwo
+        document = mergePlacementDocumentTwo fixture
+        expected = sort [(gitOidText original, "original"), (gitOidText target, "introduction")]
+    ensureSchema overlayPath
+    void $ requireEnsureUpdate "second-parent warm prime" =<< runEnsureForConfig repository currentDb mkTestConfig [] [] original
+    void $ requireEnsureUpdate "second-parent target ensure" =<< runEnsureForConfig repository currentDb mkTestConfig [document] [operation] target
+    queryPlacements overlayPath operation >>= (@?= expected)
+    bracket (open overlayPath) close $ \connection -> do
+      execute connection
+        "DELETE FROM operation_commit WHERE op_id=? AND commit_oid=?"
+        [SQLText operation, SQLText (gitOidText target)]
+      execute connection
+        "DELETE FROM operation_target_coverage WHERE op_id=? AND target_oid=?"
+        [SQLText operation, SQLText (gitOidText target)]
+    readProvenanceEvidenceAt repository overlayPath target [operation] mergePlacementEvidenceConfig >>= \case
+      Left (ProvenanceEvidenceMissingTargetPlacement _) -> pure ()
+      other -> assertFailure ("second-parent missing certificate must fail closed, got " <> show other)
+    repair <- requireEnsureUpdate "second-parent repair" =<< runEnsureForConfig repository currentDb mkTestConfig [document] [operation] target
+    changed repair @?= True
+    queryPlacements overlayPath operation >>= (@?= expected)
+    coverage <- readCoverageRows overlayPath
+    length [() | (candidate, coveredTarget, _) <- coverage, candidate == operation, coveredTarget == gitOidText target] @?= 1
+    evidence <- readProvenanceEvidenceAt repository overlayPath target [operation] mergePlacementEvidenceConfig
+    assertBool "second-parent target is certified after introduction recovery" (either (const False) (const True) evidence)
+
+missingSourceTargetCoverageReplaysRepositoryWideMerge :: RepositorySeed -> IO ()
+missingSourceTargetCoverageReplaysRepositoryWideMerge seed =
+  withRepositorySeedCopy seed "adrai source-target repository-wide replay" $ \temporary repositoryPath -> do
+    fixture <- loadMergePlacementFixture repositoryPath
+    let currentDb = temporary </> "index.sqlite"
+        overlayPath = provenanceDatabasePath currentDb
+        repository = mergePlacementRepository fixture
+        mergeTarget = mergePlacementTarget fixture
+        sourceTarget = mergePlacementSecondParent fixture
+        operation = mergePlacementOperationTwo
+        document = mergePlacementDocumentTwo fixture
+        expected = sort [(gitOidText sourceTarget, "original"), (gitOidText mergeTarget, "introduction")]
+    ensureSchema overlayPath
+    void $ requireEnsureUpdate "later merge prime" =<< runEnsureForConfig repository currentDb mkTestConfig [] [] mergeTarget
+    void $ requireEnsureUpdate "source target ensure" =<< runEnsureForConfig repository currentDb mkTestConfig [document] [operation] sourceTarget
+    queryPlacements overlayPath operation >>= (@?= expected)
+    bracket (open overlayPath) close $ \connection -> do
+      execute connection
+        "UPDATE operation_commit SET classification='copy' WHERE op_id=? AND commit_oid=?"
+        [SQLText operation, SQLText (gitOidText mergeTarget)]
+      execute connection
+        "DELETE FROM operation_target_coverage WHERE op_id=? AND target_oid=?"
+        [SQLText operation, SQLText (gitOidText sourceTarget)]
+    repair <- requireEnsureUpdate "source target repair" =<< runEnsureForConfig repository currentDb mkTestConfig [document] [operation] sourceTarget
+    changed repair @?= True
+    commitsScanned repair @?= 0
+    queryPlacements overlayPath operation >>= (@?= expected)
+    evidence <- readProvenanceEvidenceAt repository overlayPath sourceTarget [operation] mergePlacementEvidenceConfig
+    assertBool "source target is certified from its original while retaining the later merge introduction"
+      (either (const False) (const True) evidence)
+    coverage <- readCoverageRows overlayPath
+    length [() | (candidate, coveredTarget, _) <- coverage, candidate == operation, coveredTarget == gitOidText sourceTarget] @?= 1
+
+readOperationRows :: FilePath -> IO [(Text, Text, Text, Integer, Integer, Text, Text)]
+readOperationRows dbPath =
+  bracket (open dbPath) close $ \connection ->
+    query_ connection "SELECT op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json FROM operation_commit ORDER BY op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json"
+
+readCoverageRows :: FilePath -> IO [(Text, Text, Text)]
+readCoverageRows dbPath =
+  bracket (open dbPath) close $ \connection ->
+    query_ connection "SELECT op_id,target_oid,registration_signature FROM operation_target_coverage ORDER BY op_id,target_oid,registration_signature"
+
 overlaySchemaFacts :: FilePath -> IO [(Text, Text)]
 overlaySchemaFacts dbPath = do
   connection <- open dbPath
@@ -2211,18 +2475,6 @@ requireAdrId value =
   case mkAdrId value of
     Left v -> error ("invalid AdrId: " <> show v)
     Right a -> a
-
-requireRecordId :: Text -> RecordId
-requireRecordId value =
-  case mkRecordId value of
-    Left v -> error ("invalid RecordId: " <> show v)
-    Right r -> r
-
-requireConnectionId :: Text -> ConnectionId
-requireConnectionId value =
-  case mkConnectionId value of
-    Left v -> error ("invalid ConnectionId: " <> show v)
-    Right c -> c
 
 requireOperationId :: Text -> OperationId
 requireOperationId value =
@@ -2246,7 +2498,3 @@ resolveTestRepo repoDir revision = do
       case resolveResult of
         Left e -> assertFailure ("resolveRepositoryRevision: " <> show e)
         Right r -> pure r
-
-toSlash :: Char -> Char
-toSlash '\\' = '/'
-toSlash c = c

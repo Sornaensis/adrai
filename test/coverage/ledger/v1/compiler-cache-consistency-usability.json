@@ -1,453 +1,453 @@
-﻿{
-    "schema":  "adrai/coverage-ledger-category/v1",
-    "category":  "compiler-cache-consistency-usability",
-    "expectedCount":  28,
-    "sourceModules":  [
-                          {
-                              "pythonPath":  "ADRAI_1_Source/tests/test_usability_refinements.py",
-                              "expectedCount":  4
-                          },
-                          {
-                              "pythonPath":  "ADRAI_1_Source/tests/test_consistency_oracle.py",
-                              "expectedCount":  2
-                          },
-                          {
-                              "pythonPath":  "ADRAI_1_Source/tests/test_merge_aware_cache.py",
-                              "expectedCount":  4
-                          },
-                          {
-                              "pythonPath":  "ADRAI_1_Source/tests/test_cache_git_config.py",
-                              "expectedCount":  6
-                          },
-                          {
-                              "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                              "expectedCount":  11
-                          },
-                          {
-                              "pythonPath":  "ADRAI_1_Source/tests/test_cache_equivalence.py",
-                              "expectedCount":  1
-                          }
-                      ],
-    "rows":  [
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_usability_refinements.py",
-                     "pythonMethod":  "test_revision_local_unique_prefixes_work_for_reads_mutations_and_replacements",
-                     "behaviorContract":  "Case-insensitive unique ID prefixes resolve only within the selected revision for reads, mutations, and replacements while short or ambiguous prefixes fail explicitly.",
-                     "haskellTestName":  "revision local unique prefixes support reads mutations and replacements",
-                     "haskellTestPath":  "test/integration/Adrai/UsabilityRefinementsTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P6",
-                     "state":  "partial",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"revision local unique prefixes support reads mutations and replacements\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_usability_refinements.py:38-86",
-                                      "result":  "ADRAI_1_Source/tests/test_usability_refinements.py:38-86 | test/unit/Adrai/TypesTest.hs:41-68 | test/property/Adrai/TypesProperties.hs:18-34"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_usability_refinements.py",
-                     "pythonMethod":  "test_cli_json_is_compact_for_routine_search_and_collapsed_show",
-                     "behaviorContract":  "Routine search and collapsed-show JSON use compact versioned projections while exploded show emits operation provenance once and omits duplicated item provenance.",
-                     "haskellTestName":  "routine CLI JSON projections are compact and nonduplicative",
-                     "haskellTestPath":  "test/golden/Adrai/PublicJsonProjectionTest.hs",
-                     "haskellTestType":  "golden",
-                     "phaseOwner":  "P6",
-                     "state":  "partial",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"routine CLI JSON projections are compact and nonduplicative\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_usability_refinements.py:88-147",
-                                      "result":  "ADRAI_1_Source/tests/test_usability_refinements.py:88-147 | test/fixtures/contracts/v1/public-json/contracts.json:1-31 | test/golden/Adrai/GoldenFixturesTest.hs:288-305"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_usability_refinements.py",
-                     "pythonMethod":  "test_strict_and_doctor_share_one_semantic_cache_per_revision",
-                     "behaviorContract":  "Strict compilation and doctor share one semantic database for a revision, preserve a diagnostic database for corrupt source, and never misclassify integrity failure as an ADR conflict.",
-                     "haskellTestName":  "strict compile and doctor share one semantic revision cache",
-                     "haskellTestPath":  "test/integration/Adrai/CompilerCacheTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "partial",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"strict compile and doctor share one semantic revision cache\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_usability_refinements.py:151-176",
-                                      "result":  "ADRAI_1_Source/tests/test_usability_refinements.py:151-176 | P4-03 ColdCompilerTest and IntegrityAdversarialTest create valid/conflict or diagnostic-only adrai-cache/1 databases and never classify integrity errors as ADR_CONFLICT. The cold transaction verifies exact meta plus every declared normalized/search/FTS table count and key projection before commit. Shared published cache and doctor consumption remain P4-05/P4-06; Python was not executed."
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_usability_refinements.py",
-                     "pythonMethod":  "test_count_bounded_eviction_prefers_live_branch_tips_over_intermediate_operations",
-                     "behaviorContract":  "Count-bounded cache eviction retains live branch tips ahead of intermediate operation revisions when the retention limit is reached.",
-                     "haskellTestName":  "cache eviction prefers live branch tips over intermediate revisions",
-                     "haskellTestPath":  "test/integration/Adrai/CachePolicyTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"cache eviction prefers live branch tips over intermediate revisions\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_usability_refinements.py:178-219",
-                                      "result":  "ADRAI_1_Source/tests/test_usability_refinements.py:178-219"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_consistency_oracle.py",
-                     "pythonMethod":  "test_all_mutation_axes_and_merge_heavy_branch_switches_are_cold_warm_identical",
-                     "behaviorContract":  "Across every mutation axis, merges, and repeated branch switches, warm and cold rebuilds produce identical public results and semantic database tables for each revision.",
-                     "haskellTestName":  "all_mutation_axes_and_merge_heavy_branch_switches_are_cold_warm_identical",
-                     "haskellTestPath":  "test/integration/Adrai/ConsistencyTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "covered",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/Consistency oracle/\" -j 1'",
-                                      "fixture":  "ConsistencyTest.testAllMutationAxes asserts cold/warm equality for current compile, search, collapsed/exploded projections and typed SQLite rows after amend/domain/scope/status mutations, merges, and repeated main/release switches; scope capsules compile with truthful scope.<change> kinds.",
-                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /Consistency oracle/ -j1 ALL 3 PASS in 3352.03s; all_mutation_axes PASS in 1309.27s"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_consistency_oracle.py",
-                     "pythonMethod":  "test_divergent_amendments_conflict_and_reconciliation_are_cold_warm_identical",
-                     "behaviorContract":  "Divergent decision amendments and their explicit reconciliation yield identical warm and cold conflict states, heads, doctor health, and final collapsed record.",
-                     "haskellTestName":  "divergent_amendments_conflict_and_reconciliation_are_cold_warm_identical",
-                     "haskellTestPath":  "test/integration/Adrai/ConsistencyTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "covered",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/Consistency oracle/\" -j 1'",
-                                      "fixture":  "ConsistencyTest.testDivergentAmendments creates a genuine two-head decision merge, asserts exact conflicted show/search exit-3 outcomes, cold/warm typed database equality with linked ADR_CONFLICT issue evidence, ordinary multiparent amend reconciliation, and final cold/warm equality.",
-                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /Consistency oracle/ -j1 ALL 3 PASS in 3352.03s; divergent_amendments PASS in 348.84s"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_merge_aware_cache.py",
-                     "pythonMethod":  "test_stable_release_cache_survives_many_development_merges",
-                     "behaviorContract":  "Stable-release and main revision databases survive long development merge trains and return to exact or provenance-sync access without reparsing documents or rebuilding ADRs.",
-                     "haskellTestName":  "stable release cache survives development merge trains",
-                     "haskellTestPath":  "test/integration/Adrai/MergeAwareCacheTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "partial",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"stable release cache survives development merge trains\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_merge_aware_cache.py:46-92",
-                                      "result":  "ADRAI_1_Source/tests/test_merge_aware_cache.py:46-92 | test/fixtures/contracts/v1/search/production-stress-compact.json:151-203 | test/golden/Adrai/GoldenFixturesTest.hs:270-274"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_merge_aware_cache.py",
-                     "pythonMethod":  "test_nearest_cached_ancestor_beats_recent_unrelated_alias",
-                     "behaviorContract":  "Incremental compilation selects the nearest cached semantic ancestor instead of a more recent unrelated revision alias.",
-                     "haskellTestName":  "nearest cached ancestor beats recent unrelated alias",
-                     "haskellTestPath":  "test/integration/Adrai/MergeAwareCacheTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"nearest cached ancestor beats recent unrelated alias\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_merge_aware_cache.py:94-121",
-                                      "result":  "ADRAI_1_Source/tests/test_merge_aware_cache.py:94-121"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_merge_aware_cache.py",
-                     "pythonMethod":  "test_adr_bearing_merge_rebuilds_only_affected_adr",
-                     "behaviorContract":  "A merge that introduces managed ADR files uses semantic reuse, parses only the new documents, and rebuilds only the affected ADR.",
-                     "haskellTestName":  "ADR bearing merge rebuilds only affected ADR",
-                     "haskellTestPath":  "test/integration/Adrai/MergeAwareCacheTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"ADR bearing merge rebuilds only affected ADR\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_merge_aware_cache.py:123-147",
-                                      "result":  "ADRAI_1_Source/tests/test_merge_aware_cache.py:123-147"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_merge_aware_cache.py",
-                     "pythonMethod":  "test_divergent_adr_states_remain_consistent_through_repeated_noise_merges",
-                     "behaviorContract":  "Repeated switching after noise merges preserves distinct release and main ADR states, source revisions, and revision-specific cache databases.",
-                     "haskellTestName":  "divergent ADR states remain consistent through repeated noise merges",
-                     "haskellTestPath":  "test/integration/Adrai/MergeAwareCacheTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "partial",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"divergent ADR states remain consistent through repeated noise merges\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_merge_aware_cache.py:149-199",
-                                      "result":  "ADRAI_1_Source/tests/test_merge_aware_cache.py:149-199 | test/fixtures/contracts/v1/search/production-stress-compact.json:151-197"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_cache_git_config.py",
-                     "pythonMethod":  "test_default_is_twelve_and_bootstrap_does_not_commit_cache_policy",
-                     "behaviorContract":  "Cache retention defaults to twelve revisions from builtin policy and initialization commits neither a cache table nor repository-local Git cache configuration.",
-                     "haskellTestName":  "cache retention defaults to twelve without committed policy",
-                     "haskellTestPath":  "test/integration/Adrai/CachePolicyTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "partial",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"cache retention defaults to twelve without committed policy\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_cache_git_config.py:23-40",
-                                      "result":  "ADRAI_1_Source/tests/test_cache_git_config.py:23-40 | test/fixtures/contracts/v1/config/default.toml:1-9 | test/golden/Adrai/GoldenFixturesTest.hs:45-49"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_cache_git_config.py",
-                     "pythonMethod":  "test_repository_local_value_overrides_a_global_default",
-                     "behaviorContract":  "A repository-local retainRevisions value overrides an inherited global Git configuration value and reports the effective configuration source.",
-                     "haskellTestName":  "repository cache retention overrides global Git configuration",
-                     "haskellTestPath":  "test/integration/Adrai/CachePolicyTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"repository cache retention overrides global Git configuration\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_cache_git_config.py:42-70",
-                                      "result":  "ADRAI_1_Source/tests/test_cache_git_config.py:42-70"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_cache_git_config.py",
-                     "pythonMethod":  "test_repository_local_git_config_controls_pruning_by_count",
-                     "behaviorContract":  "Repository-local Git configuration bounds revision-cache files by count and doctor reports the effective retention key, value, and source.",
-                     "haskellTestName":  "local Git configuration controls cache pruning by count",
-                     "haskellTestPath":  "test/integration/Adrai/CachePolicyTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"local Git configuration controls cache pruning by count\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_cache_git_config.py:72-91",
-                                      "result":  "ADRAI_1_Source/tests/test_cache_git_config.py:72-91"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_cache_git_config.py",
-                     "pythonMethod":  "test_retention_change_prunes_on_exact_hit_without_changing_cache_identity",
-                     "behaviorContract":  "Changing retention policy prunes immediately on an exact cache hit without changing the semantic cache identity or selected database.",
-                     "haskellTestName":  "retention change prunes exact hit without changing cache identity",
-                     "haskellTestPath":  "test/integration/Adrai/CachePolicyTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"retention change prunes exact hit without changing cache identity\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_cache_git_config.py:93-113",
-                                      "result":  "ADRAI_1_Source/tests/test_cache_git_config.py:93-113"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_cache_git_config.py",
-                     "pythonMethod":  "test_committed_cache_table_is_rejected_as_unsupported_configuration",
-                     "behaviorContract":  "A committed cache table is rejected as unsupported configuration while valid branches continue using repository-local Git cache policy.",
-                     "haskellTestName":  "committed cache table is rejected as unsupported configuration",
-                     "haskellTestPath":  "test/integration/Adrai/CachePolicyTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"committed cache table is rejected as unsupported configuration\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_cache_git_config.py:115-129",
-                                      "result":  "ADRAI_1_Source/tests/test_cache_git_config.py:115-129"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_cache_git_config.py",
-                     "pythonMethod":  "test_invalid_git_config_is_rejected",
-                     "behaviorContract":  "Cache retention Git configuration accepts only decimal integers from one through 256 and rejects zero, negatives, overflow, fractional, suffixed, or textual values.",
-                     "haskellTestName":  "invalid cache retention Git configuration is rejected",
-                     "haskellTestPath":  "test/unit/Adrai/CachePolicyTest.hs",
-                     "haskellTestType":  "unit",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"invalid cache retention Git configuration is rejected\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_cache_git_config.py:131-140",
-                                      "result":  "ADRAI_1_Source/tests/test_cache_git_config.py:131-140"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_cold_compile_then_exact_cache_does_not_replace_database",
-                     "behaviorContract":  "A cold compile parses all managed documents, while the next exact hit reuses all documents and leaves the published database inode and modification time unchanged.",
-                     "haskellTestName":  "cold compile followed by exact hit preserves database file",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "partial",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"cold compile followed by exact hit preserves database file\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:21-39",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:21-39 | test/fixtures/contracts/v1/search/production-stress-compact.json:23-45 | P4-03 ColdCompilerTest and SQLite-derived goldens prove the cold half: every selected document is parsed into a fresh caller-owned database, exact meta and all declared normalized/search/FTS counts and key projections are verified transactionally, and independent cold builds have identical logical rows and fingerprints. Exact-hit reuse, publication, inode, and mtime preservation remain P4-05."
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_exact_cache_does_not_deserialize_managed_documents",
-                     "behaviorContract":  "An exact cache hit returns without loading or deserializing any managed source document.",
-                     "haskellTestName":  "exact cache hit does not deserialize managed documents",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"exact cache hit does not deserialize managed documents\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:42-52",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:42-52"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_corrupt_provenance_overlay_is_rebuilt_from_the_exact_semantic_cache",
-                     "behaviorContract":  "A corrupt provenance overlay is rebuilt at schema adrai-provenance-cache/1 from an exact semantic cache without reparsing managed documents.",
-                     "haskellTestName":  "corrupt provenance overlay rebuilds from exact semantic cache",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"corrupt provenance overlay rebuilds from exact semantic cache\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:54-69",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:54-69 | test/fixtures/contracts/v1/versions.json:8-10"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_noise_only_commit_reuses_documents_and_embeddings",
-                     "behaviorContract":  "A product-only commit takes the tree-identical incremental path, reuses every document and embedding, scans only the new history delta, and becomes an exact hit afterward.",
-                     "haskellTestName":  "noise only commit reuses documents and embeddings",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "partial",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"noise only commit reuses documents and embeddings\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:71-92",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:71-92 | test/fixtures/contracts/v1/search/production-stress-compact.json:77-87"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_merge_or_other_ref_movement_scans_only_the_provenance_delta",
-                     "behaviorContract":  "A noise-only merge or equivalent ref movement scans only the bounded provenance delta and reuses every semantic document.",
-                     "haskellTestName":  "merge ref movement scans only provenance delta",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"merge ref movement scans only provenance delta\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:94-108",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:94-108"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_hidden_reflog_commit_is_added_to_the_shared_provenance_delta",
-                     "behaviorContract":  "A commit reachable only through the reflog participates in the shared provenance delta without causing semantic document reparsing.",
-                     "haskellTestName":  "hidden reflog commit joins shared provenance delta",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"hidden reflog commit joins shared provenance delta\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:110-133",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:110-133"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_adrai_trailer_in_noise_commit_forces_provenance_rescan",
-                     "behaviorContract":  "An ADRAI operation trailer on a noise commit forces provenance scanning and records a REDUNDANT_OPERATION_TRAILER issue without reparsing documents.",
-                     "haskellTestName":  "ADRAI trailer in noise commit forces provenance rescan",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"ADRAI trailer in noise commit forces provenance rescan\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:135-151",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:135-151"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_new_operations_parse_only_new_immutable_objects",
-                     "behaviorContract":  "Incremental create and amend operations parse only newly added immutable objects and rebuild only the affected ADR while reusing unchanged objects and ADRs.",
-                     "haskellTestName":  "new operations parse only new immutable objects",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"new operations parse only new immutable objects\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:153-183",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:153-183"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_compile_cli_reports_cache_and_work_reuse_counters",
-                     "behaviorContract":  "Compile JSON reports cache mode, parsed and reused document counts, and the number of history commits scanned.",
-                     "haskellTestName":  "P6-02I compile reports cache and work reuse counters",
-                     "haskellTestPath":  "test/integration/Adrai/CompilerSearchSqliteTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P6",
-                     "state":  "covered",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
-                                      "fixture":  "CompilerSearchSqliteTest.p602iRealExecutableCompile asserts the exact canonical 17-key compile JSON, current and historical SQLite metadata, cache/work counters, revision binding, and caller-state preservation.",
-                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_corrupt_old_sqlite_cache_is_discarded_and_rebuilt",
-                     "behaviorContract":  "Corrupt revision caches and the current alias are discarded, followed by a full rebuild whose database records the current source revision.",
-                     "haskellTestName":  "corrupt old SQLite cache is discarded and rebuilt",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"corrupt old SQLite cache is discarded and rebuilt\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:193-206",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:193-206"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_incremental_compiler.py",
-                     "pythonMethod":  "test_corrupt_current_database_does_not_invalidate_revision_cache",
-                     "behaviorContract":  "A corrupt current-database alias is republished from the intact exact revision cache without invalidating or replacing that semantic cache.",
-                     "haskellTestName":  "corrupt current database preserves exact revision cache",
-                     "haskellTestPath":  "test/integration/Adrai/IncrementalCompilerTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "planned",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"corrupt current database preserves exact revision cache\"",
-                                      "fixture":  "ADRAI_1_Source/tests/test_incremental_compiler.py:208-219",
-                                      "result":  "ADRAI_1_Source/tests/test_incremental_compiler.py:208-219"
-                                  }
-                 },
-                 {
-                     "pythonPath":  "ADRAI_1_Source/tests/test_cache_equivalence.py",
-                     "pythonMethod":  "test_merge_heavy_branch_caches_are_semantically_identical_to_cold_rebuilds",
-                     "behaviorContract":  "For merge-heavy main, development, release, and feature histories, warmed caches equal cold rebuilds across public reads, search, compare, doctor, and every semantic database table.",
-                     "haskellTestName":  "merge_heavy_branch_caches_are_semantically_identical_to_cold_rebuilds",
-                     "haskellTestPath":  "test/integration/Adrai/ConsistencyTest.hs",
-                     "haskellTestType":  "integration",
-                     "phaseOwner":  "P5",
-                     "state":  "covered",
-                     "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/Consistency oracle/\" -j 1'",
-                                      "fixture":  "ConsistencyTest.testMergeHeavyBranchEquivalence asserts exact full public snapshots and every typed semantic SQLite row after main/develop/release/feature merge history, repeated branch switches, warmed caches, and cold rebuilds.",
-                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /Consistency oracle/ -j1 ALL 3 PASS in 3352.03s; merge_heavy_branch PASS in 1693.92s"
-                                  }
-                 }
-             ]
+{
+  "schema": "adrai/coverage-ledger-category/v1",
+  "category": "compiler-cache-consistency-usability",
+  "expectedCount": 28,
+  "sourceModules": [
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_usability_refinements.py",
+      "expectedCount": 4
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_consistency_oracle.py",
+      "expectedCount": 2
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_merge_aware_cache.py",
+      "expectedCount": 4
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_cache_git_config.py",
+      "expectedCount": 6
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "expectedCount": 11
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_cache_equivalence.py",
+      "expectedCount": 1
+    }
+  ],
+  "rows": [
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_usability_refinements.py",
+      "pythonMethod": "test_revision_local_unique_prefixes_work_for_reads_mutations_and_replacements",
+      "behaviorContract": "Case-insensitive unique ID prefixes resolve only within the selected revision for reads, mutations, and replacements while short or ambiguous prefixes fail explicitly.",
+      "haskellTestName": "revision local unique prefixes support reads mutations and replacements",
+      "haskellTestPath": "test/integration/Adrai/UsabilityRefinementsTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P6",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"revision local unique prefixes support reads mutations and replacements\"",
+        "fixture": "ADRAI_1_Source/tests/test_usability_refinements.py:38-86",
+        "result": "ADRAI_1_Source/tests/test_usability_refinements.py:38-86 | test/unit/Adrai/TypesTest.hs:41-68 | test/property/Adrai/TypesProperties.hs:18-34"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_usability_refinements.py",
+      "pythonMethod": "test_cli_json_is_compact_for_routine_search_and_collapsed_show",
+      "behaviorContract": "Routine search and collapsed-show JSON use compact versioned projections while exploded show emits operation provenance once and omits duplicated item provenance.",
+      "haskellTestName": "routine CLI JSON projections are compact and nonduplicative",
+      "haskellTestPath": "test/golden/Adrai/PublicJsonProjectionTest.hs",
+      "haskellTestType": "golden",
+      "phaseOwner": "P6",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"routine CLI JSON projections are compact and nonduplicative\"",
+        "fixture": "ADRAI_1_Source/tests/test_usability_refinements.py:88-147",
+        "result": "ADRAI_1_Source/tests/test_usability_refinements.py:88-147 | test/fixtures/contracts/v1/public-json/contracts.json:1-31 | test/golden/Adrai/GoldenFixturesTest.hs:288-305"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_usability_refinements.py",
+      "pythonMethod": "test_strict_and_doctor_share_one_semantic_cache_per_revision",
+      "behaviorContract": "Strict compilation and doctor share one semantic database for a revision, preserve a diagnostic database for corrupt source, and never misclassify integrity failure as an ADR conflict.",
+      "haskellTestName": "strict compile and doctor share one semantic revision cache",
+      "haskellTestPath": "test/integration/Adrai/CompilerCacheTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"strict compile and doctor share one semantic revision cache\"",
+        "fixture": "ADRAI_1_Source/tests/test_usability_refinements.py:151-176",
+        "result": "ADRAI_1_Source/tests/test_usability_refinements.py:151-176 | P4-03 ColdCompilerTest and IntegrityAdversarialTest create valid/conflict or diagnostic-only adrai-cache/1 databases and never classify integrity errors as ADR_CONFLICT. The cold transaction verifies exact meta plus every declared normalized/search/FTS table count and key projection before commit. Shared published cache and doctor consumption remain P4-05/P4-06; Python was not executed."
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_usability_refinements.py",
+      "pythonMethod": "test_count_bounded_eviction_prefers_live_branch_tips_over_intermediate_operations",
+      "behaviorContract": "Count-bounded cache eviction retains live branch tips ahead of intermediate operation revisions when the retention limit is reached.",
+      "haskellTestName": "cache eviction prefers live branch tips over intermediate revisions",
+      "haskellTestPath": "test/integration/Adrai/CachePolicyTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"cache eviction prefers live branch tips over intermediate revisions\"",
+        "fixture": "ADRAI_1_Source/tests/test_usability_refinements.py:178-219",
+        "result": "ADRAI_1_Source/tests/test_usability_refinements.py:178-219"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_consistency_oracle.py",
+      "pythonMethod": "test_all_mutation_axes_and_merge_heavy_branch_switches_are_cold_warm_identical",
+      "behaviorContract": "Compact retained contracts prove projection and topology invariants, real public-command routing, and independent cache publication/provenance isolation without replaying every mutation-axis and branch-switch matrix cell.",
+      "haskellTestName": "ADRAI.P4-07.Cache integration (P4-07).competing tree-identical targets retain their own provenance projections",
+      "haskellTestPath": "test/integration/Adrai/CacheIntegrationTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments='-p \"/competing tree-identical targets/\"'",
+        "fixture": "Current compact coverage is split across competing-target cache integration, query/history projection properties, and MutationE2E public-command wiring; the removed broad Consistency matrix is not executed.",
+        "result": "Historical removed-matrix evidence (not a current execution claim): standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /Consistency oracle/ -j1 ALL 3 PASS in 3352.03s; all_mutation_axes PASS in 1309.27s. Accepted loss: repeated all-axis cold/warm and branch-switch permutations."
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_consistency_oracle.py",
+      "pythonMethod": "test_divergent_amendments_conflict_and_reconciliation_are_cold_warm_identical",
+      "behaviorContract": "A real divergent two-head decision merge and ordinary amend preserve exact reconciliation parents, resolved output, conflict routing, and caller state; the former independent cold/warm matrix repetition is retired.",
+      "haskellTestName": "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads",
+      "haskellTestPath": "test/integration/Adrai/MutationE2ETest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments='--pattern=\"ordinary amend reconciles merged decision heads\"'",
+        "fixture": "Current retained MutationE2ETest.p603a0OrdinaryAmendReconciles creates the real two-head decision conflict, reconciles through the production command, and asserts producer/reducer provenance, both parents, returned capsules and resolved record, and caller state. The former ConsistencyTest.testDivergentAmendments fixture is historical only.",
+        "result": "Historical removed-matrix evidence, not a current execution claim: /Consistency oracle/ passed all three former cases in 3352.03s and divergent_amendments in 348.84s. Current accepted loss: matching FTS/vector/hybrid conflict queries, nonmatching empty-result queries, and separate cold/warm public-snapshot repetition."
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_merge_aware_cache.py",
+      "pythonMethod": "test_stable_release_cache_survives_many_development_merges",
+      "behaviorContract": "Stable-release and main revision databases survive long development merge trains and return to exact or provenance-sync access without reparsing documents or rebuilding ADRs.",
+      "haskellTestName": "stable release cache survives development merge trains",
+      "haskellTestPath": "test/integration/Adrai/MergeAwareCacheTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"stable release cache survives development merge trains\"",
+        "fixture": "ADRAI_1_Source/tests/test_merge_aware_cache.py:46-92",
+        "result": "ADRAI_1_Source/tests/test_merge_aware_cache.py:46-92 | test/fixtures/contracts/v1/search/production-stress-compact.json:151-203 | test/golden/Adrai/GoldenFixturesTest.hs:270-274"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_merge_aware_cache.py",
+      "pythonMethod": "test_nearest_cached_ancestor_beats_recent_unrelated_alias",
+      "behaviorContract": "Incremental compilation selects the nearest cached semantic ancestor instead of a more recent unrelated revision alias.",
+      "haskellTestName": "nearest cached ancestor beats recent unrelated alias",
+      "haskellTestPath": "test/integration/Adrai/MergeAwareCacheTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"nearest cached ancestor beats recent unrelated alias\"",
+        "fixture": "ADRAI_1_Source/tests/test_merge_aware_cache.py:94-121",
+        "result": "ADRAI_1_Source/tests/test_merge_aware_cache.py:94-121"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_merge_aware_cache.py",
+      "pythonMethod": "test_adr_bearing_merge_rebuilds_only_affected_adr",
+      "behaviorContract": "A merge that introduces managed ADR files uses semantic reuse, parses only the new documents, and rebuilds only the affected ADR.",
+      "haskellTestName": "ADR bearing merge rebuilds only affected ADR",
+      "haskellTestPath": "test/integration/Adrai/MergeAwareCacheTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"ADR bearing merge rebuilds only affected ADR\"",
+        "fixture": "ADRAI_1_Source/tests/test_merge_aware_cache.py:123-147",
+        "result": "ADRAI_1_Source/tests/test_merge_aware_cache.py:123-147"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_merge_aware_cache.py",
+      "pythonMethod": "test_divergent_adr_states_remain_consistent_through_repeated_noise_merges",
+      "behaviorContract": "Repeated switching after noise merges preserves distinct release and main ADR states, source revisions, and revision-specific cache databases.",
+      "haskellTestName": "divergent ADR states remain consistent through repeated noise merges",
+      "haskellTestPath": "test/integration/Adrai/MergeAwareCacheTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"divergent ADR states remain consistent through repeated noise merges\"",
+        "fixture": "ADRAI_1_Source/tests/test_merge_aware_cache.py:149-199",
+        "result": "ADRAI_1_Source/tests/test_merge_aware_cache.py:149-199 | test/fixtures/contracts/v1/search/production-stress-compact.json:151-197"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_cache_git_config.py",
+      "pythonMethod": "test_default_is_twelve_and_bootstrap_does_not_commit_cache_policy",
+      "behaviorContract": "Cache retention defaults to twelve revisions from builtin policy and initialization commits neither a cache table nor repository-local Git cache configuration.",
+      "haskellTestName": "cache retention defaults to twelve without committed policy",
+      "haskellTestPath": "test/integration/Adrai/CachePolicyTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"cache retention defaults to twelve without committed policy\"",
+        "fixture": "ADRAI_1_Source/tests/test_cache_git_config.py:23-40",
+        "result": "ADRAI_1_Source/tests/test_cache_git_config.py:23-40 | test/fixtures/contracts/v1/config/default.toml:1-9 | test/golden/Adrai/GoldenFixturesTest.hs:45-49"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_cache_git_config.py",
+      "pythonMethod": "test_repository_local_value_overrides_a_global_default",
+      "behaviorContract": "A repository-local retainRevisions value overrides an inherited global Git configuration value and reports the effective configuration source.",
+      "haskellTestName": "repository cache retention overrides global Git configuration",
+      "haskellTestPath": "test/integration/Adrai/CachePolicyTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"repository cache retention overrides global Git configuration\"",
+        "fixture": "ADRAI_1_Source/tests/test_cache_git_config.py:42-70",
+        "result": "ADRAI_1_Source/tests/test_cache_git_config.py:42-70"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_cache_git_config.py",
+      "pythonMethod": "test_repository_local_git_config_controls_pruning_by_count",
+      "behaviorContract": "Repository-local Git configuration bounds revision-cache files by count and doctor reports the effective retention key, value, and source.",
+      "haskellTestName": "local Git configuration controls cache pruning by count",
+      "haskellTestPath": "test/integration/Adrai/CachePolicyTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"local Git configuration controls cache pruning by count\"",
+        "fixture": "ADRAI_1_Source/tests/test_cache_git_config.py:72-91",
+        "result": "ADRAI_1_Source/tests/test_cache_git_config.py:72-91"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_cache_git_config.py",
+      "pythonMethod": "test_retention_change_prunes_on_exact_hit_without_changing_cache_identity",
+      "behaviorContract": "Changing retention policy prunes immediately on an exact cache hit without changing the semantic cache identity or selected database.",
+      "haskellTestName": "retention change prunes exact hit without changing cache identity",
+      "haskellTestPath": "test/integration/Adrai/CachePolicyTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"retention change prunes exact hit without changing cache identity\"",
+        "fixture": "ADRAI_1_Source/tests/test_cache_git_config.py:93-113",
+        "result": "ADRAI_1_Source/tests/test_cache_git_config.py:93-113"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_cache_git_config.py",
+      "pythonMethod": "test_committed_cache_table_is_rejected_as_unsupported_configuration",
+      "behaviorContract": "A committed cache table is rejected as unsupported configuration while valid branches continue using repository-local Git cache policy.",
+      "haskellTestName": "committed cache table is rejected as unsupported configuration",
+      "haskellTestPath": "test/integration/Adrai/CachePolicyTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"committed cache table is rejected as unsupported configuration\"",
+        "fixture": "ADRAI_1_Source/tests/test_cache_git_config.py:115-129",
+        "result": "ADRAI_1_Source/tests/test_cache_git_config.py:115-129"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_cache_git_config.py",
+      "pythonMethod": "test_invalid_git_config_is_rejected",
+      "behaviorContract": "Cache retention Git configuration accepts only decimal integers from one through 256 and rejects zero, negatives, overflow, fractional, suffixed, or textual values.",
+      "haskellTestName": "invalid cache retention Git configuration is rejected",
+      "haskellTestPath": "test/unit/Adrai/CachePolicyTest.hs",
+      "haskellTestType": "unit",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"invalid cache retention Git configuration is rejected\"",
+        "fixture": "ADRAI_1_Source/tests/test_cache_git_config.py:131-140",
+        "result": "ADRAI_1_Source/tests/test_cache_git_config.py:131-140"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_cold_compile_then_exact_cache_does_not_replace_database",
+      "behaviorContract": "A cold compile parses all managed documents, while the next exact hit reuses all documents and leaves the published database inode and modification time unchanged.",
+      "haskellTestName": "cold compile followed by exact hit preserves database file",
+      "haskellTestPath": "test/integration/Adrai/IncrementalCompilerTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"cold compile followed by exact hit preserves database file\"",
+        "fixture": "ADRAI_1_Source/tests/test_incremental_compiler.py:21-39",
+        "result": "ADRAI_1_Source/tests/test_incremental_compiler.py:21-39 | test/fixtures/contracts/v1/search/production-stress-compact.json:23-45 | P4-03 ColdCompilerTest and SQLite-derived goldens prove the cold half: every selected document is parsed into a fresh caller-owned database, exact meta and all declared normalized/search/FTS counts and key projections are verified transactionally, and independent cold builds have identical logical rows and fingerprints. Exact-hit reuse, publication, inode, and mtime preservation remain P4-05."
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_exact_cache_does_not_deserialize_managed_documents",
+      "behaviorContract": "An exact cache hit returns without loading or deserializing any managed source document.",
+      "haskellTestName": "production cache selection.exact CLI reports immutable archive reuse",
+      "haskellTestPath": "test/cache-selection/Main.hs",
+      "haskellTestType": "cache-selection",
+      "phaseOwner": "P5",
+      "state": "covered",
+      "evidence": {
+        "command": "stack test adrai:adrai-cache-selection-test --test-arguments='--pattern=\"production cache selection.exact CLI reports immutable archive reuse\"'",
+        "fixture": "The cache-selection exact CLI case pins authoritative archive and alias bytes and modification times, corrupts only the alias, then proves exact recovery parses zero documents, reuses all six, rebuilds none, and leaves the authoritative archive unchanged.",
+        "result": "The former focused CacheIntegration result is historical and predates this target transfer. Current proof is pending the next matching bounded retained run."
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_corrupt_provenance_overlay_is_rebuilt_from_the_exact_semantic_cache",
+      "behaviorContract": "A corrupt provenance overlay is rebuilt at schema adrai-provenance-cache/1 from an exact semantic cache without reparsing managed documents.",
+      "haskellTestName": "corrupt provenance overlay rebuilds from exact semantic cache",
+      "haskellTestPath": "test/integration/Adrai/IncrementalCompilerTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"corrupt provenance overlay rebuilds from exact semantic cache\"",
+        "fixture": "ADRAI_1_Source/tests/test_incremental_compiler.py:54-69",
+        "result": "ADRAI_1_Source/tests/test_incremental_compiler.py:54-69 | test/fixtures/contracts/v1/versions.json:8-10"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_noise_only_commit_reuses_documents_and_embeddings",
+      "behaviorContract": "A product-only commit takes the tree-identical incremental path, reuses every document and embedding, scans only the new history delta, and becomes an exact hit afterward.",
+      "haskellTestName": "v3 tree-identical seed reproduces parsed registration signatures from operation_member",
+      "haskellTestPath": "test/integration/Adrai/CacheIntegrationTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments='--pattern=\"v3 tree-identical seed reproduces parsed registration signatures from operation_member\"'",
+        "fixture": "CacheIntegrationTest's retained v3 tree-identical signature case creates one noise descendant, requires parsed=0/reused=4, and checks observed provenance commit count against the overlay. The separate production cache selection exact CLI case proves the following exact hit parses zero documents, reuses all six, and preserves the authoritative archive while republishing a corrupt alias.",
+        "result": "Current proof is split across the retained v3 tree-identical signature and production cache-selection exact CLI registrations; ADRAI_1_Source/tests/test_incremental_compiler.py:71-92 and test/fixtures/contracts/v1/search/production-stress-compact.json:77-87 are historical/static provenance."
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_merge_or_other_ref_movement_scans_only_the_provenance_delta",
+      "behaviorContract": "A noise-only merge or equivalent ref movement scans only the bounded provenance delta and reuses every semantic document.",
+      "haskellTestName": "merge ref movement scans only provenance delta",
+      "haskellTestPath": "test/integration/Adrai/IncrementalCompilerTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"merge ref movement scans only provenance delta\"",
+        "fixture": "ADRAI_1_Source/tests/test_incremental_compiler.py:94-108",
+        "result": "ADRAI_1_Source/tests/test_incremental_compiler.py:94-108"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_hidden_reflog_commit_is_added_to_the_shared_provenance_delta",
+      "behaviorContract": "A commit reachable only through the reflog participates in the shared provenance delta without causing semantic document reparsing.",
+      "haskellTestName": "hidden reflog commit joins shared provenance delta",
+      "haskellTestPath": "test/integration/Adrai/IncrementalCompilerTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"hidden reflog commit joins shared provenance delta\"",
+        "fixture": "ADRAI_1_Source/tests/test_incremental_compiler.py:110-133",
+        "result": "ADRAI_1_Source/tests/test_incremental_compiler.py:110-133"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_adrai_trailer_in_noise_commit_forces_provenance_rescan",
+      "behaviorContract": "An ADRAI operation trailer on a noise commit forces provenance scanning and records a REDUNDANT_OPERATION_TRAILER issue without reparsing documents.",
+      "haskellTestName": "ADRAI trailer in noise commit forces provenance rescan",
+      "haskellTestPath": "test/integration/Adrai/IncrementalCompilerTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"ADRAI trailer in noise commit forces provenance rescan\"",
+        "fixture": "ADRAI_1_Source/tests/test_incremental_compiler.py:135-151",
+        "result": "ADRAI_1_Source/tests/test_incremental_compiler.py:135-151"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_new_operations_parse_only_new_immutable_objects",
+      "behaviorContract": "Incremental create and amend operations parse only newly added immutable objects and rebuild only the affected ADR while reusing unchanged objects and ADRs.",
+      "haskellTestName": "new operations parse only new immutable objects",
+      "haskellTestPath": "test/integration/Adrai/IncrementalCompilerTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"new operations parse only new immutable objects\"",
+        "fixture": "ADRAI_1_Source/tests/test_incremental_compiler.py:153-183",
+        "result": "ADRAI_1_Source/tests/test_incremental_compiler.py:153-183"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_compile_cli_reports_cache_and_work_reuse_counters",
+      "behaviorContract": "Compile JSON reports cache mode, parsed and reused document counts, and the number of history commits scanned.",
+      "haskellTestName": "P6-02I compile reports cache and work reuse counters",
+      "haskellTestPath": "test/integration/Adrai/CompilerSearchSqliteTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P6",
+      "state": "covered",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+        "fixture": "CompilerSearchSqliteTest.p602iRealExecutableCompile asserts the exact canonical 17-key compile JSON, current and historical SQLite metadata, cache/work counters, revision binding, and caller-state preservation.",
+        "result": "Historical old-matrix evidence, not a current execution claim: HEAD c7c66e5 /P6-02/&&/real/ passed 22/22 in 361.06s. Current compact CompilerSearch carrier retains the compile-counter contract."
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_corrupt_old_sqlite_cache_is_discarded_and_rebuilt",
+      "behaviorContract": "Corrupt revision caches and the current alias are discarded, followed by a full rebuild whose database records the current source revision.",
+      "haskellTestName": "corrupt old SQLite cache is discarded and rebuilt",
+      "haskellTestPath": "test/integration/Adrai/IncrementalCompilerTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"corrupt old SQLite cache is discarded and rebuilt\"",
+        "fixture": "ADRAI_1_Source/tests/test_incremental_compiler.py:193-206",
+        "result": "ADRAI_1_Source/tests/test_incremental_compiler.py:193-206"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_incremental_compiler.py",
+      "pythonMethod": "test_corrupt_current_database_does_not_invalidate_revision_cache",
+      "behaviorContract": "A corrupt current-database alias is republished from the intact exact revision cache without invalidating or replacing that semantic cache.",
+      "haskellTestName": "corrupt current database preserves exact revision cache",
+      "haskellTestPath": "test/integration/Adrai/IncrementalCompilerTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "planned",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"corrupt current database preserves exact revision cache\"",
+        "fixture": "ADRAI_1_Source/tests/test_incremental_compiler.py:208-219",
+        "result": "ADRAI_1_Source/tests/test_incremental_compiler.py:208-219"
+      }
+    },
+    {
+      "pythonPath": "ADRAI_1_Source/tests/test_cache_equivalence.py",
+      "pythonMethod": "test_merge_heavy_branch_caches_are_semantically_identical_to_cold_rebuilds",
+      "behaviorContract": "A compact real ADR-bearing merge rebuilds changed managed state while retained cache cases separately prove cold, exact, incremental, and competing-target publication behavior; the former multi-branch full-snapshot equivalence matrix is retired.",
+      "haskellTestName": "ADRAI.P4-07.Cache integration (P4-07).adr_bearing_merge_rebuilds_changed_managed_tree",
+      "haskellTestPath": "test/integration/Adrai/CacheIntegrationTest.hs",
+      "haskellTestType": "integration",
+      "phaseOwner": "P5",
+      "state": "partial",
+      "evidence": {
+        "command": "stack test adrai:adrai-test --test-arguments='--pattern=\"adr_bearing_merge_rebuilds_changed_managed_tree\"'",
+        "fixture": "Current CacheIntegrationTest retains a real ADR-bearing merge plus separate cold/exact/incremental and competing-target cases. The former ConsistencyTest.testMergeHeavyBranchEquivalence fixture and repeated branch-switch snapshots are historical only.",
+        "result": "Historical removed-matrix evidence, not a current execution claim: /Consistency oracle/ passed all three former cases in 3352.03s and merge_heavy_branch in 1693.92s. Current accepted loss: broad main/development/release/feature public-read and cold-rebuild repetition."
+      }
+    }
+  ]
 }

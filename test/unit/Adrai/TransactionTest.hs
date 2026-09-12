@@ -14,21 +14,25 @@ import Adrai.Format.Document
 import Adrai.Git
   ( GitOid (..),
     Repository (..),
-    RepositoryLayout (LinkedWorktree),
+    RepositoryLayout (MainWorktree),
     discoverRepository,
     gitOidText,
     systemGit,
   )
 import Adrai.GitTestSupport
   ( commitFile,
-    createWorktree,
     gitSuccess,
     initTestRepository,
     installFailingCleanFilter,
     outputText,
     withRejectingReferenceTransactionHook,
   )
-import Adrai.Integration.CLI (adraiTestArgs, createAdraiInit)
+import Adrai.RetainedNative.RepositorySeed
+  ( RepositorySeed,
+    createRepositorySeedWith,
+    removeRepositorySeed,
+    withRepositorySeedCopy,
+  )
 import Adrai.Provenance
   ( ProvenanceCapsuleInput (..),
     ProvenanceObjectId (..),
@@ -67,7 +71,6 @@ import Adrai.Service.Transaction
     commitBootstrapFiles,
     commitBootstrapFilesWith,
     defaultBootstrapDependencies,
-    commitTree,
     defaultAppendOnlyDependencies,
     defaultAppendOnlyTestHooks,
     nullOid,
@@ -89,142 +92,50 @@ import Adrai.Types
 import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
-import qualified Data.ByteString.Lazy as LBS
 import Data.Either (isLeft)
+import Data.Time.Clock (addUTCTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Control.Exception (AsyncException (ThreadKilled), SomeException, throwIO, try)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Directory (createDirectory, createDirectoryLink, doesDirectoryExist, doesFileExist, listDirectory, removeDirectory, removeDirectoryRecursive, removeFile)
+import System.Directory (createDirectory, createDirectoryLink, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, removeDirectory, removeDirectoryRecursive, removeFile, setModificationTime)
 import Data.List (isPrefixOf, sort)
-import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import qualified System.Exit as Exit
-import System.FilePath (isAbsolute, (</>), takeDirectory)
-import System.IO.Temp (withSystemTempDirectory)
-import System.Environment (lookupEnv)
-import System.Process.Typed (proc, readProcess, runProcess, shell)
+import System.FilePath (isAbsolute, makeRelative, normalise, splitDirectories, (</>), takeDirectory)
+import System.Process.Typed (runProcess, shell)
 import System.Info (os)
 import System.IO.Error (tryIOError)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
 tests :: TestTree
 tests =
-  testGroup
-    "Transaction contract"
-    [ testGroup "repository-common mutation lock" gitLockTests,
+  withResource createTransactionRepositorySeed removeTransactionRepositorySeed $ \getTransactionSeed ->
+    withResource createUnbornTransactionRepositorySeed removeUnbornTransactionRepositorySeed $ \getUnbornTransactionSeed ->
+      let withSeed = withTransactionRepositoryCopy getTransactionSeed
+       in testGroup
+            "Transaction contract"
+            [ testGroup "repository-common mutation lock" (gitLockTests getTransactionSeed),
       testCase "Git plumbing accepts one bare 40- or 64-hex OID with trailing stdout framing" $
         mapM_ assertAccepted acceptedOutputs,
       testCase "Git plumbing rejects non-bare or malformed OID output" $
         mapM_ assertRejected rejectedOutputs,
-      testCase "commit-tree creates a one-parent commit from stdin message" $
-        withSystemTempDirectory "adrai commit-tree" $ \temporary -> do
-          let repositoryPath = temporary </> "repository"
-          initTestRepository repositoryPath
-          parentText <- commitFile repositoryPath "seed.txt" "seed"
-          repository <-
-            discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
-          treeText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD^{tree}"] ""
-          parent <- requireGitOid parentText
-          tree <- requireGitOid treeText
-          commitTree repository parent tree "Follow up" "op-commit-tree" (Map.fromList [("Reason", "regression")]) >>= \case
-            Left problem -> assertFailure (show problem)
-            Right commit -> do
-              let commitText = Text.unpack (gitOidText commit)
-              actualParents <- outputText <$> gitSuccess repositoryPath ["show", "-s", "--format=%P", commitText] ""
-              actualMessage <- outputText <$> gitSuccess repositoryPath ["show", "-s", "--format=%B", commitText] ""
-              assertEqual "commit-tree supplies exactly the previous HEAD as parent" parentText actualParents
-              assertEqual
-                "commit-tree reads the complete message from stdin"
-                "Follow up\n\nADRAI-Op: op-commit-tree\nADRAI-Reason: regression"
-                actualMessage,
-      testCase "commit-tree creates a root commit from stdin message" $
-        withSystemTempDirectory "adrai commit-tree root" $ \temporary -> do
-          let repositoryPath = temporary </> "repository"
-          initTestRepository repositoryPath
-          repository <-
-            discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
-          treeText <- outputText <$> gitSuccess repositoryPath ["mktree"] ""
-          tree <- requireGitOid treeText
-          commitTree repository nullOid tree "Bootstrap" "op-bootstrap" (Map.fromList [("Objects", "bootstrap")]) >>= \case
-            Left problem -> assertFailure (show problem)
-            Right commit -> do
-              let commitText = Text.unpack (gitOidText commit)
-              actualParents <- outputText <$> gitSuccess repositoryPath ["show", "-s", "--format=%P", commitText] ""
-              actualMessage <- outputText <$> gitSuccess repositoryPath ["show", "-s", "--format=%B", commitText] ""
-              assertEqual "commit-tree supplies no parent for the null OID" "" actualParents
-              assertEqual
-                "commit-tree reads the complete root message from stdin"
-                "Bootstrap\n\nADRAI-Op: op-bootstrap\nADRAI-Objects: bootstrap"
-                actualMessage,
-       testCase "append-only transaction preserves unrelated staged entry and binary worktree bytes" $
-        withSystemTempDirectory "adrai transaction isolated index" $ \temporary -> do
-          let repositoryPath = temporary </> "repository"
-              unrelatedPath = repositoryPath </> "unrelated.bin"
-              stagedBytes = BS.pack [255, 0, 13, 10, 128, 64, 1, 2, 3]
-          initTestRepository repositoryPath
-          parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-          BS.writeFile unrelatedPath stagedBytes
-          _ <- gitSuccess repositoryPath ["add", "--", "unrelated.bin"] BS.empty
-          stagedEntryBefore <- gitSuccess repositoryPath ["ls-files", "--stage", "--", "unrelated.bin"] BS.empty
-          worktreeBytesBefore <- BS.readFile unrelatedPath
-          repository <-
-            discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
-          parent <- requireGitOid parentText
-          (operationText, generated) <- transactionGeneratedFile parent
-          let generatedPathText = Text.unpack (repoPathText (genFilePath generated))
-              config =
-                TransactionConfig
-                  { configOperationId = operationText,
-                    configSubject = "adrai: transaction index isolation",
-                    configTrailers = Map.fromList [("Objects", "transaction-isolation")],
-                    configExpectedHead = parent,
-                    configGenerated = [generated]
-                  }
-          commitAppendOnlyOperation repository config >>= \case
-            Left problem -> assertFailure (show problem)
-            Right result -> do
-              assertBool "generated paths were refreshed in the real index" (transactionIndexUpdated result)
-              stagedEntryAfter <- gitSuccess repositoryPath ["ls-files", "--stage", "--", "unrelated.bin"] BS.empty
-              worktreeBytesAfter <- BS.readFile unrelatedPath
-              stagedPaths <- outputText <$> gitSuccess repositoryPath ["diff", "--cached", "--name-only"] BS.empty
-              generatedIndexDiff <- gitSuccess repositoryPath ["diff", "--cached", "--", generatedPathText] BS.empty
-              generatedWorktreeBytes <- gitSuccess repositoryPath ["show", "HEAD:" <> generatedPathText] BS.empty
-              assertEqual "unrelated index OID, mode, and stage are unchanged" stagedEntryBefore stagedEntryAfter
-              assertEqual "unrelated binary worktree bytes are unchanged" worktreeBytesBefore worktreeBytesAfter
-              assertEqual "only the unrelated staged path remains staged" "unrelated.bin" stagedPaths
-              assertEqual "generated path is refreshed to the committed HEAD entry" BS.empty generatedIndexDiff
-              assertEqual "generated bytes are committed" (genFileBytes generated) generatedWorktreeBytes
-      , testCase "Stage7 failure restores caller index and generated worktree state exactly" $
-          withSystemTempDirectory "adrai transaction rollback" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-                stagedPath = repositoryPath </> "staged.bin"
+      testCase "Stage7 failure restores caller index and generated worktree state exactly" $
+          withSeed "adrai transaction rollback" $ \_ repositoryPath repository parentText -> do
+            let stagedPath = repositoryPath </> "staged.bin"
                 dirtyPath = repositoryPath </> "dirty.bin"
                 untrackedPath = repositoryPath </> "untracked.bin"
                 stagedBytes = BS.pack [255, 0, 13, 10, 128, 64, 1, 2, 3]
                 dirtyBytes = BS.pack [3, 2, 1, 0, 255]
                 untrackedBytes = BS.pack [13, 10, 0, 17, 255]
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
             BS.writeFile stagedPath stagedBytes
             BS.writeFile dirtyPath dirtyBytes
             BS.writeFile untrackedPath untrackedBytes
             _ <- gitSuccess repositoryPath ["add", "--", "staged.bin"] BS.empty
-            headBefore <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
-            treeBefore <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD^{tree}"] BS.empty
-            indexBefore <- BS.readFile (repositoryPath </> ".git" </> "index")
+            (headBefore, treeBefore) <- commitHeadAndTree repositoryPath
             indexEntriesBefore <- gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty
-            statusBefore <- gitSuccess repositoryPath ["status", "--porcelain=v1", "--untracked-files=all"] BS.empty
-            repository <-
-              discoverRepository systemGit repositoryPath >>= \case
-                Left problem -> assertFailure (show problem)
-                Right discovered -> pure discovered
+            statusBefore <- gitSuccess repositoryPath ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"] BS.empty
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -239,15 +150,23 @@ tests =
                     }
             _ <- gitSuccess repositoryPath ["config", "user.name", ""] BS.empty
             _ <- gitSuccess repositoryPath ["config", "user.email", ""] BS.empty
-            commitAppendOnlyOperation repository config >>= \case
+            makeTrackedFileStatStale repositoryPath "seed.txt"
+            indexAtSnapshotRef <- newIORef Nothing
+            let indexPath = repositoryPath </> ".git" </> "index"
+                dependencies =
+                  defaultAppendOnlyDependencies
+                    { appendOnlyBeforeSnapshot = BS.readFile indexPath >>= writeIORef indexAtSnapshotRef . Just
+                    }
+            indexAtEntry <- BS.readFile indexPath
+            commitAppendOnlyOperationWith dependencies repository config >>= \case
               Left (Stage7CommitTree _) -> pure ()
               Left problem -> assertFailure ("expected original Stage7 failure, got " <> show problem)
               Right result -> assertFailure ("expected Stage7 failure, got " <> show result)
-            headAfter <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
-            treeAfter <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD^{tree}"] BS.empty
-            indexAfter <- BS.readFile (repositoryPath </> ".git" </> "index")
+            indexAtSnapshot <- readIORef indexAtSnapshotRef
+            (headAfter, treeAfter) <- commitHeadAndTree repositoryPath
+            indexAfter <- BS.readFile indexPath
             indexEntriesAfter <- gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty
-            statusAfter <- gitSuccess repositoryPath ["status", "--porcelain=v1", "--untracked-files=all"] BS.empty
+            statusAfter <- gitSuccess repositoryPath ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"] BS.empty
             stagedAfter <- BS.readFile stagedPath
             dirtyAfter <- BS.readFile dirtyPath
             untrackedAfter <- BS.readFile untrackedPath
@@ -256,7 +175,8 @@ tests =
             temporaryIndexes <- adraiTemporaryIndexes repositoryPath
             assertEqual "HEAD is restored exactly" headBefore headAfter
             assertEqual "HEAD tree is restored exactly" treeBefore treeAfter
-            assertEqual "raw caller index is byte-for-byte unchanged" indexBefore indexAfter
+            assertEqual "Stage7 reaches the snapshot boundary without changing API-entry index bytes" (Just indexAtEntry) indexAtSnapshot
+            assertEqual "raw caller index is byte-for-byte unchanged" indexAtEntry indexAfter
             assertEqual "complete caller index entries are unchanged" indexEntriesBefore indexEntriesAfter
             assertEqual "staged, dirty, and untracked path set is unchanged" statusBefore statusAfter
             assertEqual "staged binary bytes are unchanged" stagedBytes stagedAfter
@@ -265,17 +185,49 @@ tests =
             assertBool "generated managed file is removed" (not generatedExists)
             assertBool "transaction-owned generated directory is removed" (not generatedParentExists)
             assertEqual "Stage7 cleanup leaves no temporary transaction index" [] temporaryIndexes
+      , testCase "rollback refuses to overwrite an external caller index change" $
+          withSeed "adrai transaction external index" $ \_ repositoryPath repository parentText -> do
+            let externalPath = repositoryPath </> "external.bin"
+                externalBytes = BS.pack [19, 0, 255, 7]
+                indexPath = repositoryPath </> ".git" </> "index"
+            BS.writeFile externalPath externalBytes
+            parent <- requireGitOid parentText
+            (operationText, generated) <- transactionGeneratedFile parent
+            indexAtSnapshotRef <- newIORef Nothing
+            externalIndexRef <- newIORef Nothing
+            let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+                dependencies =
+                  defaultAppendOnlyDependencies
+                    { appendOnlyBeforeSnapshot = BS.readFile indexPath >>= writeIORef indexAtSnapshotRef . Just,
+                      appendOnlyAfterGeneratedWrite = do
+                        _ <- gitSuccess repositoryPath ["add", "--", "external.bin"] BS.empty
+                        BS.readFile indexPath >>= writeIORef externalIndexRef . Just
+                        throwIO (Stage7CommitTree "injected failure after external index write")
+                    }
+                config = TransactionConfig operationText "adrai: external index" (Map.fromList [("Objects", "external-index")]) parent [generated]
+            commitAppendOnlyOperationWith dependencies repository config >>= \case
+              Left (RollbackFailed detail) -> assertBool "external index refusal remains typed" ("refusing to overwrite it" `Text.isInfixOf` detail)
+              Left problem -> assertFailure ("expected external index refusal, got " <> show problem)
+              Right result -> assertFailure ("expected external index refusal, got " <> show result)
+            indexAtSnapshot <- readIORef indexAtSnapshotRef
+            externalIndex <- readIORef externalIndexRef
+            indexAfter <- BS.readFile indexPath
+            headAfter <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+            externalAfter <- BS.readFile externalPath
+            generatedAfter <- BS.readFile generatedPath
+            case (indexAtSnapshot, externalIndex) of
+              (Just snapshotBytes, Just externalBytesAfter) ->
+                assertBool "external Git write changes the post-snapshot caller index" (snapshotBytes /= externalBytesAfter)
+              _ -> assertFailure "expected both snapshot and external index callbacks"
+            assertEqual "rollback preserves the externally written caller index bytes" (Just indexAfter) externalIndex
+            assertEqual "rollback refusal leaves the original ref unchanged" parentText headAfter
+            assertEqual "rollback refusal preserves external caller bytes" externalBytes externalAfter
+            assertEqual "rollback refusal preserves generated bytes while ownership is uncertain" (genFileBytes generated) generatedAfter
       , testCase "partial Stage5 write removes only the path written by this attempt" $
-          withSystemTempDirectory "adrai transaction partial stage5" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-                callerPath = "caller-owned.decision.md"
+          withSeed "adrai transaction partial stage5" $ \_ repositoryPath repository _ -> do
+            let callerPath = "caller-owned.decision.md"
                 callerBytes = "caller-owned bytes\NUL\255"
-            initTestRepository repositoryPath
             parentText <- commitFile repositoryPath callerPath callerBytes
-            repository <-
-              discoverRepository systemGit repositoryPath >>= \case
-                Left problem -> assertFailure (show problem)
-                Right discovered -> pure discovered
             parent <- requireGitOid parentText
             (operationText, firstGenerated) <- transactionGeneratedFile parent
             callerRepoPath <- requireRight (mkRepoPath (Text.pack callerPath))
@@ -298,19 +250,13 @@ tests =
             assertBool "rollback removes only the successfully written first path" (not firstExists)
             assertEqual "pre-existing caller path is never rewritten or deleted" callerBytes callerAfter
       , testCase "Stage6 failure removes generated files without changing the caller index" $
-          withSystemTempDirectory "adrai transaction stage6 rollback" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-                stagedPath = repositoryPath </> "staged.bin"
+          withSeed "adrai transaction stage6 rollback" $ \_ repositoryPath repository _ -> do
+            let stagedPath = repositoryPath </> "staged.bin"
                 stagedBytes = BS.pack [0, 255, 4, 9]
-            initTestRepository repositoryPath
             parentText <- installFailingCleanFilter repositoryPath
             BS.writeFile stagedPath stagedBytes
             _ <- gitSuccess repositoryPath ["add", "--", "staged.bin"] BS.empty
             indexBefore <- BS.readFile (repositoryPath </> ".git" </> "index")
-            repository <-
-              discoverRepository systemGit repositoryPath >>= \case
-                Left problem -> assertFailure (show problem)
-                Right discovered -> pure discovered
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -335,22 +281,20 @@ tests =
             assertBool "Stage6 rollback removes the generated managed file" (not generatedExists)
             assertEqual "Stage6 cleanup leaves no temporary transaction index" [] temporaryIndexes
       , testCase "Stage8 rejected CAS restores generated files only after confirming the old ref" $
-          withSystemTempDirectory "adrai transaction stage8 rollback" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-                stagedPath = repositoryPath </> "staged.bin"
+          withSeed "adrai transaction stage8 rollback" $ \_ repositoryPath repository parentText -> do
+            let stagedPath = repositoryPath </> "staged.bin"
                 stagedBytes = BS.pack [127, 0, 255, 8]
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
             BS.writeFile stagedPath stagedBytes
             _ <- gitSuccess repositoryPath ["add", "--", "staged.bin"] BS.empty
-            indexBefore <- BS.readFile (repositoryPath </> ".git" </> "index")
-            repository <-
-              discoverRepository systemGit repositoryPath >>= \case
-                Left problem -> assertFailure (show problem)
-                Right discovered -> pure discovered
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
-            let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+            indexAtSnapshotRef <- newIORef Nothing
+            let indexPath = repositoryPath </> ".git" </> "index"
+                generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+                dependencies =
+                  defaultAppendOnlyDependencies
+                    { appendOnlyBeforeSnapshot = BS.readFile indexPath >>= writeIORef indexAtSnapshotRef . Just
+                    }
                 config =
                   TransactionConfig
                     { configOperationId = operationText,
@@ -359,29 +303,33 @@ tests =
                       configExpectedHead = parent,
                       configGenerated = [generated]
                     }
-            withRejectingReferenceTransactionHook repositoryPath Nothing (commitAppendOnlyOperation repository config) >>= \case
+            (indexAtEntry, indexEntriesAtEntry, transactionResult) <- withRejectingReferenceTransactionHook repositoryPath Nothing $ do
+              makeTrackedFileStatStale repositoryPath "seed.txt"
+              entryRecords <- gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty
+              entryBytes <- BS.readFile indexPath
+              result <- commitAppendOnlyOperationWith dependencies repository config
+              pure (entryBytes, entryRecords, result)
+            case transactionResult of
               Left (Stage8UpdateRef _) -> pure ()
               Left problem -> assertFailure ("expected original Stage8 failure, got " <> show problem)
               Right result -> assertFailure ("expected Stage8 failure, got " <> show result)
+            indexAtSnapshot <- readIORef indexAtSnapshotRef
             headAfter <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
-            indexAfter <- BS.readFile (repositoryPath </> ".git" </> "index")
+            indexAfter <- BS.readFile indexPath
+            indexEntriesAfter <- gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty
             stagedAfter <- BS.readFile stagedPath
             generatedExists <- doesFileExist generatedPath
             temporaryIndexes <- adraiTemporaryIndexes repositoryPath
             assertEqual "Stage8 rejection leaves the ref at its exact old HEAD" parentText headAfter
-            assertEqual "Stage8 rejection preserves the raw caller index" indexBefore indexAfter
+            assertEqual "Stage8 reaches the snapshot boundary without changing API-entry index bytes" (Just indexAtEntry) indexAtSnapshot
+            assertEqual "Stage8 rejection preserves the raw caller index" indexAtEntry indexAfter
+            assertEqual "Stage8 rejection preserves complete caller index entries" indexEntriesAtEntry indexEntriesAfter
             assertEqual "Stage8 rejection preserves staged binary bytes" stagedBytes stagedAfter
             assertBool "Stage8 rollback removes the generated managed file" (not generatedExists)
             assertEqual "Stage8 cleanup leaves no temporary transaction index" [] temporaryIndexes
       , testCase "Stage8 rollback rechecks the pinned main ref after hook rejection" $
-          withSystemTempDirectory "adrai transaction pinned ref" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+          withSeed "adrai transaction pinned ref" $ \_ repositoryPath repository parentText -> do
             _ <- gitSuccess repositoryPath ["branch", "other", "HEAD"] BS.empty
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -395,13 +343,7 @@ tests =
             assertEqual "pinned main ref remains at expected old head" parentText mainAfter
             assertBool "rollback still removes only its generated path" (not generatedExists)
       , testCase "authoritative new ref outcome preserves generated paths without destructive rollback" $
-          withSystemTempDirectory "adrai transaction authoritative new" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+          withSeed "adrai transaction authoritative new" $ \_ repositoryPath repository parentText -> do
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -420,14 +362,8 @@ tests =
             generatedAfter <- BS.readFile generatedPath
             assertEqual "authoritative new outcome retains the generated bytes" (genFileBytes generated) generatedAfter
       , testCase "ambiguous target ref outcome fails closed and preserves generated paths" $
-          withSystemTempDirectory "adrai transaction ambiguous ref" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-                otherCommit = GitOid "1111111111111111111111111111111111111111"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+          withSeed "adrai transaction ambiguous ref" $ \_ repositoryPath repository parentText -> do
+            let otherCommit = GitOid "1111111111111111111111111111111111111111"
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -440,13 +376,7 @@ tests =
             generatedAfter <- BS.readFile generatedPath
             assertEqual "ambiguous ref outcome preserves generated bytes" (genFileBytes generated) generatedAfter
       , testCase "target ref inspection failure fails closed and preserves generated paths" $
-          withSystemTempDirectory "adrai transaction unreadable ref" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+          withSeed "adrai transaction unreadable ref" $ \_ repositoryPath repository parentText -> do
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -459,14 +389,8 @@ tests =
             generatedAfter <- BS.readFile generatedPath
             assertEqual "inspection failure preserves generated bytes" (genFileBytes generated) generatedAfter
       , testCase "rollback inspection callback receives the ref pinned before HEAD changes" $
-          withSystemTempDirectory "adrai transaction observed pinned ref" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+          withSeed "adrai transaction observed pinned ref" $ \_ repositoryPath repository parentText -> do
             _ <- gitSuccess repositoryPath ["branch", "other", "HEAD"] BS.empty
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             observedRef <- newIORef Nothing
@@ -487,13 +411,8 @@ tests =
             generatedExists <- doesFileExist generatedPath
             assertBool "proven-safe rollback still removes the generated path" (not generatedExists)
       , testCase "temporary index cleanup failure retains the original failure context" $
-          withSystemTempDirectory "adrai transaction cleanup failure" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
+          withSeed "adrai transaction cleanup failure" $ \_ repositoryPath repository _ -> do
             parentText <- installFailingCleanFilter repositoryPath
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -507,55 +426,8 @@ tests =
               Right result -> assertFailure ("expected cleanup failure, got " <> show result)
             generatedExists <- doesFileExist generatedPath
             assertBool "cleanup failure does not suppress the later safe generated-file rollback" (not generatedExists)
-      , testCase "linked worktree transaction uses its own index and updates only its pinned branch" $
-          withSystemTempDirectory "adrai linked transaction" $ \temporary -> do
-            let mainPath = temporary </> "main"
-                linkedPath = temporary </> "linked"
-                stagedPath = linkedPath </> "linked-staged.bin"
-                stagedBytes = BS.pack [0, 255, 17, 9]
-            initTestRepository mainPath
-            parentText <- commitFile mainPath "seed.txt" "seed\n"
-            createWorktree mainPath linkedPath "linked"
-            BS.writeFile stagedPath stagedBytes
-            _ <- gitSuccess linkedPath ["add", "--", "linked-staged.bin"] BS.empty
-            mainHeadBefore <- outputText <$> gitSuccess mainPath ["rev-parse", "refs/heads/main"] BS.empty
-            linkedIndexEntryBefore <- gitSuccess linkedPath ["ls-files", "--stage", "--", "linked-staged.bin"] BS.empty
-            mainIndexBefore <- BS.readFile (mainPath </> ".git" </> "index")
-            repository <- discoverRepository systemGit linkedPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
-            assertEqual "discovery identifies a real linked worktree" LinkedWorktree (repositoryLayout repository)
-            assertBool "linked caller index is distinct from common repository storage" (repositoryGitDir repository /= repositoryCommonDir repository)
-            linkedIndexBefore <- BS.readFile (repositoryGitDir repository </> "index")
-            parent <- requireGitOid parentText
-            (operationText, generated) <- transactionGeneratedFile parent
-            let config = TransactionConfig operationText "adrai: linked transaction" (Map.fromList [("Objects", "linked-worktree")]) parent [generated]
-                failingDependencies = defaultAppendOnlyDependencies { appendOnlyAfterGeneratedWrite = throwIO (Stage7CommitTree "injected linked-worktree rollback") }
-            commitAppendOnlyOperationWith failingDependencies repository config >>= \case
-              Left (Stage7CommitTree _) -> pure ()
-              Left problem -> assertFailure ("expected injected Stage7 failure, got " <> show problem)
-              Right result -> assertFailure ("expected injected failure, got " <> show result)
-            linkedIndexAfterFailure <- BS.readFile (repositoryGitDir repository </> "index")
-            mainIndexAfterFailure <- BS.readFile (mainPath </> ".git" </> "index")
-            assertEqual "failed linked transaction restores the linked caller index byte-for-byte" linkedIndexBefore linkedIndexAfterFailure
-            assertEqual "failed linked transaction does not touch the main worktree index" mainIndexBefore mainIndexAfterFailure
-            commitAppendOnlyOperation repository config >>= \case
-              Left problem -> assertFailure (show problem)
-              Right _ -> pure ()
-            linkedHeadAfter <- outputText <$> gitSuccess linkedPath ["rev-parse", "refs/heads/linked"] BS.empty
-            mainHeadAfter <- outputText <$> gitSuccess mainPath ["rev-parse", "refs/heads/main"] BS.empty
-            linkedIndexEntryAfter <- gitSuccess linkedPath ["ls-files", "--stage", "--", "linked-staged.bin"] BS.empty
-            assertBool "linked branch advances from its pinned old ref" (linkedHeadAfter /= parentText)
-            assertEqual "main branch remains at its original ref" mainHeadBefore mainHeadAfter
-            assertEqual "linked caller's unrelated staged entry survives refresh" linkedIndexEntryBefore linkedIndexEntryAfter
       , testCase "injected cancellation after write cleans then propagates ThreadKilled" $
-          withSystemTempDirectory "adrai transaction cancellation" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+          withSeed "adrai transaction cancellation" $ \_ repositoryPath repository parentText -> do
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -568,13 +440,7 @@ tests =
             generatedExists <- doesFileExist generatedPath
             assertBool "cancellation rollback removes the exact generated path" (not generatedExists)
       , testCase "partial synchronous generated write removes only its owned bytes and directories" $
-          withSystemTempDirectory "adrai transaction partial sync" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+          withSeed "adrai transaction partial sync" $ \_ repositoryPath repository parentText -> do
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -595,13 +461,7 @@ tests =
             assertBool "partial bytes are removed" (not exists)
             assertBool "only newly owned parent directories are removed" (not directoryExists)
       , testCase "partial generated write cancellation cleans then rethrows ThreadKilled" $
-          withSystemTempDirectory "adrai transaction partial async" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+          withSeed "adrai transaction partial async" $ \_ repositoryPath repository parentText -> do
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -619,13 +479,7 @@ tests =
             assertBool "partial cancellation removes owned bytes" (not exists)
             assertBool "partial cancellation removes owned directories" (not directoryExists)
       , testCase "snapshot cancellation propagates before generated state exists" $
-          withSystemTempDirectory "adrai transaction snapshot async" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+          withSeed "adrai transaction snapshot async" $ \_ repositoryPath repository parentText -> do
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -641,13 +495,7 @@ tests =
             assertBool "snapshot cancellation never writes a file" (not exists)
             assertBool "snapshot cancellation never creates a directory" (not directoryExists)
       , testCase "cleanup cancellation finishes owned cleanup then rethrows ThreadKilled" $
-          withSystemTempDirectory "adrai transaction cleanup async" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+          withSeed "adrai transaction cleanup async" $ \_ repositoryPath repository parentText -> do
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -667,13 +515,7 @@ tests =
             assertBool "cleanup cancellation removes owned bytes before propagating" (not exists)
             assertBool "cleanup cancellation removes owned directories before propagating" (not directoryExists)
       , testCase "temporary-index cleanup cancellation removes the temp index then rethrows ThreadKilled" $
-          withSystemTempDirectory "adrai transaction temp-index cleanup async" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+          withSeed "adrai transaction temp-index cleanup async" $ \_ repositoryPath repository parentText -> do
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -691,15 +533,15 @@ tests =
             assertBool "transaction rollback removes generated bytes after cleanup cancellation" (not generatedExists)
             assertBool "transaction rollback removes generated directories after cleanup cancellation" (not generatedDirectoryExists)
       , testCase "successful CAS refreshes from new commit when HEAD switches branches" $
-          withSystemTempDirectory "adrai transaction CAS head switch" $ \temporary -> do
-            let repositoryPath = temporary </> "repository"
-                headPath = repositoryPath </> ".git" </> "HEAD"
-            initTestRepository repositoryPath
-            parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+          withSeed "adrai transaction CAS head switch" $ \_ repositoryPath repository parentText -> do
+            let headPath = repositoryPath </> ".git" </> "HEAD"
+                unrelatedPath = repositoryPath </> "unrelated.bin"
+                stagedBytes = BS.pack [255, 0, 13, 10, 128, 64, 1, 2, 3]
             _ <- gitSuccess repositoryPath ["branch", "other", "HEAD"] BS.empty
-            repository <- discoverRepository systemGit repositoryPath >>= \case
-              Left problem -> assertFailure (show problem)
-              Right discovered -> pure discovered
+            BS.writeFile unrelatedPath stagedBytes
+            _ <- gitSuccess repositoryPath ["add", "--", "unrelated.bin"] BS.empty
+            stagedEntryBefore <- gitSuccess repositoryPath ["ls-files", "--stage", "--", "unrelated.bin"] BS.empty
+            worktreeBytesBefore <- BS.readFile unrelatedPath
             parent <- requireGitOid parentText
             (operationText, generated) <- transactionGeneratedFile parent
             let generatedPathText = Text.unpack (repoPathText (genFilePath generated))
@@ -710,18 +552,37 @@ tests =
               Left problem -> assertFailure (show problem) >> fail "unreachable"
               Right success -> pure success
             assertBool "the pinned-CAS caller index refresh succeeded" (transactionIndexUpdated transaction)
+            assertEqual "the successful result retains its operation ID" operationText (transactionOperationId transaction)
+            assertEqual "the successful result reports its created path" [genFilePath generated] (transactionCreatedPaths transaction)
+            (observedCommit, actualParents, actualMessage) <-
+              commitIdentityParentAndMessage repositoryPath (Text.unpack (gitOidText (transactionCommitOid transaction)))
             headAfter <- outputText <$> gitSuccess repositoryPath ["symbolic-ref", "--short", "HEAD"] BS.empty
             otherAfter <- outputText <$> gitSuccess repositoryPath ["rev-parse", "refs/heads/other"] BS.empty
+            stagedEntryAfter <- gitSuccess repositoryPath ["ls-files", "--stage", "--", "unrelated.bin"] BS.empty
+            worktreeBytesAfter <- BS.readFile unrelatedPath
+            stagedPaths <- outputText <$> gitSuccess repositoryPath ["diff", "--cached", "--name-only", Text.unpack (gitOidText (transactionCommitOid transaction))] BS.empty
             generatedIndexDiff <- gitSuccess repositoryPath ["diff", "--cached", Text.unpack (gitOidText (transactionCommitOid transaction)), "--", generatedPathText] BS.empty
+            generatedWorktreeBytes <- gitSuccess repositoryPath ["show", Text.unpack (gitOidText (transactionCommitOid transaction)) <> ":" <> generatedPathText] BS.empty
             assertEqual "the injected HEAD switch took effect" "other" headAfter
             assertEqual "the other branch was not reset or advanced" parentText otherAfter
+            assertEqual "the successful result reports the observed commit" (transactionCommitOid transaction) observedCommit
+            assertEqual "unrelated index OID, mode, and stage are unchanged" stagedEntryBefore stagedEntryAfter
+            assertEqual "unrelated binary worktree bytes are unchanged" worktreeBytesBefore worktreeBytesAfter
+            assertEqual "only the unrelated staged path remains relative to the transaction commit" "unrelated.bin" stagedPaths
             assertEqual "the caller index uses the pinned new commit, not mutable HEAD" BS.empty generatedIndexDiff
+            assertEqual "generated bytes are committed" (genFileBytes generated) generatedWorktreeBytes
+            assertEqual "append commit supplies exactly the previous HEAD as parent" parentText actualParents
+            assertEqual
+              "append commit reads the complete message and trailer block from stdin"
+              "adrai: CAS head switch\n\nADRAI-Op: O00000000000000000000000042\nADRAI-Objects: cas-head-switch"
+              actualMessage
       , testCase "append-only transaction rejects a redirected managed parent before touching repository state" $
-          assertRedirectedManagedParent "append-only" commitAppendOnlyOperation
+          assertRedirectedManagedParent getTransactionSeed "append-only" commitAppendOnlyOperation
       , testCase "bootstrap transaction rejects a redirected managed parent before backup or write" $
-          assertRedirectedManagedParent "bootstrap" commitBootstrapFiles
+          assertRedirectedManagedParent getTransactionSeed "bootstrap" commitBootstrapFiles
       , testCase "append-only transaction re-resolves after parent creation before its write" $
           assertLateRedirectAfterParentCreation
+            getTransactionSeed
             "append-only"
             (\repository config redirect ->
                 commitAppendOnlyOperationWithHooks
@@ -731,6 +592,7 @@ tests =
             )
       , testCase "bootstrap transaction re-resolves after parent creation before its write" $
           assertLateRedirectAfterParentCreation
+            getTransactionSeed
             "bootstrap"
             (\repository config redirect ->
                 commitBootstrapFilesWith
@@ -749,104 +611,59 @@ tests =
                   config
             )
       , testCase "append-only async failure retains ThreadKilled precedence over synchronous rollback failure" $
-          assertAppendRollbackPrecedence True
+          assertAppendRollbackPrecedence getTransactionSeed True
       , testCase "append-only synchronous rollback failure is typed and preserves caller state" $
-          assertAppendRollbackPrecedence False
+          assertAppendRollbackPrecedence getTransactionSeed False
       , testCase "bootstrap rollback reports synchronous generated-file delete failure and retains bytes for retry" $
-          assertBootstrapRollbackDeleteFailure False
+          assertBootstrapRollbackDeleteFailure getTransactionSeed False
       , testCase "bootstrap rollback delete cancellation propagates ThreadKilled and retains bytes for retry" $
-          assertBootstrapRollbackDeleteFailure True
+          assertBootstrapRollbackDeleteFailure getTransactionSeed True
       , testCase "append rollback hook cancellation wins over a synchronous restore failure" $
-          assertAppendHookAsyncWinsRestoreFailure
+          assertAppendHookAsyncWinsRestoreFailure getTransactionSeed
       , testCase "bootstrap rollback hook cancellation wins over a synchronous delete failure" $
-          assertBootstrapHookAsyncWinsDeleteFailure
+          assertBootstrapHookAsyncWinsDeleteFailure getTransactionSeed
       , testCase "append-only re-resolves managed destinations after temporary index before CAS" $
           assertPreCasRedirect
+            getTransactionSeed
             "append-only"
             (\repository config redirect ->
                 commitAppendOnlyOperationWithHooks defaultAppendOnlyDependencies defaultAppendOnlyTestHooks {appendOnlyBeforeRefUpdateHook = redirect} repository config
             )
       , testCase "bootstrap re-resolves managed destinations after temporary index before CAS" $
           assertPreCasRedirect
+            getTransactionSeed
             "bootstrap"
             (\repository config redirect ->
                 commitBootstrapFilesWith (bootstrapDependencies redirect (pure ())) repository config
             )
       , testCase "append-only preserves authoritative CAS and skips unsafe post-CAS index refresh" $
           assertPostCasRedirect
+            getTransactionSeed
             "append-only"
             (\repository config redirect ->
                 commitAppendOnlyOperationWithHooks defaultAppendOnlyDependencies defaultAppendOnlyTestHooks {appendOnlyBeforePostCasIndexRefreshHook = redirect} repository config
             )
       , testCase "bootstrap preserves authoritative CAS and skips unsafe post-CAS index refresh" $
           assertPostCasRedirect
+            getTransactionSeed
             "bootstrap"
             (\repository config redirect ->
                 commitBootstrapFilesWith (bootstrapDependencies (pure ()) redirect) repository config
             )
       , testCase "bootstrap post-CAS ThreadKilled preserves its authoritative commit and releases the lock" $
-          assertBootstrapPostCasCancellationAuthority
+          assertBootstrapPostCasCancellationAuthority getTransactionSeed
       , testCase "bootstrap post-update-ref ThreadKilled verifies the candidate ref before rollback" $
-          assertBootstrapPostUpdateRefCancellationAuthority
+          assertBootstrapPostUpdateRefCancellationAuthority getTransactionSeed
       , testCase "unborn bootstrap candidate cancellation confirms missing ref then rolls back" $
-          assertUnbornCandidateCancellation
+          assertUnbornCandidateCancellation getUnbornTransactionSeed
       , testCase "unreadable first-commit CAS inspection fails closed without destructive rollback" $
-          assertUnreadableFirstCommitInspection
+          assertUnreadableFirstCommitInspection getUnbornTransactionSeed
       ]
 
-gitLockTests :: [TestTree]
-gitLockTests =
-  [ testCase "linked worktrees share one canonical common-directory lock" $
-      withSystemTempDirectory "adrai common Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-            worktreePath = temporary </> "linked-worktree"
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        createWorktree repositoryPath worktreePath "feature/lock-contract"
-        repository <- requireRepository repositoryPath
-        linkedRepository <- requireRepository worktreePath
-        assertEqual "linked worktree uses the repository common directory" (repositoryCommonDir repository) (repositoryCommonDir linkedRepository)
-        lock <- acquireGitLock repository
-        let path = gitLockPath lock
-            expectedBytes = BS8.pack ("pid=" <> show (gitLockPid lock) <> "\n")
-        assertEqual "lock lives directly in the canonical common directory" (repositoryCommonDir repository </> "adrai.lock") path
-        BS.readFile path >>= assertEqual "lock has canonical ASCII contents" expectedBytes
-        gitLockStatus linkedRepository >>= \case
-          Left (LockHeld observedPath observedPid) -> do
-            assertEqual "status reports the common lock path" path observedPath
-            assertEqual "status reports the owning PID" (gitLockPid lock) observedPid
-          other -> assertFailure ("expected live common lock status, got " <> show other)
-        releaseGitLock lock
-        doesFileExist path >>= assertEqual "release retains the persistent canonical lock file" True
-        BS.readFile path >>= assertEqual "release leaves the last canonical owner bytes" expectedBytes
-        gitLockStatus linkedRepository >>= assertEqual "an unheld persistent file has no owner" (Right Nothing)
-        reacquired <- acquireGitLock linkedRepository
-        releaseGitLock reacquired,
-    testCase "live lock contention is typed and preserves the lock bytes" $
-      withSystemTempDirectory "adrai live Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-            worktreePath = temporary </> "linked-worktree"
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        createWorktree repositoryPath worktreePath "feature/lock-contention"
-        repository <- requireRepository repositoryPath
-        linkedRepository <- requireRepository worktreePath
-        lock <- acquireGitLock repository
-        bytesBefore <- BS.readFile (gitLockPath lock)
-        attempted <- try @GitLockError (acquireGitLock linkedRepository)
-        assertEqual
-          "second acquisition reports the existing owner rather than replacing it"
-          (Left (LockHeld (gitLockPath lock) (gitLockPid lock)))
-          attempted
-        BS.readFile (gitLockPath lock) >>= assertEqual "contended acquisition preserves lock bytes" bytesBefore
-        releaseGitLock lock
-        gitLockStatus linkedRepository >>= assertEqual "status reports no owner after release" (Right Nothing),
-    testCase "persistent stale and noncanonical lock contents are recovered under native ownership" $
-      withSystemTempDirectory "adrai stale Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
+gitLockTests :: IO TransactionRepositorySeed -> [TestTree]
+gitLockTests getSeed =
+  [ testCase "persistent stale and noncanonical lock contents are recovered under native ownership" $
+      withTransactionRepositoryCopy getSeed "adrai stale Git lock" $ \_ _ repository _ -> do
         let path = repositoryCommonDir repository </> "adrai.lock"
         BS.writeFile path (BS8.pack ("pid=" <> show (maxBound :: Int) <> "\n"))
         recovered <- acquireGitLock repository
@@ -865,11 +682,7 @@ gitLockTests =
         releaseGitLock leadingZeroRecovered
         gitLockStatus repository >>= assertEqual "persistent stale file has no native owner" (Right Nothing),
     testCase "simultaneous persistent-file contenders yield one native owner" $
-      withSystemTempDirectory "adrai stale contender Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
+      withTransactionRepositoryCopy getSeed "adrai stale contender Git lock" $ \_ _ repository _ -> do
         let path = repositoryCommonDir repository </> "adrai.lock"
         BS.writeFile path (BS8.pack ("pid=" <> show (maxBound :: Int) <> "\n"))
         left <- async (try @GitLockError (acquireGitLock repository))
@@ -893,11 +706,7 @@ gitLockTests =
         mapM_ releaseGitLock acquired
         gitLockStatus repository >>= assertEqual "released contender leaves no native owner" (Right Nothing),
     testCase "three-field GitLock values cannot release a newer same-process owner" $
-      withSystemTempDirectory "adrai reservation token Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
+      withTransactionRepositoryCopy getSeed "adrai reservation token Git lock" $ \_ _ repository _ -> do
         first <- acquireGitLock repository
         releaseGitLock first
         second <- acquireGitLock repository
@@ -913,11 +722,7 @@ gitLockTests =
         assertEqual "the stale three-field value cannot admit another acquirer" (Left (LockHeld (gitLockPath second) (gitLockPid second))) attempted
         releaseGitLock second,
     testCase "concurrent duplicate releases claim one native handle and permit reacquisition" $
-      withSystemTempDirectory "adrai concurrent release Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
+      withTransactionRepositoryCopy getSeed "adrai concurrent release Git lock" $ \_ _ repository _ -> do
         lock <- acquireGitLock repository
         ready <- newEmptyMVar
         start <- newEmptyMVar
@@ -938,16 +743,12 @@ gitLockTests =
         reacquired <- acquireGitLock repository
         releaseGitLock reacquired,
     testCase "failed status probe close retains its handle until a later status retry" $
-      withSystemTempDirectory "adrai probe cleanup Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-            failingProbeClose =
+      withTransactionRepositoryCopy getSeed "adrai probe cleanup Git lock" $ \_ _ repository _ -> do
+        let failingProbeClose =
               GitLockDependencies $ \_ operation ->
                 case operation of
                   CloseStatusProbe -> throwIO (userError "injected Git lock probe close failure")
                   _ -> pure ()
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
         prior <- acquireGitLock repository
         releaseGitLock prior
         failedProbe <- gitLockStatusWith failingProbeClose repository
@@ -961,16 +762,12 @@ gitLockTests =
         reacquired <- acquireGitLock repository
         releaseGitLock reacquired,
     testCase "async status-probe close retains its reservation and rethrows cancellation" $
-      withSystemTempDirectory "adrai probe cancellation Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-            cancellingProbeClose =
+      withTransactionRepositoryCopy getSeed "adrai probe cancellation Git lock" $ \_ _ repository _ -> do
+        let cancellingProbeClose =
               GitLockDependencies $ \_ operation ->
                 case operation of
                   CloseStatusProbe -> throwIO ThreadKilled
                   _ -> pure ()
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
         prior <- acquireGitLock repository
         releaseGitLock prior
         cancelled <- try @SomeException (gitLockStatusWith cancellingProbeClose repository)
@@ -981,8 +778,7 @@ gitLockTests =
         reacquired <- acquireGitLock repository
         releaseGitLock reacquired,
     testCase "owner close failure restores exclusion until a successful retry" $
-      withSystemTempDirectory "adrai owner cleanup Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
+      withTransactionRepositoryCopy getSeed "adrai owner cleanup Git lock" $ \_ _ repository _ -> do
         firstClose <- newIORef True
         let failOwnerCloseOnce =
               GitLockDependencies $ \_ operation ->
@@ -993,9 +789,6 @@ gitLockTests =
                       then writeIORef firstClose False >> throwIO (userError "injected Git lock owner close failure")
                       else pure ()
                   _ -> pure ()
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
         lock <- acquireGitLockWith failOwnerCloseOnce repository
         failedRelease <- try @GitLockError (releaseGitLock lock)
         case failedRelease of
@@ -1009,11 +802,7 @@ gitLockTests =
         reacquired <- acquireGitLock repository
         releaseGitLock reacquired,
     testCase "withGitLock owner pre-close failure preserves action precedence and permits retry" $
-      withSystemTempDirectory "adrai withGitLock cleanup precedence" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
+      withTransactionRepositoryCopy getSeed "adrai withGitLock cleanup precedence" $ \_ _ repository _ -> do
         let runCase label action expected = do
               failClose <- newIORef True
               capturedLock <- newIORef Nothing
@@ -1045,66 +834,8 @@ gitLockTests =
         runCase "successful action" (pure ()) "injected successful action cleanup failure"
         runCase "synchronous action" (throwIO (userError "synchronous action failure") :: IO ()) "synchronous action failure"
         runCase "asynchronous action" (throwIO ThreadKilled :: IO ()) "thread killed",
-    testCase "transaction lock contention preserves refs and generated files" $
-      withSystemTempDirectory "adrai transaction Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-        initTestRepository repositoryPath
-        parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
-        parent <- requireGitOid parentText
-        (operationText, generated) <- transactionGeneratedFile parent
-        headBefore <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
-        let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
-            config = TransactionConfig operationText "adrai: held common lock" (Map.fromList [("Objects", "held-lock")]) parent [generated]
-        withGitLock repository $ do
-          result <- commitAppendOnlyOperation repository config
-          case result of
-            Left (Stage2AcquireLock message) ->
-              assertBool "transaction returns the typed lock holder failure" ("LockHeld" `Text.isInfixOf` message)
-            other -> assertFailure ("expected Stage2AcquireLock, got " <> show other)
-          outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty >>= assertEqual "held lock preserves HEAD" headBefore
-          doesFileExist generatedPath >>= assertEqual "held lock creates no managed file" False,
-    testCase "parent-held production lock rejects an absolute executable child without repository mutation" $
-      withSystemTempDirectory "adrai child process Git lock" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-            createArguments =
-              [ "create",
-                "--title", "Locked child mutation",
-                "--summary", "The child must not mutate while the parent owns the common lock.",
-                "--body", "## Decision\nRespect the production Git lock.\n",
-                "--actor", "llm:planner",
-                "--model", "demo-model",
-                "--domain", "tooling.git",
-                "--json"
-              ]
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        createAdraiInit repositoryPath
-        (compileExit, _, compileStderr) <- absoluteAdraiChild repositoryPath ["compile", "--json"]
-        assertEqual "fixture cache compilation succeeds before the held-child baseline" ExitSuccess compileExit
-        assertEqual "fixture cache compilation emits no stderr" LBS.empty compileStderr
-        repository <- requireRepository repositoryPath
-        before <- childLockObservableState repositoryPath
-        withGitLock repository $ do
-          held <- gitLockStatus repository
-          lockError <- case held of
-            Left problem -> pure problem
-            Right _ -> assertFailure "parent-held lock was not observable before child mutation" >> fail "unreachable"
-          (exitCode, stdout, stderr) <- absoluteAdraiChild repositoryPath createArguments
-          assertEqual "the held child mutation exits with ordinary CLI failure" (ExitFailure 2) exitCode
-          assertEqual "the rejected child emits no stdout" LBS.empty stdout
-          assertEqual
-            "the rejected child renders the typed transaction lock error exactly"
-            (LBS.fromStrict (TextEncoding.encodeUtf8 ("adrai: " <> Text.pack (show (Stage2AcquireLock (Text.pack (show lockError)))) <> "\n")))
-            stderr
-          after <- childLockObservableState repositoryPath
-          assertEqual "the rejected cross-process child leaves refs, index, worktree, cache, and reflogs unchanged" before after,
     testCase "withGitLock cleans up after synchronous and asynchronous actions" $
-      withSystemTempDirectory "adrai Git lock cleanup" $ \temporary -> do
-        let repositoryPath = temporary </> "repository"
-        initTestRepository repositoryPath
-        _ <- commitFile repositoryPath "seed.txt" "seed\n"
-        repository <- requireRepository repositoryPath
+      withTransactionRepositoryCopy getSeed "adrai Git lock cleanup" $ \_ _ repository _ -> do
         let path = repositoryCommonDir repository </> "adrai.lock"
         synchronous <- try @SomeException (withGitLock repository (throwIO (userError "synchronous lock action") :: IO ()))
         assertBool "synchronous action exception propagates" ("synchronous lock action" `Text.isInfixOf` Text.pack (show synchronous))
@@ -1115,75 +846,23 @@ gitLockTests =
         doesFileExist path >>= assertEqual "asynchronous cleanup preserves the canonical lock file" True
         gitLockStatus repository >>= assertEqual "asynchronous cleanup releases native ownership" (Right Nothing)
   ]
-  where
-    requireRepository location =
-      discoverRepository systemGit location >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right repository -> pure repository
-
-absoluteAdraiChild :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
-absoluteAdraiChild repositoryPath arguments = do
-  lookupEnv "ADRAI_EXE" >>= \case
-    Just executable | not (null executable) && isAbsolute executable ->
-      readProcess (proc executable (adraiTestArgs repositoryPath arguments))
-    _ -> fail "TransactionTest requires ADRAI_EXE to name an absolute executable under test"
-
-childLockObservableState :: FilePath -> IO (BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString, [(FilePath, BS.ByteString)])
-childLockObservableState repositoryPath = do
-  headOid <- gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
-  refs <- gitSuccess repositoryPath ["show-ref", "--head"] BS.empty
-  index <- gitSuccess repositoryPath ["diff", "--cached", "--binary"] BS.empty
-  worktree <- gitSuccess repositoryPath ["status", "--porcelain=v1", "-z", "--untracked-files=all"] BS.empty
-  reflogs <- gitSuccess repositoryPath ["reflog", "show", "--all", "--format=%H%x00%gs"] BS.empty
-  cache <- snapshotChildCache (repositoryPath </> ".adrai")
-  pure (headOid, refs, index, worktree, reflogs, cache)
-
-snapshotChildCache :: FilePath -> IO [(FilePath, BS.ByteString)]
-snapshotChildCache cacheRoot = do
-  exists <- doesDirectoryExist cacheRoot
-  if not exists then pure [] else go ""
-  where
-    go relative = do
-      let directory = cacheRoot </> relative
-      entries <- sort <$> listDirectory directory
-      fmap concat . mapM (snapshotEntry relative) $ entries
-
-    snapshotEntry relative entry = do
-      let childRelative = if null relative then entry else relative </> entry
-          child = cacheRoot </> childRelative
-      isDirectory <- doesDirectoryExist child
-      if isDirectory
-        then go childRelative
-        else do
-          isFile <- doesFileExist child
-          if isFile
-            then do
-              bytes <- BS.readFile child
-              pure [(childRelative, bytes)]
-            else pure []
 
 adraiTemporaryIndexes :: FilePath -> IO [FilePath]
 adraiTemporaryIndexes repositoryPath =
   filter ("adrai-index-" `isPrefixOf`) <$> listDirectory (repositoryPath </> ".git")
 
 assertRedirectedManagedParent
-  :: String
+  :: IO TransactionRepositorySeed
+  -> String
   -> (Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult))
   -> IO ()
-assertRedirectedManagedParent label runTransaction =
-  withSystemTempDirectory ("adrai transaction redirected " <> label) $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-        outsidePath = temporary </> "outside"
+assertRedirectedManagedParent getSeed label runTransaction =
+  withTransactionRepositoryCopy getSeed ("adrai transaction redirected " <> label) $ \temporary repositoryPath repository parentText -> do
+    let outsidePath = temporary </> "outside"
         redirectedParent = repositoryPath </> "architecture" </> "adrai"
-    initTestRepository repositoryPath
-    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
     createDirectory (repositoryPath </> "architecture")
     createDirectory outsidePath
     createDirectoryRedirect outsidePath redirectedParent
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
     parent <- requireGitOid parentText
     (operationText, generated) <- transactionGeneratedFile parent
     let config = TransactionConfig operationText "adrai: redirected managed parent" (Map.fromList [("Objects", "redirected-parent")]) parent [generated]
@@ -1203,25 +882,19 @@ assertRedirectedManagedParent label runTransaction =
 -- comparison: containment must reject it without writing outside the repo or
 -- mutating Git state.
 assertLateRedirectAfterParentCreation
-  :: String
+  :: IO TransactionRepositorySeed
+  -> String
   -> (Repository -> TransactionConfig -> (GeneratedFile -> IO ()) -> IO (Either TransactionError TransactionResult))
   -> IO ()
-assertLateRedirectAfterParentCreation label runTransaction =
-  withSystemTempDirectory ("adrai transaction late redirect " <> label) $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-        outsidePath = temporary </> "outside"
+assertLateRedirectAfterParentCreation getSeed label runTransaction =
+  withTransactionRepositoryCopy getSeed ("adrai transaction late redirect " <> label) $ \temporary repositoryPath repository parentText -> do
+    let outsidePath = temporary </> "outside"
         managedParent = repositoryPath </> "architecture" </> "adrai"
         architectureParent = repositoryPath </> "architecture"
         redirect GeneratedFile{} = do
           removeDirectoryRecursive managedParent
           createDirectoryRedirect outsidePath managedParent
-    initTestRepository repositoryPath
-    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
     createDirectory outsidePath
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
     parent <- requireGitOid parentText
     (operationText, generated) <- transactionGeneratedFile parent
     let config = TransactionConfig operationText "adrai: late managed redirect" (Map.fromList [("Objects", "late-redirect")]) parent [generated]
@@ -1237,16 +910,9 @@ assertLateRedirectAfterParentCreation label runTransaction =
     after <- transactionObservableState repositoryPath
     assertEqual (label <> " leaves HEAD, refs, index, status, and reflogs unchanged after link removal") before after
 
-assertAppendRollbackPrecedence :: Bool -> IO ()
-assertAppendRollbackPrecedence originalIsAsync =
-  withSystemTempDirectory "adrai transaction rollback precedence" $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-    initTestRepository repositoryPath
-    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
+assertAppendRollbackPrecedence :: IO TransactionRepositorySeed -> Bool -> IO ()
+assertAppendRollbackPrecedence getSeed originalIsAsync =
+  withTransactionRepositoryCopy getSeed "adrai transaction rollback precedence" $ \_ repositoryPath repository parentText -> do
     parent <- requireGitOid parentText
     (operationText, generated) <- transactionGeneratedFile parent
     let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -1279,16 +945,9 @@ assertAppendRollbackPrecedence originalIsAsync =
     assertBool "rollback removes generated directories despite its synchronous hook failure" (not directoryExists)
     assertEqual "rollback precedence leaves caller Git state unchanged" before after
 
-assertBootstrapRollbackDeleteFailure :: Bool -> IO ()
-assertBootstrapRollbackDeleteFailure deleteIsAsync =
-  withSystemTempDirectory "adrai bootstrap rollback delete" $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-    initTestRepository repositoryPath
-    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
+assertBootstrapRollbackDeleteFailure :: IO TransactionRepositorySeed -> Bool -> IO ()
+assertBootstrapRollbackDeleteFailure getSeed deleteIsAsync =
+  withTransactionRepositoryCopy getSeed "adrai bootstrap rollback delete" $ \_ repositoryPath repository parentText -> do
     parent <- requireGitOid parentText
     (operationText, generated) <- transactionGeneratedFile parent
     let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -1324,11 +983,10 @@ assertBootstrapRollbackDeleteFailure deleteIsAsync =
           Left exception -> assertFailure ("synchronous delete failure escaped the typed API: " <> show exception)
     retainedBytes <- BS.readFile generatedPath
     afterFailure <- transactionObservableState repositoryPath
-    let (headBefore, refsBefore, indexBefore, _, reflogsBefore) = before
-        (headAfter, refsAfter, indexAfter, _, reflogsAfter) = afterFailure
+    let (refsBefore, indexBefore, _, reflogsBefore) = before
+        (refsAfter, indexAfter, _, reflogsAfter) = afterFailure
     assertEqual "failed bootstrap delete retains precisely the transaction-created bytes" (genFileBytes generated) retainedBytes
-    assertEqual "failed bootstrap delete leaves HEAD unchanged" headBefore headAfter
-    assertEqual "failed bootstrap delete leaves refs unchanged" refsBefore refsAfter
+    assertEqual "failed bootstrap delete leaves HEAD and refs unchanged" refsBefore refsAfter
     assertEqual "failed bootstrap delete leaves index unchanged" indexBefore indexAfter
     assertEqual "failed bootstrap delete leaves reflogs unchanged" reflogsBefore reflogsAfter
     retry <- commitBootstrapFiles repository config
@@ -1336,16 +994,9 @@ assertBootstrapRollbackDeleteFailure deleteIsAsync =
       Left problem -> assertFailure ("default cleanup retry should recover the retained bytes: " <> show problem)
       Right success -> assertEqual "retry creates the requested managed path" [genFilePath generated] (transactionCreatedPaths success)
 
-assertAppendHookAsyncWinsRestoreFailure :: IO ()
-assertAppendHookAsyncWinsRestoreFailure =
-  withSystemTempDirectory "adrai append rollback async ordering" $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-    initTestRepository repositoryPath
-    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
+assertAppendHookAsyncWinsRestoreFailure :: IO TransactionRepositorySeed -> IO ()
+assertAppendHookAsyncWinsRestoreFailure getSeed =
+  withTransactionRepositoryCopy getSeed "adrai append rollback async ordering" $ \_ repositoryPath repository parentText -> do
     parent <- requireGitOid parentText
     (operationText, generated) <- transactionGeneratedFile parent
     let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -1363,11 +1014,10 @@ assertAppendHookAsyncWinsRestoreFailure =
       Right other -> assertFailure ("expected ThreadKilled, got " <> show other)
     retained <- BS.readFile generatedPath
     afterFailure <- transactionObservableState repositoryPath
-    let (headBefore, refsBefore, indexBefore, _, reflogsBefore) = before
-        (headAfter, refsAfter, indexAfter, _, reflogsAfter) = afterFailure
+    let (refsBefore, indexBefore, _, reflogsBefore) = before
+        (refsAfter, indexAfter, _, reflogsAfter) = afterFailure
     assertEqual "rollback does not delete caller-replaced bytes" callerBytes retained
-    assertEqual "append rollback leaves HEAD unchanged" headBefore headAfter
-    assertEqual "append rollback leaves refs unchanged" refsBefore refsAfter
+    assertEqual "append rollback leaves HEAD and refs unchanged" refsBefore refsAfter
     assertEqual "append rollback leaves index unchanged" indexBefore indexAfter
     assertEqual "append rollback leaves reflogs unchanged" reflogsBefore reflogsAfter
     removeFile generatedPath
@@ -1376,16 +1026,9 @@ assertAppendHookAsyncWinsRestoreFailure =
       Left problem -> assertFailure ("retry after removing caller-owned bytes should succeed: " <> show problem)
       Right success -> assertEqual "retry creates the requested managed path" [genFilePath generated] (transactionCreatedPaths success)
 
-assertBootstrapHookAsyncWinsDeleteFailure :: IO ()
-assertBootstrapHookAsyncWinsDeleteFailure =
-  withSystemTempDirectory "adrai bootstrap rollback async ordering" $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-    initTestRepository repositoryPath
-    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
+assertBootstrapHookAsyncWinsDeleteFailure :: IO TransactionRepositorySeed -> IO ()
+assertBootstrapHookAsyncWinsDeleteFailure getSeed =
+  withTransactionRepositoryCopy getSeed "adrai bootstrap rollback async ordering" $ \_ repositoryPath repository parentText -> do
     parent <- requireGitOid parentText
     (operationText, generated) <- transactionGeneratedFile parent
     let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -1409,11 +1052,10 @@ assertBootstrapHookAsyncWinsDeleteFailure =
       Right other -> assertFailure ("expected ThreadKilled, got " <> show other)
     retained <- BS.readFile generatedPath
     afterFailure <- transactionObservableState repositoryPath
-    let (headBefore, refsBefore, indexBefore, _, reflogsBefore) = before
-        (headAfter, refsAfter, indexAfter, _, reflogsAfter) = afterFailure
+    let (refsBefore, indexBefore, _, reflogsBefore) = before
+        (refsAfter, indexAfter, _, reflogsAfter) = afterFailure
     assertEqual "failed delete retains exactly transaction-created bytes" (genFileBytes generated) retained
-    assertEqual "bootstrap rollback leaves HEAD unchanged" headBefore headAfter
-    assertEqual "bootstrap rollback leaves refs unchanged" refsBefore refsAfter
+    assertEqual "bootstrap rollback leaves HEAD and refs unchanged" refsBefore refsAfter
     assertEqual "bootstrap rollback leaves index unchanged" indexBefore indexAfter
     assertEqual "bootstrap rollback leaves reflogs unchanged" reflogsBefore reflogsAfter
     retry <- commitBootstrapFiles repository config
@@ -1429,25 +1071,19 @@ bootstrapDependencies beforeRefUpdate beforeRefresh =
     }
 
 assertPreCasRedirect
-  :: String
+  :: IO TransactionRepositorySeed
+  -> String
   -> (Repository -> TransactionConfig -> IO () -> IO (Either TransactionError TransactionResult))
   -> IO ()
-assertPreCasRedirect label runTransaction =
-  withSystemTempDirectory ("adrai pre-CAS redirect " <> label) $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-        outsidePath = temporary </> "outside"
+assertPreCasRedirect getSeed label runTransaction =
+  withTransactionRepositoryCopy getSeed ("adrai pre-CAS redirect " <> label) $ \temporary repositoryPath repository parentText -> do
+    let outsidePath = temporary </> "outside"
         redirectedParent = repositoryPath </> "architecture" </> "adrai"
         architectureParent = repositoryPath </> "architecture"
         redirect = do
           removeDirectoryRecursive redirectedParent
           createDirectoryRedirect outsidePath redirectedParent
-    initTestRepository repositoryPath
-    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
     createDirectory outsidePath
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
     parent <- requireGitOid parentText
     (operationText, generated) <- transactionGeneratedFile parent
     let config = TransactionConfig operationText "adrai: pre-CAS containment" (Map.fromList [("Objects", "pre-cas-containment")]) parent [generated]
@@ -1463,13 +1099,13 @@ assertPreCasRedirect label runTransaction =
     assertEqual (label <> " publishes no ref or index/worktree/reflog mutation before CAS") before after
 
 assertPostCasRedirect
-  :: String
+  :: IO TransactionRepositorySeed
+  -> String
   -> (Repository -> TransactionConfig -> IO () -> IO (Either TransactionError TransactionResult))
   -> IO ()
-assertPostCasRedirect label runTransaction =
-  withSystemTempDirectory ("adrai post-CAS redirect " <> label) $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-        outsidePath = temporary </> "outside"
+assertPostCasRedirect getSeed label runTransaction =
+  withTransactionRepositoryCopy getSeed ("adrai post-CAS redirect " <> label) $ \temporary repositoryPath repository parentText -> do
+    let outsidePath = temporary </> "outside"
         redirectedParent = repositoryPath </> "architecture" </> "adrai"
         architectureParent = repositoryPath </> "architecture"
         stagedPath = repositoryPath </> "caller-post-cas.bin"
@@ -1477,15 +1113,9 @@ assertPostCasRedirect label runTransaction =
         redirect = do
           removeDirectoryRecursive redirectedParent
           createDirectoryRedirect outsidePath redirectedParent
-    initTestRepository repositoryPath
-    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
     BS.writeFile stagedPath stagedBytes
     _ <- gitSuccess repositoryPath ["add", "--", "caller-post-cas.bin"] BS.empty
     createDirectory outsidePath
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
     indexPath <- pure (repositoryGitDir repository </> "index")
     indexBeforeExists <- doesFileExist indexPath
     indexBefore <- BS.readFile indexPath
@@ -1511,32 +1141,27 @@ assertPostCasRedirect label runTransaction =
     _ <- tryIOError (removeDirectory architectureParent)
     pure ()
 
-assertBootstrapPostCasCancellationAuthority :: IO ()
-assertBootstrapPostCasCancellationAuthority =
+assertBootstrapPostCasCancellationAuthority :: IO TransactionRepositorySeed -> IO ()
+assertBootstrapPostCasCancellationAuthority getSeed =
   assertBootstrapCancellationAuthority
+    getSeed
     "post-CAS"
     (\dependencies -> dependencies {bootstrapBeforePostCasIndexRefresh = throwIO ThreadKilled})
 
-assertBootstrapPostUpdateRefCancellationAuthority :: IO ()
-assertBootstrapPostUpdateRefCancellationAuthority =
+assertBootstrapPostUpdateRefCancellationAuthority :: IO TransactionRepositorySeed -> IO ()
+assertBootstrapPostUpdateRefCancellationAuthority getSeed =
   assertBootstrapCancellationAuthority
+    getSeed
     "post-update-ref"
     (\dependencies -> dependencies {bootstrapAfterSuccessfulCasBeforeBookkeeping = throwIO ThreadKilled})
 
-assertBootstrapCancellationAuthority :: String -> (BootstrapDependencies -> BootstrapDependencies) -> IO ()
-assertBootstrapCancellationAuthority label adjustDependencies =
-  withSystemTempDirectory ("adrai bootstrap " <> label <> " cancellation") $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-        stagedPath = repositoryPath </> "caller-bootstrap-cancellation.bin"
+assertBootstrapCancellationAuthority :: IO TransactionRepositorySeed -> String -> (BootstrapDependencies -> BootstrapDependencies) -> IO ()
+assertBootstrapCancellationAuthority getSeed label adjustDependencies =
+  withTransactionRepositoryCopy getSeed ("adrai bootstrap " <> label <> " cancellation") $ \_ repositoryPath repository parentText -> do
+    let stagedPath = repositoryPath </> "caller-bootstrap-cancellation.bin"
         stagedBytes = BS.pack [255, 0, 13, 10, 128, 64, 9, 8, 7]
-    initTestRepository repositoryPath
-    parentText <- commitFile repositoryPath "seed.txt" "seed\n"
     BS.writeFile stagedPath stagedBytes
     _ <- gitSuccess repositoryPath ["add", "--", "caller-bootstrap-cancellation.bin"] BS.empty
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
     indexPath <- pure (repositoryGitDir repository </> "index")
     indexBeforeExists <- doesFileExist indexPath
     indexBefore <- BS.readFile indexPath
@@ -1566,15 +1191,9 @@ assertBootstrapCancellationAuthority label adjustDependencies =
     _ <- gitSuccess repositoryPath ["show", "--stat", "HEAD"] BS.empty
     pure ()
 
-assertUnbornCandidateCancellation :: IO ()
-assertUnbornCandidateCancellation =
-  withSystemTempDirectory "adrai unborn candidate cancellation" $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-    initTestRepository repositoryPath
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
+assertUnbornCandidateCancellation :: IO UnbornTransactionRepositorySeed -> IO ()
+assertUnbornCandidateCancellation getSeed =
+  withUnbornTransactionRepositoryCopy getSeed "adrai unborn candidate cancellation" $ \_ repositoryPath repository -> do
     (operationText, generated) <- transactionGeneratedFile nullOid
     let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
         config = TransactionConfig operationText "adrai: unborn candidate cancellation" (Map.fromList [("Objects", "unborn-candidate-cancellation")]) nullOid [generated]
@@ -1588,15 +1207,9 @@ assertUnbornCandidateCancellation =
     assertBool "confirmed missing unborn ref publishes no first commit" (not mainRefExists)
     assertBool "confirmed missing unborn ref rolls back generated bytes" (not generatedExists)
 
-assertUnreadableFirstCommitInspection :: IO ()
-assertUnreadableFirstCommitInspection =
-  withSystemTempDirectory "adrai unreadable first commit inspection" $ \temporary -> do
-    let repositoryPath = temporary </> "repository"
-    initTestRepository repositoryPath
-    repository <-
-      discoverRepository systemGit repositoryPath >>= \case
-        Left problem -> assertFailure (show problem) >> fail "unreachable"
-        Right discovered -> pure discovered
+assertUnreadableFirstCommitInspection :: IO UnbornTransactionRepositorySeed -> IO ()
+assertUnreadableFirstCommitInspection getSeed =
+  withUnbornTransactionRepositoryCopy getSeed "adrai unreadable first commit inspection" $ \_ repositoryPath repository -> do
     indexBefore <- doesFileExist (repositoryGitDir repository </> "index")
     (operationText, generated) <- transactionGeneratedFile nullOid
     let generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
@@ -1610,22 +1223,27 @@ assertUnreadableFirstCommitInspection =
     case result of
       Left (Stage8UpdateRef detail) -> assertBool "unreadable inspection returns typed fail-closed error" ("unreadable CAS inspection" `Text.isInfixOf` detail)
       other -> assertFailure ("expected fail-closed Stage8 error, got " <> show other)
-    headAfter <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+    (headCommit, actualParents, actualMessage) <- commitIdentityParentAndMessage repositoryPath "HEAD"
+    let headAfter = gitOidText headCommit
     committedBytes <- gitSuccess repositoryPath ["show", Text.unpack headAfter <> ":" <> Text.unpack (repoPathText (genFilePath generated))] BS.empty
     worktreeBytes <- BS.readFile generatedPath
     indexAfter <- doesFileExist (repositoryGitDir repository </> "index")
     assertEqual "uncertain authority preserves first-commit bytes" (genFileBytes generated) committedBytes
     assertEqual "uncertain authority preserves worktree bytes" (genFileBytes generated) worktreeBytes
     assertEqual "uncertain authority does not materialize or refresh caller index" indexBefore indexAfter
+    assertEqual "bootstrap commit supplies no parent for the null OID" "" actualParents
+    assertEqual
+      "bootstrap commit reads the complete message and trailer block from stdin"
+      "adrai: unreadable first commit inspection\n\nADRAI-Op: O00000000000000000000000042\nADRAI-Objects: bootstrap"
+      actualMessage
 
-transactionObservableState :: FilePath -> IO (BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString)
+transactionObservableState :: FilePath -> IO (BS.ByteString, BS.ByteString, BS.ByteString, BS.ByteString)
 transactionObservableState repositoryPath = do
-  headOid <- gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
   refs <- gitSuccess repositoryPath ["show-ref", "--head"] BS.empty
   index <- gitSuccess repositoryPath ["ls-files", "--stage", "-z"] BS.empty
-  status <- gitSuccess repositoryPath ["status", "--porcelain=v1", "--untracked-files=all", "-z"] BS.empty
+  status <- gitSuccess repositoryPath ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all", "-z"] BS.empty
   reflogs <- gitSuccess repositoryPath ["reflog", "show", "--all", "--format=%H%x00%gs"] BS.empty
-  pure (headOid, refs, index, status, reflogs)
+  pure (refs, index, status, reflogs)
 
 createDirectoryRedirect :: FilePath -> FilePath -> IO ()
 createDirectoryRedirect target link
@@ -1681,6 +1299,227 @@ transactionGeneratedFile basis = do
   pure (Text.unpack operationText, GeneratedFile path bytes)
   where
     operationText = "O00000000000000000000000042"
+
+commitIdentityParentAndMessage :: FilePath -> String -> IO (GitOid, Text.Text, Text.Text)
+commitIdentityParentAndMessage repositoryPath revision = do
+  metadata <-
+    outputText
+      <$> gitSuccess
+        repositoryPath
+        ["show", "-s", "--format=%H%x00%P%x00%B", revision]
+        BS.empty
+  let (commitText, separatorAndRemainder) = Text.breakOn "\NUL" metadata
+      (parents, separatorAndMessage) = Text.breakOn "\NUL" (Text.drop 1 separatorAndRemainder)
+  assertBool "commit metadata observation contains its identity/parent separator" (not (Text.null separatorAndRemainder))
+  assertBool "commit metadata observation contains its parent/message separator" (not (Text.null separatorAndMessage))
+  pure (GitOid commitText, parents, Text.drop 1 separatorAndMessage)
+
+commitHeadAndTree :: FilePath -> IO (Text.Text, Text.Text)
+commitHeadAndTree repositoryPath = do
+  metadata <- outputText <$> gitSuccess repositoryPath ["show", "-s", "--format=%H%x00%T", "HEAD"] BS.empty
+  let (headOid, separatorAndTree) = Text.breakOn "\NUL" metadata
+  assertBool "commit identity observation contains its HEAD/tree separator" (not (Text.null separatorAndTree))
+  pure (headOid, Text.drop 1 separatorAndTree)
+
+data TransactionRepositorySeed = TransactionRepositorySeed
+  { transactionCopySeed :: RepositorySeed,
+    transactionSeedPath :: FilePath,
+    transactionSeedRepository :: Repository,
+    transactionSeedParent :: Text.Text
+  }
+
+createTransactionRepositorySeed :: IO TransactionRepositorySeed
+createTransactionRepositorySeed = do
+  (copySeed, (seedPath, seedRepository, seedParent)) <-
+    createRepositorySeedWith "adrai-transaction-seed" $ \repositoryPath -> do
+      initTestRepository repositoryPath
+      _ <- gitSuccess repositoryPath ["config", "core.hooksPath", ".git/adrai-no-hooks"] BS.empty
+      parentText <- commitFile repositoryPath "seed.txt" "seed\n"
+      repository <-
+        discoverRepository systemGit repositoryPath >>= \case
+          Left problem -> assertFailure (show problem) >> fail "unreachable"
+          Right discovered -> pure discovered
+      assertMainWorktreeRepositoryIdentity "committed seed discovery" repositoryPath repository
+      pure (repositoryPath, repository, parentText)
+  pure
+    TransactionRepositorySeed
+      { transactionCopySeed = copySeed,
+        transactionSeedPath = seedPath,
+        transactionSeedRepository = seedRepository,
+        transactionSeedParent = seedParent
+      }
+
+data UnbornTransactionRepositorySeed = UnbornTransactionRepositorySeed
+  { unbornTransactionCopySeed :: RepositorySeed,
+    unbornTransactionSeedPath :: FilePath,
+    unbornTransactionSeedRepository :: Repository
+  }
+
+createUnbornTransactionRepositorySeed :: IO UnbornTransactionRepositorySeed
+createUnbornTransactionRepositorySeed = do
+  (copySeed, (seedPath, seedRepository)) <-
+    createRepositorySeedWith "adrai-unborn-transaction-seed" $ \repositoryPath -> do
+      initTestRepository repositoryPath
+      _ <- gitSuccess repositoryPath ["config", "core.hooksPath", ".git/adrai-no-hooks"] BS.empty
+      repository <-
+        discoverRepository systemGit repositoryPath >>= \case
+          Left problem -> assertFailure (show problem) >> fail "unreachable"
+          Right discovered -> pure discovered
+      assertMainWorktreeRepositoryIdentity "unborn seed discovery" repositoryPath repository
+      pure (repositoryPath, repository)
+  pure
+    UnbornTransactionRepositorySeed
+      { unbornTransactionCopySeed = copySeed,
+        unbornTransactionSeedPath = seedPath,
+        unbornTransactionSeedRepository = seedRepository
+      }
+
+removeUnbornTransactionRepositorySeed :: UnbornTransactionRepositorySeed -> IO ()
+removeUnbornTransactionRepositorySeed = removeRepositorySeed . unbornTransactionCopySeed
+
+removeTransactionRepositorySeed :: TransactionRepositorySeed -> IO ()
+removeTransactionRepositorySeed = removeRepositorySeed . transactionCopySeed
+
+withTransactionRepositoryCopy ::
+  IO TransactionRepositorySeed ->
+  String ->
+  (FilePath -> FilePath -> Repository -> Text.Text -> IO value) ->
+  IO value
+withTransactionRepositoryCopy getSeed label action = do
+  seed <- getSeed
+  withRepositorySeedCopy (transactionCopySeed seed) label $ \temporary repositoryPath -> do
+    repository <- relocateSeedRepository (transactionSeedPath seed) (transactionSeedRepository seed) repositoryPath
+    assertTransactionRepositoryCopy seed repositoryPath repository
+    action temporary repositoryPath repository (transactionSeedParent seed)
+
+withUnbornTransactionRepositoryCopy ::
+  IO UnbornTransactionRepositorySeed ->
+  String ->
+  (FilePath -> FilePath -> Repository -> IO value) ->
+  IO value
+withUnbornTransactionRepositoryCopy getSeed label action = do
+  seed <- getSeed
+  withRepositorySeedCopy (unbornTransactionCopySeed seed) label $ \temporary repositoryPath -> do
+    repository <- relocateSeedRepository (unbornTransactionSeedPath seed) (unbornTransactionSeedRepository seed) repositoryPath
+    assertUnbornTransactionRepositoryCopy seed repositoryPath repository
+    action temporary repositoryPath repository
+
+relocateSeedRepository :: FilePath -> Repository -> FilePath -> IO Repository
+relocateSeedRepository sourcePath sourceRepository repositoryPath = do
+  let relocate label = relocateSeedPath label sourcePath repositoryPath
+  worktreeRoot <- traverse (relocate "worktree root") (repositoryWorktreeRoot sourceRepository)
+  gitDirectory <- relocate "Git directory" (repositoryGitDir sourceRepository)
+  commonDirectory <- relocate "common Git directory" (repositoryCommonDir sourceRepository)
+  commandDirectory <- relocate "command directory" (repositoryCommandDirectory sourceRepository)
+  pure
+    sourceRepository
+      { repositoryWorktreeRoot = worktreeRoot,
+        repositoryGitDir = gitDirectory,
+        repositoryCommonDir = commonDirectory,
+        repositoryCommandDirectory = commandDirectory
+      }
+
+relocateSeedPath :: String -> FilePath -> FilePath -> FilePath -> IO FilePath
+relocateSeedPath label sourceRoot targetRoot sourcePath = do
+  let relative = makeRelative sourceRoot sourcePath
+      relocated
+        | relative == "." = normalise targetRoot
+        | otherwise = normalise (targetRoot </> relative)
+  assertBool (label <> " originates inside the immutable seed repository") (isContainedPath sourceRoot sourcePath)
+  assertBool (label <> " has no parent traversal after relocation") (".." `notElem` splitDirectories relative)
+  assertBool (label <> " is contained inside the private repository copy") (isContainedPath targetRoot relocated)
+  pure relocated
+
+isContainedPath :: FilePath -> FilePath -> Bool
+isContainedPath root path =
+  let relative = makeRelative (normalise root) (normalise path)
+   in not (isAbsolute relative) && ".." `notElem` splitDirectories relative
+
+assertTransactionRepositoryCopy :: TransactionRepositorySeed -> FilePath -> Repository -> IO ()
+assertTransactionRepositoryCopy seed repositoryPath repository = do
+  let seedPath = transactionSeedPath seed
+      seedGitDirectory = repositoryGitDir (transactionSeedRepository seed)
+      privateGitDirectory = repositoryGitDir repository
+      parentText = transactionSeedParent seed
+      parentObjectPath = "objects" </> take 2 (Text.unpack parentText) </> drop 2 (Text.unpack parentText)
+      assertCopiedFile relative = do
+        seedBytes <- BS.readFile (seedGitDirectory </> relative)
+        privateBytes <- BS.readFile (privateGitDirectory </> relative)
+        assertEqual ("private repository copies exact " <> relative <> " bytes") seedBytes privateBytes
+        pure privateBytes
+  assertMainWorktreeRepositoryIdentity "private committed repository" repositoryPath repository
+  privateHead <- assertCopiedFile "HEAD"
+  assertEqual "private committed repository retains the main branch identity" "ref: refs/heads/main\n" privateHead
+  mapM_ assertCopiedFile ["index", parentObjectPath]
+  privateRef <- assertCopiedFile ("refs" </> "heads" </> "main")
+  assertEqual "private repository contains the cached initial commit OID" (TextEncoding.encodeUtf8 (parentText <> "\n")) privateRef
+  seedWorktreeBytes <- BS.readFile (seedPath </> "seed.txt")
+  privateWorktreeBytes <- BS.readFile (repositoryPath </> "seed.txt")
+  assertEqual "private committed repository copies exact tracked worktree bytes" seedWorktreeBytes privateWorktreeBytes
+  privateConfig <- assertCopiedFile "config"
+  assertPrivateRepositoryIsolation "private committed repository" seedPath privateGitDirectory privateConfig
+
+assertUnbornTransactionRepositoryCopy :: UnbornTransactionRepositorySeed -> FilePath -> Repository -> IO ()
+assertUnbornTransactionRepositoryCopy seed repositoryPath repository = do
+  let seedPath = unbornTransactionSeedPath seed
+      seedGitDirectory = repositoryGitDir (unbornTransactionSeedRepository seed)
+      privateGitDirectory = repositoryGitDir repository
+      assertCopiedFile relative = do
+        seedBytes <- BS.readFile (seedGitDirectory </> relative)
+        privateBytes <- BS.readFile (privateGitDirectory </> relative)
+        assertEqual ("private unborn repository copies exact " <> relative <> " bytes") seedBytes privateBytes
+        pure privateBytes
+  assertMainWorktreeRepositoryIdentity "private unborn repository" repositoryPath repository
+  privateHead <- assertCopiedFile "HEAD"
+  assertEqual "private unborn repository retains the unborn main branch identity" "ref: refs/heads/main\n" privateHead
+  privateConfig <- assertCopiedFile "config"
+  assertPrivateRepositoryIsolation "private unborn repository" seedPath privateGitDirectory privateConfig
+  doesFileExist (privateGitDirectory </> "index")
+    >>= assertEqual "private unborn repository has no caller index" False
+  doesFileExist (privateGitDirectory </> "refs" </> "heads" </> "main")
+    >>= assertEqual "private unborn repository has no main ref" False
+  privateObjects <- sort <$> listDirectory (privateGitDirectory </> "objects")
+  seedObjects <- sort <$> listDirectory (seedGitDirectory </> "objects")
+  assertEqual "private unborn repository copies the empty object-store shape" seedObjects privateObjects
+  assertBool "private unborn repository contains no loose commit object" (all (`elem` ["info", "pack"]) privateObjects)
+  sort <$> listDirectory repositoryPath
+    >>= assertEqual "private unborn repository has no worktree bytes" [".git"]
+
+assertMainWorktreeRepositoryIdentity :: String -> FilePath -> Repository -> IO ()
+assertMainWorktreeRepositoryIdentity label repositoryPath repository = do
+  let gitDirectory = repositoryPath </> ".git"
+  assertEqual (label <> " has its exact worktree root") (Just repositoryPath) (repositoryWorktreeRoot repository)
+  assertEqual (label <> " has its exact Git directory") gitDirectory (repositoryGitDir repository)
+  assertEqual (label <> " has its exact common Git directory") gitDirectory (repositoryCommonDir repository)
+  assertEqual (label <> " has its exact command directory") repositoryPath (repositoryCommandDirectory repository)
+  assertEqual (label <> " retains the main-worktree layout") MainWorktree (repositoryLayout repository)
+  assertEqual (label <> " retains its non-bare common directory") False (repositoryCommonIsBare repository)
+
+assertPrivateRepositoryIsolation :: String -> FilePath -> FilePath -> BS.ByteString -> IO ()
+assertPrivateRepositoryIsolation label seedPath privateGitDirectory privateConfig = do
+  let seedPathForward = map (\character -> if character == '\\' then '/' else character) seedPath
+      seedPathBackward = map (\character -> if character == '/' then '\\' else character) seedPath
+      seedPathSpellings = map BS8.pack [seedPath, seedPathForward, seedPathBackward]
+  assertBool (label <> " config contains no immutable seed path") (not (any (`BS8.isInfixOf` privateConfig) seedPathSpellings))
+  assertBool (label <> " keeps a repository-relative no-hooks path") (".git/adrai-no-hooks" `BS8.isInfixOf` privateConfig)
+  doesDirectoryExist (privateGitDirectory </> "adrai-no-hooks")
+    >>= assertEqual (label <> " owns its no-hooks directory") True
+  doesFileExist (privateGitDirectory </> "objects" </> "info" </> "alternates")
+    >>= assertEqual (label <> " has no shared object alternates") False
+
+makeTrackedFileStatStale :: FilePath -> FilePath -> IO ()
+makeTrackedFileStatStale repositoryPath relativePath = do
+  let path = repositoryPath </> relativePath
+  cachedEntry <- gitSuccess repositoryPath ["--no-optional-locks", "ls-files", "--debug", "--", relativePath] BS.empty
+  bytesBefore <- BS.readFile path
+  modificationTime <- getModificationTime path
+  setModificationTime path (addUTCTime (-3600) modificationTime)
+  bytesAfter <- BS.readFile path
+  staleModificationTime <- getModificationTime path
+  let staleMtime = BS8.pack ("mtime: " <> show (floor (utcTimeToPOSIXSeconds staleModificationTime) :: Integer) <> ":")
+  assertEqual "stale-stat fixture preserves tracked file content" bytesBefore bytesAfter
+  assertBool "stale-stat fixture changes only tracked file metadata" (staleModificationTime /= modificationTime)
+  assertBool "stale-stat fixture differs from the cached index mtime" (not (staleMtime `BS8.isInfixOf` cachedEntry))
 
 requireRight :: (Show problem) => Either problem value -> IO value
 requireRight result =

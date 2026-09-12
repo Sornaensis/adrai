@@ -38,35 +38,14 @@ module Adrai.Provenance.Overlay
 
     -- * Observation records
     RefObservation (..),
-    refObservationRefName,
-    refObservationTipOid,
-    refObservationObjectType,
 
     ObservationRoot (..),
-    observationRootKind,
-    observationRootName,
-    observationRootCommitOid,
 
     CommitObservation (..),
-    commitObservationOid,
-    commitObservationParents,
-    commitObservationAuthored,
-    commitObservationCommitted,
-    commitObservationSubject,
-    commitObservationMessage,
 
     OperationCommit (..),
-    operationCommitOpId,
-    operationCommitCommitOid,
-    operationCommitClassification,
-    operationCommitAuthored,
-    operationCommitCommitted,
-    operationCommitSubject,
-    operationCommitParents,
 
     ManagedPathAddition (..),
-    managedPathAdditionPath,
-    managedPathAdditionCommitOid,
 
     -- * Immutable target-relative evidence rows
     RegisteredOperationRow (..),
@@ -85,6 +64,8 @@ module Adrai.Provenance.Overlay
     -- * Schema helpers
     overlaySchemaDdl,
     overlaySchemaIndexes,
+    OverlaySchemaState (..),
+    overlaySchemaState,
 
     -- * Schema validation and creation
     overlayValid,
@@ -98,14 +79,7 @@ module Adrai.Provenance.Overlay
 where
 
 import Adrai.Git
-import Adrai.Provenance (OverlayFingerprint (..), mkOverlayFingerprint)
 import Adrai.Sqlite (asQuery)
-import Adrai.Types
-  ( AdrId (..),
-    Digest,
-    OperationId (..),
-    RepoPath (..)
-  )
 import Control.Exception
   ( SomeAsyncException,
     SomeException,
@@ -115,13 +89,14 @@ import Control.Exception
     try,
   )
 import Control.Monad (forM_)
+import Data.List (sort)
+import Data.Char (isSpace)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.SQLite.Simple
   ( Connection,
     Only (..),
     SQLData (SQLText),
-    SQLError (..),
     close,
     execute,
     execute_,
@@ -132,7 +107,7 @@ import System.FilePath (takeDirectory, (</>))
 
 -- | Constant schema version string.
 overlaySchemaVersion :: Text
-overlaySchemaVersion = "adrai-provenance-cache/1"
+overlaySchemaVersion = "adrai-provenance-cache/2"
 
 -- | Newtype for overlay observation fingerprint (SHA-256 hex).
 --
@@ -401,6 +376,13 @@ overlaySchemaDdl =
         <> "parents_json TEXT NOT NULL,"
         <> "PRIMARY KEY(op_id,commit_oid))"
     ),
+    ( "operation_target_coverage",
+      "CREATE TABLE operation_target_coverage("
+        <> "op_id TEXT NOT NULL,"
+        <> "target_oid TEXT NOT NULL,"
+        <> "registration_signature TEXT NOT NULL,"
+        <> "PRIMARY KEY(op_id,target_oid,registration_signature))"
+    ),
     ( "ref_observation",
       "CREATE TABLE ref_observation("
         <> "ref_name TEXT PRIMARY KEY,"
@@ -455,9 +437,68 @@ overlaySchemaIndexes =
   [ "CREATE INDEX idx_registered_path ON registered_object(path,op_id)",
     "CREATE INDEX idx_addition_path ON managed_path_addition(path,commit_oid)",
     "CREATE INDEX idx_operation_commit ON operation_commit(op_id,commit_oid)",
+    "CREATE INDEX idx_operation_target_coverage ON operation_target_coverage(op_id,target_oid)",
     "CREATE INDEX idx_line_landing ON line_landing(config_key,op_id)",
     "CREATE INDEX idx_provenance_issue_op ON provenance_issue(op_id,code)"
   ]
+
+-- | ABI facts for the retired v1 archive.  This deliberately does /not/
+-- derive from the current v2 builders: changing v2 must never silently make
+-- an unknown historical database eligible for destructive migration.
+frozenV1SchemaFacts :: [(Text, Text, Text)]
+frozenV1SchemaFacts =
+  [ ("table", "meta", "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+  , ("table", "registered_operation", "CREATE TABLE registered_operation(op_id TEXT PRIMARY KEY,adr_id TEXT,basis_oid TEXT NOT NULL,signature TEXT NOT NULL)")
+  , ("table", "registered_object", "CREATE TABLE registered_object(op_id TEXT NOT NULL,object_id TEXT NOT NULL,path TEXT NOT NULL,blob_oid TEXT NOT NULL,PRIMARY KEY(op_id,object_id),UNIQUE(op_id,path))")
+  , ("table", "commit_observation", "CREATE TABLE commit_observation(commit_oid TEXT PRIMARY KEY,parents_json TEXT NOT NULL,authored_s INTEGER NOT NULL,committed_s INTEGER NOT NULL,subject TEXT NOT NULL,message TEXT NOT NULL)")
+  , ("table", "observed_commit", "CREATE TABLE observed_commit(commit_oid TEXT PRIMARY KEY)")
+  , ("table", "managed_path_addition", "CREATE TABLE managed_path_addition(path TEXT NOT NULL,commit_oid TEXT NOT NULL,PRIMARY KEY(path,commit_oid))")
+  , ("table", "operation_commit", "CREATE TABLE operation_commit(op_id TEXT NOT NULL,commit_oid TEXT NOT NULL,classification TEXT NOT NULL,authored_s INTEGER NOT NULL,committed_s INTEGER NOT NULL,subject TEXT NOT NULL,parents_json TEXT NOT NULL,PRIMARY KEY(op_id,commit_oid))")
+  , ("table", "ref_observation", "CREATE TABLE ref_observation(ref_name TEXT PRIMARY KEY,tip_oid TEXT NOT NULL,object_type TEXT NOT NULL)")
+  , ("table", "observation_root", "CREATE TABLE observation_root(root_kind TEXT NOT NULL,root_name TEXT NOT NULL,commit_oid TEXT NOT NULL,PRIMARY KEY(root_kind,root_name))")
+  , ("table", "line_config", "CREATE TABLE line_config(config_key TEXT PRIMARY KEY,config_json TEXT NOT NULL)")
+  , ("table", "line_ref_state", "CREATE TABLE line_ref_state(config_key TEXT NOT NULL,ref_name TEXT NOT NULL,tip_oid TEXT NOT NULL,PRIMARY KEY(config_key,ref_name))")
+  , ("table", "line_landing", "CREATE TABLE line_landing(config_key TEXT NOT NULL,op_id TEXT NOT NULL,line_id TEXT NOT NULL,ref_name TEXT NOT NULL,commit_oid TEXT NOT NULL,complete INTEGER NOT NULL,PRIMARY KEY(config_key,op_id,line_id,ref_name))")
+  , ("table", "provenance_issue", "CREATE TABLE provenance_issue(issue_key TEXT PRIMARY KEY,severity TEXT NOT NULL,code TEXT NOT NULL,adr_id TEXT,object_id TEXT,path TEXT,message TEXT NOT NULL,op_id TEXT)")
+  , ("index", "idx_registered_path", "CREATE INDEX idx_registered_path ON registered_object(path,op_id)")
+  , ("index", "idx_addition_path", "CREATE INDEX idx_addition_path ON managed_path_addition(path,commit_oid)")
+  , ("index", "idx_operation_commit", "CREATE INDEX idx_operation_commit ON operation_commit(op_id,commit_oid)")
+  , ("index", "idx_line_landing", "CREATE INDEX idx_line_landing ON line_landing(config_key,op_id)")
+  , ("index", "idx_provenance_issue_op", "CREATE INDEX idx_provenance_issue_op ON provenance_issue(op_id,code)")
+  ]
+
+-- | The only overlay shapes that may be acted on under the writer lock.
+-- Version strings alone are not authority: a partially-created or retagged
+-- database must remain byte-preserved and fail closed.
+data OverlaySchemaState
+  = OverlaySchemaV1
+  | OverlaySchemaV2
+  | OverlaySchemaInvalid
+  deriving (Eq, Show)
+
+-- | Compare frozen @sqlite_master@ facts, including table/index DDL, before
+-- considering a legacy v1 overlay rebuildable.  V1 is exactly V2 without the
+-- target-certificate table and index; no migration infers that missing state.
+overlaySchemaState :: Connection -> IO OverlaySchemaState
+overlaySchemaState connection = do
+  facts <- query_ connection
+    "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name"
+    :: IO [(Text, Text, Text)]
+  tags <- query_ connection "SELECT value FROM meta WHERE key='schema'" :: IO [Only Text]
+  pure $ case tags of
+    [Only "adrai-provenance-cache/1"]
+      | normalized facts == normalized schemaFactsV1 -> OverlaySchemaV1
+    [Only value] | value == overlaySchemaVersion && normalized facts == normalized schemaFactsV2 -> OverlaySchemaV2
+    _ -> OverlaySchemaInvalid
+  where
+    schemaFactsV2 = sort
+      ([("table", name, ddl) | (name, ddl) <- overlaySchemaDdl]
+        <> [("index", indexName ddl, ddl) | ddl <- overlaySchemaIndexes])
+    schemaFactsV1 = frozenV1SchemaFacts
+    normalized = sort . map (\(kind, name, ddl) -> (kind, name, Text.filter (not . isSpace) ddl))
+    indexName ddl = case Text.words ddl of
+      (_ : _ : name : _) -> name
+      _ -> error "invalid frozen overlay index DDL"
 
 -- | Given the current semantic-revision database path, return the parent
 -- directory joined with @\"provenance.sqlite\"@.
@@ -494,8 +535,8 @@ overlayValidWithCleanup path afterOpen beforeClose = mask $ \restore -> do
     Right connection -> do
       validation <- try @SomeException $ restore $ do
         afterOpen
-        rows <- query_ connection "SELECT value FROM meta WHERE key='schema'" :: IO [Only Text]
-        pure (rows == [Only overlaySchemaVersion])
+        state <- overlaySchemaState connection
+        pure (state == OverlaySchemaV2)
       hookResult <- try @SomeException beforeClose
       closeResult <- try @SomeException (close connection)
       let cleanupProblems = [problem | Left problem <- [hookResult, closeResult]]

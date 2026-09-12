@@ -54,7 +54,6 @@ import Adrai.Git
     gitOidText,
     runRepository,
     runRepositoryWithEnvironment,
-    GitError (..),
     GitProcessResult (..),
      repositoryCommonDir,
      repositoryGitDir,
@@ -62,24 +61,19 @@ import Adrai.Git
     resolveRevision,
     GitHeadState (..),
     repositoryHeadState,
-    RevisionSpec (..),
     mkRevisionSpec,
   )
 import Adrai.Provenance
-  ( OperationContext (..),
-    ProvenanceCapsule,
-    mkGitOid,
+  ( mkGitOid,
     provenanceOperationId,
     provenanceBasis,
     provenanceActor,
     provenanceTimestampMs,
     provenanceObjectId,
     provenanceObjectIdText,
-    provenanceOperationContext,
   )
 import Adrai.Provenance.Git.Lock
   ( withGitLock,
-    GitLockError (..),
   )
 import Adrai.ManagedPath
   ( ManagedPathError (..),
@@ -89,7 +83,6 @@ import Adrai.Types
   ( RepoPath,
     repoPathText,
     GitRef (..),
-    mkGitRef,
     operationIdText,
     actorId,
     gitRefText,
@@ -98,15 +91,12 @@ import Adrai.Format.Document
   ( ParsedManagedDocument (..),
     parseManagedDocument,
   )
-import Data.Set (Set)
 import qualified Data.Set as Set
 
 import Control.Exception
   ( Exception,
     SomeException,
     SomeAsyncException,
-    bracket,
-    catch,
      fromException,
      toException,
     onException,
@@ -121,10 +111,7 @@ import Data.Char (toLower)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.List (find)
 import qualified Data.Map.Strict as Map
-import Data.Map.Strict (Map)
-import Data.Maybe (mapMaybe)
 import Data.IORef (IORef, newIORef, modifyIORef', readIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -143,7 +130,6 @@ import System.Directory
   )
 import System.FilePath
   ( (</>),
-    isAbsolute,
     takeDirectory,
   )
 import System.IO (hClose, openTempFile)
@@ -357,25 +343,11 @@ validateRepoRelativePath p =
                   then Left (Stage4GenerateFiles "path is absolute")
                   else Right ()
 
--- ---------------------------------------------------------------------------
--- Helpers: provenance capsule extraction
--- ---------------------------------------------------------------------------
-
--- | Decode the base64url-encoded capsule from a managed document's text.
--- Returns the capsule and the provenance operation context.
-decodeProvenanceCapsule :: Text -> Either TransactionError (ProvenanceCapsule, OperationContext)
-decodeProvenanceCapsule text = do
-  -- The capsule is encoded as a base64url string in the trailer comment.
-  -- We need to extract it from the text and decode it.
-  -- For now, we'll use the document parsing path.
-  Left (Stage5ValidateGenerated "capsule not yet embedded in raw text for transaction")
-
 -- | Parse provenance fields from a managed document's provenance capsule.
 -- Returns (operationId, basis/parent, actor, timestamp, objectId).
 extractProvenanceFields :: ParsedManagedDocument -> (Text, GitOid, Text, Integer, Text)
 extractProvenanceFields doc =
   let capsule = parsedManagedCapsule doc
-      ctx = provenanceOperationContext capsule
       opId = operationIdText (provenanceOperationId capsule)
       basis = provenanceBasis capsule
       actor = actorId (provenanceActor capsule)
@@ -401,12 +373,13 @@ checkAttachedBranch repository = do
 -- there are no unresolved paths in the index.
 checkNoActiveGitOperations :: Repository -> IO (Either Text ())
 checkNoActiveGitOperations repository = do
-  -- Use git status porcelain to check for unresolved paths
+  -- Porcelain diff independently refreshes stat-only matches by default, so
+  -- disable that behavior as well as optional locks before the byte snapshot.
   unmergedResult <-
     runRepository
       repository
       "check unmerged"
-      ["diff", "--name-only", "--diff-filter=U"]
+      ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "diff", "--name-only", "--diff-filter=U"]
       BS.empty
   case unmergedResult of
     Left err -> pure (Left ("diff unmerged failed: " <> T.pack (show err)))
@@ -416,8 +389,6 @@ checkNoActiveGitOperations repository = do
       | otherwise -> do
           -- Check for active operation markers in the common dir
           let commonDir = repositoryCommonDir repository
-              checkFile name = doesFileExist (commonDir </> name)
-              checkDir name = doesDirectoryExist (commonDir </> name)
           let activeOps =
                 filterM (\name -> doesFileExist (commonDir </> name))
                   [ "MERGE_HEAD",
@@ -448,12 +419,13 @@ checkNoActiveGitOperations repository = do
 -- Uses @git status --porcelain=v1 --untracked-files=all@ for each path.
 checkManagedPathsClean :: Repository -> [RepoPath] -> IO (Either Text ())
 checkManagedPathsClean repository paths = do
-  let pathArgs = map (\p -> "--" : [repoPathText p]) paths
+  -- Status may otherwise take an optional index lock solely to refresh stat
+  -- metadata, changing caller bytes during an intended read-only preflight.
   result <-
     runRepository
       repository
       "status check"
-      ["status", "--porcelain=v1", "--untracked-files=all"]
+      ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"]
       BS.empty
   pure $
     case result of
@@ -523,8 +495,6 @@ validateGeneratedFiles dependencies hooks repository TransactionConfig{..} writt
   pathErrorsRef <- newIORef []
 
   forM_ genFiles $ \GeneratedFile{..} -> do
-    -- Decode the file as UTF-8 text
-    let textContent = TE.decodeUtf8With lenientDecode genFileBytes
     -- Parse the document to extract the provenance capsule
     parsedResult <-
       try @SomeException (pure (parseManagedDocument genFilePath genFileBytes))
@@ -532,6 +502,8 @@ validateGeneratedFiles dependencies hooks repository TransactionConfig{..} writt
       Left parseErr -> do
         modifyIORef' pathErrorsRef ((genFilePath, "parse error: " <> T.pack (show parseErr)) :)
         return ()
+      Right (Left parseErr) ->
+        modifyIORef' pathErrorsRef ((genFilePath, "parse error: " <> T.pack (show parseErr)) :)
       Right (Right parsedDoc) -> do
         -- Validate op matches
         let (opId, basis, actor, ts, objIdText) = extractProvenanceFields parsedDoc
@@ -683,9 +655,6 @@ createTemporaryIndexContained beforeCleanupHook cleanupHook repository oldHead g
                                 Left parseErr -> throwIO (Stage6CreateTemporaryIndex ("parse tree OID: " <> parseErr))
                                 Right treeOid -> pure (Right treeOid)
 
-removeTempFile :: FilePath -> IO ()
-removeTempFile path = void $ try @SomeException (removeFile path)
-
 parseSingleOidFromOutput :: Text -> ByteString -> Either Text GitOid
 parseSingleOidFromOutput operation raw = do
   let body = stripTrailingWhitespace raw
@@ -761,122 +730,6 @@ buildCommitMessage subject operationId trailers =
   where
     trailerLine (key, value) = "ADRAI-" <> T.pack key <> ": " <> T.pack value
 
--- ---------------------------------------------------------------------------
--- Stage 8: Update ref and refresh index
--- ---------------------------------------------------------------------------
-
--- | Stage 8: Get the current branch ref, update-ref with CAS, and refresh
--- only the generated paths in the real index.
-updateRefAndRefresh :: Repository -> GitRef -> GitOid -> GitOid -> [RepoPath] -> Bool -> IO (Either TransactionError GitOid)
-updateRefAndRefresh repository branchRef newCommit expectedOld generatedPaths bootstrap = do
-  let configOperationIdDefault = "unknown"
-  -- Get the current ref tip for CAS verification
-  let refText = gitRefText branchRef
-  currentTipResult <-
-    runRepository
-      repository
-      "rev-parse ref"
-      ["rev-parse", "--verify", Text.unpack refText]
-      BS.empty
-  case currentTipResult of
-    Left err ->
-      throwIO (Stage8UpdateRef ("rev-parse ref failed: " <> T.pack (show err)))
-    Right res
-      | processExitCode res /= ExitSuccess ->
-          throwIO (Stage8UpdateRef ("rev-parse ref exited " <> T.pack (show (processExitCode res))))
-      | otherwise -> do
-          let casExpectedOld =
-                if bootstrap && isNullOid expectedOld
-                  then nullOid
-                  else expectedOld
-          let casCurrentTip =
-                case parseSingleOidFromOutput "rev-parse" (processStdout res) of
-                  Left _ -> expectedOld
-                  Right oid -> oid
-          -- CAS via update-ref
-          updateRefResult <-
-            runRepository
-              repository
-              "update-ref"
-              [ "update-ref",
-                "-m",
-                "adrai " <> configOperationIdDefault,
-                Text.unpack refText,
-                Text.unpack (gitOidText newCommit),
-                Text.unpack (gitOidText casExpectedOld)
-              ]
-              BS.empty
-          case updateRefResult of
-            Left err ->
-              throwIO (Stage8UpdateRef ("update-ref failed: " <> T.pack (show err)))
-            Right res2
-              | processExitCode res2 /= ExitSuccess ->
-                  throwIO (Stage8UpdateRef ("update-ref exited " <> T.pack (show (processExitCode res2))))
-              | otherwise -> do
-                  -- Refresh index for generated paths only
-                  indexUpdated <-
-                    if null generatedPaths
-                      then pure True
-                      else do
-                        refreshResult <-
-                          runRepository
-                            repository
-                            "reset index"
-                            (["reset", "-q", "HEAD", "--"] <> map (T.unpack . repoPathText) generatedPaths)
-                            BS.empty
-                        pure $ case refreshResult of
-                          Left _ -> False
-                          Right res -> processExitCode res == ExitSuccess
-                  unless indexUpdated $
-                    return () -- Non-fatal: index refresh is best-effort
-                  return (Right newCommit)
-
--- ---------------------------------------------------------------------------
--- Rollback logic
--- ---------------------------------------------------------------------------
-
--- | Rollback after failure: remove uncommitted generated files if the
--- current tip differs from our new commit.  Never delete a path that a
--- concurrent external commit adopted (check via blob_oid_at).
-rollbackGeneratedFiles :: Repository -> [RepoPath] -> GitOid -> GitOid -> IO (Either TransactionError ())
-rollbackGeneratedFiles repository generatedPaths currentTip newCommit = do
-  -- If current_tip == new_commit, another transaction may have committed
-  -- our work; don't delete files we don't own.
-  when (currentTip /= newCommit) $ do
-    forM_ generatedPaths $ \path -> do
-      -- Check if a concurrent external commit adopted this path
-      blobResult <- blobOidAt repository currentTip path
-      case blobResult of
-        Right (Just _) -> return () -- Adopted by concurrent commit, keep
-        _ -> do
-          -- Remove the file (ignore errors)
-          let worktreeRoot = repositoryWorktreeRoot repository
-          case worktreeRoot of
-            Nothing -> return ()
-            Just root -> do
-              let filePath = root </> T.unpack (repoPathText path)
-              void $ try @SomeException (removeFile filePath)
-              -- Try to remove empty parent directories
-              let parent = takeDirectory filePath
-              removeEmptyParents root parent
-  return (Right ())
-
--- | Recursively remove empty parent directories up to the root.
-removeEmptyParents :: FilePath -> FilePath -> IO ()
-removeEmptyParents root parent = do
-  when (parent /= root && parent /= ".") $ do
-    exists <- doesDirectoryExist parent
-    if exists
-      then do
-        contents <- getDirectoryContents parent
-        let nonDot = filter (`notElem` [".", ".."]) contents
-        if null nonDot
-          then do
-            void $ try @SomeException (removeDirectory parent)
-            removeEmptyParents root (takeDirectory parent)
-          else return ()
-      else return ()
-
 -- | Bootstrap cleanup resolves the managed destination immediately before
 -- every directory removal.  A late junction swap therefore becomes a typed
 -- rollback failure instead of a write outside the worktree.
@@ -895,26 +748,6 @@ removeEmptyParentsContained repository generatedFile root parent = do
           removeEmptyParentsContained repository generatedFile root (takeDirectory parent)
       else pure ()
 
--- | Get the blob OID at a revision for a given path. Returns Nothing if the
--- path doesn't exist at that revision.
-blobOidAt :: Repository -> GitOid -> RepoPath -> IO (Either TransactionError (Maybe GitOid))
-blobOidAt repository revision path = do
-  result <-
-    runRepository
-      repository
-      "rev-parse path"
-      ["rev-parse", "--verify", Text.unpack (gitOidText revision) <> ":" <> T.unpack (repoPathText path)]
-      BS.empty
-  pure $
-    case result of
-      Left _ -> Right Nothing
-      Right res
-        | processExitCode res /= ExitSuccess -> Right Nothing
-        | otherwise ->
-            case parseSingleOidFromOutput "rev-parse" (processStdout res) of
-              Left _ -> Right Nothing
-              Right oid -> Right (Just oid)
-
 -- | Capture the only caller-visible inputs that append-only work may touch
 -- before a successful ref CAS.  The generated paths are normally absent, but
 -- retaining the complete preimage makes cleanup fail closed if that invariant
@@ -928,7 +761,7 @@ captureAppendOnlySnapshot dependencies repository targetRef generated =
         appendOnlyBeforeSnapshot dependencies
         indexBytes <- readOptionalFile (repositoryGitDir repository </> "index")
         fileBytes <-
-          forM generated $ \generatedFile@GeneratedFile{..} -> do
+          forM generated $ \generatedFile -> do
             resolved <- resolveGeneratedDestination repository False generatedFile
             destination <- either throwIO pure resolved
             before <- readOptionalFile destination
@@ -1221,7 +1054,8 @@ commitAppendOnlyOperationWithHooks dependencies hooks repository config@Transact
               writtenFilesRef <- newIORef []
               attempt <- try @SomeException $ restore $ do
                  -- Stage 5: Validate and write generated files
-                 validateGeneratedFiles dependencies hooks repository config writtenFilesRef
+                 validatedFiles <- validateGeneratedFiles dependencies hooks repository config writtenFilesRef
+                 either throwIO pure validatedFiles
                  appendOnlyAfterGeneratedWrite dependencies
 
                  -- Stages 6-8: Create temporary index, commit, update ref
@@ -1337,23 +1171,19 @@ commitBootstrapFilesContained dependencies repository config@TransactionConfig{.
       return (Left (Stage1ResolveRepo "worktree root is missing"))
     Just _ -> do
       -- Stage 2: Acquire lock (with backup/restore on failure)
-      let generatedPaths = map genFilePath configGenerated
-
       -- Backup existing files.  This happens before the lock only to capture
       -- caller bytes, but remains inside a typed exception boundary so a late
       -- containment rejection never escapes the public Either API.
       let backupOne GeneratedFile{genFilePath = path} =
-            case repositoryWorktreeRoot repository of
-              Nothing -> return (path, Nothing)
-              Just root -> do
-                resolved <- resolveGeneratedDestination repository True GeneratedFile{genFilePath = path, genFileBytes = BS.empty}
-                filePath <- either throwIO pure resolved
-                exists <- doesFileExist filePath
-                if exists
-                  then do
-                    content <- BS.readFile filePath
-                    return (path, Just content)
-                  else return (path, Nothing)
+            do
+              resolved <- resolveGeneratedDestination repository True GeneratedFile{genFilePath = path, genFileBytes = BS.empty}
+              filePath <- either throwIO pure resolved
+              exists <- doesFileExist filePath
+              if exists
+                then do
+                  content <- BS.readFile filePath
+                  return (path, Just content)
+                else return (path, Nothing)
       backupAttempt <- try @SomeException (traverse backupOne configGenerated)
       backupFiles <-
         case backupAttempt of
@@ -1415,7 +1245,7 @@ commitBootstrapFilesAfterBackup dependencies repository config@TransactionConfig
           -- Create parent dirs and write
           case worktreeRoot of
             Nothing -> pure ()
-            Just root -> do
+            Just _ -> do
                 resolved <- resolveGeneratedDestination repository True (GeneratedFile genFilePath genFileBytes)
                 dirPath <- either throwIO pure resolved
                 createDirectoryIfMissing True (takeDirectory dirPath)
@@ -1592,10 +1422,7 @@ rollbackBootstrappedFiles dependencies repository _genFiles _backups backupData 
         Nothing -> pure ()
         Just root -> do
           resolved <- resolveGeneratedDestination repository True (GeneratedFile path BS.empty)
-          filePath <-
-            case resolved of
-              Left err -> throwIO (RollbackFailed ("managed bootstrap rollback destination rejected: " <> T.pack (show err)))
-              Right destination -> pure destination
+          void (either (throwIO . RollbackFailed . ("managed bootstrap rollback destination rejected: " <>) . T.pack . show) pure resolved)
           case maybeContent of
             Just content -> do
               -- Restore original content

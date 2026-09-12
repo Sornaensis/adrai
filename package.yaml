@@ -38,13 +38,82 @@ dependencies:
   - random
 
 library:
-  source-dirs: src
+  source-dirs: []
+  dependencies: [adrai:internal]
+  reexported-modules:
+    - Adrai.Cli
+    - Adrai.CliRunner
+    - Adrai.CliTypes
+    - Adrai.Compiler
+    - Adrai.Compiler.Attribution
+    - Adrai.Compiler.CacheSelection
+    - Adrai.Compiler.CacheSync
+    - Adrai.Compiler.DocumentCache
+    - Adrai.Compiler.Snapshot
+    - Adrai.Domain
+    - Adrai.Explorer
+    - Adrai.Explorer.Interactive
+    - Adrai.Explorer.Mutation
+    - Adrai.Explorer.Render
+    - Adrai.Explorer.Types
+    - Adrai.Format
+    - Adrai.Format.Config
+    - Adrai.Format.Document
+    - Adrai.Format.Json
+    - Adrai.Format.Toml
+    - Adrai.Git
+    - Adrai.Graph
+    - Adrai.History
+    - Adrai.Identity
+    - Adrai.Integrity
+    - Adrai.ManagedPath
+    - Adrai.Markdown
+    - Adrai.Provenance
+    - Adrai.Provenance.Classification
+    - Adrai.Provenance.Discovery
+    - Adrai.Provenance.Ensure
+    - Adrai.Provenance.Git.Lock
+    - Adrai.Provenance.Lock
+    - Adrai.Provenance.Overlay
+    - Adrai.Provenance.Read
+    - Adrai.Query
+    - Adrai.Relevance
+    - Adrai.Repository
+    - Adrai.Retrieval
+    - Adrai.Scope
+    - Adrai.SearchVectorCorpus
+    - Adrai.Service
+    - Adrai.Service.Mutation
+    - Adrai.Service.PostCommitIndex
+    - Adrai.Service.Query
+    - Adrai.Service.Transaction
+    - Adrai.Sqlite
+    - Adrai.State
+    - Adrai.Types
+    - Adrai.Vector
+    - Adrai.Web.Api
+    - Adrai.Web.Application
+    - Adrai.Web.Assets
+    - Adrai.Web.Events
+    - Adrai.Web.Server
+    - Adrai.Web.Socket
+    - Adrai.Web.Watch
+
+internal-libraries:
+  internal:
+    source-dirs: src
+    visibility: private
+    # These modules stay implementation-only even within the package.
+    other-modules:
+      - Adrai.Compiler.CacheLease.Internal
+      - Adrai.Compiler.CacheSelection.Internal
+      - Adrai.Service.PostCommitIndex.Internal
 
 executables:
   adrai:
     main: Main.hs
     source-dirs: app
-    dependencies: [adrai]
+    dependencies: [adrai:internal]
     ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N]
 
   # A Criterion-free, one-action executable for GHC attribution profiles.
@@ -62,8 +131,8 @@ executables:
       - Adrai.Fixture.Types
       - Adrai.Fixture.QueryMaterialization
       - Adrai.Fixture.RetrievalScale
-    dependencies: [adrai]
-    ghc-options: [-threaded, -rtsopts, -eventlog, -with-rtsopts=-N1]
+    dependencies: [adrai:internal]
+    ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1]
 
 tests:
   adrai-test:
@@ -76,12 +145,13 @@ tests:
       - test/integration
       - test/support
     dependencies:
-      - adrai
+      - adrai:internal
       - hedgehog
       - tasty
       - tasty-hedgehog
       - tasty-hunit
       - temporary
+    ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1]
 
   adrai-stress-test:
     main: Main.hs
@@ -93,12 +163,13 @@ tests:
     # keeps its cache/search assertions at the public executable boundary.
     build-tools: [adrai:adrai]
     dependencies:
-      - adrai
+      - adrai:internal
       - hedgehog
       - tasty
       - tasty-hedgehog
       - tasty-hunit
       - temporary
+    ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1]
 
   # Keep real-executable cache coverage outside the large-fixture test tree:
   # selecting it must never construct the 2,000-ADR stress corpus.
@@ -109,7 +180,7 @@ tests:
     # so Stack builds the current component and exposes it to the test process.
     build-tools: [adrai:adrai]
     dependencies:
-      - adrai
+      - adrai:internal
       - process
       - sqlite-simple
       - tasty
@@ -129,6 +200,7 @@ tests:
       - directory
       - tasty
       - tasty-hunit
+    ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1]
 
 benchmarks:
   adrai-bench:
@@ -144,10 +216,10 @@ benchmarks:
       - Adrai.Fixture.Relevance
       - Adrai.Fixture.RetrievalScale
     dependencies:
-      - adrai
+      - adrai:internal
       - criterion
       - deepseq
-    # The eventlog runtime remains idle for ordinary Criterion timing runs.
-    # It is enabled here only so the documented profiling invocation can opt
-    # in with +RTS -l and write heap samples to its run directory.
-    ghc-options: [-threaded, -rtsopts, -eventlog, -with-rtsopts=-N1]
+    # The RTS provides eventlog support by default; ordinary Criterion timing
+    # runs remain idle until the documented profiling invocation opts in with
+    # +RTS -l and writes heap samples to its run directory.
+    ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1]

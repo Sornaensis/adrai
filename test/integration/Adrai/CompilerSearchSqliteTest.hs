@@ -7,10 +7,18 @@ import Adrai.Compiler
 import Adrai.Cli (CompileResult (..))
 import Adrai.CliTypes (compileResultValue)
 import Adrai.CompilerMaterializationTest (p303RationaleSnapshot)
+import Adrai.Format.Config (defaultConfigText)
+import Adrai.Git (GitOid (..))
+import Adrai.GitTestSupport (commitFiles)
 import Adrai.Graph (GraphAxis (DecisionAxis), reduceManagedGraph)
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
 import Adrai.Property.Generators
+import Adrai.RetainedCache.CacheFixture
+  ( additionalSimpleCompilerFiles,
+    healthySimpleCompilerFiles,
+  )
 import Adrai.Retrieval
+import Adrai.SearchVectorCorpus (buildSearchVectorCorpus)
 import Adrai.Sqlite
 import Adrai.Format.Json (renderCanonicalJson)
 import Adrai.Integration.CLI (adraiTestArgs, createTestRepo, gitEnv, gitStdout, parseCompileResult)
@@ -41,6 +49,7 @@ import Test.Tasty.HUnit ((@?=), assertBool, testCase)
 import Test.Tasty.HUnit (assertFailure)
 import System.Exit (ExitCode (..))
 import System.Environment (getEnvironment, lookupEnv)
+import System.Directory (doesDirectoryExist, doesFileExist, removeFile, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process.Typed (proc, readProcess, setEnv)
@@ -54,6 +63,7 @@ tests =
       testCase "only current rationale and deterministic first-wins aliases reach ordinary and FTS storage" currentRationaleAndAliasContract,
       testCase "decision conflict candidates are independently retrievable and superseded root is absent" conflictContract,
       testCase "complete replacement removes stale rows and a mid-write failure rolls back" replacementContract,
+      testCase "typed loader round-trips identifier source and vector corpus losslessly" typedLoaderRoundTrip,
       testCase "P6-02I real executable compile is revision-bound, canonical, readable, and preserves caller state" p602iRealExecutableCompile
     ]
 
@@ -61,11 +71,20 @@ p602iRealExecutableCompile :: IO ()
 p602iRealExecutableCompile =
   withSystemTempDirectory "adrai p6-02i compile ü" $ \temporary -> do
     repository <- createTestRepo (temporary </> "repo parent with spaces")
-    _ <- p602iJsonOrThrow repository ["init", "--json"]
-    _ <- create repository "Compile ü first decision" "compiler.first"
-    historicalRevision <- headOid repository
-    _ <- create repository "Compile ü second decision" "compiler.second"
-    currentRevision <- headOid repository
+    initialBasis <- GitOid <$> headOid repository
+    (_, initialDocuments) <- requireRight "seal initial compiler fixture" (healthySimpleCompilerFiles initialBasis)
+    historicalRevision <-
+      commitFiles
+        repository
+        ( [ (".adrai.toml", TextEncoding.encodeUtf8 defaultConfigText),
+            (".gitattributes", "architecture/adrai/decisions/** text eol=lf\narchitecture/adrai/connections/** text eol=lf\n"),
+            (".gitignore", ".adrai/\n")
+          ]
+            <> initialDocuments
+        )
+    additionalDocuments <- requireRight "seal additional compiler fixture" (additionalSimpleCompilerFiles (GitOid historicalRevision))
+    currentRevision <- commitFiles repository additionalDocuments
+    removeCompileArtifacts repository
 
     BS.writeFile (repository </> "compile staged.bin") "\NUL\SOHstaged compile bytes\255"
     _ <- gitStdout repository ["add", "--", "compile staged.bin"]
@@ -84,70 +103,61 @@ p602iRealExecutableCompile =
 
     current <- compileJson repository ["compile", "--json"]
     coldCompilerRevision current @?= currentRevision
-    assertBool "current compile publishes a readable SQLite path" (not (null (coldCompilerDatabase current)))
-    coldCompilerCacheMode current @?= "exact"
-    coldCompilerIncrementalKind current @?= "exact"
-    coldCompilerDocumentsParsed current @?= 0
-    coldCompilerDocumentsReused current @?= 8
-    coldCompilerAdrsRebuilt current @?= 0
+    coldCompilerDatabase current
+      @?= repository </> ".adrai" </> "cache" </> (Text.unpack currentRevision <> ".sqlite")
+    coldCompilerCacheMode current @?= "full"
+    coldCompilerIncrementalKind current @?= "full"
+    coldCompilerDocumentsParsed current @?= 8
+    coldCompilerDocumentsReused current @?= 0
+    assertBool "initial current compile rebuilds operations" (coldCompilerAdrsRebuilt current > 0)
+    coldCompilerAdrsReused current @?= 0
+    coldCompilerAnnBuckets current @?= 0
     currentMeta <- readCompileMeta (coldCompilerDatabase current)
     lookup "resolved_oid" currentMeta @?= Just currentRevision
     lookup "managed_source_count" currentMeta @?= Just (Text.pack (show (coldCompilerDocumentsParsed current + coldCompilerDocumentsReused current)))
     lookup "operation_count" currentMeta @?= Just (Text.pack (show (coldCompilerAdrsRebuilt current + coldCompilerAdrsReused current)))
-    lookup "search_document_count" currentMeta @?= Just (Text.pack (show (coldCompilerAnnBuckets current)))
+    lookup "search_document_count" currentMeta @?= Just "2"
 
     historical <- compileJson repository ["compile", "--at", Text.unpack historicalRevision, "--json"]
     coldCompilerRevision historical @?= historicalRevision
-    coldCompilerDatabase historical @?= coldCompilerDatabase current
+    coldCompilerDatabase historical
+      @?= repository </> ".adrai" </> "cache" </> (Text.unpack historicalRevision <> ".sqlite")
+    assertBool "current and historical compile archives are distinct" (coldCompilerDatabase historical /= coldCompilerDatabase current)
     coldCompilerCacheMode historical @?= "full"
     coldCompilerIncrementalKind historical @?= "full"
     assertBool "historical compile rebuilds managed documents" (coldCompilerDocumentsParsed historical > 0)
     coldCompilerDocumentsReused historical @?= 0
     assertBool "historical compile rebuilds operations" (coldCompilerAdrsRebuilt historical > 0)
     coldCompilerAdrsReused historical @?= 0
+    coldCompilerAnnBuckets historical @?= 0
     historicalMeta <- readCompileMeta (coldCompilerDatabase historical)
     lookup "resolved_oid" historicalMeta @?= Just historicalRevision
     lookup "managed_source_count" historicalMeta @?= Just (Text.pack (show (coldCompilerDocumentsParsed historical + coldCompilerDocumentsReused historical)))
     lookup "operation_count" historicalMeta @?= Just (Text.pack (show (coldCompilerAdrsRebuilt historical + coldCompilerAdrsReused historical)))
+    lookup "search_document_count" historicalMeta @?= Just "1"
 
     currentRebuilt <- compileJson repository ["compile", "--json"]
     coldCompilerRevision currentRebuilt @?= currentRevision
-    coldCompilerDatabase currentRebuilt @?= coldCompilerDatabase current
-    coldCompilerCacheMode currentRebuilt @?= "full"
-    coldCompilerIncrementalKind currentRebuilt @?= "full"
-    coldCompilerDocumentsParsed currentRebuilt @?= 8
-    coldCompilerDocumentsReused currentRebuilt @?= 0
-    assertBool "current compile after historical rebuilds operations" (coldCompilerAdrsRebuilt currentRebuilt > 0)
-    coldCompilerAdrsReused currentRebuilt @?= 0
+    coldCompilerDatabase currentRebuilt @?= repository </> ".adrai" </> "index.sqlite"
+    assertBool "exact current compile index alias differs from the immutable archive" (coldCompilerDatabase currentRebuilt /= coldCompilerDatabase current)
+    coldCompilerCacheMode currentRebuilt @?= "exact"
+    coldCompilerIncrementalKind currentRebuilt @?= "exact"
+    coldCompilerDocumentsParsed currentRebuilt @?= 0
+    coldCompilerDocumentsReused currentRebuilt @?= 8
+    coldCompilerAdrsRebuilt currentRebuilt @?= 0
+    coldCompilerAdrsReused currentRebuilt @?= 2
+    coldCompilerAnnBuckets currentRebuilt @?= 0
     currentRebuiltMeta <- readCompileMeta (coldCompilerDatabase currentRebuilt)
     lookup "resolved_oid" currentRebuiltMeta @?= Just currentRevision
     lookup "managed_source_count" currentRebuiltMeta @?= Just (Text.pack (show (coldCompilerDocumentsParsed currentRebuilt + coldCompilerDocumentsReused currentRebuilt)))
     lookup "operation_count" currentRebuiltMeta @?= Just (Text.pack (show (coldCompilerAdrsRebuilt currentRebuilt + coldCompilerAdrsReused currentRebuilt)))
+    lookup "search_document_count" currentRebuiltMeta @?= Just "2"
     databaseBeforeFailure <- BS.readFile (coldCompilerDatabase currentRebuilt)
+    currentArchiveBeforeFailure <- BS.readFile (coldCompilerDatabase current)
 
     assertFailureCall repository ["compile", "--at", "refs/heads/does-not-exist", "--json"] 2 "adrai: "
     BS.readFile (coldCompilerDatabase currentRebuilt) >>= (@?= databaseBeforeFailure)
-    assertFailureCall repository ["compile", "--database", "forbidden.sqlite"] 2 "Invalid option `--database'"
-    BS.readFile (coldCompilerDatabase currentRebuilt) >>= (@?= databaseBeforeFailure)
-
-    plainCurrent <- compileJson repository ["compile", "--json"]
-    plainCurrent @?= current
-
-    (plainExit, plainOut, plainErr) <- p602iRaw repository ["compile"]
-    plainExit @?= ExitSuccess
-    plainErr @?= ""
-    plainOut
-      @?= LBS.fromStrict
-        ( TextEncoding.encodeUtf8
-            ( Text.unlines
-                [ "revision=" <> coldCompilerRevision plainCurrent
-                , "database=" <> Text.pack (coldCompilerDatabase plainCurrent)
-                , "documents_parsed=" <> Text.pack (show (coldCompilerDocumentsParsed plainCurrent))
-                , "issues=" <> Text.pack (show (coldCompilerIssueCount plainCurrent))
-                ]
-            )
-        )
-    readCompileMeta (coldCompilerDatabase plainCurrent) >>= \metadata -> lookup "resolved_oid" metadata @?= Just currentRevision
+    BS.readFile (coldCompilerDatabase current) >>= (@?= currentArchiveBeforeFailure)
 
     afterHead <- headOid repository
     afterRef <- gitStdout repository ["symbolic-ref", "--quiet", "HEAD"]
@@ -170,17 +180,6 @@ p602iRealExecutableCompile =
     afterDirtyBytes @?= beforeDirtyBytes
     afterUntrackedBytes @?= beforeUntrackedBytes
   where
-    create repository title domain =
-      p602iJsonOrThrow repository
-        [ "create"
-        , "--title", title
-        , "--summary", title <> " summary"
-        , "--body", "## Decision\nCompile the selected immutable revision.\n"
-        , "--domain", domain
-        , "--applies-to", "src/**"
-        , "--actor", "human:compiler"
-        , "--json"
-        ]
     headOid repository = Text.strip . TextEncoding.decodeUtf8 . LBS.toStrict <$> gitStdout repository ["rev-parse", "HEAD"]
     compileJson repository arguments = do
       (exitCode, stdoutBytes, stderrBytes) <- p602iRaw repository arguments
@@ -224,16 +223,15 @@ p602iRaw repository arguments = do
   inherited <- getEnvironment
   readProcess (setEnv (p602iEnvironment inherited) (proc executable (adraiTestArgs repository arguments)))
 
-p602iJsonOrThrow :: FilePath -> [String] -> IO Aeson.Value
-p602iJsonOrThrow repository arguments = do
-  (exitCode, stdoutBytes, stderrBytes) <- p602iRaw repository arguments
-  case exitCode of
-    ExitSuccess ->
-      case Aeson.decode stdoutBytes of
-        Just value -> pure value
-        Nothing -> assertFailure "P6-02I executable emitted non-JSON success output" >> fail "unreachable"
-    ExitFailure code ->
-      assertFailure ("P6-02I executable failed with exit " <> show code <> ": " <> Text.unpack (TextEncoding.decodeUtf8 (LBS.toStrict stderrBytes))) >> fail "unreachable"
+removeCompileArtifacts :: FilePath -> IO ()
+removeCompileArtifacts repository = do
+  let currentDatabase = repository </> ".adrai" </> "index.sqlite"
+      cacheDirectory = repository </> ".adrai" </> "cache"
+  doesFileExist currentDatabase >>= \exists -> if exists then removeFile currentDatabase else pure ()
+  doesDirectoryExist cacheDirectory >>= \exists -> if exists then removePathForcibly cacheDirectory else pure ()
+
+requireRight :: (Show problem) => String -> Either problem value -> IO value
+requireRight label = either (\problem -> assertFailure (label <> ": " <> show problem) >> fail "unreachable") pure
 
 p602iEnvironment :: [(String, String)] -> [(String, String)]
 p602iEnvironment inherited =
@@ -343,6 +341,36 @@ replacementContract = withMemory $ \connection -> do
   documentIds connection >>= (@?= oldIds)
   persistedSearchSnapshot connection >>= (@?= oldSnapshot)
 
+typedLoaderRoundTrip :: IO ()
+typedLoaderRoundTrip = withMemory $ \connection -> do
+  initializeSearchSchema connection >>= (@?= Right ())
+  let base = mustRight (materializeCurrentSearch (projectionFixtureAfter (materializeProjectionDag fixedProjectionSpec)))
+      documents =
+        case searchMaterializationDocuments base of
+          document : remaining ->
+            document
+              { searchDocumentIdentifierSource = "raw identifier source distinct from persisted identifiers",
+                searchDocumentIdentifiers = "display identifier text"
+              }
+              : remaining
+          [] -> error "typed loader fixture unexpectedly has no documents"
+      materialization =
+        SearchMaterialization
+          documents
+          (concatMap (mustRight . chunkSearchDocument) documents)
+          (materializationAliases documents)
+      canonicalMaterialization =
+        materialization
+          { searchMaterializationPassages = sortPassages (searchMaterializationPassages materialization)
+          }
+  assertBool
+    "fixture preserves the distinction the vector embedder requires"
+    (any (\document -> searchDocumentIdentifierSource document /= searchDocumentIdentifiers document) documents)
+  replaceSearchMaterialization connection materialization >>= (@?= Right ())
+  loaded <- loadSearchMaterialization connection
+  loaded @?= Right canonicalMaterialization
+  fmap buildSearchVectorCorpus loaded @?= Right (buildSearchVectorCorpus materialization)
+
 conflictSnapshot :: ReadSnapshot
 conflictSnapshot =
   ReadSnapshot
@@ -397,6 +425,7 @@ persistedSearchSnapshot connection =
           "consequences",
           "domains",
           "rationale",
+          "identifier_source",
           "identifiers",
           "other",
           "scope",

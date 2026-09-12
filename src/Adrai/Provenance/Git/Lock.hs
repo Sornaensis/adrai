@@ -31,7 +31,7 @@ import Adrai.Git (Repository (..), repositoryCommonDir)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
 import Control.Exception (Exception, IOException, SomeAsyncException, SomeException, fromException, mask, throwIO, try, uninterruptibleMask_)
-import Control.Monad (unless, void)
+import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Map.Strict as Map
@@ -253,7 +253,7 @@ parseLockPid bytes =
           let digits = init rest
            in case reads digits of
                 [(pid, "")]
-                  | pid > 0 && head digits /= '0' && all isAsciiDigit digits -> Just pid
+                  | pid > 0, firstDigit : _ <- digits, firstDigit /= '0', all isAsciiDigit digits -> Just pid
                 _ -> Nothing
     _ -> Nothing
   where
@@ -464,9 +464,6 @@ openExistingNative path =
       Win32.oPEN_EXISTING
       Win32.fILE_ATTRIBUTE_NORMAL
       Nothing
-
-nativeDescriptor :: NativeLock -> Int
-nativeDescriptor _ = 0
 
 writeOwnedNative :: FilePath -> NativeLock -> Int -> IO ()
 writeOwnedNative _ (NativeLock handle) pid = do

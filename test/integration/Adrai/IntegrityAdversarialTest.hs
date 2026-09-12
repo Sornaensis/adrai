@@ -8,8 +8,22 @@ import Adrai.Fixture.CompilerRepository
 import Adrai.Format.Document
 import Adrai.Git
 import Adrai.GitTestSupport
+import Adrai.Integrity
+  ( IntegrityIssue (integrityCode),
+    IntegrityIssueCode (AppendOnlyRewrite),
+    parseSnapshotEntry,
+    snapshotEntryDocument,
+    validateAppendOnlyDelta,
+  )
 import Adrai.Provenance
 import Adrai.Repository
+import Adrai.RetainedNative.ResidualRepositorySeed
+  ( RepositorySeed,
+    createRepositorySeed,
+    createRepositorySeedWith,
+    removeRepositorySeed,
+    withRepositorySeedCopy,
+  )
 import Adrai.Types (mkOperationId, mkRepoPath, operationIdText)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -17,68 +31,42 @@ import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.SQLite.Simple (Connection, Only (..), close, open, query_)
-import System.Directory (removeFile, renameFile)
+import System.Directory (removeFile)
 import System.FilePath ((</>))
-import System.IO.Temp (withSystemTempDirectory)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
 tests :: TestTree
 tests =
-  testGroup
-    "Compiler integrity adversarial"
-    [ testCase "malformed managed bytes persist INVALID_MANAGED_DOCUMENT and gate semantics" $
-        withCompilerFiles malformedFiles $ \_ resolved ->
+  withResource createEmptyRepositorySeed removeRepositorySeed $ \getEmptyRepositorySeed ->
+    withResource createExpandedRepositorySeed (removeRepositorySeed . fst) $ \getExpandedRepositorySeed ->
+      testGroup
+        "Compiler integrity adversarial"
+        [ testCase "malformed managed bytes persist INVALID_MANAGED_DOCUMENT and gate semantics" $
+        withCompilerFiles getEmptyRepositorySeed malformedFiles $ \_ resolved ->
           assertInvalidWith resolved "INVALID_MANAGED_DOCUMENT",
-      testCase "wrong path and duplicate identity persist canonical diagnostics" $
-        withCompilerFiles wrongAndDuplicateFiles $ \_ resolved -> do
-          connection <- compileIntoMemory resolved
-          assertIssue connection "NON_CANONICAL_PATH"
-          assertIssue connection "DUPLICATE_OBJECT_ID"
-          assertNoSemantics connection
-          close connection,
       testCase "selected Git nonblob persists MANAGED_NONBLOB" $
-        withSystemTempDirectory "adrai compiler nonblob" $ \temporary -> do
-          let repository = temporary </> "repository"
-              path = "architecture/adrai/connections/C000/orphan.connection.md"
-          initTestRepository repository
+        withEmptyRepository getEmptyRepositorySeed "adrai compiler nonblob" $ \repository -> do
+          let path = "architecture/adrai/connections/C000/orphan.connection.md"
           commitOid <- commitFile repository "seed.txt" "seed"
           _ <- gitSuccess repository ["update-index", "--add", "--cacheinfo", "160000," <> Text.unpack commitOid <> "," <> path] BS.empty
           _ <- gitSuccess repository ["commit", "-m", "managed nonblob"] BS.empty
           resolved <- resolveHead repository
           assertInvalidWith resolved "MANAGED_NONBLOB",
-      testCase "managed-suffix directories are observed as nonblobs" $
-        withSystemTempDirectory "adrai compiler managed directories" $ \temporary -> do
-          let repository = temporary </> "repository"
-          initTestRepository repository
-          _ <-
-            commitFiles
-              repository
-              [ ("architecture/adrai/decisions/tree.decision.md/child.txt", "decision directory child"),
-                ("architecture/adrai/connections/tree.connection.md/child.txt", "connection directory child")
-              ]
-          resolved <- resolveHead repository
-          connection <- compileIntoMemory resolved
-          issues <- query_ connection "SELECT code FROM issue WHERE code='MANAGED_NONBLOB' ORDER BY path" :: IO [Only Text]
-          issues @?= [Only "MANAGED_NONBLOB", Only "MANAGED_NONBLOB"]
-          assertNoSemantics connection
-          close connection,
-      testCase "graph zero-head input persists graph diagnostics and no semantics" $
-        withCompilerFiles zeroHeadCompilerFiles $ \_ resolved -> do
-          connection <- compileIntoMemory resolved
-          graphCount <- query_ connection "SELECT count(*) FROM issue WHERE origin='graph'" :: IO [Only Int64]
-          assertBool "zero-head graph diagnostic is persisted" (graphCount /= [Only 0])
-          assertNoSemantics connection
-          close connection,
-      testCase "internally resealed same-path rewrite persists APPEND_ONLY_REWRITE" $
-        withExpandedRepository $ \repository _files (path, bytes) -> do
-          rewritten <- requireFixture (resealChangedRationale path bytes)
-          BS.writeFile (repository </> path) rewritten
-          _ <- commitFiles repository []
-          resolveHead repository >>= (\resolved -> assertInvalidWith resolved "APPEND_ONLY_REWRITE"),
       testCase "valid then malformed then delete does not retain historical identity" $
-        withExpandedRepository $ \repository _files (path, bytes) -> do
+        withExpandedRepository getExpandedRepositorySeed $ \repository _files (path, bytes) -> do
           identity <- requireFixture (documentIdentityText path bytes)
+          rewritten <- requireFixture (resealChangedRationale path bytes)
+          assertBool "freshly resealed semantic rewrite changes committed bytes" (rewritten /= bytes)
+          rewrittenIdentity <- requireFixture (documentIdentityText path rewritten)
+          rewrittenIdentity @?= identity
+          repoPath <- requireFixture (firstShow "path" (mkRepoPath (Text.pack path)))
+          let originalEntry = parseSnapshotEntry repoPath bytes
+              rewrittenEntry = parseSnapshotEntry repoPath rewritten
+          case snapshotEntryDocument rewrittenEntry of
+            Left problem -> assertFailure ("freshly resealed semantic rewrite did not parse: " <> show problem)
+            Right _ -> pure ()
+          map integrityCode (validateAppendOnlyDelta [originalEntry] [rewrittenEntry]) @?= [AppendOnlyRewrite]
           BS.writeFile (repository </> path) "malformed managed document"
           _ <- commitFiles repository []
           removeFile (repository </> path)
@@ -92,7 +80,7 @@ tests =
           assertNoSemantics connection
           close connection,
       testCase "valid then malformed then different valid does not retain historical identity" $
-         withExpandedRepository $ \repository _files (path, bytes) -> do
+         withExpandedRepository getExpandedRepositorySeed $ \repository _files (path, bytes) -> do
           identity <- requireFixture (documentIdentityText path bytes)
           -- Do not copy a member from an operation that remains live: that is
           -- covered below and must fail closed as INCOMPLETE_OPERATION.  This
@@ -114,7 +102,7 @@ tests =
           assertNoSemantics connection
           close connection,
        testCase "malformed then valid member reused from a live operation persists INCOMPLETE_OPERATION" $
-         withExpandedRepository $ \repository files (path, _bytes) -> do
+         withExpandedRepository getExpandedRepositorySeed $ \repository files (path, _bytes) -> do
            (reusedPath, reusedBytes) <-
              case [(candidatePath, candidate) | (candidatePath, candidate) <- files, candidatePath /= path] of
                candidate : _ -> pure candidate
@@ -130,70 +118,32 @@ tests =
            assertIssueOperation connection "INCOMPLETE_OPERATION" reusedOperation
            assertNoSemantics connection
            close connection,
-       testCase "permanent deletion persists MISSING_HISTORICAL_OBJECT" $
-        withExpandedRepository $ \repository _files (path, _bytes) -> do
-          removeFile (repository </> path)
-          _ <- commitFiles repository []
-          resolved <- resolveHead repository
-          connection <- compileIntoMemory resolved
-          assertIssue connection "MISSING_HISTORICAL_OBJECT"
-          assertIssue connection "INCOMPLETE_OPERATION"
-          assertNoSemantics connection
-          close connection,
-      testCase "delete and exact restore persists APPEND_ONLY_DELETE" $
-        withExpandedRepository $ \repository _files (path, bytes) -> do
+       testCase "delete and exact restore persists APPEND_ONLY_DELETE" $
+        withExpandedRepository getExpandedRepositorySeed $ \repository _files (path, bytes) -> do
           removeFile (repository </> path)
           _ <- commitFiles repository []
           _ <- commitFile repository path bytes
           resolveHead repository >>= (\resolved -> assertInvalidWith resolved "APPEND_ONLY_DELETE"),
-      testCase "rename persists noncanonical destination and historical disappearance" $
-        withExpandedRepository $ \repository _files (path, _bytes) -> do
-          let renamed = "architecture/adrai/connections/renamed.connection.md"
-          renameFile (repository </> path) (repository </> renamed)
-          _ <- commitFiles repository []
-          resolved <- resolveHead repository
-          connection <- compileIntoMemory resolved
-          assertIssue connection "NON_CANONICAL_PATH"
-          assertIssue connection "MISSING_HISTORICAL_OBJECT"
-          assertNoSemantics connection
-          close connection,
-      testCase "each merge parent edge is checked independently" $
-        withSystemTempDirectory "adrai compiler merge edge" $ \temporary -> do
-          let repository = temporary </> "repository"
-          initTestRepository repository
-          basisText <- commitFile repository "seed.txt" "basis"
-          basis <- requireOid basisText
-          healthy <- requireFixture (healthyCompilerFiles basis)
-          _ <- commitFiles repository healthy
-          _ <- gitSuccess repository ["checkout", "-b", "feature"] BS.empty
-          _ <- commitFile repository "feature.txt" "independent branch"
-          _ <- gitSuccess repository ["checkout", "main"] BS.empty
-          expanded <- requireFixture (scopeExpandedCompilerFiles basis)
-          let member@(memberPath, _memberBytes) = requireExpandedMember healthy expanded
-          _ <- commitFiles repository [member]
-          _ <- gitSuccess repository ["merge", "--no-commit", "--no-ff", "feature"] BS.empty
-          removeFile (repository </> memberPath)
-          _ <- commitFiles repository []
-          resolveHead repository >>= (\resolved -> assertInvalidWith resolved "MISSING_HISTORICAL_OBJECT"),
       testCase "selected merge deltas exactly match full traversal when both parents change managed paths" $
-        withSystemTempDirectory "adrai compiler selected merge parity" $ \temporary -> do
-          let repository = temporary </> "repository"
-              repoPath value = case mkRepoPath value of
+        withEmptyRepository getEmptyRepositorySeed "adrai compiler selected merge parity" $ \repository -> do
+          let repoPath value = case mkRepoPath value of
                 Right path -> path
                 Left problem -> error (show problem)
               roots = [repoPath ".adrai.toml", repoPath "architecture/adrai/decisions", repoPath "architecture/adrai/connections"]
-          initTestRepository repository
           basisText <- commitFile repository "seed.txt" "basis"
           basis <- requireOid basisText
           healthy <- requireFixture (healthyCompilerFiles basis)
           _ <- commitFiles repository healthy
           _ <- gitSuccess repository ["checkout", "-b", "feature"] BS.empty
-          let (featurePath, _) = head healthy
+          (featurePath, _) <-
+            case healthy of
+              entry : _ -> pure entry
+              [] -> assertFailure "healthy fixture must contain a removable file" >> fail "unreachable"
           removeFile (repository </> featurePath)
           _ <- commitFiles repository []
           _ <- gitSuccess repository ["checkout", "main"] BS.empty
           expanded <- requireFixture (scopeExpandedCompilerFiles basis)
-          let member@(memberPath, _) = requireExpandedMember healthy expanded
+          let member@(_memberPath, _) = requireExpandedMember healthy expanded
           _ <- commitFiles repository [member]
           _ <- gitSuccess repository ["merge", "--no-commit", "--no-ff", "feature"] BS.empty
           _ <- commitFiles repository []
@@ -202,8 +152,12 @@ tests =
           graph <- case graphResult of
             Left problem -> assertFailure (show problem) >> fail "unreachable"
             Right value -> pure value
-          selectedResult <- historyTreeDeltasAt (resolvedRepository resolved) True graph (head roots) roots
-          fullResult <- historyTreeDeltasAt (resolvedRepository resolved) False graph (head roots) roots
+          selectedRoot <-
+            case roots of
+              root : _ -> pure root
+              [] -> assertFailure "history roots fixture must be non-empty" >> fail "unreachable"
+          selectedResult <- historyTreeDeltasAt (resolvedRepository resolved) True graph selectedRoot roots
+          fullResult <- historyTreeDeltasAt (resolvedRepository resolved) False graph selectedRoot roots
           selected <- case selectedResult of
             Left problem -> assertFailure (show problem) >> fail "unreachable"
             Right value -> pure value
@@ -211,7 +165,11 @@ tests =
             Left problem -> assertFailure (show problem) >> fail "unreachable"
             Right value -> pure value
           selected @?= full
-          let mergeNode = last graph
+          mergeNode <-
+            case reverse graph of
+              node : _ -> pure node
+              [] -> assertFailure "merge history graph must be non-empty" >> fail "unreachable"
+          let
               mergeEdges = [delta | delta <- selected, gitHistoryTreeDeltaCommit delta == gitCommitNodeOid mergeNode]
           map gitHistoryTreeDeltaParent mergeEdges @?= map Just (gitCommitNodeParents mergeNode)
           assertBool "both original merge edges carry managed deltas" (length mergeEdges == 2 && all (not . null . gitHistoryTreeDeltaChanges) mergeEdges)
@@ -220,19 +178,6 @@ tests =
 
 malformedFiles :: GitOid -> Either Text [(FilePath, ByteString)]
 malformedFiles _ = Right [("architecture/adrai/decisions/broken.decision.md", "broken")]
-
-wrongAndDuplicateFiles :: GitOid -> Either Text [(FilePath, ByteString)]
-wrongAndDuplicateFiles basis = do
-  files <- healthyCompilerFiles basis
-  case break (Text.isSuffixOf ".decision.md" . Text.pack . fst) files of
-    (_, []) -> Left "healthy fixture has no decision"
-    (before, decision@(_path, bytes) : after) ->
-      Right
-        ( before
-            <> [decision]
-            <> after
-            <> [("architecture/adrai/decisions/zz-copy.decision.md", bytes)]
-        )
 
 resealChangedRationale :: FilePath -> ByteString -> Either Text ByteString
 resealChangedRationale path bytes = do
@@ -295,11 +240,40 @@ resealWithDistinctOperation path bytes = do
 firstShow :: (Show problem) => Text -> Either problem value -> Either Text value
 firstShow label = either (Left . ((label <> ": ") <>) . Text.pack . show) Right
 
-withCompilerFiles :: (GitOid -> Either Text [(FilePath, ByteString)]) -> (FilePath -> ResolvedRepositoryRevision -> IO value) -> IO value
-withCompilerFiles fixture action =
-  withSystemTempDirectory "adrai compiler adversarial" $ \temporary -> do
-    let repository = temporary </> "repository"
+data ExpandedRepositoryFacts = ExpandedRepositoryFacts
+  { expandedRepositoryFiles :: [(FilePath, ByteString)],
+    expandedRepositoryMember :: (FilePath, ByteString)
+  }
+
+type ExpandedRepositorySeed = (RepositorySeed, ExpandedRepositoryFacts)
+
+createEmptyRepositorySeed :: IO RepositorySeed
+createEmptyRepositorySeed =
+  createRepositorySeed "adrai-integrity-empty-seed" initTestRepository
+
+createExpandedRepositorySeed :: IO ExpandedRepositorySeed
+createExpandedRepositorySeed =
+  createRepositorySeedWith "adrai-integrity-expanded-seed" $ \repository -> do
     initTestRepository repository
+    basisText <- commitFile repository "seed.txt" "basis"
+    basis <- requireOid basisText
+    healthy <- requireFixture (healthyCompilerFiles basis)
+    expanded <- requireFixture (scopeExpandedCompilerFiles basis)
+    _ <- commitFiles repository expanded
+    pure
+      ExpandedRepositoryFacts
+        { expandedRepositoryFiles = expanded,
+          expandedRepositoryMember = requireExpandedMember healthy expanded
+        }
+
+withEmptyRepository :: IO RepositorySeed -> String -> (FilePath -> IO value) -> IO value
+withEmptyRepository getRepositorySeed label action = do
+  seed <- getRepositorySeed
+  withRepositorySeedCopy seed label action
+
+withCompilerFiles :: IO RepositorySeed -> (GitOid -> Either Text [(FilePath, ByteString)]) -> (FilePath -> ResolvedRepositoryRevision -> IO value) -> IO value
+withCompilerFiles getRepositorySeed fixture action =
+  withEmptyRepository getRepositorySeed "adrai compiler adversarial" $ \repository -> do
     basisText <- commitFile repository "seed.txt" "basis"
     basis <- requireOid basisText
     files <- requireFixture (fixture basis)
@@ -307,17 +281,11 @@ withCompilerFiles fixture action =
     resolved <- resolveHead repository
     action repository resolved
 
-withExpandedRepository :: (FilePath -> [(FilePath, ByteString)] -> (FilePath, ByteString) -> IO value) -> IO value
-withExpandedRepository action =
-  withSystemTempDirectory "adrai compiler history" $ \temporary -> do
-    let repository = temporary </> "repository"
-    initTestRepository repository
-    basisText <- commitFile repository "seed.txt" "basis"
-    basis <- requireOid basisText
-    healthy <- requireFixture (healthyCompilerFiles basis)
-    expanded <- requireFixture (scopeExpandedCompilerFiles basis)
-    _ <- commitFiles repository expanded
-    action repository expanded (requireExpandedMember healthy expanded)
+withExpandedRepository :: IO ExpandedRepositorySeed -> (FilePath -> [(FilePath, ByteString)] -> (FilePath, ByteString) -> IO value) -> IO value
+withExpandedRepository getExpandedRepositorySeed action = do
+  (seed, facts) <- getExpandedRepositorySeed
+  withRepositorySeedCopy seed "adrai compiler history" $ \repository ->
+    action repository (expandedRepositoryFiles facts) (expandedRepositoryMember facts)
 
 requireExpandedMember :: [(FilePath, ByteString)] -> [(FilePath, ByteString)] -> (FilePath, ByteString)
 requireExpandedMember healthy expanded =

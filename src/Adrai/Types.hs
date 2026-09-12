@@ -73,8 +73,6 @@ module Adrai.Types
     ManagedPathsViolation (..),
     LogicalLine (..),
     mkLogicalLine,
-    logicalLineId,
-    logicalLineRefs,
     LogicalLineViolation (..),
     Config,
     mkConfig,

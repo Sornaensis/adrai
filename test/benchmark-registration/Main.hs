@@ -2,7 +2,7 @@ module Main (main) where
 
 import Control.Monad (forM_)
 import Data.Char (isSpace)
-import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, tails)
 import System.Directory (doesFileExist, listDirectory)
 import Test.Tasty (defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase)
@@ -26,6 +26,8 @@ benchmarkComponentRegistration = do
     assertContains packageBenchmark needle ("adrai-bench package.yaml stanza is missing: " <> needle)
   forM_ cabalRegistrationRequirements $ \needle ->
     assertContains cabalBenchmark needle ("adrai-bench Cabal stanza is missing: " <> needle)
+  assertNotContains packageBenchmark "-eventlog" "adrai-bench package registration must rely on the RTS eventlog support enabled by profiling"
+  assertNotContains cabalBenchmark "-eventlog" "adrai-bench Cabal registration must not force eventlog instrumentation into ordinary timing"
 
 profileDriverRegistration :: Assertion
 profileDriverRegistration = do
@@ -39,6 +41,8 @@ profileDriverRegistration = do
     assertContains packageExecutable needle ("adrai-profile package.yaml stanza is missing: " <> needle)
   forM_ profileCabalRegistrationRequirements $ \needle ->
     assertContains cabalExecutable needle ("adrai-profile Cabal stanza is missing: " <> needle)
+  assertNotContains packageExecutable "-eventlog" "adrai-profile package registration must leave eventlog collection to an explicit RTS invocation"
+  assertNotContains cabalExecutable "-eventlog" "adrai-profile Cabal registration must leave eventlog collection to an explicit RTS invocation"
   assertContains profileMain "ProfileDriver.main" "adrai-profile must delegate to the profile driver"
   forM_ profileDriverRequirements $ \needle ->
     assertContains profileDriver needle ("profile driver is missing one-action contract: " <> needle)
@@ -48,7 +52,7 @@ profileDriverRegistration = do
   assertNotContains profileDriver "Criterion.Main" "profile driver must not run Criterion"
   forM_ sharedFixtureReadinessRequirements $ \needle ->
     assertContains sharedFixture needle ("shared current-search fixture is missing ready-state forcing: " <> needle)
-  assertContains benchmarkMain "rnf fixture = forceCurrentSearchFixture fixture `seq` ()" "Criterion must use the shared current-search fixture forcing API"
+  assertContains benchmarkMain "rnf fixture = forceCurrentSearchFixture (unCurrentSearchBenchmarkFixture fixture) `seq` ()" "Criterion must strictly force the wrapped shared current-search fixture"
 
 retiredMeasurementScriptsAbsent :: Assertion
 retiredMeasurementScriptsAbsent = do
@@ -67,7 +71,34 @@ workloadRegistration :: Assertion
 workloadRegistration = do
   benchmarkMain <- benchmarkTreeSource <$> readRequired "bench/Main.hs"
   benchmarkReadme <- readRequired "bench/README.md"
-  assertBool "benchmark main must contain exactly the registered adrai Criterion tree" (benchmarkMain == exactCriterionTree)
+  forM_ criterionGroupNames $ \groupName ->
+    assertOccurrenceCount 1 ("bgroup\"" <> groupName <> "\"") benchmarkMain ("benchmark main must register Criterion group exactly once: " <> groupName)
+  assertOccurrenceCount 5 "bgroup\"" benchmarkMain "benchmark main must contain exactly the five registered Criterion groups"
+  forM_ selectableCriterionLeafNames $ \workloadName ->
+    assertOccurrenceCount 1 ("bench\"" <> workloadName <> "\"") benchmarkMain ("benchmark main must register selectable workload exactly once: " <> workloadName)
+  assertOccurrenceCount 6 "bench\"" benchmarkMain "benchmark main must contain exactly the six selectable workloads"
+  assertOccurrenceCount 6 "envWithCleanup" benchmarkMain "every selectable workload must own one isolated Criterion environment"
+  adraiGroupSource <-
+    case criterionGroupSource "adrai" benchmarkMain of
+      Nothing -> assertFailure "benchmark main is missing the adrai Criterion root" >> pure ""
+      Just source -> pure source
+  let directGroupNames = directCriterionGroupNames adraiGroupSource
+  assertBool
+    ("adrai Criterion root must contain exactly the four workload groups directly; observed " <> show directGroupNames)
+    ( length directGroupNames == length criterionWorkloadGroupNames
+        && all (\groupName -> length (filter (== groupName) directGroupNames) == 1) criterionWorkloadGroupNames
+    )
+  forM_ criterionWorkloadRegistrations $ \(groupName, workloadName, registrationSource) -> do
+    groupSource <-
+      case criterionGroupSource groupName adraiGroupSource of
+        Nothing -> assertFailure ("benchmark main is missing Criterion group: " <> groupName) >> pure ""
+        Just source -> pure source
+    assertOccurrenceCount 0 "bgroup\"" groupSource ("workload group must not contain a nested Criterion subgroup: " <> groupName)
+    assertOccurrenceCount
+      1
+      registrationSource
+      groupSource
+      ("benchmark workload must retain its group, label, isolated fixture, cleanup, and production action: " <> groupName <> "/" <> workloadName)
   forM_ selectableCriterionPaths $ \path ->
     assertContains benchmarkReadme ("`" <> path <> "`") ("benchmark documentation is missing selectable Criterion path " <> path)
 
@@ -102,16 +133,56 @@ selectableCriterionPaths =
     "adrai/relevance/warm-six-adr"
   ]
 
-exactCriterionTree :: String
-exactCriterionTree =
-  "main::IO()main=dosetLocaleEncodingutf8defaultMain[bgroup\"adrai\"[bgroup\"corpus\"[envWithCleanupprepareCorpusFixturediscardFixture(\\fixture->bench\"construction-2000-adr\"(nf(forceCorpus.buildSearchVectorCorpus)(corpusFixtureMaterializationfixture)))],bgroup\"sqlite\"[envWithCleanupprepareSqliteFixturecloseSqliteFixture(\\fixture->bench\"replacement-warm-2000-adr\"(whnfIO(sqliteReplacementfixture)))],bgroup\"search\"[envWithCleanup(prepareCurrentSearchFixtureFalse)closeCurrentSearchFixture(\\fixture->bench\"current-cold-2000-adr\"(nfIO(currentSearchColdfixture))),envWithCleanup(prepareCurrentSearchFixtureTrue)closeCurrentSearchFixture(\\fixture->bench\"current-warm-2000-adr\"(nfIO(currentSearchWarmfixture)))],bgroup\"relevance\"[envWithCleanup(prepareRelevanceFixtureFalse)closeRelevanceFixture(\\fixture->bench\"cold-six-adr\"(nfIO(relevanceSearchColdfixture))),envWithCleanup(prepareRelevanceFixtureTrue)closeRelevanceFixture(\\fixture->bench\"warm-six-adr\"(nfIO(relevanceSearchWarmfixture)))]]]"
+criterionGroupNames :: [String]
+criterionGroupNames = ["adrai", "corpus", "sqlite", "search", "relevance"]
+
+criterionWorkloadGroupNames :: [String]
+criterionWorkloadGroupNames = ["corpus", "sqlite", "search", "relevance"]
+
+selectableCriterionLeafNames :: [String]
+selectableCriterionLeafNames =
+  [ "construction-2000-adr",
+    "replacement-warm-2000-adr",
+    "current-cold-2000-adr",
+    "current-warm-2000-adr",
+    "cold-six-adr",
+    "warm-six-adr"
+  ]
+
+criterionWorkloadRegistrations :: [(String, String, String)]
+criterionWorkloadRegistrations =
+  [ ( "corpus",
+      "construction-2000-adr",
+      "envWithCleanupprepareCorpusFixturediscardFixture(\\fixture->bench\"construction-2000-adr\"(nf(forceCorpus.buildSearchVectorCorpus)(corpusFixtureMaterializationfixture)))"
+    ),
+    ( "sqlite",
+      "replacement-warm-2000-adr",
+      "envWithCleanupprepareSqliteFixturecloseSqliteFixture(\\fixture->bench\"replacement-warm-2000-adr\"(whnfIO(sqliteReplacementfixture)))"
+    ),
+    ( "search",
+      "current-cold-2000-adr",
+      "envWithCleanup(CurrentSearchBenchmarkFixture<$>prepareCurrentSearchFixtureFalse)(closeCurrentSearchFixture.unCurrentSearchBenchmarkFixture)(\\fixture->bench\"current-cold-2000-adr\"(nfIO(currentSearchCold(unCurrentSearchBenchmarkFixturefixture))))"
+    ),
+    ( "search",
+      "current-warm-2000-adr",
+      "envWithCleanup(CurrentSearchBenchmarkFixture<$>prepareCurrentSearchFixtureTrue)(closeCurrentSearchFixture.unCurrentSearchBenchmarkFixture)(\\fixture->bench\"current-warm-2000-adr\"(nfIO(currentSearchWarm(unCurrentSearchBenchmarkFixturefixture))))"
+    ),
+    ( "relevance",
+      "cold-six-adr",
+      "envWithCleanup(prepareRelevanceFixtureFalse)closeRelevanceFixture(\\fixture->bench\"cold-six-adr\"(nfIO(relevanceSearchColdfixture)))"
+    ),
+    ( "relevance",
+      "warm-six-adr",
+      "envWithCleanup(prepareRelevanceFixtureTrue)closeRelevanceFixture(\\fixture->bench\"warm-six-adr\"(nfIO(relevanceSearchWarmfixture)))"
+    )
+  ]
 
 packageRegistrationRequirements :: [String]
 packageRegistrationRequirements =
   [ "main: Main.hs",
     "source-dirs:\n      - bench\n      - test/support",
-    "- adrai\n      - criterion\n      - deepseq",
-    "ghc-options: [-threaded, -rtsopts, -eventlog, -with-rtsopts=-N1]"
+    "- adrai:internal\n      - criterion\n      - deepseq",
+    "ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1]"
   ]
 
 cabalRegistrationRequirements :: [String]
@@ -119,9 +190,10 @@ cabalRegistrationRequirements =
   [ "type: exitcode-stdio-1.0",
     "main-is: Main.hs",
     "hs-source-dirs:\n      bench\n      test/support",
+    ", adrai:internal",
     ", criterion",
     ", deepseq",
-    "ghc-options: -threaded -rtsopts -eventlog -with-rtsopts=-N1"
+    "ghc-options: -threaded -rtsopts -with-rtsopts=-N1"
   ]
 
 profilePackageRegistrationRequirements :: [String]
@@ -129,8 +201,8 @@ profilePackageRegistrationRequirements =
   [ "main: ProfileMain.hs",
     "source-dirs:\n      - bench\n      - test/support",
     "- Adrai.Benchmark.CurrentSearch\n      - Adrai.Benchmark.ProfileDriver",
-    "dependencies: [adrai]",
-    "ghc-options: [-threaded, -rtsopts, -eventlog, -with-rtsopts=-N1]"
+    "dependencies: [adrai:internal]",
+    "ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1]"
   ]
 
 profileCabalRegistrationRequirements :: [String]
@@ -139,7 +211,8 @@ profileCabalRegistrationRequirements =
     "Adrai.Benchmark.CurrentSearch",
     "Adrai.Benchmark.ProfileDriver",
     "hs-source-dirs:\n      bench\n      test/support",
-    "ghc-options: -threaded -rtsopts -eventlog -with-rtsopts=-N1"
+    ", adrai:internal",
+    "ghc-options: -threaded -rtsopts -with-rtsopts=-N1"
   ]
 
 profileDriverRequirements :: [String]
@@ -268,9 +341,9 @@ isYamlSibling line =
     && not ("    " `isPrefixOf` line)
 
 isCabalStanzaBoundary :: String -> Bool
-isCabalStanzaBoundary line =
-  not (null line)
-    && not (isSpace (head line))
+isCabalStanzaBoundary line = case line of
+  [] -> False
+  firstCharacter : _ -> not (isSpace firstCharacter)
 
 compact :: String -> String
 compact = filter (not . isSpace)
@@ -278,6 +351,41 @@ compact = filter (not . isSpace)
 benchmarkTreeSource :: String -> String
 benchmarkTreeSource source =
   compact . unlines . takeWhile (/= "prepareCorpusFixture :: IO CorpusFixture") . dropWhile (/= "main :: IO ()") $ lines source
+
+criterionGroupSource :: String -> String -> Maybe String
+criterionGroupSource groupName source =
+  case dropWhile (not . isPrefixOf marker) (tails source) of
+    [] -> Nothing
+    matchingSource : _ ->
+      case dropWhile (/= '[') (drop (length marker) matchingSource) of
+        '[' : groupBody -> takeBalancedGroup 1 [] groupBody
+        _ -> Nothing
+  where
+    marker = "bgroup\"" <> groupName <> "\""
+
+directCriterionGroupNames :: String -> [String]
+directCriterionGroupNames = collect 0
+  where
+    marker = "bgroup\""
+
+    collect :: Int -> String -> [String]
+    collect _ [] = []
+    collect depth remaining@(character : rest)
+      | depth == 0 && marker `isPrefixOf` remaining =
+          let afterMarker = drop (length marker) remaining
+              (groupName, afterName) = span (/= '"') afterMarker
+           in groupName : collect depth (drop 1 afterName)
+      | character == '[' = collect (depth + 1) rest
+      | character == ']' = collect (depth - 1) rest
+      | otherwise = collect depth rest
+
+takeBalancedGroup :: Int -> String -> String -> Maybe String
+takeBalancedGroup _ _ [] = Nothing
+takeBalancedGroup depth reversedBody (character : rest)
+  | character == '[' = takeBalancedGroup (depth + 1) (character : reversedBody) rest
+  | character == ']' && depth == 1 = Just (reverse reversedBody)
+  | character == ']' = takeBalancedGroup (depth - 1) (character : reversedBody) rest
+  | otherwise = takeBalancedGroup depth (character : reversedBody) rest
 
 stackBenchInvocationLines :: String -> [String]
 stackBenchInvocationLines =
@@ -297,3 +405,19 @@ assertContains haystack needle message =
 assertNotContains :: String -> String -> String -> Assertion
 assertNotContains haystack needle message =
   assertBool message (not (needle `isInfixOf` haystack))
+
+assertOccurrenceCount :: Int -> String -> String -> String -> Assertion
+assertOccurrenceCount expected needle haystack message =
+  assertBool (message <> "; expected " <> show expected <> ", observed " <> show actual) (actual == expected)
+  where
+    actual = occurrenceCount needle haystack
+
+occurrenceCount :: String -> String -> Int
+occurrenceCount needle
+  | null needle = const 0
+  | otherwise = go
+  where
+    go [] = 0
+    go remaining@(_ : rest)
+      | needle `isPrefixOf` remaining = 1 + go (drop (length needle) remaining)
+      | otherwise = go rest

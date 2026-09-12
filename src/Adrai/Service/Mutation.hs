@@ -69,22 +69,11 @@ import Adrai.Service.Transaction
     nullOid,
   )
 import Adrai.Provenance
-  ( ProvenanceCapsule (..),
-    ProvenanceCapsuleInput (..),
-    EventKind,
-    LineAnchor,
+  ( ProvenanceCapsuleInput (..),
     ProvenanceObjectId (..),
     mkEventKind,
     sha256Digest,
     semanticDigest,
-    ProvenanceError (..),
-    provenanceOperationId,
-    provenanceObjectIdText,
-    provenanceBasis,
-    provenanceActor,
-    provenanceTimestampMs,
-    provenanceObjectId,
-    provenanceOperationContext,
     normalizeLineEndings,
     mkProvenanceCapsule,
   )
@@ -106,30 +95,23 @@ import Adrai.Format.Document
     canonicalManagedPath,
     sealManagedDocument,
     ManagedRecord (..),
-    DocumentError (..),
   )
 import Adrai.Format.Config
   ( defaultConfigText,
   )
 import Adrai.Types
-  ( AdrId (..),
-    RecordId (..),
-    ConnectionId (..),
+  ( AdrId,
+    RecordId,
+    ConnectionId,
     OperationId (..),
     RepoPath (RepoPath),
-    ObjectRef (..),
-    recordObjectRef,
-    connectionObjectRef,
     ManagedPaths (..),
-    mkManagedPaths,
-    repoPathText,
     gitRefText,
     recordIdText,
     connectionIdText,
     operationIdText,
     adrIdText,
     Actor (..),
-    ActorKind (..),
     Digest (..),
     digestBytes,
     ProvenanceInputs (..),
@@ -147,7 +129,6 @@ import Adrai.Domain
   )
 import Adrai.Scope
   ( ScopePattern,
-    scopePatternText,
   )
 import Adrai.Identity
   ( sortableOperationId,
@@ -162,6 +143,7 @@ import Adrai.Repository
     repositoryTreeBlob,
     repositoryTreeEntry,
     ResolvedRepositoryRevision,
+    RepositorySnapshot,
     resolvedCommitOid,
   )
 import Adrai.Graph
@@ -181,10 +163,10 @@ import qualified Data.ByteString as BS
 import Data.Word (Word8)
 import qualified Data.Map.Strict as Map
 import Data.List (intercalate, sort)
-import Data.Maybe (mapMaybe, fromMaybe)
+import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8, decodeUtf8With, encodeUtf8)
+import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import Data.Text.Encoding.Error (lenientDecode)
 import Control.Exception (try, SomeException)
 import System.Exit (ExitCode (ExitSuccess))
@@ -293,18 +275,13 @@ initCommand repository =
 currentTimestamp :: IO Integer
 currentTimestamp = floor . (* 1000) <$> getPOSIXTime
 
--- | Current timestamp encoded as the canonical 6-byte big-endian sortable-ID
--- field.
-currentTimestampMs :: IO BS.ByteString
-currentTimestampMs = encodeTimestampMs <$> currentTimestamp
-
 encodeTimestampMs :: Integer -> BS.ByteString
 encodeTimestampMs ms = BS.pack (toBytesBE ms)
   where
     toBytesBE :: Integer -> [Word8]
     toBytesBE n =
       [ fromIntegral ((n `div` (256 ^ byteOffset)) `mod` 256)
-      | byteOffset <- [5, 4 .. 0]
+      | byteOffset <- [5 :: Int, 4 .. 0]
       ]
 
 -- | 10 bytes of pseudo-random entropy (sufficient for testing).
@@ -370,7 +347,7 @@ createAdrCommand
   managedPaths
   actor
   adrId
-  recordId
+  _recordId
   title
   summary
   body
@@ -642,6 +619,7 @@ amendCurrentAdrCommand repository actor adrId expectedState changeSummary newTit
     Right rationale ->
       amendWithSource repository actor adrId (selectCurrentAmendmentSource adrId expectedState newTitle newSummary newBody) rationale newTitle newSummary newBody inputs
 
+amendWithSource :: Repository -> Actor -> AdrId -> ([ParsedManagedDocument] -> Either TransactionError (Maybe DecisionRecord, [RecordId], [Domain])) -> T.Text -> T.Text -> T.Text -> T.Text -> ProvenanceInputs -> IO (Either TransactionError AmendResult)
 amendWithSource repository actor adrId selectSource rationale newTitle newSummary newBody inputs =
   requireAttachedHead repository >>= \case
     Left err -> pure (Left err)
@@ -670,32 +648,32 @@ amendWithSource repository actor adrId selectSource rationale newTitle newSummar
                 else createAmendment snapshot branchName sourceHeads currentDomains rationale title summary body
   where
     inherit replacement original = if T.null replacement then original else replacement
-    createAmendment snapshot branchName sourceHeads currentDomains rationale title summary body = do
+    createAmendment snapshot branchName sourceHeads currentDomains amendmentRationale title summary body = do
       timestampMs <- currentTimestamp
       let timestampBytes = encodeTimestampMs timestampMs
       entropy <- randomEntropy
       case (sortableOperationId timestampBytes entropy, sortableRecordId timestampBytes entropy, sortableConnectionId timestampBytes (createConnectionEntropy "amends" entropy)) of
         (Right opId, Right amendedId, Right connectionId) -> do
-          let amendedRecord = DecisionRecord adrId amendedId title summary currentDomains body
-              amendsConnection = ConnectionRecord connectionId (AmendsConnection (AmendsPayload adrId amendedId sourceHeads)) rationale
-              members = [ManagedDecision amendedRecord, ManagedConnection amendsConnection]
-              paths = repositorySnapshotManagedPaths snapshot
-          case traverse (sealAmendMember opId (repositorySnapshotRevision snapshot) branchName actor timestampMs sourceHeads inputs paths) members of
-            Left err -> pure (Left err)
-            Right generated -> do
-              let operationText = T.unpack (operationIdText opId)
-                  config = TransactionConfig operationText ("adrai: amend " <> adrIdText adrId)
-                    (Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", intercalate "," [T.unpack (recordIdText amendedId), T.unpack (connectionIdText connectionId)])])
-                    (resolvedCommitOid (repositorySnapshotRevision snapshot)) generated
-              commitAppendOnlyOperation repository config >>= \case
-                Left transactionError -> pure (Left transactionError)
-                Right TransactionResult {..} -> case (sourceHeads, transactionCreatedPaths) of
-                  (_ : _, decisionPath : _) -> pure (Right AmendResult
-                    { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId, amendAmends = sourceHeads,
-                      amendConnectionId = connectionId, amendCommitOid = transactionCommitOid, amendUpdatedPath = decisionPath,
-                      amendCreatedPaths = transactionCreatedPaths, amendIndexUpdated = transactionIndexUpdated })
-                  ([], _) -> pure (Left (Stage3ValidateState "amend target ADR has no current decision"))
-                  (_, []) -> pure (Left (Stage8UpdateRef "amend transaction reported no created paths"))
+           let amendedRecord = DecisionRecord adrId amendedId title summary currentDomains body
+               amendsConnection = ConnectionRecord connectionId (AmendsConnection (AmendsPayload adrId amendedId sourceHeads)) amendmentRationale
+               members = [ManagedDecision amendedRecord, ManagedConnection amendsConnection]
+               paths = repositorySnapshotManagedPaths snapshot
+           case traverse (sealAmendMember opId (repositorySnapshotRevision snapshot) branchName actor timestampMs sourceHeads inputs paths) members of
+             Left err -> pure (Left err)
+             Right generated -> do
+               let operationText = T.unpack (operationIdText opId)
+                   config = TransactionConfig operationText ("adrai: amend " <> adrIdText adrId)
+                     (Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", intercalate "," [T.unpack (recordIdText amendedId), T.unpack (connectionIdText connectionId)])])
+                     (resolvedCommitOid (repositorySnapshotRevision snapshot)) generated
+               commitAppendOnlyOperation repository config >>= \case
+                 Left transactionError -> pure (Left transactionError)
+                 Right TransactionResult {..} -> case (sourceHeads, transactionCreatedPaths) of
+                   (_ : _, decisionPath : _) -> pure (Right AmendResult
+                     { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId, amendAmends = sourceHeads,
+                       amendConnectionId = connectionId, amendCommitOid = transactionCommitOid, amendUpdatedPath = decisionPath,
+                       amendCreatedPaths = transactionCreatedPaths, amendIndexUpdated = transactionIndexUpdated })
+                   ([], _) -> pure (Left (Stage3ValidateState "amend target ADR has no current decision"))
+                   (_, []) -> pure (Left (Stage8UpdateRef "amend transaction reported no created paths"))
         _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
 
 -- | Backwards-compatible spelling retained for existing explorer callers.
@@ -720,6 +698,7 @@ requireAttachedHead repository = do
     Right (GitHeadAttached ref) ->
       pure (Right (fromMaybe (gitRefText ref) (T.stripPrefix "refs/heads/" (gitRefText ref))))
 
+committedDocuments :: ManagedPaths -> RepositorySnapshot -> Either TransactionError [ParsedManagedDocument]
 committedDocuments paths snapshot =
   traverse parseEntry (repositorySnapshotEntries snapshot)
   where
@@ -745,8 +724,8 @@ selectAmendmentSource adr requestedRecord documents = do
     then Left (Stage3ValidateState "amend target ADR is not active")
     else pure ()
   case (axisResolutionHeads (reducedDecisionAxis reduced), axisResolutionEffective (reducedDecisionAxis reduced)) of
-    ([head], Just record)
-      | head == requestedRecord -> Right (Just record, [head], axisResolutionEffective (reducedDomainAxis reduced))
+    ([currentHead], Just record)
+      | currentHead == requestedRecord -> Right (Just record, [currentHead], axisResolutionEffective (reducedDomainAxis reduced))
       | otherwise -> Left (Stage3ValidateState "amend target record is not the current decision head")
     _ -> Left (Stage3ValidateState "amend target ADR has no unambiguous current decision")
 
@@ -770,10 +749,11 @@ selectCurrentAmendmentSource adr expected newTitle newSummary newBody documents 
     then Left (Stage3ValidateState "amend target ADR is not active")
     else pure ()
   case decisionHeads of
-    [head] -> selectAmendmentSource adr head documents
+    [currentHead] -> selectAmendmentSource adr currentHead documents
     heads
       | null heads -> Left (Stage3ValidateState "amend target ADR has no unambiguous current decision")
-      | null nonDecisionConflicts && not (T.null newTitle || T.null newSummary || T.null newBody) ->
+      | null nonDecisionConflicts
+          && all (not . T.null . T.strip) [newTitle, newSummary, newBody] ->
           Right (Nothing, heads, axisResolutionEffective (reducedDomainAxis reduced))
       | null nonDecisionConflicts ->
           Left (Stage3ValidateState "amend decision conflict requires title, summary, and body")
@@ -870,7 +850,7 @@ changeScopeCommand ::
   IO (Either TransactionError ScopeChangeResult)
 changeScopeCommand
   repository
-  managedPaths
+  _managedPaths
   actor
   adrId
   expectedState
@@ -1106,7 +1086,7 @@ changeDomainCommand ::
   IO (Either TransactionError DomainChangeResult)
 changeDomainCommand
   repository
-  managedPaths
+  _managedPaths
   actor
   adrId
   expectedState reason request inputs =
@@ -1235,7 +1215,7 @@ effectiveDomainUnion parents history = do
   -- valid antichain; the temporary union is only the comparison baseline for
   -- a reviewed merge and must not be rejected before the caller supplies the
   -- final reviewed antichain.
-  traverse validateDomainAntichain effective
+  _ <- traverse validateDomainAntichain effective
   pure (Set.toAscList (Set.unions (map Set.fromList effective)))
   where
     lookupOne parent = case [domainsEffective payload | c <- history, connectionRecordId c == parent, DomainsConnection payload <- [connectionPayload c]] of
@@ -1433,7 +1413,7 @@ normalizeStatusReason operation raw
     normalized = T.strip (normalizeLineEndings raw)
 
 statusTransition :: Repository -> ManagedPaths -> Actor -> AdrId -> ObsoleteRequest -> StatusState -> ProvenanceInputs -> IO (Either TransactionError ObsoleteResult)
-statusTransition repository managedPaths actor adrId request desiredState inputs =
+statusTransition repository _managedPaths actor adrId request desiredState inputs =
   requireAttachedHead repository >>= \case
     Left err -> pure (Left err)
     Right branchName ->

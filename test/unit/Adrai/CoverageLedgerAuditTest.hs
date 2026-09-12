@@ -100,7 +100,17 @@ testEmptyEvidenceFixture = assertValidationGap EmptyEvidenceFixture "missing-evi
 testEmptyEvidenceResult = assertValidationGap EmptyEvidenceResult "missing-evidence-result"
 
 testInvalidEvidenceCommand :: IO ()
-testInvalidEvidenceCommand = assertValidationGap InvalidEvidenceCommand "invalid-evidence-command"
+testInvalidEvidenceCommand = do
+  assertValidationGap InvalidEvidenceCommand "invalid-evidence-command"
+  assertAccepted "stack test adrai:adrai-cache-selection-test --test-arguments='--pattern=fixture'"
+  assertValidationGap (StressEvidenceCommand "stack test adrai:unapproved-test --test-arguments='--pattern=fixture'") "invalid-evidence-command"
+  where
+    assertAccepted command =
+      withFrozenLedger (StressEvidenceCommand command) $ \root -> do
+        result <- Audit.auditLedgerAt root
+        case result of
+          Left problem -> assertFailure (Text.unpack problem)
+          Right audit -> assertBool "cache-selection evidence command should be accepted" (Audit.auditIsClosed audit)
 
 testBareStressEvidenceCommand :: IO ()
 testBareStressEvidenceCommand = assertValidationGap BareStressEvidenceCommand "invalid-evidence-command"
@@ -146,7 +156,8 @@ testPowerShellStressEvidenceArgv =
   Audit.decodeStressCommandArguments (Text.pack powershellStressCommand)
     @?= Just
       [ "--run-stress",
-        "--pattern=12,000-commit repository with 2,000 ADR operations"
+        "-p",
+        "/compact repository stress/"
       ]
 
 testCommittedLedgerRuntimeAudit :: IO ()
@@ -164,8 +175,8 @@ testCommittedLargeStressEvidence = do
   result <- Audit.auditLedgerAt ("test" </> "coverage" </> "ledger" </> "v1")
   assertBool "the committed large-stress ledger row must name the isolated stress suite" (ByteString.pack "adrai:adrai-stress-test" `ByteString.isInfixOf` evidence)
   assertBool "the committed large-stress ledger row must carry the exact opt-in" (ByteString.pack "--run-stress" `ByteString.isInfixOf` evidence)
-  assertBool "the committed large-stress ledger row must select its focused stress contract" (ByteString.pack "12,000-commit repository with 2,000 ADR operations" `ByteString.isInfixOf` evidence)
-  assertBool "the committed large-stress ledger row must use PowerShell-safe single outer quotes" (ByteString.pack "--test-arguments='--run-stress --pattern=" `ByteString.isInfixOf` evidence)
+  assertBool "the committed large-stress ledger row must select its compact stress contract" (ByteString.pack "compact repository stress" `ByteString.isInfixOf` evidence)
+  assertBool "the committed large-stress ledger row must use PowerShell-safe single outer quotes" (ByteString.pack "--test-arguments='--run-stress -p" `ByteString.isInfixOf` evidence)
   case result of
     Left problem -> assertFailure (Text.unpack problem)
     Right audit -> assertBool "the committed stress command must survive audit parsing" (not ("invalid-evidence-command" `Text.isInfixOf` Audit.renderAuditReport audit))
@@ -232,7 +243,7 @@ manifestJson mutation =
     <> intercalate "," ["{\"file\":\"" <> fileName <> "\",\"category\":\"" <> category <> "\",\"expectedCount\":" <> show count <> "}" | (fileName, category, count) <- frozenCategories]
     <> "],\"allowedStates\":[\"planned\",\"partial\",\"covered\",\"installed-haskell-equivalent\",\"not-applicable\"],\"closureStates\":"
     <> (if mutation == PolicyDrift then "[\"planned\",\"covered\",\"installed-haskell-equivalent\",\"not-applicable\"]" else "[\"covered\",\"installed-haskell-equivalent\",\"not-applicable\"]")
-    <> ",\"gapStates\":[\"planned\",\"partial\"],\"allowedPhaseOwners\":[\"P2\",\"P3\",\"P4\",\"P5\",\"P6\",\"P7\"],\"allowedHaskellTestTypes\":[\"unit\",\"property\",\"integration\",\"golden\",\"e2e\"],\"allowedHaskellTestDirectories\":[\"test/unit/\",\"test/property/\",\"test/integration/\",\"test/golden/\",\"test/e2e/\"]}"
+    <> ",\"gapStates\":[\"planned\",\"partial\"],\"allowedPhaseOwners\":[\"P2\",\"P3\",\"P4\",\"P5\",\"P6\",\"P7\"],\"allowedHaskellTestTypes\":[\"unit\",\"property\",\"integration\",\"golden\",\"e2e\",\"cache-selection\"],\"allowedHaskellTestDirectories\":[\"test/unit/\",\"test/property/\",\"test/integration/\",\"test/golden/\",\"test/e2e/\",\"test/cache-selection/\"]}"
 
 fragmentJson :: Mutation -> Int -> String -> Int -> String
 fragmentJson mutation categoryIndex category count =
@@ -312,4 +323,4 @@ frozenCategories =
 
 powershellStressCommand :: String
 powershellStressCommand =
-  "stack test adrai:adrai-stress-test --test-arguments='--run-stress --pattern=\"12,000-commit repository with 2,000 ADR operations\"'"
+  "stack test adrai:adrai-stress-test --test-arguments='--run-stress -p \"/compact repository stress/\"'"

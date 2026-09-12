@@ -22,82 +22,38 @@ where
 import Adrai.Explorer.Types (ExplorerCommand (..), ExplorerSession (..))
 import Adrai.Git
   ( Repository (..),
-    runRepository,
-    resolveRevision,
     repositoryWorktreeRoot,
-    GitHeadState (..),
-    repositoryHeadState,
-    RevisionSpec (RevisionSpec),
     GitOid (..),
-    processExitCode,
-    processStdout,
-    gitOidText,
-    GitError (..),
-    GitProcessResult (..),
     discoverRepository,
     systemGit,
-  )
-import Adrai.Provenance
-  ( ProvenanceCapsule (..),
-    ProvenanceCapsuleInput (..),
-    EventKind,
-    mkEventKind,
-    semanticDigest,
-    ProvenanceError (..),
-    ProvenanceObjectId (ProvenanceRecord, ProvenanceConnection),
   )
 import Data.Either (fromRight)
 import Adrai.Types
   ( AdrId,
     RecordId,
-    ConnectionId (..),
-    OperationId (..),
+    ConnectionId,
     RepoPath (..),
-    Digest (..),
     ProvenanceInputs (..),
-    Actor (..),
-    ActorKind (..),
     ManagedPaths,
     mkManagedPaths,
     mkAdrId,
     mkRecordId,
-    recordIdText,
-    operationIdText,
-    connectionIdText,
-    adrIdText,
-    mkActor,
-    mkRepoPath,
   )
 import Adrai.Domain
-  ( Domain (..),
-    domainText,
+  ( Domain,
   )
 import Adrai.Service.Mutation
   ( CreateResult (..),
     createAdrCommand,
     AmendResult (..),
     amendAdmCommand,
-    ScopeChangeResult (..),
-    changeScopeCommand,
-    DomainChangeResult (..),
-    changeDomainCommand,
     ObsoleteResult (..),
     obsoleteCommand,
     ReactivateResult (..),
     reactivateCommand,
   )
-import Adrai.Service.Transaction
-  ( TransactionError (..),
-    TransactionResult (..),
-  )
-import Adrai.Format.Document
-  ( ManagedRecord (..),
-  )
-import Data.Bifunctor (first)
-import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import Data.Text (Text)
-import Data.Char (isDigit)
 
 -- | Result of a mutation executed through the explorer.
 --

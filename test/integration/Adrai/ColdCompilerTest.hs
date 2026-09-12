@@ -4,66 +4,112 @@
 module Adrai.ColdCompilerTest (tests) where
 
 import Adrai.Compiler
-import Adrai.Compiler.Snapshot (AnalyzedRepositorySnapshot (..), analyzeRepositorySnapshot, analyzeRepositorySnapshotWithHistoryCounts, analyzeRepositorySnapshotWithHistoryParseCount)
+import Adrai.Compiler.Attribution
+  ( AttributionPhase (CompileOutcomeEvaluation, PostCloseFingerprintValidation, PostCloseProvenanceRefresh),
+    AttributionArtifact (..),
+    AttributionRow (..),
+    closeColdCompileAttribution,
+    newFileColdCompileAttribution,
+    parseAttributionArtifact,
+  )
+import Adrai.Compiler.Snapshot (AnalyzedRepositorySnapshot (..), analyzeRepositorySnapshot, analyzeRepositorySnapshotWithHistoryCounts)
 import Adrai.Fixture.CompilerRepository
 import Adrai.Git
 import Adrai.GitTestSupport
 import Adrai.Provenance (mkGitOid)
 import Adrai.Repository
+import Adrai.RetainedNative.RepositorySeed
+  ( RepositorySeed,
+    createRepositorySeedWith,
+    removeRepositorySeed,
+    withRepositorySeedCopy,
+  )
 import Adrai.Retrieval (SearchMaterialization (..), SearchPassage (..))
+import Adrai.Service.PostCommitIndex
+  ( PostCommitIndexResult,
+    compilePostCommitIndexWithAttributionAndRefresh,
+  )
 import Adrai.Sqlite
+import Control.Exception (AsyncException (ThreadKilled), onException, throwIO, try)
+import qualified Control.Concurrent.Async as Async
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.Int (Int64)
+import Data.List (isPrefixOf)
+import qualified Data.Map.Strict as Map
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as TextEncoding
 import Database.SQLite.Simple (Connection, Only (..), Query, close, execute_, open, query_)
-import System.Directory (doesFileExist)
-import System.FilePath ((</>), makeRelative)
+import System.Directory (copyFile, doesDirectoryExist, doesFileExist, listDirectory)
+import System.Environment (getExecutablePath)
+import System.FilePath ((</>), normalise)
 import System.IO.Temp (withSystemTempDirectory)
-import Test.Tasty (TestTree, testGroup)
+import System.Timeout (timeout)
+import Control.Monad (forM_)
+import Control.Concurrent (threadDelay)
+import qualified Data.ByteString.Lazy as LBS
+import System.Process.Typed (proc, readProcess)
+import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
 tests :: TestTree
 tests =
-  testGroup
-    "Cold compiler"
-    [ testCase "healthy exact-OID revision populates normalized semantics search and six FTS tables" $
-        withHealthyRepository $ \repository resolved -> do
-          -- Ambient bytes change after resolution and must never enter the cold build.
-          BS.writeFile (repository </> decisionPath) "dirty invalid worktree bytes"
-          connection <- open ":memory:"
-          result <- requireCompiled connection resolved
-          coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "valid"
-          coldDatabaseManagedSourceCount (coldCompilerDatabaseStats result) @?= 4
-          coldDatabaseIssueCount (coldCompilerDatabaseStats result) @?= 0
-          count connection "decision_record" >>= (@?= 1)
-          count connection "connection_record" >>= (@?= 3)
-          count connection "operation" >>= (@?= 1)
-          count connection "reduced_adr" >>= (@?= 1)
-          count connection "search_document" >>= (@?= 1)
-          ftsTables <- query_ connection "SELECT count(*) FROM sqlite_master WHERE type='table' AND name LIKE 'fts_%' AND sql LIKE 'CREATE VIRTUAL TABLE%'" :: IO [Only Int64]
-          ftsTables @?= [Only 6]
-          matches <- query_ connection "SELECT item_id FROM fts_search_stemmed WHERE fts_search_stemmed MATCH 'cold'" :: IO [Only Text]
-          assertBool "cold FTS result is present" (not (null matches))
-          anchors <- query_ connection "SELECT line_anchors FROM operation" :: IO [Only Text]
-          case anchors of
-            [Only encoded] -> do
-              assertBool "line anchors use a JSON array" (Text.isPrefixOf "[" encoded)
-              assertBool "line anchor identifiers preserve @ and escaped newlines" ("logical@anchor\\nsecond-line" `Text.isInfixOf` encoded)
-            unexpected -> assertFailure ("unexpected operation anchors: " <> show unexpected)
-          scopePayloads <- query_ connection "SELECT payload FROM connection_record WHERE relation_kind='applies_to'" :: IO [Only Text]
-          case scopePayloads of
-            [Only encoded] -> do
-              assertBool "connection payload uses a JSON object" (Text.isPrefixOf "{" encoded)
-              assertBool "comma-bearing scope is one quoted JSON value" ("\"src/a,b/**\"" `Text.isInfixOf` encoded)
-              assertBool "connection payload has no delimiter NULs" (not (Text.any (== '\NUL') encoded))
-            unexpected -> assertFailure ("unexpected scope payload: " <> show unexpected)
-          close connection,
+  withResource createCompilerRepositorySeeds removeCompilerRepositorySeeds $ \getCompilerRepositorySeeds ->
+    let getHealthyRepositorySeed = compilerHealthySeed <$> getCompilerRepositorySeeds
+        getBasisRepositorySeed = compilerBasisSeed <$> getCompilerRepositorySeeds
+     in testGroup
+          "Cold compiler"
+          [ testCase "healthy exact-OID revision ignores later HEAD and worktree corruption and persists a reopenable database" $
+        withHealthyRepository getHealthyRepositorySeed $ \repository discovered resolved ->
+          withSystemTempDirectory "adrai cold sqlite" $ \temporary -> do
+            -- Both a later committed config and dirty managed bytes are ambient to
+            -- the already bound exact OID and must never enter the cold build.
+            _ <- commitFile repository ".adrai.toml" "invalid = ["
+            currentHead <- requireResolvedFrom discovered "HEAD"
+            assertBool "later committed HEAD differs from the bound healthy OID" (resolvedCommitOid currentHead /= resolvedCommitOid resolved)
+            BS.writeFile (repository </> decisionPath) "dirty invalid worktree bytes"
+            let database = temporary </> "cold.sqlite"
+            connection <- open database
+            result <- requireCompiled connection resolved
+            coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "valid"
+            coldDatabaseManagedSourceCount (coldCompilerDatabaseStats result) @?= 4
+            coldDatabaseIssueCount (coldCompilerDatabaseStats result) @?= 0
+            count connection "decision_record" >>= (@?= 1)
+            count connection "connection_record" >>= (@?= 3)
+            count connection "operation" >>= (@?= 1)
+            count connection "reduced_adr" >>= (@?= 1)
+            count connection "search_document" >>= (@?= 1)
+            ftsTables <- query_ connection "SELECT count(*) FROM sqlite_master WHERE type='table' AND name LIKE 'fts_%' AND sql LIKE 'CREATE VIRTUAL TABLE%'" :: IO [Only Int64]
+            ftsTables @?= [Only 6]
+            matches <- query_ connection "SELECT item_id FROM fts_search_stemmed WHERE fts_search_stemmed MATCH 'cold'" :: IO [Only Text]
+            assertBool "cold FTS result is present" (not (null matches))
+            anchors <- query_ connection "SELECT line_anchors FROM operation" :: IO [Only Text]
+            case anchors of
+              [Only encoded] -> do
+                assertBool "line anchors use a JSON array" (Text.isPrefixOf "[" encoded)
+                assertBool "line anchor identifiers preserve @ and escaped newlines" ("logical@anchor\\nsecond-line" `Text.isInfixOf` encoded)
+              unexpected -> assertFailure ("unexpected operation anchors: " <> show unexpected)
+            scopePayloads <- query_ connection "SELECT payload FROM connection_record WHERE relation_kind='applies_to'" :: IO [Only Text]
+            case scopePayloads of
+              [Only encoded] -> do
+                assertBool "connection payload uses a JSON object" (Text.isPrefixOf "{" encoded)
+                assertBool "comma-bearing scope is one quoted JSON value" ("\"src/a,b/**\"" `Text.isInfixOf` encoded)
+                assertBool "connection payload has no delimiter NULs" (not (Text.any (== '\NUL') encoded))
+              unexpected -> assertFailure ("unexpected scope payload: " <> show unexpected)
+            expectedMeta <- meta connection
+            expectedLogicalRows <- logicalRows connection
+            close connection
+            reopened <- open database
+            meta reopened >>= (@?= expectedMeta)
+            logicalRows reopened >>= (@?= expectedLogicalRows)
+            count reopened "decision_record" >>= (@?= 1)
+            close reopened
+            doesFileExist (database <> "-wal") >>= (@?= False)
+            doesFileExist (database <> "-shm") >>= (@?= False)
+            doesFileExist (repository </> ".adrai" </> "cold.sqlite") >>= (@?= False),
       testCase "timestamps beyond SQLite Int64 are preserved exactly" $
-        withCompilerRepository largeTimestampCompilerFiles $ \_ resolved -> do
+        withCompilerRepository getBasisRepositorySeed largeTimestampCompilerFiles $ \_ resolved -> do
           connection <- open ":memory:"
           result <- requireCompiled connection resolved
           coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "valid"
@@ -72,43 +118,8 @@ tests =
           storageTypes <- query_ connection "SELECT typeof(timestamp_ms) FROM operation" :: IO [Only Text]
           storageTypes @?= [Only "text"]
           close connection,
-      testCase "two cold rebuilds have identical fingerprints and logical meta" $
-        withHealthyRepository $ \_ resolved -> do
-          firstConnection <- open ":memory:"
-          secondConnection <- open ":memory:"
-          first <- requireCompiled firstConnection resolved
-          second <- requireCompiled secondConnection resolved
-          coldCompilerMaterializationFingerprint first @?= coldCompilerMaterializationFingerprint second
-          firstMeta <- meta firstConnection
-          secondMeta <- meta secondConnection
-          firstMeta @?= secondMeta
-          firstRows <- logicalRows firstConnection
-          secondRows <- logicalRows secondConnection
-          firstRows @?= secondRows
-          close firstConnection
-          close secondConnection,
-      testCase "materialization fingerprint ignores revision alias and changes on managed mode" $
-        withHealthyRepository $ \repository resolvedHead -> do
-          resolvedOid <- requireResolved repository (gitOidText (resolvedCommitOid resolvedHead))
-          headConnection <- open ":memory:"
-          oidConnection <- open ":memory:"
-          headResult <- requireCompiled headConnection resolvedHead
-          oidResult <- requireCompiled oidConnection resolvedOid
-          coldCompilerMaterializationFingerprint headResult @?= coldCompilerMaterializationFingerprint oidResult
-          close headConnection
-          close oidConnection
-          _ <- gitSuccess repository ["update-index", "--chmod=+x", decisionPath] BS.empty
-          _ <- gitSuccess repository ["commit", "-m", "managed mode change"] BS.empty
-          changed <- requireResolved repository "HEAD"
-          changedConnection <- open ":memory:"
-          changedResult <- requireCompiled changedConnection changed
-          coldDatabaseSemanticState (coldCompilerDatabaseStats changedResult) @?= "valid"
-          assertBool
-            "managed Git mode changes the materialization fingerprint"
-            (coldCompilerMaterializationFingerprint changedResult /= coldCompilerMaterializationFingerprint headResult)
-          close changedConnection,
       testCase "valid decision multihead stores ADR_CONFLICT and ADR at record search rows" $
-        withCompilerRepository conflictedCompilerFiles $ \_ resolved -> do
+        withCompilerRepository getBasisRepositorySeed conflictedCompilerFiles $ \_ resolved -> do
           connection <- open ":memory:"
           result <- requireCompiled connection resolved
           coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "conflict"
@@ -133,13 +144,11 @@ tests =
           assertBool "both search candidates use ADR@record identities" (all (Text.isInfixOf "@" . fromOnly) itemIds)
           close connection,
       testCase "compiler diagnostics precede semantic conflict issues deterministically" $
-        withSystemTempDirectory "adrai conflict issue ordering" $ \temporary -> do
-          let repository = temporary </> "repository"
-              unavailableBasis = requireOid (Text.replicate 40 "f")
-          initTestRepository repository
+        withBasisRepository getBasisRepositorySeed "adrai conflict issue ordering" $ \repository discovered _ -> do
+          let unavailableBasis = requireOid (Text.replicate 40 "f")
           files <- requireFixture (conflictedCompilerFiles unavailableBasis)
           _ <- commitFiles repository files
-          resolved <- requireResolved repository "HEAD"
+          resolved <- requireResolvedFrom discovered "HEAD"
           connection <- open ":memory:"
           result <- requireCompiled connection resolved
           coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "conflict"
@@ -148,11 +157,9 @@ tests =
           issueOrder @?= [(0, "BASIS_COMMIT_UNAVAILABLE", "warning", "basis"), (1, "ADR_CONFLICT", "error", "graph")]
           close connection,
       testCase "invalid committed config creates a diagnostic-only database" $
-        withSystemTempDirectory "adrai invalid compiler config" $ \temporary -> do
-          let repository = temporary </> "repository"
-          initTestRepository repository
+        withBasisRepository getBasisRepositorySeed "adrai invalid compiler config" $ \repository discovered _ -> do
           _ <- commitFile repository ".adrai.toml" "not valid toml = ["
-          resolved <- requireResolved repository "HEAD"
+          resolved <- requireResolvedFrom discovered "HEAD"
           connection <- open ":memory:"
           result <- requireCompiled connection resolved
           coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "invalid"
@@ -161,168 +168,61 @@ tests =
           count connection "managed_source" >>= (@?= 0)
           count connection "search_document" >>= (@?= 0)
           close connection,
-      testCase "missing basis is a stable warning and does not block semantics" $
-        withExplicitBasis (requireOid (Text.replicate 40 "f")) $ \_ resolved -> do
-          connection <- open ":memory:"
-          result <- requireCompiled connection resolved
-          coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "valid"
-          issues <- query_ connection "SELECT code,severity FROM issue ORDER BY ordinal" :: IO [(Text, Text)]
-          issues @?= [("BASIS_COMMIT_UNAVAILABLE", "warning")]
-          close connection,
-      testCase "noncommit basis is a stable warning and does not block semantics" $
-        withSystemTempDirectory "adrai noncommit basis" $ \temporary -> do
-          let repository = temporary </> "repository"
-          initTestRepository repository
-          basisText <- hashObject repository "basis blob"
-          basis <- requireGitOid basisText
-          files <- requireFixture (healthyCompilerFiles basis)
-          _ <- commitFiles repository files
-          resolved <- requireResolved repository "HEAD"
-          connection <- open ":memory:"
-          result <- requireCompiled connection resolved
-          coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "valid"
-          issues <- query_ connection "SELECT code,severity FROM issue ORDER BY ordinal" :: IO [(Text, Text)]
-          issues @?= [("BASIS_COMMIT_UNAVAILABLE", "warning")]
-          close connection,
-      testCase "custom Unicode committed roots drive the cold source set" $
-        withSystemTempDirectory "adrai Unicode compiler roots" $ \temporary -> do
-          let repository = temporary </> "repository"
-          initTestRepository repository
-          basisText <- commitFile repository "seed.txt" "basis"
-          basis <- requireGitOid basisText
-          defaultFiles <- requireFixture (healthyCompilerFiles basis)
-          let relocated = map relocateCompilerPath defaultFiles
-              config =
-                TextEncoding.encodeUtf8
-                  ( Text.unlines
-                      [ "schema = 1",
-                        "",
-                        "[paths]",
-                        "decisions = \"" <> Text.pack customDecisionRoot <> "\"",
-                        "connections = \"" <> Text.pack customConnectionRoot <> "\""
-                      ]
-                  )
-          _ <- commitFiles repository ((".adrai.toml", config) : relocated)
-          resolved <- requireResolved repository "HEAD"
-          connection <- open ":memory:"
-          result <- requireCompiled connection resolved
-          coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "valid"
-          paths <- query_ connection "SELECT path FROM managed_source ORDER BY path" :: IO [Only Text]
-          assertBool
-            "Unicode custom roots are persisted"
-            ( all
-                (\path -> Text.isPrefixOf (Text.pack customDecisionRoot <> "/") path || Text.isPrefixOf (Text.pack customConnectionRoot <> "/") path)
-                (map fromOnly paths)
-            )
-          close connection,
-      testCase "exact historical OID remains healthy after later HEAD corruption" $
-        withHealthyRepository $ \repository resolved -> do
-          _ <- commitFile repository ".adrai.toml" "invalid = ["
-          connection <- open ":memory:"
-          result <- requireCompiled connection resolved
-          coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "valid"
-          count connection "decision_record" >>= (@?= 1)
-          close connection,
-      testCase "shallow cold compilation persists incomplete history without blocking semantics" $
-        withSystemTempDirectory "adrai shallow cold compiler" $ \temporary -> do
-          let source = temporary </> "source"
-              shallow = temporary </> "shallow"
-          initTestRepository source
-          basisText <- commitFile source "seed.txt" "basis"
-          basis <- requireGitOid basisText
-          files <- requireFixture (healthyCompilerFiles basis)
-          _ <- commitFiles source files
-          let sourceUri = "file:///" <> map slash source
-          _ <- gitSuccess temporary ["clone", "--depth", "1", sourceUri, shallow] BS.empty
-          resolved <- requireResolved shallow "HEAD"
-          connection <- open ":memory:"
-          result <- requireCompiled connection resolved
-          coldDatabaseSemanticState (coldCompilerDatabaseStats result) @?= "valid"
-          issues <- query_ connection "SELECT code,severity FROM issue ORDER BY code" :: IO [(Text, Text)]
-          assertBool "shallow history warning is persisted" (("HISTORY_COVERAGE_INCOMPLETE", "warning") `elem` issues)
-          historyComplete <- query_ connection "SELECT value FROM meta WHERE key='history_complete'" :: IO [Only Text]
-          historyComplete @?= [Only "false"]
-          close connection,
-       testCase "exact 32-commit noise suffix preserves analysis and adds no parse attempts" $
-         withHealthyRepository $ \repository resolvedBefore -> do
-          (before, beforeParses, beforeRequested) <- requireAnalyzedWithHistoryCounts resolvedBefore
-          mapM_
-            (\index -> do
-                _ <- commitFile repository ("src/noise/history-" <> show index <> ".txt") "noise"
-                pure ())
-            [1 :: Int .. 32]
-          resolvedAfter <- requireResolved repository "HEAD"
-          (after, afterParses, afterRequested) <- requireAnalyzedWithHistoryCounts resolvedAfter
-          assertBool "baseline must parse at least one historical managed blob" (beforeParses > 0)
-          analyzedHistoryCommitsScanned after @?= analyzedHistoryCommitsScanned before + 32
-          afterParses @?= beforeParses
-          afterRequested @?= beforeRequested
-          analyzedDiagnostics after @?= analyzedDiagnostics before
-          analyzedDocuments after @?= analyzedDocuments before
-          analyzedReduction after @?= analyzedReduction before
-          analyzedConflicts after @?= analyzedConflicts before
-          analyzedHistoryComplete after @?= analyzedHistoryComplete before
-          analyzedSourceFingerprint after @?= analyzedSourceFingerprint before,
-       testCase "linear history and convergent merge preserve snapshot analysis" $
-         withHealthyRepository $ \repository _ -> do
-           _ <- gitSuccess repository ["checkout", "-b", "history-feature"] BS.empty
-           _ <- commitFile repository "src/noise/feature.txt" "feature noise"
-           _ <- gitSuccess repository ["checkout", "main"] BS.empty
-           _ <- commitFile repository "src/noise/main.txt" "main noise"
-           linearResolved <- requireResolved repository "HEAD"
-           linear <- requireAnalyzed linearResolved
-           _ <- gitSuccess repository ["merge", "--no-ff", "-m", "convergent noise merge", "history-feature"] BS.empty
-           mergedResolved <- requireResolved repository "HEAD"
-           merged <- requireAnalyzed mergedResolved
-           analyzedHistoryCommitsScanned merged @?= analyzedHistoryCommitsScanned linear + 2
-           analyzedDiagnostics merged @?= analyzedDiagnostics linear
-           analyzedDocuments merged @?= analyzedDocuments linear
-           analyzedReduction merged @?= analyzedReduction linear
-           analyzedConflicts merged @?= analyzedConflicts linear
-           analyzedHistoryComplete merged @?= analyzedHistoryComplete linear
-           analyzedSourceFingerprint merged @?= analyzedSourceFingerprint linear,
-       testCase "ordinary blob batch requests and parses each distinct prefetched blob exactly once" $
-        withHealthyRepository $ \repository _ -> do
-          decisionBytes <- BS.readFile (repository </> decisionPath)
-          (_, beforeParsed, beforeRequested) <- requireAnalyzedWithHistoryCounts =<< requireResolved repository "HEAD"
-          _ <-
-            commitFiles
-              repository
-              [ ( "architecture/adrai/decisions/Rlookahead/prefetched-" <> show index <> ".decision.md",
-                  decisionBytes <> BS8.pack ("\n<!-- distinct prefetched blob " <> show index <> " -->\n")
-                )
-              | index <- [1 :: Int .. 4]
-              ]
-          mapM_
-            (\index -> do
-                _ <- commitFile repository ("src/noise/lookahead-" <> show index <> ".txt") "noise"
-                pure ())
-            [1 :: Int .. 40]
-          resolved <- requireResolved repository "HEAD"
-          (_analyzed, parsed, requested) <- requireAnalyzedWithHistoryCounts resolved
-          -- All four changed paths deliberately have distinct blob OIDs.  The
-          -- exact deltas make a future duplicate look-ahead request/reparse
-          -- observable even if both counters would otherwise rise together.
-          parsed - beforeParsed @?= 4
-          requested - beforeRequested @?= 4
-          requested @?= parsed,
-      testCase "oversized single managed commit streams historical blobs within the fixed budget" $
-        withHealthyRepository $ \repository resolvedBefore -> do
-          (_, beforeParses) <- requireAnalyzedWithHistoryParseCount resolvedBefore
-          decisionBytes <- BS.readFile (repository </> decisionPath)
-          _ <-
-            commitFiles
-              repository
-              [ ( "architecture/adrai/decisions/Rbulk/oversized-" <> show index <> ".decision.md",
-                  decisionBytes <> BS8.pack ("\n<!-- oversized-history-" <> show index <> " -->\n")
-                )
-                | index <- [1 :: Int .. 257]
-              ]
-          resolvedAfter <- requireResolved repository "HEAD"
-          (_, afterParses) <- requireAnalyzedWithHistoryParseCount resolvedAfter
-          afterParses @?= beforeParses + 257,
+      testCase "late history batch corruption returns the original Git error without a later request" nativeLateHistoryBatchFailure,
+      testCase "managed-source restream uses one production session and preserves every SQLite row" $
+        withHealthyRepository getHealthyRepositorySeed $ \repository discovered _ ->
+          withSystemTempDirectory "adrai managed-source blob-session" $ \temporary -> do
+            decisionBytes <- BS.readFile (repository </> decisionPath)
+            let newSources =
+                  [ ( "architecture/adrai/decisions/Rrestream/source-" <> show index <> ".decision.md",
+                      decisionBytes <> BS8.pack ("\n<!-- session-restream-" <> show index <> " -->\n")
+                    )
+                    | index <- [1 :: Int .. 257]
+                  ]
+            _ <- commitFiles repository newSources
+            normalResolved <- requireResolvedFrom discovered "HEAD"
+            normalConnection <- open ":memory:"
+            normalResult <- requireCompiled normalConnection normalResolved
+            expectedRows <- managedSourceRows normalConnection
+            close normalConnection
+            let traceFile = temporary </> "restream-git-argv.txt"
+                wrapper = temporary </> "restream-tracing-git.cmd"
+            writeTracingGitWrapper wrapper traceFile
+            wrapped <- requireResolvedWithGitClient repository (GitClient wrapper) "HEAD"
+            raw <-
+              observeRawRepositorySnapshotAt wrapped
+                >>= \case
+                  Left problem -> assertFailure (show problem)
+                  Right value -> pure value
+            analyzed <-
+              analyzeRepositorySnapshot raw
+                >>= \case
+                  Left problem -> assertFailure (show problem)
+                  Right value -> pure value
+            -- The only Git activity below is Sqlite.insertManagedSources,
+            -- reached through the normal writeColdDatabase transaction.
+            BS.writeFile traceFile BS.empty
+            targetConnection <- open ":memory:"
+            writeColdDatabase targetConnection analyzed Nothing (coldCompilerMaterializationFingerprint normalResult)
+              >>= \case
+                Left problem -> assertFailure (show problem)
+                Right _ -> pure ()
+            actualRows <- managedSourceRows targetConnection
+            close targetConnection
+            let selectedRows =
+                  Map.fromList
+                    [ (path, bytes)
+                      | (path, _, _, _, bytes, _) <- actualRows,
+                        "architecture/adrai/decisions/Rrestream/" `Text.isPrefixOf` path
+                    ]
+                expectedSelectedRows = Map.fromList [(Text.pack path, Just bytes) | (path, bytes) <- newSources]
+            actualRows @?= expectedRows
+            length actualRows @?= 261
+            Map.size selectedRows @?= 257
+            selectedRows @?= expectedSelectedRows
+            assertSingleUnbufferedBlobSession traceFile,
       testCase "nonfresh connection is rejected without modifying existing schema" $
-        withHealthyRepository $ \_ resolved -> do
+        withHealthyRepository getHealthyRepositorySeed $ \_ _ resolved -> do
           connection <- open ":memory:"
           execute_ connection "CREATE TABLE caller_owned(value TEXT)"
           coldCompileRepository connection resolved >>= \case
@@ -332,7 +232,7 @@ tests =
           count connection "caller_owned" >>= (@?= 0)
           close connection,
       testCase "foreign-key failure rolls back schema and all rows" $
-        withHealthyRepository $ \_ resolved -> do
+        withHealthyRepository getHealthyRepositorySeed $ \_ _ resolved -> do
           sourceConnection <- open ":memory:"
           compiled <- requireCompiled sourceConnection resolved
           close sourceConnection
@@ -352,50 +252,172 @@ tests =
           schema <- query_ targetConnection "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'" :: IO [Only Text]
           schema @?= []
           close targetConnection,
-      testCase "on-disk disposable database reopens and leaves no WAL or SHM sidecars" $
-        withHealthyRepository $ \repository resolved ->
-          withSystemTempDirectory "adrai cold sqlite" $ \temporary -> do
-            let database = temporary </> "cold.sqlite"
-            connection <- open database
-            _ <- requireCompiled connection resolved
-            close connection
-            reopened <- open database
-            values <- meta reopened
-            assertBool "reopened database retains schema meta" (("schema", "adrai-cache/1") `elem` values)
-            close reopened
-            doesFileExist (database <> "-wal") >>= (@?= False)
-            doesFileExist (database <> "-shm") >>= (@?= False)
-            -- Repository itself remains independent of the caller-owned DB.
-            doesFileExist (repository </> ".adrai" </> "cold.sqlite") >>= (@?= False)
-    ]
+      testCase "post-close refresh cancellation cleans its private candidate" $
+        withHealthyRepository getHealthyRepositorySeed $ \repository _ resolved -> do
+          let database = repository </> "post-close.sqlite"
+              artifact = repository </> "post-close.tsv"
+          observer <- newFileColdCompileAttribution artifact
+          cancelled <-
+            try
+              ( compilePostCommitIndexWithAttributionAndRefresh
+                  observer
+                  (resolvedRepository resolved)
+                  (resolvedCommitOid resolved)
+                  database
+                  (\_ -> throwIO ThreadKilled)
+              )
+              :: IO (Either AsyncException PostCommitIndexResult)
+          closeColdCompileAttribution observer
+          cancelled @?= Left ThreadKilled
+          artifactText <- BS8.unpack <$> BS8.readFile artifact
+          case parseAttributionArtifact artifactText of
+            Left problem -> assertFailure ("post-close cancellation attribution: " <> problem)
+            Right (AttributionArtifact rows) ->
+              [ (phase, succeeded)
+              | AttributionEnd _ phase _ _ _ succeeded <- rows
+              , phase `elem` [CompileOutcomeEvaluation, PostCloseProvenanceRefresh, PostCloseFingerprintValidation]
+              ]
+                @?= [(CompileOutcomeEvaluation, True), (PostCloseProvenanceRefresh, False)]
+          doesFileExist database >>= (@?= False)
+          siblings <- listDirectory repository
+          assertBool
+            "post-close cancellation leaves no task-owned candidate"
+            (not (any (isPrefixOf "post-close.sqlite.post-commit-") siblings))
+      ]
 
-withHealthyRepository :: (FilePath -> ResolvedRepositoryRevision -> IO value) -> IO value
-withHealthyRepository = withCompilerRepository healthyCompilerFiles
+data HealthyRepositorySeed = HealthyRepositorySeed
+  { healthyCopySeed :: RepositorySeed,
+    healthyRepositoryTemplate :: Repository,
+    healthyCommitOid :: GitOid
+  }
 
-withCompilerRepository :: (GitOid -> Either Text [(FilePath, BS.ByteString)]) -> (FilePath -> ResolvedRepositoryRevision -> IO value) -> IO value
-withCompilerRepository fixture action =
-  withSystemTempDirectory "adrai cold compiler" $ \temporary -> do
-    let repository = temporary </> "repository"
-    initTestRepository repository
-    basisText <- commitFile repository "seed.txt" "basis"
-    basis <- case mkGitOid basisText of
-      Left problem -> assertFailure (show problem)
-      Right oid -> pure oid
-    files <- case fixture basis of
-      Left problem -> assertFailure (Text.unpack problem)
-      Right value -> pure value
+data BasisRepositorySeed = BasisRepositorySeed
+  { basisCopySeed :: RepositorySeed,
+    basisRepositoryTemplate :: Repository,
+    basisCommitOid :: GitOid
+  }
+
+data CompilerRepositorySeeds = CompilerRepositorySeeds
+  { compilerHealthySeed :: HealthyRepositorySeed,
+    compilerBasisSeed :: BasisRepositorySeed
+  }
+
+createCompilerRepositorySeeds :: IO CompilerRepositorySeeds
+createCompilerRepositorySeeds = do
+  healthy <- createHealthyRepositorySeed
+  basis <- createBasisRepositorySeed `onException` removeHealthyRepositorySeed healthy
+  pure (CompilerRepositorySeeds healthy basis)
+
+removeCompilerRepositorySeeds :: CompilerRepositorySeeds -> IO ()
+removeCompilerRepositorySeeds seeds = do
+  removeBasisRepositorySeed (compilerBasisSeed seeds)
+  removeHealthyRepositorySeed (compilerHealthySeed seeds)
+
+createHealthyRepositorySeed :: IO HealthyRepositorySeed
+createHealthyRepositorySeed =
+  do
+    (seed, (template, commitOid)) <-
+      createRepositorySeedWith "adrai healthy compiler seed" $ \repository -> do
+        initTestRepository repository
+        basisText <- commitFile repository "seed.txt" "basis"
+        basis <- requireGitOid basisText
+        files <- requireFixture (healthyCompilerFiles basis)
+        commitText <- commitFiles repository files
+        discovered <- requireRepository repository
+        commitOid <- requireGitOid commitText
+        pure (discovered, commitOid)
+    auditRepositorySeedCopy seed template commitOid "adrai healthy compiler seed audit"
+      `onException` removeRepositorySeed seed
+    pure (HealthyRepositorySeed seed template commitOid)
+
+removeHealthyRepositorySeed :: HealthyRepositorySeed -> IO ()
+removeHealthyRepositorySeed = removeRepositorySeed . healthyCopySeed
+
+createBasisRepositorySeed :: IO BasisRepositorySeed
+createBasisRepositorySeed = do
+  (seed, (template, commitOid)) <-
+    createRepositorySeedWith "adrai compiler basis seed" $ \repository -> do
+      initTestRepository repository
+      commitText <- commitFile repository "seed.txt" "basis"
+      discovered <- requireRepository repository
+      commitOid <- requireGitOid commitText
+      pure (discovered, commitOid)
+  auditRepositorySeedCopy seed template commitOid "adrai compiler basis seed audit"
+    `onException` removeRepositorySeed seed
+  pure (BasisRepositorySeed seed template commitOid)
+
+removeBasisRepositorySeed :: BasisRepositorySeed -> IO ()
+removeBasisRepositorySeed = removeRepositorySeed . basisCopySeed
+
+withHealthyRepository :: IO HealthyRepositorySeed -> (FilePath -> Repository -> ResolvedRepositoryRevision -> IO value) -> IO value
+withHealthyRepository getSeed action = do
+  seed <- getSeed
+  withRepositorySeedCopy (healthyCopySeed seed) "adrai cold compiler" $ \_ repository -> do
+    repairCopiedHooksPath repository
+    let copiedRepository = relocateCopiedRepository (healthyRepositoryTemplate seed) repository
+        commitOid = healthyCommitOid seed
+        resolved =
+          ResolvedRepositoryRevision
+            { resolvedRepository = copiedRepository,
+              resolvedRequestedRevision = requireRevision "HEAD",
+              resolvedCommitOid = commitOid,
+              resolvedRevisionKey = RepositoryRevisionKey (repositoryCommonDir copiedRepository) commitOid
+            }
+    action repository copiedRepository resolved
+
+withBasisRepository :: IO BasisRepositorySeed -> String -> (FilePath -> Repository -> GitOid -> IO value) -> IO value
+withBasisRepository getSeed label action = do
+  seed <- getSeed
+  withRepositorySeedCopy (basisCopySeed seed) label $ \_ repository -> do
+    repairCopiedHooksPath repository
+    let copiedRepository = relocateCopiedRepository (basisRepositoryTemplate seed) repository
+    action repository copiedRepository (basisCommitOid seed)
+
+relocateCopiedRepository :: Repository -> FilePath -> Repository
+relocateCopiedRepository template repository =
+  template
+    { repositoryWorktreeRoot = Just repository,
+      repositoryGitDir = repository </> ".git",
+      repositoryCommonDir = repository </> ".git",
+      repositoryCommandDirectory = repository
+    }
+
+auditRepositorySeedCopy :: RepositorySeed -> Repository -> GitOid -> String -> IO ()
+auditRepositorySeedCopy seed template knownCommit label =
+  withRepositorySeedCopy seed label $ \_ repository -> do
+    repairCopiedHooksPath repository
+    let expected = relocateCopiedRepository template repository
+        expectedHooks = repository </> ".git" </> "adrai-no-hooks"
+        alternates = repository </> ".git" </> "objects" </> "info" </> "alternates"
+    actual <- requireRepository repository
+    repositoryWorktreeRoot actual @?= Just repository
+    repositoryGitDir actual @?= repository </> ".git"
+    repositoryCommonDir actual @?= repository </> ".git"
+    repositoryCommandDirectory actual @?= repository
+    repositoryClient actual @?= repositoryClient template
+    repositoryLayout actual @?= repositoryLayout template
+    repositoryCommonIsBare actual @?= repositoryCommonIsBare template
+    actual @?= expected
+    hooks <- Text.unpack . outputText <$> gitSuccess repository ["config", "--local", "--get", "core.hooksPath"] BS.empty
+    normalise hooks @?= normalise expectedHooks
+    doesDirectoryExist expectedHooks >>= (@?= True)
+    doesFileExist alternates >>= (@?= False)
+    resolved <- requireResolvedFrom actual (gitOidText knownCommit)
+    resolvedRequestedRevision resolved @?= requireRevision (gitOidText knownCommit)
+    resolvedCommitOid resolved @?= knownCommit
+    repositoryRevisionNamespace (resolvedRevisionKey resolved) @?= repositoryCommonDir actual
+
+repairCopiedHooksPath :: FilePath -> IO ()
+repairCopiedHooksPath repository = do
+  _ <- gitSuccess repository ["config", "core.hooksPath", repository </> ".git" </> "adrai-no-hooks"] BS.empty
+  pure ()
+
+withCompilerRepository :: IO BasisRepositorySeed -> (GitOid -> Either Text [(FilePath, BS.ByteString)]) -> (FilePath -> ResolvedRepositoryRevision -> IO value) -> IO value
+withCompilerRepository getSeed fixture action =
+  withBasisRepository getSeed "adrai cold compiler" $ \repository discovered basis -> do
+    files <- requireFixture (fixture basis)
     _ <- commitFiles repository files
-    resolved <- requireResolved repository "HEAD"
-    action repository resolved
-
-withExplicitBasis :: GitOid -> (FilePath -> ResolvedRepositoryRevision -> IO value) -> IO value
-withExplicitBasis basis action =
-  withSystemTempDirectory "adrai explicit compiler basis" $ \temporary -> do
-    let repository = temporary </> "repository"
-    initTestRepository repository
-    files <- requireFixture (healthyCompilerFiles basis)
-    _ <- commitFiles repository files
-    resolved <- requireResolved repository "HEAD"
+    resolved <- requireResolvedFrom discovered "HEAD"
     action repository resolved
 
 requireFixture :: Either Text value -> IO value
@@ -416,25 +438,143 @@ requireOid value =
     Left problem -> error (show problem)
     Right oid -> oid
 
-relocateCompilerPath :: (FilePath, BS.ByteString) -> (FilePath, BS.ByteString)
-relocateCompilerPath (path, bytes)
-  | ".decision.md" `Text.isSuffixOf` pathText = (customDecisionRoot </> makeRelative "architecture/adrai/decisions" path, bytes)
-  | otherwise = (customConnectionRoot </> makeRelative "architecture/adrai/connections" path, bytes)
-  where
-    pathText = Text.pack path
-
-customDecisionRoot :: FilePath
-customDecisionRoot = "arkitektur/beslutninger-ø"
-
-customConnectionRoot :: FilePath
-customConnectionRoot = "arkitektur/forbindelser-å"
-
-requireResolved :: FilePath -> Text -> IO ResolvedRepositoryRevision
-requireResolved repository revision = do
-  discovered <- discoverRepository systemGit repository >>= \case
+-- | Resolve through the supplied client so production snapshot/history callers
+-- can be observed without adding a test-only Git path to the compiler.
+requireResolvedWithGitClient :: FilePath -> GitClient -> Text -> IO ResolvedRepositoryRevision
+requireResolvedWithGitClient repository client revision = do
+  discovered <- discoverRepository client repository >>= \case
     Left problem -> assertFailure (show problem)
     Right value -> pure value
   resolveRepositoryRevision discovered (requireRevision revision) >>= \case
+    Left problem -> assertFailure (show problem)
+    Right value -> pure value
+
+nativeLateHistoryBatchFailure :: IO ()
+nativeLateHistoryBatchFailure =
+  withSystemTempDirectory "adrai native late history" $ \temporary -> do
+      let repository = temporary </> "repository"
+          helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+      initTestRepository repository
+      basisText <- commitFile repository "seed.txt" "basis"
+      basis <-
+        case mkGitOid basisText of
+          Left problem -> assertFailure (show problem) >> fail "unreachable"
+          Right value -> pure value
+      healthyFiles <- requireFixture (healthyCompilerFiles basis)
+      decisionBytes <-
+        case lookup decisionPath healthyFiles of
+          Nothing -> assertFailure "healthy compiler fixture omitted its decision document" >> fail "unreachable"
+          Just bytes -> pure bytes
+      _ <- commitFiles repository
+        [ ("architecture/adrai/decisions/Rnative/history-" <> show index <> ".decision.md", decisionBytes <> BS8.pack ("\n<!-- native-history-" <> show index <> " -->\n"))
+          | index <- [1 :: Int .. 257]
+        ]
+      resolved <- requireResolved repository "HEAD"
+      raw <- observeRawRepositorySnapshotAt resolved >>= either (assertFailure . show) pure
+      executable <- getExecutablePath
+      copyFile executable helper
+      BS.writeFile (temporary </> "fixture-shallow") "false\n"
+      graph <- gitSuccess repository ["rev-list", "--topo-order", "--reverse", "--parents", Text.unpack (gitOidText (resolvedCommitOid resolved))] BS.empty
+      BS.writeFile (temporary </> "fixture-rev-list") graph
+      let graphRows = map BS8.words (BS8.lines graph)
+      BS.writeFile (temporary </> "fixture-path-selection") (BS8.unlines [child | child : _ <- graphRows])
+      let
+          deltaInput = BS8.unlines [case row of [child] -> child; child : parent : _ -> child <> " " <> parent; _ -> BS.empty | row <- graphRows]
+          diffArguments = ["--literal-pathspecs", "diff-tree", "--stdin", "--root", "-r", "-t", "--no-renames", "--raw", "--no-abbrev", "--always", "-z", "--pretty=tformat:%x1e%H"]
+      diff <- gitSuccess repository diffArguments deltaInput
+      BS.writeFile (temporary </> "fixture-diff-tree") diff
+      let currentBlobs = [blob | observation <- rawRepositorySnapshotEntries raw, Just blob <- [repositoryTreeBlob observation]]
+      forM_ currentBlobs $ \blob -> BS.writeFile (temporary </> "fixture-blob-" <> Text.unpack (gitOidText (gitBlobOid blob))) (gitBlobBytes blob)
+      writeFile (temporary </> "fixture-malformed-after") "257"
+      let wrappedRepository = (resolvedRepository resolved) {repositoryClient = GitClient helper}
+          wrappedRevision = resolved {resolvedRepository = wrappedRepository}
+          wrappedRaw = raw {rawRepositorySnapshotRevision = wrappedRevision}
+      Async.withAsync (analyzeRepositorySnapshotWithHistoryCounts wrappedRaw) $ \analysis -> do
+        waitForNativeHistoryPhase (temporary </> "fixture-phase") analysis
+        timeout (10 * 1000000) (Async.wait analysis) >>= \case
+          Just (Left (RepositorySnapshotGitError (GitInvalidOutput "cat-file batch" (GitMalformedObjectHeader "malformed"))), parsed, requested) -> do
+            parsed @?= 256
+            requested @?= 257
+          result -> assertFailure ("expected native late history Git error after fixture phase, got " <> show result)
+      seen <- lines <$> readFile (temporary </> "fixture-requests")
+      length seen @?= 257
+      boundaries <- lines <$> readFile (temporary </> "fixture-window-boundaries")
+      boundaries @?= ["256:False"]
+      helperPid <- read <$> readFile (temporary </> "fixture-helper.pid")
+      waitForExactPidAbsence helperPid 50
+      analyzeRepositorySnapshotWithHistoryCounts raw >>= \case
+        (Right _, parsed, requested) -> do
+          parsed @?= 257
+          requested @?= 257
+        result -> assertFailure ("fresh real-Git history retry failed: " <> show result)
+
+waitForNativeHistoryPhase :: Show value => FilePath -> Async.Async value -> IO ()
+waitForNativeHistoryPhase phaseFile analysis = go (300 :: Int)
+  where
+    go attempts = do
+      exists <- doesFileExist phaseFile
+      if exists
+        then readFile phaseFile >>= (@?= "malformed\n")
+        else do
+          Async.poll analysis >>= \case
+            Just result -> assertFailure ("native late-history analysis completed before fixture phase: " <> show result)
+            Nothing
+              | attempts <= 0 -> assertFailure "native late-history fixture phase did not arrive within 30 seconds"
+              | otherwise -> threadDelay 100000 >> go (attempts - 1)
+
+waitForExactPidAbsence :: Int -> Int -> IO ()
+waitForExactPidAbsence pid attempts = do
+  (_, output, _) <- readProcess (proc "powershell.exe" ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; try { [void][Diagnostics.Process]::GetProcessById(" <> show pid <> "); [Console]::Out.Write('present') } catch [ArgumentException] { [Console]::Out.Write('absent') }"])
+  if LBS.toStrict output == "absent"
+    then pure ()
+    else if attempts <= 0
+      then assertFailure "exact native history helper PID remained after cleanup"
+      else threadDelay 100000 >> waitForExactPidAbsence pid (attempts - 1)
+
+writeTracingGitWrapper :: FilePath -> FilePath -> IO ()
+writeTracingGitWrapper wrapper traceFile =
+  BS.writeFile
+    wrapper
+    ( "@echo off\r\n"
+        <> "echo %*>> \""
+        <> BS8.pack traceFile
+        <> "\"\r\ngit %*\r\n"
+    )
+
+assertSingleUnbufferedBlobSession :: FilePath -> IO ()
+assertSingleUnbufferedBlobSession traceFile = do
+  invocations <- BS.readFile traceFile
+  let blobSessions =
+        filter
+          ( \line ->
+              "cat-file" `BS.isInfixOf` line
+                && "--batch" `BS.isInfixOf` line
+                && not ("--batch-check" `BS.isInfixOf` line)
+          )
+          (BS8.lines invocations)
+  length blobSessions @?= 1
+  assertBool "production persistent blob session must not request --buffer" (not ("--buffer" `BS.isInfixOf` invocations))
+
+managedSourceRows :: Connection -> IO [(Text, Text, Text, Text, Maybe BS.ByteString, Text)]
+managedSourceRows connection =
+  query_
+    connection
+    "SELECT path,oid,object_type,mode,bytes,parse_state FROM managed_source ORDER BY path"
+
+requireRepository :: FilePath -> IO Repository
+requireRepository path =
+  discoverRepository systemGit path >>= \case
+    Left problem -> assertFailure (show problem)
+    Right repository -> pure repository
+
+requireResolved :: FilePath -> Text -> IO ResolvedRepositoryRevision
+requireResolved repository revision = do
+  discovered <- requireRepository repository
+  requireResolvedFrom discovered revision
+
+requireResolvedFrom :: Repository -> Text -> IO ResolvedRepositoryRevision
+requireResolvedFrom repository revision =
+  resolveRepositoryRevision repository (requireRevision revision) >>= \case
     Left problem -> assertFailure (show problem)
     Right value -> pure value
 
@@ -455,30 +595,6 @@ requireAnalyzed resolved = do
     >>= \case
       Left problem -> assertFailure (show problem)
       Right value -> pure value
-
-requireAnalyzedWithHistoryParseCount :: ResolvedRepositoryRevision -> IO (AnalyzedRepositorySnapshot, Int)
-requireAnalyzedWithHistoryParseCount resolved = do
-  raw <-
-    observeRawRepositorySnapshotAt resolved
-      >>= \case
-        Left problem -> assertFailure (show problem)
-        Right value -> pure value
-  analyzeRepositorySnapshotWithHistoryParseCount raw
-    >>= \case
-      (Left problem, _) -> assertFailure (show problem)
-      (Right value, parsed) -> pure (value, parsed)
-
-requireAnalyzedWithHistoryCounts :: ResolvedRepositoryRevision -> IO (AnalyzedRepositorySnapshot, Int, Int)
-requireAnalyzedWithHistoryCounts resolved = do
-  raw <-
-    observeRawRepositorySnapshotAt resolved
-      >>= \case
-        Left problem -> assertFailure (show problem)
-        Right value -> pure value
-  analyzeRepositorySnapshotWithHistoryCounts raw
-    >>= \case
-      (Left problem, _, _) -> assertFailure (show problem)
-      (Right value, parsed, requested) -> pure (value, parsed, requested)
 
 count :: Connection -> Text -> IO Int64
 count connection table = do
@@ -510,7 +626,3 @@ fromText = fromString . Text.unpack
 
 decisionPath :: FilePath
 decisionPath = "architecture/adrai/decisions/R000/R00000000000000000000000000--use-a-cold-compiler.decision.md"
-
-slash :: Char -> Char
-slash '\\' = '/'
-slash character = character

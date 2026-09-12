@@ -64,6 +64,10 @@ data SqliteFixture = SqliteFixture
     sqliteFixtureMaterialization :: SearchMaterialization
   }
 
+newtype CurrentSearchBenchmarkFixture = CurrentSearchBenchmarkFixture
+  { unCurrentSearchBenchmarkFixture :: CurrentSearchFixture
+  }
+
 data RelevanceFixture = RelevanceFixture
   { relevanceConnection :: Connection,
     relevanceSnapshot :: ReadSnapshot,
@@ -82,8 +86,8 @@ instance NFData CorpusFixture where
 instance NFData SqliteFixture where
   rnf fixture = materializationChecksum (sqliteFixtureMaterialization fixture) `seq` ()
 
-instance NFData CurrentSearchFixture where
-  rnf fixture = forceCurrentSearchFixture fixture `seq` ()
+instance NFData CurrentSearchBenchmarkFixture where
+  rnf fixture = forceCurrentSearchFixture (unCurrentSearchBenchmarkFixture fixture) `seq` ()
 
 instance NFData RelevanceFixture where
   rnf fixture =
@@ -117,13 +121,13 @@ main = do
           bgroup
             "search"
             [ envWithCleanup
-                (prepareCurrentSearchFixture False)
-                closeCurrentSearchFixture
-                (\fixture -> bench "current-cold-2000-adr" (nfIO (currentSearchCold fixture))),
+                (CurrentSearchBenchmarkFixture <$> prepareCurrentSearchFixture False)
+                (closeCurrentSearchFixture . unCurrentSearchBenchmarkFixture)
+                (\fixture -> bench "current-cold-2000-adr" (nfIO (currentSearchCold (unCurrentSearchBenchmarkFixture fixture)))),
               envWithCleanup
-                (prepareCurrentSearchFixture True)
-                closeCurrentSearchFixture
-                (\fixture -> bench "current-warm-2000-adr" (nfIO (currentSearchWarm fixture)))
+                (CurrentSearchBenchmarkFixture <$> prepareCurrentSearchFixture True)
+                (closeCurrentSearchFixture . unCurrentSearchBenchmarkFixture)
+                (\fixture -> bench "current-warm-2000-adr" (nfIO (currentSearchWarm (unCurrentSearchBenchmarkFixture fixture))))
             ],
           bgroup
             "relevance"

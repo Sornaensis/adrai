@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE StrictData #-}
 
 -- | Provenance overlay orchestration module.
@@ -28,6 +29,20 @@ module Adrai.Provenance.Ensure
 
     -- | Main orchestration entry point
     ensureProvenance,
+    ensureProvenanceWithRecoveryWitness,
+    ensureProvenanceWithRecoveryWitnessAndWorklistObserver,
+
+    -- | Narrow recovery-authority seam for real Git regression tests
+    usableWitnessRange,
+    recoveryWitnessSuppresses,
+    recoveryProjectionValidity,
+
+    -- | Bounded ancestry cache seam used by provenance maintenance tests
+    extendTargetAncestryCache,
+
+    -- | Seed overlay operation registrations from an immutable semantic cache
+    seedRegisteredOperationsFromSemanticCache,
+    seedRegisteredOperationsFromSemanticCacheWithQueryObserver,
 
     -- | Update record
     ProvenanceUpdate (..),
@@ -38,11 +53,14 @@ module Adrai.Provenance.Ensure
     -- | Read immutable target-relative provenance evidence
     readProvenanceEvidenceAt,
     readProvenanceEvidenceAtWith,
+    openReadOnly,
+    openReadWriteExisting,
   )
 where
 
 import Adrai.Git
   ( GitError (..),
+    GitCommitNode,
     GitOid (..),
     GitObjectType (GitCommitObject),
     GitObjectInfo (..),
@@ -50,16 +68,15 @@ import Adrai.Git
     Repository (..),
     batchObjectInfo,
     gitCommitNodeOid,
+    gitCommitNodeParents,
     gitOidText,
     isShallowRepository,
     reachableCommitGraphAt,
     runRepository,
   )
 import Adrai.Provenance
-  ( LineAnchor (..),
-    OverlayFingerprint (..),
+  ( OverlayFingerprint (..),
     mkGitOid,
-    mkOverlayFingerprint,
     provenanceOperationId,
     sha256Digest,
   )
@@ -68,6 +85,9 @@ import Adrai.Provenance.Classification
     RegisteredObjectData (..),
     RegisteredOperationData (..),
     candidateCommits,
+    findAllOpTrailers,
+    issueKey,
+    operationMemberSignature,
     processCandidates,
     pruneUnavailablePlacements,
     registerOperationGroups,
@@ -76,14 +96,9 @@ import Adrai.Provenance.Classification
     storeNewCommits,
   )
 import Adrai.Provenance.Overlay
-  ( CommitObservation (..),
-    ManagedPathAddition (..),
-    ObservationRoot (..),
+  ( ObservationRoot (..),
     RefObservation (..),
     LineLanding (..),
-    OperationClassification (..),
-    OperationCommit (..),
-    ProvenanceIssue (..),
     RegisteredOperationRow (..),
     RegisteredObjectRow (..),
     OperationCommitRow (..),
@@ -96,73 +111,60 @@ import Adrai.Provenance.Overlay
     ProvenanceOperationEvidence (..),
     ProvenanceEvidence (..),
     ProvenanceEvidenceError (..),
-    createOverlaySchema,
-    overlayValid,
+    overlaySchemaVersion,
     provenanceDatabasePath,
-  )
+   )
+import Adrai.Provenance.RecoveryWitness (ProvenanceRecoveryWitness (..))
 import Adrai.Provenance.Discovery
-  ( addedPathsForCommits,
-    commitLogSnapshotForOids,
-    firstParentPathLandings,
+  ( firstParentPathLandings,
     listRefs,
-    managedPathAdditions,
-    managedSuffixes,
     observationFingerprint,
     observationRoots,
-    reflogCommitRoots,
     revListDelta,
   )
 
 import Adrai.Sqlite (asQuery)
 import Adrai.Types
-  ( Config (..),
-    LogicalLine (..),
-    RepoPath (..),
+  ( LogicalLine (..),
     GitRef (..),
     Digest (..),
-    digestBytes,
-    mkGitRef,
-    repoPathText,
     gitRefText,
     operationIdText,
   )
 import Control.Exception
   ( SomeAsyncException,
     Exception,
-    SomeException (SomeException),
+    SomeException,
     bracket,
     fromException,
     throwIO,
     toException,
     try,
   )
-import Control.Monad (forM_, when, void)
+import Control.Monad (forM_, unless, when, void)
 import Data.Maybe (isJust)
-import Data.Aeson (Value (..))
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
-import Data.Bits ((.&.), shiftL, shiftR)
+import Data.Bits ((.&.), shiftR)
 import qualified Data.ByteString as BS
-import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as Lazy (toStrict)
-import Data.List (sort, sortBy)
+import Data.List (sort)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
-import Data.Ord (comparing)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Data.Text.Encoding.Error as TextEncodingError
 import qualified Data.Vector as Vector
 import Database.SQLite.Simple
   ( Connection,
     Only (..),
     SQLData (SQLNull, SQLText, SQLInteger),
-    execute,
-    execute_,
+     execute,
+     executeMany,
+     execute_,
     open,
     query,
     query_,
@@ -170,7 +172,6 @@ import Database.SQLite.Simple
     withTransaction,
   )
 import System.Exit (ExitCode (ExitSuccess))
-import System.FilePath (takeDirectory, (</>))
 import Data.Word (Word8)
 import Data.Int (Int64)
 import System.Directory (makeAbsolute)
@@ -197,7 +198,331 @@ configJsonText decisionsPath connectionsPath logicalLines =
       [ (Key.fromText "connections", Aeson.String connectionsPath),
         (Key.fromText "decisions", Aeson.String decisionsPath),
         (Key.fromText "logical_lines", Aeson.Array (Vector.fromList (map Aeson.String logicalLines)))
-      ]))))
+       ]))))
+
+-- | Preserve the first occurrence so Git observation and candidate processing
+-- see one stable, shared worklist even when a target is also a delta or a
+-- historical recovery candidate.
+deduplicateOids :: [GitOid] -> [GitOid]
+deduplicateOids = go Set.empty
+  where
+    go _ [] = []
+    go seen (oid:rest)
+      | oid `Set.member` seen = go seen rest
+      | otherwise = oid : go (Set.insert oid seen) rest
+
+-- | A persisted archive may reduce recovery only after Git independently
+-- proves that it is a complete immutable ancestor authority.  The target graph
+-- establishes both the source's complete all-parent closure and the exact
+-- target-relative range without additional Git history processes.
+usableWitnessRange
+  :: Repository
+  -> GitOid
+  -> Maybe ProvenanceRecoveryWitness
+  -> IO (Maybe [GitOid])
+usableWitnessRange repository target maybeWitness = do
+  (_, _, witnessedRange) <- newTargetReachabilityChecker repository target
+  witnessedRange maybeWitness
+
+usableWitnessRangeFromTarget
+  :: Repository
+  -> GitOid
+  -> IO (Either GitError TargetReachability)
+  -> Maybe ProvenanceRecoveryWitness
+  -> IO (Maybe [GitOid])
+usableWitnessRangeFromTarget _ _ _ Nothing = pure Nothing
+usableWitnessRangeFromTarget repository target readTarget (Just witness) = do
+  shallow <- isShallowRepository repository
+  case shallow of
+    Right False -> do
+      targetResult <- readTarget
+      pure $ case targetResult of
+        Left _ -> Nothing
+        Right cachedTarget -> do
+          targetReachability <- either (const Nothing) Just
+            (validateTargetReachability target (targetReachabilityGraph cachedTarget))
+          let nodeMap = Map.fromList
+                [ (gitCommitNodeOid node, gitCommitNodeParents node)
+                | node <- targetReachabilityGraph targetReachability
+                ]
+          sourceReachable <- commitClosure
+            nodeMap
+            (recoveryWitnessSourceTarget witness)
+          if sourceReachable == recoveryWitnessSourceReachability witness
+            then Just
+              ( Set.toAscList
+                  (targetReachabilityOids targetReachability `Set.difference` sourceReachable)
+              )
+            else Nothing
+    _ -> pure Nothing
+
+-- | Decide whether a source-authorized operation needs no historical replay.
+-- The caller supplies only facts established in the current transaction; this
+-- is kept pure so regressions cannot accidentally make a test-only decision
+-- diverge from production recovery planning.
+recoveryWitnessSuppresses
+  :: Maybe ProvenanceRecoveryWitness
+  -> Maybe [GitOid]
+  -> Map Text Text
+  -> Map Text Bool
+  -> Map Text Bool
+  -> Text
+  -> Bool
+recoveryWitnessSuppresses maybeWitness witnessedRange registeredSignatures projectionValidity targetPlacementChecks operationId =
+  case maybeWitness of
+    Just witness
+      | Just witnessedRange' <- witnessedRange
+      , Map.lookup operationId registeredSignatures == Map.lookup operationId (recoveryWitnessSignatures witness)
+      , Set.member operationId (recoveryWitnessCoveredOperations witness)
+      , Set.member operationId (recoveryWitnessPlacedOperations witness)
+      , Map.lookup operationId projectionValidity == Just True
+      , Map.lookup operationId targetPlacementChecks == Just True
+      , not (null witnessedRange') -> True
+    _ -> False
+
+-- | One batched, transaction-local comparison of the source-authorized
+-- provenance projection against the mutable overlay.  It deliberately makes
+-- a fixed number of reads regardless of operation count.
+recoveryProjectionValidity
+  :: Connection -> [Text] -> Text -> Text -> ProvenanceRecoveryWitness -> IO (Map Text Bool)
+recoveryProjectionValidity conn operationIds requestedConfigKey _requestedConfigText witness
+  | null operationIds = pure Map.empty
+  | otherwise = do
+      let placeholders = Text.intercalate "," (replicate (length operationIds) "?")
+          parameters = map SQLText operationIds
+      placementRows <- query conn
+        (asQuery ("SELECT op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json FROM operation_commit WHERE op_id IN (" <> placeholders <> ")"))
+        parameters :: IO [(Text, Text, Text, Integer, Integer, Text, Text)]
+      issueRows <- query conn
+        (asQuery ("SELECT op_id,severity,code,adr_id,object_id,path,message FROM provenance_issue WHERE op_id IN (" <> placeholders <> ")"))
+        parameters :: IO [(Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)]
+      landingRows <- query conn
+        (asQuery ("SELECT config_key,op_id,line_id,ref_name,commit_oid,complete FROM line_landing WHERE op_id IN (" <> placeholders <> ")"))
+        parameters :: IO [(Text, Text, Text, Text, Text, Integer)]
+      configRows <- query conn
+        "SELECT config_key,config_json FROM line_config WHERE config_key=?"
+        (Only requestedConfigKey) :: IO [(Text, Text)]
+      let sourceReachable = recoveryWitnessSourceReachability witness
+          relevantPlacement (_, rawOid, _, _, _, _, _) = either (const False) (`Set.member` sourceReachable) (mkGitOid rawOid)
+          relevantLanding (_, _, _, _, rawOid, _) = either (const False) (`Set.member` sourceReachable) (mkGitOid rawOid)
+          groupedBy first rows = Map.fromListWith (<>) [(first row, [row]) | row <- rows]
+          placementsByOperation = groupedBy (\(op, _, _, _, _, _, _) -> op) (filter relevantPlacement placementRows)
+          issuesByOperation = groupedBy (\(op, _, _, _, _, _, _) -> op) issueRows
+          landingsByOperation = groupedBy (\(_, op, _, _, _, _) -> op) (filter relevantLanding landingRows)
+          expectedPlacements = groupedBy (\(op, _, _, _, _, _, _) -> op) (Set.toList (recoveryWitnessPlacements witness))
+          expectedIssues = groupedBy (\(op, _, _, _, _, _, _) -> op) (Set.toList (recoveryWitnessIssues witness))
+          expectedLandings = groupedBy (\(_, op, _, _, _, _) -> op) (Set.toList (recoveryWitnessLandings witness))
+          currentConfigs = Set.fromList configRows
+      pure (Map.fromList
+        [ (operationId, currentConfigs == recoveryWitnessLineConfigs witness
+            && Set.fromList (Map.findWithDefault [] operationId placementsByOperation) == Set.fromList (Map.findWithDefault [] operationId expectedPlacements)
+            && Set.fromList (Map.findWithDefault [] operationId issuesByOperation) == Set.fromList (Map.findWithDefault [] operationId expectedIssues)
+            && Set.fromList (Map.findWithDefault [] operationId landingsByOperation) == Set.fromList (Map.findWithDefault [] operationId expectedLandings))
+        | operationId <- operationIds ])
+
+importWitnessBaseline :: Connection -> [Text] -> Map Text Text -> Text -> Text -> ProvenanceRecoveryWitness -> IO ()
+importWitnessBaseline conn operationIds registeredSignatures requestedConfigKey requestedConfigText witness
+  | recoveryWitnessLineConfigs witness /= Set.singleton (requestedConfigKey, requestedConfigText) = pure ()
+  | otherwise = do
+      forM_ (Set.toList (recoveryWitnessLineConfigs witness)) $ \(configKey', configText') ->
+        execute conn "INSERT OR REPLACE INTO line_config(config_key,config_json) VALUES(?,?)"
+          [SQLText configKey', SQLText configText']
+      let eligibleOperations = Set.fromList
+            [ operationId
+            | operationId <- operationIds
+            , Map.lookup operationId registeredSignatures == Map.lookup operationId (recoveryWitnessSignatures witness)
+            , Set.member operationId (recoveryWitnessCoveredOperations witness)
+            , Set.member operationId (recoveryWitnessPlacedOperations witness)
+            ]
+          eligibleRows predicate rows = Set.toList (Set.filter (\row -> Set.member (predicate row) eligibleOperations) rows)
+          placements = eligibleRows (\(op, _, _, _, _, _, _) -> op) (recoveryWitnessPlacements witness)
+          issues = eligibleRows (\(op, _, _, _, _, _, _) -> op) (recoveryWitnessIssues witness)
+          landings = eligibleRows (\(_, op, _, _, _, _) -> op) (recoveryWitnessLandings witness)
+      execute_ conn "CREATE TEMP TABLE IF NOT EXISTS recovery_witness_operation(op_id TEXT PRIMARY KEY)"
+      execute_ conn "CREATE TEMP TABLE IF NOT EXISTS recovery_witness_reachable(commit_oid TEXT PRIMARY KEY)"
+      execute_ conn "DELETE FROM recovery_witness_operation"
+      execute_ conn "DELETE FROM recovery_witness_reachable"
+      executeMany conn "INSERT INTO recovery_witness_operation(op_id) VALUES(?)"
+        [[SQLText operationId] | operationId <- Set.toList eligibleOperations]
+      executeMany conn "INSERT INTO recovery_witness_reachable(commit_oid) VALUES(?)"
+        [[SQLText (gitOidText oid)] | oid <- Set.toList (recoveryWitnessSourceReachability witness)]
+      execute_ conn
+        "DELETE FROM operation_commit WHERE op_id IN (SELECT op_id FROM recovery_witness_operation) AND commit_oid IN (SELECT commit_oid FROM recovery_witness_reachable)"
+      executeMany conn "INSERT OR REPLACE INTO operation_commit(op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json) VALUES(?,?,?,?,?,?,?)"
+        [[SQLText op, SQLText oid, SQLText classification, SQLInteger (fromInteger authored), SQLInteger (fromInteger committed), SQLText subject, SQLText parents] | (op, oid, classification, authored, committed, subject, parents) <- placements]
+      executeMany conn "INSERT OR REPLACE INTO provenance_issue(issue_key,severity,code,adr_id,object_id,path,message,op_id) VALUES(?,?,?,?,?,?,?,?)"
+        [[ SQLText (issueKey code message (Just op) objectId path), SQLText severity, SQLText code
+         , maybe SQLNull SQLText adr, maybe SQLNull SQLText objectId, maybe SQLNull SQLText path
+         , SQLText message, SQLText op
+         ] | (op, severity, code, adr, objectId, path, message) <- issues]
+      execute conn
+        "DELETE FROM line_landing WHERE config_key=? AND op_id IN (SELECT op_id FROM recovery_witness_operation) AND commit_oid IN (SELECT commit_oid FROM recovery_witness_reachable)"
+        (Only requestedConfigKey)
+      executeMany conn "INSERT OR REPLACE INTO line_landing(config_key,op_id,line_id,ref_name,commit_oid,complete) VALUES(?,?,?,?,?,?)"
+        [[SQLText configKey', SQLText op, SQLText lineId, SQLText refName, SQLText oid, SQLInteger (fromInteger complete)] | (configKey', op, lineId, refName, oid, complete) <- landings]
+
+-- | Extend an ancestry-result cache with one shared batch for all unseen
+-- placement candidates.  Keeping this seam independent of repository access
+-- makes the bounded-request contract directly testable.
+extendTargetAncestryCache
+  :: ([GitOid] -> IO (Either GitError (Map GitOid Bool)))
+  -> Map GitOid Bool
+  -> [GitOid]
+  -> IO (Either GitError (Map GitOid Bool))
+extendTargetAncestryCache checkCandidates cache candidates = do
+  let missing = deduplicateOids [candidate | candidate <- candidates, Map.notMember candidate cache]
+  if null missing
+    then pure (Right cache)
+    else do
+      checked <- checkCandidates missing
+      pure $ do
+        answers <- checked
+        let requested = Set.fromList missing
+            answerKeys = Map.keysSet answers
+        if answerKeys == requested
+          then Right (Map.union cache answers)
+          else Left (GitCommandFailed "target ancestry" 128 "" "batched target ancestry returned an incomplete or unexpected candidate set")
+
+-- | Construct one target-relative reachability proof that can be reused by
+-- every certification pass in an overlay refresh.  Candidates already in the
+-- decoded graph are proven commits; only outsiders require bounded object-info
+-- checks, preserving the old fail-closed behavior for missing or non-commit
+-- placement rows without probing every reachable placement.
+newTargetReachabilityChecker
+  :: Repository
+  -> GitOid
+  -> IO
+       ( [GitOid] -> IO (Either GitError (Map GitOid Bool)),
+         IO (Either GitError (Set.Set GitOid)),
+         Maybe ProvenanceRecoveryWitness -> IO (Maybe [GitOid])
+       )
+newTargetReachabilityChecker repository target = do
+  reachableRef <- newIORef Nothing
+  let checkCandidates candidates = do
+        let uniqueCandidates = deduplicateOids candidates
+        reachableResult <- cachedTarget reachableRef
+        case reachableResult of
+          Left problem -> pure (Left problem)
+          Right targetReachability -> do
+            let reachable = targetReachabilityOids targetReachability
+            let outsiders = filter (`Set.notMember` reachable) uniqueCandidates
+            infosResult <- batchObjectInfo repository outsiders
+            pure $ do
+              infos <- infosResult
+              validateCommitCandidates infos outsiders
+              Right (Map.fromList [(candidate, candidate `Set.member` reachable) | candidate <- uniqueCandidates])
+      readTarget = cachedTarget reachableRef
+  pure
+    ( checkCandidates,
+      fmap (fmap targetReachabilityOids) readTarget,
+      usableWitnessRangeFromTarget repository target readTarget
+    )
+  where
+    cachedTarget reachableRef = do
+      cached <- readIORef reachableRef
+      case cached of
+        Just targetReachability -> pure (Right targetReachability)
+        Nothing -> do
+          graphResult <- reachableCommitGraphAt repository target
+          case graphResult of
+            Left problem -> pure (Left problem)
+            Right graph -> do
+              let targetReachability = TargetReachability
+                    { targetReachabilityGraph = graph,
+                      targetReachabilityOids = Set.insert target (Set.fromList (map gitCommitNodeOid graph))
+                    }
+              writeIORef reachableRef (Just targetReachability)
+              pure (Right targetReachability)
+
+    validateCommitCandidates infos candidates = do
+      _ <- traverse validate candidates
+      pure ()
+      where
+        validate candidate =
+          case Map.lookup candidate infos of
+            Just (Just info) | objectInfoType info == GitCommitObject -> Right ()
+            _ ->
+              Left
+                ( GitCommandFailed
+                    "target ancestry"
+                    128
+                    ""
+                    ("candidate is unavailable or is not a commit: " <> gitOidText candidate)
+                )
+
+data TargetReachability = TargetReachability
+  { targetReachabilityGraph :: [GitCommitNode],
+    targetReachabilityOids :: Set.Set GitOid
+  }
+
+data GraphTraversalStep
+  = EnterCommit GitOid
+  | LeaveCommit GitOid
+
+validateTargetReachability
+  :: GitOid
+  -> [GitCommitNode]
+  -> Either GitError TargetReachability
+validateTargetReachability target graph = do
+  let nodeRows =
+        [ (gitCommitNodeOid node, gitCommitNodeParents node)
+        | node <- graph
+        ]
+      nodeMap = Map.fromList nodeRows
+      supplied = Map.keysSet nodeMap
+  if Map.size nodeMap /= length graph
+    then Left (invalidTargetGraph "reachable graph contains duplicate commit nodes")
+    else pure ()
+  traversed <- traverseTargetGraph nodeMap target
+  if traversed /= supplied
+    then Left (invalidTargetGraph "reachable graph contains nodes outside the target traversal")
+    else Right
+      TargetReachability
+        { targetReachabilityGraph = graph,
+          targetReachabilityOids = traversed
+        }
+
+traverseTargetGraph
+  :: Map GitOid [GitOid]
+  -> GitOid
+  -> Either GitError (Set.Set GitOid)
+traverseTargetGraph nodeMap target = go Set.empty Set.empty [EnterCommit target]
+  where
+    go _ completed [] = Right completed
+    go active completed (EnterCommit oid : rest)
+      | oid `Set.member` completed = go active completed rest
+      | oid `Set.member` active =
+          Left (invalidTargetGraph "reachable graph contains a parent cycle")
+      | otherwise =
+          case Map.lookup oid nodeMap of
+            Nothing -> Left (invalidTargetGraph "reachable graph references a missing commit node")
+            Just parents ->
+              go
+                (Set.insert oid active)
+                completed
+                (map EnterCommit parents <> (LeaveCommit oid : rest))
+    go active completed (LeaveCommit oid : rest)
+      | oid `Set.member` active =
+          go (Set.delete oid active) (Set.insert oid completed) rest
+      | otherwise =
+          Left (invalidTargetGraph "reachable graph traversal closed an inactive commit")
+
+commitClosure :: Map GitOid [GitOid] -> GitOid -> Maybe (Set.Set GitOid)
+commitClosure nodeMap source
+  | Map.notMember source nodeMap = Nothing
+  | otherwise = Just (go Set.empty [source])
+  where
+    go completed [] = completed
+    go completed (oid : rest)
+      | oid `Set.member` completed = go completed rest
+      | otherwise =
+          case Map.lookup oid nodeMap of
+            Nothing -> completed
+            Just parents -> go (Set.insert oid completed) (parents <> rest)
+
+invalidTargetGraph :: Text -> GitError
+invalidTargetGraph message =
+  GitCommandFailed "target ancestry" 128 "" message
 
 -- ============================================================
 -- Shallow history detection
@@ -319,21 +644,19 @@ refreshLineLandings repo conn decisionsPath connectionsPath logicalLines newOps 
                         let opPaths = Set.fromList [regObjectPath obj | obj <- regOpObjects opData]
                             landingCommits = [Map.lookup p landings | p <- Set.toList opPaths]
                             filteredLandings = filter isJust landingCommits
-                            uniqueLanding =
-                              if length filteredLandings == 1
-                              then head filteredLandings
-                              else Nothing
+                            uniqueLanding = case filteredLandings of
+                              [landing] -> landing
+                              _ -> Nothing
                         case uniqueLanding of
                           Nothing -> pure ()
                           Just landingOid -> do
-                            let completeVal = if isShallowFlag then 0 else 1
-                                landing = LineLanding
+                            let landing = LineLanding
                                   { lineLandingConfigKey = configKey'
                                   , lineLandingOpId = opId
                                   , lineLandingLineId = llId
                                   , lineLandingRefName = refName
                                   , lineLandingCommitOid = landingOid
-                                  , lineLandingComplete = completeVal /= 0
+                                  , lineLandingComplete = not isShallowFlag
                                   }
                             execute conn "INSERT OR REPLACE INTO line_landing VALUES(?,?,?,?,?,?)"
                               [ SQLText (lineLandingConfigKey landing)
@@ -380,7 +703,10 @@ data ProvenanceUpdate = ProvenanceUpdate
     commitsScanned       :: Int,
     observedCommitCount  :: Int,
     changed              :: Bool,
-    newOperations        :: Int
+    newOperations        :: Int,
+    -- | The immutable target graph used for this refresh.  Cache publication
+    -- consumes it directly rather than observing history a second time.
+    targetReachableCommits :: Set.Set GitOid
   }
   deriving (Eq, Show)
 
@@ -427,36 +753,71 @@ ensureProvenance
   -> IO (Either SomeException ProvenanceUpdate)
 ensureProvenance repo conn currentDbPath _logicalLineIds
   decisionsPath connectionsPath logicalLines maybeParsedDocs operationIds groupsLoader targetRevision = do
+  ensureProvenanceWithRecoveryWitness repo conn currentDbPath _logicalLineIds
+    decisionsPath connectionsPath logicalLines maybeParsedDocs operationIds groupsLoader targetRevision Nothing []
+
+-- | Variant used by post-commit compilation.  The optional witness is an
+-- independently validated immutable source archive; it can only suppress a
+-- replay of source-complete operations and never authorizes an exact target
+-- result or semantic payload reuse.
+ensureProvenanceWithRecoveryWitness
+  :: Repository
+  -> Connection
+  -> FilePath
+  -> [Text]
+  -> Text
+  -> Text
+  -> [LogicalLine]
+  -> Maybe [ParsedManagedDocument]
+  -> [Text]
+  -> Maybe GroupsLoader
+  -> GitOid
+  -> Maybe ProvenanceRecoveryWitness
+  -> [Text]
+  -> IO (Either SomeException ProvenanceUpdate)
+ensureProvenanceWithRecoveryWitness repo conn currentDbPath _logicalLineIds
+  decisionsPath connectionsPath logicalLines maybeParsedDocs operationIds groupsLoader targetRevision maybeWitness reseededChangedOperations =
+  ensureProvenanceWithRecoveryWitnessAndWorklistObserver (const (pure ()))
+    repo conn currentDbPath _logicalLineIds decisionsPath connectionsPath logicalLines
+    maybeParsedDocs operationIds groupsLoader targetRevision maybeWitness reseededChangedOperations
+
+-- | Testable recovery form.  The observer runs once, after the complete
+-- target-relative worklist is fixed and before any commit observation or
+-- classification.  Production delegates with a no-op observer.
+ensureProvenanceWithRecoveryWitnessAndWorklistObserver
+  :: ([GitOid] -> IO ())
+  -> Repository
+  -> Connection
+  -> FilePath
+  -> [Text]
+  -> Text
+  -> Text
+  -> [LogicalLine]
+  -> Maybe [ParsedManagedDocument]
+  -> [Text]
+  -> Maybe GroupsLoader
+  -> GitOid
+  -> Maybe ProvenanceRecoveryWitness
+  -> [Text]
+  -> IO (Either SomeException ProvenanceUpdate)
+ensureProvenanceWithRecoveryWitnessAndWorklistObserver observeWorklist repo conn currentDbPath _logicalLineIds
+  decisionsPath connectionsPath logicalLines maybeParsedDocs operationIds groupsLoader targetRevision maybeWitness reseededChangedOperations = do
   result <- try @SomeException $ do
     let dbPath = provenanceDatabasePath currentDbPath
 
-    -- Get current refs and reflog roots
-    refsResult <- listRefs repo
-    reflogResult <- reflogCommitRoots repo
-
-    let refs' :: [RefObservation]
-        refs' = case refsResult of
-          Right r -> r
-          Left _  -> []
-
-        reflogOids' :: [GitOid]
-        reflogOids' = case reflogResult of
-          Right r -> r
-          Left _  -> []
-
-    -- Read prior query roots from existing observation_root table
+    -- Every previously observed root participates in the next delta boundary.
+    -- Restricting this to query roots re-walked refs/reflogs on every refresh
+    -- and made a hidden reflog commit indistinguishable from a cold scan.
     priorRootOids' <- do
       rootRows <- query_ conn
-        "SELECT commit_oid FROM observation_root WHERE root_kind='query'"
+        "SELECT commit_oid FROM observation_root"
         :: IO [Only Text]
-      pure [case mkGitOid oid of Left _ -> error "invalid GitOid in observation_root"; Right oid -> oid
+      pure [case mkGitOid oid of Left _ -> error "invalid GitOid in observation_root"; Right parsedOid -> parsedOid
            | Only oid <- rootRows]
 
     -- Build observation roots using prior roots for delta computation
-    observationRoots' <- observationRoots repo targetRevision priorRootOids'
-    let refsTuple = case observationRoots' of
-          Right t -> t
-          Left _  -> (refs', [])
+    refsTuple <- observationRoots repo targetRevision priorRootOids' >>= either (throwIO . GitErrorSome) pure
+    let refs' = fst refsTuple
 
         newRootOids :: [GitOid]
         newRootOids = [observationRootCommitOid r | r <- snd refsTuple]
@@ -470,16 +831,13 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
           _  -> observationFingerprint refs' (snd refsTuple)
 
     -- Discover new commits via rev-list delta
-    commitsResult <- revListDelta repo newRootOids oldRootOids
-    let newCommits :: [GitOid]
-        newCommits = case commitsResult of
-          Right c -> c
-          Left _  -> []
+    newCommits <- revListDelta repo newRootOids oldRootOids >>= either (throwIO . GitErrorSome) pure
 
     -- Check if all required operations are already registered
-    registeredOps <- query_ conn "SELECT op_id FROM registered_operation"
-      :: IO [(Only Text)]
-    let registeredSet = Set.fromList (map fromOnly registeredOps)
+    registeredOps <- query_ conn "SELECT op_id,signature FROM registered_operation"
+      :: IO [(Text, Text)]
+    let registeredSet = Set.fromList (map fst registeredOps)
+        registeredSignatures = Map.fromList registeredOps
 
     -- Compute fingerprint value for cached result
     let fingerprintVal = gitOidText (case fp of OverlayFingerprint t -> GitOid t)
@@ -495,13 +853,17 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
         generationSql :: Int64
         generationSql = fromIntegral generation
 
-    -- Read observed commit count for cached result
-    observedCountRows <- query_ conn "SELECT count(*) FROM observed_commit"
-      :: IO [Only Integer]
-    let observedCount :: Int
-        observedCount = case observedCountRows of
-          [Only c] -> fromIntegral c
-          _ -> 0
+    -- Read observed commit count from the authority table.  The slow path
+    -- re-reads this after storing both delta and target commits so published
+    -- metadata describes the committed overlay, not the pre-refresh state.
+    let readObservedCount = do
+          observedCountRows <- query_ conn "SELECT count(*) FROM observed_commit"
+            :: IO [Only Integer]
+          pure $ case observedCountRows of
+            [Only c] -> fromIntegral c
+            _ -> 0
+    observedCount <- readObservedCount
+    let
         observedCountSql :: Int64
         observedCountSql = fromIntegral observedCount
 
@@ -520,21 +882,106 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
       :: IO [Only Text]
     let configReady = configRows == [Only requestedConfigText]
 
-    targetPlacementChecks <- traverse
-      (\operationId -> do
-        rows <- query conn
-          "SELECT 1 FROM operation_commit WHERE op_id=? AND commit_oid=? LIMIT 1"
-          [SQLText operationId, SQLText (gitOidText targetRevision)]
-          :: IO [Only Int]
-        pure (not (null rows)))
-      operationIds
-    let targetReady = and targetPlacementChecks
+    (targetReachability, readTargetReachability, deriveWitnessRange) <-
+      newTargetReachabilityChecker repo targetRevision
+    witnessedRange <- deriveWitnessRange maybeWitness
+
+    -- A placement is target-ready only when its individual commit is an
+    -- ancestor of the immutable caller target.  One shared target graph and
+    -- bounded candidate batches replace one merge-base process per placement.
+    placementRows <-
+      if null operationIds
+        then pure []
+        else do
+          let placeholders = Text.intercalate "," (replicate (length operationIds) "?")
+          query conn
+            (asQuery
+              ( "SELECT op_id, commit_oid FROM operation_commit WHERE op_id IN ("
+                  <> placeholders <> ")"
+              )
+            )
+            (map SQLText operationIds)
+            :: IO [(Text, Text)]
+    let placementsByOperation = Map.fromListWith (<>)
+          [ (operationId, [placementOid])
+          | (operationId, rawOid) <- placementRows
+          , Right placementOid <- [mkGitOid rawOid]
+          ]
+        placementCandidates = deduplicateOids (concat (Map.elems placementsByOperation))
+    placementAncestryResult <- extendTargetAncestryCache
+      targetReachability
+      Map.empty
+      placementCandidates
+    placementAncestry <- case placementAncestryResult of
+      Left problem -> throwIO (GitErrorSome problem)
+      Right cache -> pure cache
+    coverageRows <-
+      if null operationIds
+        then pure []
+        else do
+          let placeholders = Text.intercalate "," (replicate (length operationIds) "?")
+          query conn
+            (asQuery ("SELECT op_id,registration_signature FROM operation_target_coverage WHERE target_oid=? AND op_id IN (" <> placeholders <> ")"))
+            (SQLText (gitOidText targetRevision) : map SQLText operationIds)
+            :: IO [(Text, Text)]
+    case (maybeWitness, witnessedRange) of
+      (Just witness, Just range) | not (null range) ->
+        importWitnessBaseline conn operationIds registeredSignatures requestedConfigKey requestedConfigText witness
+      _ -> pure ()
+    placementRowsAfterImport <-
+      if null operationIds
+        then pure []
+        else do
+          let placeholders = Text.intercalate "," (replicate (length operationIds) "?")
+          query conn
+            (asQuery ("SELECT op_id,commit_oid FROM operation_commit WHERE op_id IN (" <> placeholders <> ")"))
+            (map SQLText operationIds)
+            :: IO [(Text, Text)]
+    let placementsAfterImport = Map.fromListWith (<>)
+          [ (operationId, [placementOid])
+          | (operationId, rawOid) <- placementRowsAfterImport
+          , Right placementOid <- [mkGitOid rawOid]
+          ]
+    placementAncestryAfterImportResult <- extendTargetAncestryCache
+      targetReachability placementAncestry (deduplicateOids (concat (Map.elems placementsAfterImport)))
+    placementAncestryAfterImport <- case placementAncestryAfterImportResult of
+      Left problem -> throwIO (GitErrorSome problem)
+      Right cache -> pure cache
+    projectionValidity <- case maybeWitness of
+      Nothing -> pure Map.empty
+      Just witness -> recoveryProjectionValidity conn operationIds requestedConfigKey requestedConfigText witness
+    let targetPlacementChecks =
+          [ any (\placementOid -> Map.lookup placementOid placementAncestryAfterImport == Just True)
+              (Map.findWithDefault [] operationId placementsAfterImport)
+          | operationId <- operationIds
+          ]
+        coverageByOperation = Map.fromListWith (<>)
+          [ (operationId, [signature]) | (operationId, signature) <- coverageRows ]
+        coverageChecks =
+          [ Map.lookup operationId registeredSignatures == Just signature
+              && Map.lookup operationId coverageByOperation == Just [signature]
+          | operationId <- operationIds
+          , let signature = Map.findWithDefault "" operationId registeredSignatures
+          ]
+        targetReady = and (zipWith (&&) targetPlacementChecks coverageChecks)
+        -- A missing or mismatched target certificate must replay every
+        -- already-indexed candidate for that operation.  Placement rows are
+        -- intentionally repository-wide; target ancestry is consulted only
+        -- later when issuing this target's certificate.
+        recoveryUncoveredOperations =
+          [ operationId
+          | (operationId, covered) <- zip operationIds coverageChecks
+          , not covered
+          && not
+            (recoveryWitnessSuppresses maybeWitness witnessedRange registeredSignatures projectionValidity
+              (Map.fromList (zip operationIds targetPlacementChecks)) operationId)
+          ]
 
     -- Fast path check: fingerprint matches, all ops are registered, this
     -- exact requested configuration exists, and every requested operation has
-    -- already been classified at the caller-resolved target.  The target
-    -- condition prevents a globally observed commit from hiding incomplete
-    -- operation-specific evidence.
+    -- reachable placement evidence in the caller-resolved immutable target.
+    -- The reachability condition prevents a globally observed commit on an
+    -- unrelated branch from hiding incomplete operation-specific evidence.
     let fastPath = fingerprintMatches
                     && Set.fromList operationIds `Set.isSubsetOf` registeredSet
                     && configReady
@@ -547,7 +994,7 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
         -- consistent; we only advance the generation counter as a "refresh tick".
         execute conn
           "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-          [SQLText "schema", SQLText "adrai-provenance-cache/1"]
+          [SQLText "schema", SQLText overlaySchemaVersion]
         execute conn
           "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
           [SQLText "observation_fingerprint", SQLText fingerprintVal]
@@ -557,14 +1004,19 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
         execute conn
           "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
           [SQLText "observed_commit_count", SQLInteger observedCountSql]
+        targetReachable <-
+          if null operationIds
+            then pure (Set.singleton targetRevision)
+            else readTargetReachability >>= either (throwIO . GitErrorSome) pure
         pure (ProvenanceUpdate
           { databasePath = dbPath
           , fingerprint = fp
           , generation = generation
-          , commitsScanned = length newCommits
+          , commitsScanned = 0
           , observedCommitCount = observedCount
-          , changed = False
-          , newOperations = 0
+           , changed = False
+           , newOperations = 0
+           , targetReachableCommits = targetReachable
           })
       else do
         -- LoadMissing helper: load only operations not yet in the overlay
@@ -602,48 +1054,138 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
           :: IO [Only Text]
         let classificationOps = map fromOnly registeredNow
 
+        -- A requested operation can be registered after all refs have already
+        -- been observed.  When its exact target coverage is absent, replay the
+        -- complete indexed candidate union for that operation.  The overlay is
+        -- repository-wide, so this deliberately includes placements on other
+        -- refs; ancestry is reserved for target certification below.
+        recoveryRowsResult <-
+          if null recoveryUncoveredOperations
+            then pure (Right [])
+            else do
+              let placeholders = Text.intercalate "," (replicate (length recoveryUncoveredOperations) "?")
+              try @SomeException
+                ( do
+                    additions <- query conn
+                      (asQuery
+                        ( "SELECT DISTINCT addition.commit_oid "
+                            <> "FROM managed_path_addition AS addition "
+                            <> "JOIN registered_object AS object "
+                            <> "ON object.path=addition.path "
+                            <> "WHERE object.op_id IN (" <> placeholders <> ")"
+                        )
+                      )
+                      (map SQLText recoveryUncoveredOperations)
+                      :: IO [Only Text]
+                    existing <- query conn
+                      (asQuery
+                        ( "SELECT DISTINCT commit_oid FROM operation_commit "
+                            <> "WHERE op_id IN (" <> placeholders <> ")"
+                        )
+                      )
+                      (map SQLText recoveryUncoveredOperations)
+                      :: IO [Only Text]
+                    pure (additions <> existing)
+                )
+        recoveryRows <- case recoveryRowsResult of
+          Left problem -> throwIO problem
+          Right rows -> pure rows
+        -- Trailer-only placements are indexed observations too.  Replaying
+        -- them avoids a history walk while covering a merge whose sealed files
+        -- live solely on a non-first parent and whose membership is declared
+        -- by an exact ADRAI-Op trailer.
+        trailerRows <-
+          if null recoveryUncoveredOperations
+            then pure []
+            else query_ conn "SELECT commit_oid,message FROM commit_observation"
+              :: IO [(Text, Text)]
+        let recoveryCandidates = deduplicateOids
+              ( [ oid
+                | Only rawOid <- recoveryRows
+                , Right oid <- [mkGitOid rawOid]
+                ]
+                  <> [ oid
+                     | (rawOid, message) <- trailerRows
+                     , not (null (findAllOpTrailers message recoveryUncoveredOperations))
+                     , Right oid <- [mkGitOid rawOid]
+                     ]
+              )
+        let classificationCommits = deduplicateOids
+              (newCommits <> [targetRevision] <> maybe [] id witnessedRange <> recoveryCandidates)
+        observeWorklist classificationCommits
+
         -- Store commit observations + managed path additions
-        when (not (null newCommits)) $ do
-          storeResult <- storeNewCommits repo conn newCommits
+        when (not (null classificationCommits)) $ do
+          storeResult <- storeNewCommits repo conn classificationCommits
           case storeResult of
             Right _ -> pure ()
-            Left e  -> recordIssue conn "error" "STORE_NEW_COMMITS_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
+            Left e  -> throwIO e
 
         -- Find candidate commits per operation
-        candidatesResult <- candidateCommits conn newCommits classificationOps
-
+        candidatesResult <- candidateCommits conn classificationCommits classificationOps
         -- Classify candidates
         case (candidatesResult, newOpsResult) of
-          (Right candidates, Right _) ->
-            void (processCandidates repo conn candidates classificationOps)
-          _ -> pure ()
+          (Right candidates, Right _) -> do
+            processed <- processCandidates repo conn candidates classificationOps
+            case processed of
+              Left e -> throwIO e
+              Right () -> pure ()
+          (Left e, _) -> throwIO e
+          (_, Left e) -> throwIO e
 
-        -- Complete the caller-resolved target even when it was globally
-        -- observed by an earlier call for a different operation.  These
-        -- inserts are idempotent and keep the exact-target protocol inside the
-        -- Ensure authority rather than duplicating it in read consumers.
-        targetStoreResult <- storeNewCommits repo conn [targetRevision]
-        case targetStoreResult of
-          Left e -> recordIssue conn "error" "STORE_TARGET_COMMIT_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
-          Right _ -> do
-            targetCandidatesResult <- candidateCommits conn [targetRevision] classificationOps
-            case targetCandidatesResult of
-              Left e -> recordIssue conn "error" "TARGET_CANDIDATES_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
-              Right targetCandidates -> do
-                targetProcessResult <- processCandidates repo conn targetCandidates classificationOps
-                case targetProcessResult of
-                  Left e -> recordIssue conn "error" "TARGET_CLASSIFICATION_FAILED" (Text.pack (show e)) Nothing Nothing Nothing Nothing
-                  Right () -> pure ()
-
-        -- Prune unavailable placements
+        -- Prune before certification: a target proof is published only for
+        -- canonical placements that still exist in the object database.
         prunedResult <- pruneUnavailablePlacements repo conn
+        prunedCount <- case prunedResult of
+          Left e -> throwIO (GitErrorSome e)
+          Right n -> pure n
+
+        -- Certify each requested registration only after classification has
+        -- produced reachable target evidence.  The certificate binds the
+        -- immutable target and registration signature, so a later
+        -- registration change cannot reuse an earlier coverage claim.
+        certifiedRows <-
+          if null operationIds then pure [] else do
+            let placeholders = Text.intercalate "," (replicate (length operationIds) "?")
+            query conn
+              (asQuery ("SELECT op_id,commit_oid FROM operation_commit WHERE op_id IN (" <> placeholders <> ")"))
+              (map SQLText operationIds) :: IO [(Text, Text)]
+        let certificationCandidates = deduplicateOids
+              [ oid | (_, rawOid) <- certifiedRows, Right oid <- [mkGitOid rawOid] ]
+        certifiedAncestryResult <- extendTargetAncestryCache
+          targetReachability placementAncestry certificationCandidates
+        certifiedAncestry <- case certifiedAncestryResult of
+          Left problem -> throwIO (GitErrorSome problem)
+          Right cache -> pure cache
+        registeredAfter <- query_ conn "SELECT op_id,signature FROM registered_operation"
+          :: IO [(Text, Text)]
+        let registeredAfterSignatures = Map.fromList registeredAfter
+        let reachableByOperation = Map.fromListWith (||)
+              [ (operationId, Map.lookup oid certifiedAncestry == Just True)
+              | (operationId, rawOid) <- certifiedRows
+              , Right oid <- [mkGitOid rawOid]
+              ]
+        -- A target certificate is a proof for this exact registration.  Drop
+        -- any stale or duplicate proof before publishing the freshly checked
+        -- one; an operation without reachable canonical evidence deliberately
+        -- remains uncertified.
+        forM_ operationIds $ \operationId ->
+          execute conn "DELETE FROM operation_target_coverage WHERE op_id=? AND target_oid=?"
+            [SQLText operationId, SQLText (gitOidText targetRevision)]
+        forM_ operationIds $ \operationId ->
+          when (Map.findWithDefault False operationId reachableByOperation) $
+            case Map.lookup operationId registeredAfterSignatures of
+              Nothing -> pure ()
+              Just signature -> execute conn
+                "INSERT OR REPLACE INTO operation_target_coverage(op_id,target_oid,registration_signature) VALUES(?,?,?)"
+                [SQLText operationId, SQLText (gitOidText targetRevision), SQLText signature]
 
         -- Refresh line landings (only if new ops or pruned)
         let opsForRefresh = case newOpsResult of
               Right ops ->
-                case prunedResult of
-                  Right n | n > 0 -> []
-                  _ -> ops
+                if prunedCount > 0
+                  then []
+                  else deduplicateTexts (ops <> reseededChangedOperations <> recoveryUncoveredOperations)
               Left _ -> []
 
         lineChangedResult <- refreshLineLandings repo conn decisionsPath connectionsPath
@@ -654,21 +1196,16 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
 
         -- Update ref observation table
         execute_ conn "DELETE FROM ref_observation"
-        case refsResult of
-          Right refs -> do
-            forM_ refs $ \refObs ->
-              execute conn "INSERT INTO ref_observation VALUES(?,?,?)"
-                [ SQLText (refObservationRefName refObs)
-                , SQLText (refObservationTipOid refObs)
-                , SQLText (refObservationObjectType refObs)
-                ]
-          Left _ -> pure ()
+        forM_ refs' $ \refObs ->
+          execute conn "INSERT INTO ref_observation VALUES(?,?,?)"
+            [ SQLText (refObservationRefName refObs)
+            , SQLText (refObservationTipOid refObs)
+            , SQLText (refObservationObjectType refObs)
+            ]
 
         -- Update observation root table
         execute_ conn "DELETE FROM observation_root"
-        let roots' = case observationRoots' of
-              Right (_, roots) -> roots
-              Left _  -> []
+        let roots' = snd refsTuple
         forM_ roots' $ \root ->
           execute conn "INSERT INTO observation_root VALUES(?,?,?)"
             [ SQLText (observationRootKind root)
@@ -677,9 +1214,12 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
             ]
 
         -- Update meta table
+        observedCountAfterRefresh <- readObservedCount
+        let observedCountAfterRefreshSql :: Int64
+            observedCountAfterRefreshSql = fromIntegral observedCountAfterRefresh
         execute conn
           "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-          [SQLText "schema", SQLText "adrai-provenance-cache/1"]
+          [SQLText "schema", SQLText overlaySchemaVersion]
         execute conn
           "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
           [SQLText "observation_fingerprint", SQLText fingerprintVal]
@@ -688,23 +1228,120 @@ ensureProvenance repo conn currentDbPath _logicalLineIds
           [SQLText "generation", SQLInteger generationSql]
         execute conn
           "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-          [SQLText "observed_commit_count", SQLInteger observedCountSql]
+          [SQLText "observed_commit_count", SQLInteger observedCountAfterRefreshSql]
 
         let newOpsCount = case newOpsResult of
               Right ops -> length ops
               Left _ -> 0
 
+        targetReachable <-
+          if null operationIds
+            then pure (Set.singleton targetRevision)
+            else readTargetReachability >>= either (throwIO . GitErrorSome) pure
         pure (ProvenanceUpdate
           { databasePath = dbPath
           , fingerprint = fp
           , generation = generation
-          , commitsScanned = length newCommits
-          , observedCommitCount = observedCount
-          , changed = lineChanged || not (null newCommits) || newOpsCount > 0 || not targetReady
-          , newOperations = newOpsCount
+          -- Replaying already-observed indexed candidates repairs placement
+          -- evidence but is not a history scan.
+          , commitsScanned = length (deduplicateOids newCommits)
+          , observedCommitCount = observedCountAfterRefresh
+           , changed = lineChanged || not (null classificationCommits) || newOpsCount > 0 || not targetReady
+           , newOperations = newOpsCount
+           , targetReachableCommits = targetReachable
           })
 
   pure result
+
+-- | Populate an empty provenance overlay from the immutable semantic cache
+-- without reading or parsing managed source files.  The cold database already
+-- stores the operation member identity, semantic digest, and source blob OID
+-- needed for the same registration signature used by normal parsing.
+-- A same-ID semantic change replaces stale overlay registration evidence before
+-- recovery.  Retaining an old signature here would let an ancestor witness
+-- suppress the replay required by the new member set.
+seedRegisteredOperationsFromSemanticCache :: FilePath -> Connection -> IO ([Text], [Text])
+seedRegisteredOperationsFromSemanticCache = seedRegisteredOperationsFromSemanticCacheWithQueryObserver (pure ())
+
+-- | The observer counts cache/overlay reads only.  Per-row registration DML
+-- deliberately remains prepared execution work; this seam protects against a
+-- regression to an operation-by-operation SELECT/prepare fan-out.
+seedRegisteredOperationsFromSemanticCacheWithQueryObserver :: IO () -> FilePath -> Connection -> IO ([Text], [Text])
+seedRegisteredOperationsFromSemanticCacheWithQueryObserver beforeQuery semanticDatabase overlay =
+  bracket (open semanticDatabase) close $ \cache -> do
+    beforeQuery
+    schemas <- query_ cache "SELECT value FROM meta WHERE key='schema'" :: IO [Only Text]
+    unless (schemas == [Only "adrai-cache/3"])
+      (ioError (userError "cache provenance seeding requires adrai-cache/3"))
+    beforeQuery
+    operationRows <- query_ cache
+      "SELECT operation_id,basis_oid FROM operation ORDER BY operation_id"
+      :: IO [(Text, Text)]
+    beforeQuery
+    memberRows <- query_ cache
+      "SELECT operation_id,object_id,path,blob_oid,semantic_digest FROM operation_member ORDER BY operation_id,path,object_id"
+      :: IO [(Text, Text, Text, Text, Text)]
+    beforeQuery
+    existingRows <- query_ overlay
+      "SELECT op_id,signature FROM registered_operation ORDER BY op_id"
+      :: IO [(Text, Text)]
+    let membersByOperation = Map.fromListWith (<>)
+          [ (operationId, [(objectId, path, blobOid, digest)])
+          | (operationId, objectId, path, blobOid, digest) <- memberRows
+          ]
+        existingByOperation = Map.fromListWith (<>)
+          [ (operationId, [signature]) | (operationId, signature) <- existingRows ]
+    changedRef <- newIORef []
+    forM_ operationRows $ \(operationId, basisOid) -> do
+      let existing = Map.findWithDefault [] operationId existingByOperation
+          members = Map.findWithDefault [] operationId membersByOperation
+      let signature = semanticCacheOperationSignature members
+          adrId = firstAdrId [objectId | (objectId, _, _, _) <- members]
+      case existing of
+        [] -> do
+          execute overlay
+            "INSERT INTO registered_operation(op_id,adr_id,basis_oid,signature) VALUES(?,?,?,?)"
+            [ SQLText operationId
+            , maybe SQLNull SQLText adrId
+            , SQLText basisOid
+            , SQLText signature
+            ]
+          forM_ members $ \(objectId, path, blobOid, _) ->
+            execute overlay
+              "INSERT INTO registered_object(op_id,object_id,path,blob_oid) VALUES(?,?,?,?)"
+              [SQLText operationId, SQLText objectId, SQLText path, SQLText blobOid]
+        [oldSignature] | oldSignature /= signature -> do
+          modifyIORef' changedRef (operationId :)
+          execute overlay "DELETE FROM operation_target_coverage WHERE op_id=?" (Only operationId)
+          execute overlay "DELETE FROM operation_commit WHERE op_id=?" (Only operationId)
+          execute overlay "DELETE FROM registered_object WHERE op_id=?" (Only operationId)
+          execute overlay "DELETE FROM line_landing WHERE op_id=?" (Only operationId)
+          execute overlay "DELETE FROM provenance_issue WHERE op_id=?" (Only operationId)
+          execute overlay "UPDATE registered_operation SET adr_id=?,basis_oid=?,signature=? WHERE op_id=?"
+            [ maybe SQLNull SQLText adrId, SQLText basisOid, SQLText signature, SQLText operationId ]
+          forM_ members $ \(objectId, path, blobOid, _) ->
+            execute overlay
+              "INSERT INTO registered_object(op_id,object_id,path,blob_oid) VALUES(?,?,?,?)"
+              [SQLText operationId, SQLText objectId, SQLText path, SQLText blobOid]
+        [_] -> pure ()
+        _ -> ioError (userError "duplicate registered operation rows")
+    changed <- readIORef changedRef
+    pure (map fst operationRows, deduplicateTexts changed)
+  where
+    firstAdrId = foldr choose Nothing
+    choose objectId rest
+      | Text.isPrefixOf "A" objectId = Just objectId
+      | Text.isPrefixOf "R" objectId = Just ("A" <> Text.drop 1 objectId)
+      | otherwise = rest
+    semanticCacheOperationSignature = digestToHex . operationMemberSignature
+
+deduplicateTexts :: [Text] -> [Text]
+deduplicateTexts = go Set.empty
+  where
+    go _ [] = []
+    go seen (value : rest)
+      | Set.member value seen = go seen rest
+      | otherwise = value : go (Set.insert value seen) rest
 
 -- | Group parsed managed documents by operation ID.
 groupParsedDocs :: [ParsedManagedDocument] -> Map Text [ParsedManagedDocument]
@@ -786,6 +1423,9 @@ readProvenanceEvidenceAtWith repository overlayPath target requestedOperations r
       placementRaw <- query connection
         (operationQuery "SELECT op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json FROM operation_commit" " ORDER BY op_id,commit_oid,classification,authored_s,committed_s,subject,parents_json")
         operationParams :: IO [(Text, Text, Text, Integer, Integer, Text, Text)]
+      coverageRaw <- query connection
+        (asQuery ("SELECT op_id,registration_signature FROM operation_target_coverage WHERE target_oid=? AND op_id IN (" <> placeholders <> ") ORDER BY op_id,registration_signature"))
+        (SQLText (gitOidText target) : operationParams) :: IO [(Text, Text)]
       landingRaw <- query connection
         (asQuery ("SELECT op_id,line_id,ref_name,commit_oid,complete FROM line_landing WHERE config_key=? AND op_id IN (" <> placeholders <> ") ORDER BY op_id,line_id,ref_name,commit_oid,complete"))
         (SQLText requestedConfig : operationParams) :: IO [(Text, Text, Text, Text, Integer)]
@@ -827,7 +1467,7 @@ readProvenanceEvidenceAtWith repository overlayPath target requestedOperations r
                 | (opId, severity, code, adrId, objectId, path, message) <- issueRaw
               ]
         operations <- traverse
-          (operationEvidence registrations objects placements landings issues)
+          (operationEvidence registrations objects placements landings issues coverageRaw)
           requestedOperations
         -- This guard documents that caller ownership is exact even if a
         -- malformed database managed to manufacture an extra row.
@@ -835,14 +1475,17 @@ readProvenanceEvidenceAtWith repository overlayPath target requestedOperations r
           then Right (ProvenanceEvidence target (Just config) operations lineRefs refs roots)
           else Left (ProvenanceEvidenceDatabaseError "unrequested operation evidence")
 
-    operationEvidence registrations objects placements landings issues opId = do
+    operationEvidence registrations objects placements landings issues coverage opId = do
       registration <- case filter ((== opId) . registeredOperationRowOpId) registrations of
         [] -> Left (ProvenanceEvidenceMissingRegistration opId)
         [row] -> Right row
         _ -> Left (ProvenanceEvidenceDuplicateRegistration opId)
       let members = filter ((== opId) . registeredObjectRowOpId) objects
+          certificates = [signature | (certificateOpId, signature) <- coverage, certificateOpId == opId]
       if null members
         then Left (ProvenanceEvidenceMissingObjects opId)
+        else if certificates /= [registeredOperationRowSignature registration]
+          then Left (ProvenanceEvidenceMissingTargetPlacement opId)
         else if null (filter ((== opId) . operationCommitRowOpId) placements)
           then Left (ProvenanceEvidenceMissingTargetPlacement opId)
           else Right
@@ -878,10 +1521,17 @@ readProvenanceEvidenceAtWith repository overlayPath target requestedOperations r
 -- cache.  A normal read-only transaction gives a coherent snapshot without
 -- creating the database or any journal sidecar.
 openReadOnly :: FilePath -> IO Connection
-openReadOnly path = makeAbsolute path >>= open . sqliteReadOnlyUri
+openReadOnly path = makeAbsolute path >>= open . sqliteUri "ro"
 
-sqliteReadOnlyUri :: FilePath -> String
-sqliteReadOnlyUri path = prefix <> concatMap escapeByte (BS.unpack utf8Path) <> "?mode=ro"
+-- | Open an existing SQLite database through URI @mode=rw@.  This never
+-- creates a database; callers use it only for SQLite checks that FTS5 cannot
+-- perform on a read-only handle, and must enable connection-local query-only
+-- mode before reading application rows.
+openReadWriteExisting :: FilePath -> IO Connection
+openReadWriteExisting path = makeAbsolute path >>= open . sqliteUri "rw"
+
+sqliteUri :: String -> FilePath -> String
+sqliteUri mode path = prefix <> concatMap escapeByte (BS.unpack utf8Path) <> "?mode=" <> mode
   where
     normalized = map replaceBackslash path
     utf8Path = TextEncoding.encodeUtf8 (Text.pack normalized)
@@ -979,7 +1629,7 @@ computeRelevantRefs logicalLines currentTips =
       Map.member refName currentTips
   ]
 
--- | Convert a 'Digest' to a hex-encoded 'Text' (40-char SHA-256 hex string).
+-- | Convert a 'Digest' to a zero-padded 64-character SHA-256 hex string.
 digestToHex :: Digest -> Text
 digestToHex (Digest bytes) =
   Text.pack (concatMap byteToHex (BS.unpack bytes))

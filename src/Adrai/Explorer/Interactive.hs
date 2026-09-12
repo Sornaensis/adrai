@@ -41,29 +41,19 @@ import Adrai.Explorer.Render
     ansiCyan,
     ansiGreen,
     ansiRed,
-    ansiReset,
-    renderCollapsed,
-    renderExploded,
-    renderHistory,
     renderHelp,
-    renderSearchResults,
-    renderConflict,
-    terminalWidth,
   )
 import Adrai.Explorer.Types
   ( ExplorerCommand (..),
     ExplorerSession (..),
     ExplorerState (..),
-    SearchFilter (..),
     SearchMode (..),
     ViewMode (..),
     defaultSession,
-    emptyFilter,
     initialState,
     parseCommand,
   )
-import Adrai.Query (CollapsedProjection, SearchProjection, projectCollapsed)
-import Adrai.Domain (Domain (..), domainText)
+import Adrai.Domain (Domain)
 import Adrai.Git
   ( Repository (..),
     discoverRepository,
@@ -72,18 +62,13 @@ import Adrai.Git
   )
 import Adrai.Types
   ( Actor,
-    AdrId (..),
-    AdraiError (..),
-    ActorKind (..),
-    ExitClass (..),
+    AdrId,
     RepoPath (..),
     adrIdText,
-    mkActor,
     recordIdText,
     repoPathText,
   )
 import Control.Monad (when, unless)
-import Data.List (intercalate)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -296,7 +281,7 @@ handleCommand repository cmd session state =
 
 handleSearch ::
   ExplorerSession -> ExplorerState -> Text -> IO (ExplorerSession, ExplorerState)
-handleSearch session state query =
+handleSearch session _state query =
   pure (session, ExplorerState
     { stateOutput       = ["search: " <> query]
     , stateCursorPosition = 0
@@ -305,7 +290,7 @@ handleSearch session state query =
 
 handleShow ::
   ExplorerSession -> ExplorerState -> AdrId -> IO (ExplorerSession, ExplorerState)
-handleShow session state adr =
+handleShow session _state adr =
   pure (session, ExplorerState
     { stateOutput       = ["show: " <> adrIdText adr]
     , stateCursorPosition = 0
@@ -314,7 +299,7 @@ handleShow session state adr =
 
 handleView ::
   ExplorerSession -> ExplorerState -> AdrId -> ViewMode -> IO (ExplorerSession, ExplorerState)
-handleView session state adr mode =
+handleView session _state adr mode =
   pure (session, ExplorerState
     { stateOutput       = ["view " <> adrIdText adr <> " (" <> viewModeText mode <> ")"]
     , stateCursorPosition = 0
@@ -323,7 +308,7 @@ handleView session state adr mode =
 
 handleHistory ::
   ExplorerSession -> ExplorerState -> Maybe AdrId -> IO (ExplorerSession, ExplorerState)
-handleHistory session state maybeAdr =
+handleHistory session _state maybeAdr =
   pure (session, ExplorerState
     { stateOutput       = ["history" <> maybe "" (\adr -> " for " <> adrIdText adr) maybeAdr]
     , stateCursorPosition = 0
@@ -332,7 +317,7 @@ handleHistory session state maybeAdr =
 
 handleConflicts ::
   ExplorerSession -> ExplorerState -> IO (ExplorerSession, ExplorerState)
-handleConflicts session state =
+handleConflicts session _state =
   pure (session, ExplorerState
     { stateOutput       = ["conflicts"]
     , stateCursorPosition = 0
@@ -387,7 +372,7 @@ handleCreateMutation ::
   Text ->
   [Domain] ->
   IO (ExplorerSession, ExplorerState, Bool)
-handleCreateMutation repository session state title body domains = do
+handleCreateMutation _repository session state title body domains = do
   result <- runMutation session (CreateCommand title body domains)
   pure (session, renderMutationResult state result, True)
 
@@ -401,7 +386,7 @@ handleAmendMutation ::
   Text ->
   Text ->
   IO (ExplorerSession, ExplorerState, Bool)
-handleAmendMutation repository session state adr title body = do
+handleAmendMutation _repository session state adr title body = do
   result <- runMutation session (AmendCommand adr title body)
   pure (session, renderMutationResult state result, True)
 
@@ -414,7 +399,7 @@ handleStatusMutation ::
   AdrId ->
   Text ->
   IO (ExplorerSession, ExplorerState, Bool)
-handleStatusMutation repository session state adr newStatus = do
+handleStatusMutation _repository session state adr newStatus = do
   result <- runMutation session (StatusCommand adr newStatus)
   pure (session, renderMutationResult state result, True)
 
@@ -424,7 +409,7 @@ handleStatusMutation repository session state adr newStatus = do
 
 -- | Render a mutation result into explorer output state.
 renderMutationResult :: ExplorerState -> MutationResult -> ExplorerState
-renderMutationResult state result =
+renderMutationResult _state result =
   case result of
     CreateMutationResult{..} ->
       ExplorerState

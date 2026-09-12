@@ -315,6 +315,7 @@ validEvidenceCommand :: Text -> Bool
 validEvidenceCommand command =
   case shellWords command of
     Just ("stack" : "test" : "adrai:adrai-test" : _) -> True
+    Just ("stack" : "test" : "adrai:adrai-cache-selection-test" : _) -> True
     Just ("stack" : "test" : "adrai:adrai-stress-test" : arguments) -> hasStressOptIn arguments
     _ -> False
 
@@ -374,6 +375,8 @@ shellWords = fmap (map T.pack) . go [] [] Nothing False . T.unpack
 
 testStressEvidenceOptIn :: Assertion
 testStressEvidenceOptIn = do
+  assertBool "cache-selection evidence command was rejected" (validEvidenceCommand cacheSelectionCommand)
+  assertBool "unsupported component evidence command was accepted" (not (validEvidenceCommand unsupportedComponentCommand))
   mapM_ (assertBool "valid stress evidence command was rejected" . validEvidenceCommand) validCommands
   mapM_ (assertBool "ambiguous stress evidence command was accepted" . not . validEvidenceCommand) invalidCommands
   where
@@ -401,8 +404,8 @@ testPowerShellStressEvidenceArgv =
 
 decodeStressCommandArguments :: Text -> Maybe [Text]
 decodeStressCommandArguments command = do
-  words <- shellWords command
-  case words of
+  commandWords <- shellWords command
+  case commandWords of
     "stack" : "test" : "adrai:adrai-stress-test" : arguments -> decodeStressTestArguments arguments
     _ -> Nothing
 
@@ -552,7 +555,7 @@ exactPhases :: [Text]
 exactPhases = ["P2", "P3", "P4", "P5", "P6", "P7"]
 
 exactTypes :: [Text]
-exactTypes = ["unit", "property", "integration", "golden", "e2e"]
+exactTypes = ["unit", "property", "integration", "golden", "e2e", "cache-selection"]
 
 exactTypeDirectories :: [(Text, Text)]
 exactTypeDirectories =
@@ -560,7 +563,8 @@ exactTypeDirectories =
     ("property", "test/property/"),
     ("integration", "test/integration/"),
     ("golden", "test/golden/"),
-    ("e2e", "test/e2e/")
+    ("e2e", "test/e2e/"),
+    ("cache-selection", "test/cache-selection/")
   ]
 
 translationStates :: Set.Set Text
@@ -595,3 +599,11 @@ exactDynamicGenerators =
 powershellStressCommand :: Text
 powershellStressCommand =
   "stack test adrai:adrai-stress-test --test-arguments='--run-stress --pattern=\"12,000-commit repository with 2,000 ADR operations\"'"
+
+cacheSelectionCommand :: Text
+cacheSelectionCommand =
+  "stack test adrai:adrai-cache-selection-test --test-arguments='--pattern=\"production cache selection.exact CLI reports immutable archive reuse\"'"
+
+unsupportedComponentCommand :: Text
+unsupportedComponentCommand =
+  "stack test adrai:unapproved-test --test-arguments='--pattern=fixture'"

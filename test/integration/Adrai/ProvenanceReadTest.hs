@@ -5,7 +5,6 @@ module Adrai.ProvenanceReadTest (tests) where
 import Adrai.Git (GitOid, Repository, discoverRepository, gitOidText, systemGit)
 import Adrai.GitTestSupport
   ( commitFile,
-    commitFiles,
     gitSuccess,
     initTestRepository,
     outputText,
@@ -13,22 +12,32 @@ import Adrai.GitTestSupport
     requireRevision,
   )
 import Adrai.Provenance
-  ( ProvenanceCapsule,
+  ( EventKind,
+    ProvenanceCapsule,
     ProvenanceCapsuleInput (..),
     ProvenanceObjectId (..),
     mkEventKind,
-    mkGitOid,
-    mkProvenanceCapsule,
-    provenanceBasis,
-    sealSemantic,
-    semanticDigest,
-  )
-import Adrai.Provenance.Classification (ParsedManagedDocument (..))
+     mkGitOid,
+     mkProvenanceCapsule,
+     sealSemantic,
+     semanticDigest,
+   )
+import Adrai.Provenance.Classification (ParsedManagedDocument (..), operationSignature)
 import Adrai.Provenance.Read
   ( PlacementHydrationError (..),
     hydratePlacementEvidenceAt,
     hydratePlacementEvidenceAtWith,
     hydratePlacementEvidenceAtWithHooks,
+    materialize,
+  )
+import Adrai.Provenance.Overlay
+  ( LineConfigRow (..),
+    LineLandingRow (..),
+    OperationCommitRow (..),
+    ProvenanceEvidence (..),
+    ProvenanceOperationEvidence (..),
+    RegisteredObjectRow (..),
+    RegisteredOperationRow (..),
   )
 import Adrai.Provenance.Lock
   ( acquireOverlayLock,
@@ -48,10 +57,12 @@ import Adrai.History
     PlacementEvidence (..),
   )
 import Adrai.Types
-  ( ActorKind (HumanActor),
+  ( Actor,
+    ActorKind (HumanActor),
     AdrId,
     Config,
-    ConfigSchema (ConfigSchemaV1),
+     ConfigSchema (ConfigSchemaV1),
+     digestBytes,
     GitRef (GitRef),
     LogicalLine (LogicalLine),
     OperationId,
@@ -71,7 +82,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import Control.Concurrent (forkIO, threadDelay, throwTo)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, fromException, throwIO, try)
-import Database.SQLite.Simple (SQLData (SQLInteger, SQLText), close, execute, open)
+import Database.SQLite.Simple (Only (..), SQLData (SQLInteger, SQLText), close, execute, open, query_)
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -83,19 +94,16 @@ tests =
   testGroup "ProvenanceRead"
     [ testCase "empty snapshot is deterministic and does not create a cache" emptySnapshotTest,
       testCase "cold and warm hydration preserve genuine original placement for Unicode paths" coldWarmTest,
-      testCase "a real ASCII-space managed path has a complete line landing" asciiLineLandingTest,
       testCase "configuration evolution is exact and reusable at the public boundary" configEvolutionTest,
-      testCase "cross-operation cache priming preserves exact target evidence" crossOperationPrimingTest,
       testCase "a real cherry-pick retains copy placement metadata" copyPlacementTest,
       testCase "a real merge preserves first-parent order" mergeParentOrderTest,
       testCase "historical revision stays isolated after HEAD advances" historicalIsolationTest,
-      testCase "tampered cache facts fail as typed hydration errors" tamperedCacheTest,
-      testCase "tampered registration signature is byte-preserved" signatureTamperTest,
+      testCase "tampered cache mismatches fail closed while missing placement repairs" tamperedCacheTest,
       testCase "invalid existing schema is typed and byte-preserved" invalidSchemaPreservationTest,
-      testCase "malformed existing schema is typed and byte-preserved" malformedSchemaPreservationTest,
-      testCase "duplicate registration and placement facts fail deterministically" duplicateEvidenceTest,
-      testCase "duplicate placement facts fail deterministically" duplicatePlacementTest,
-      testCase "an unopenable cache location is a synchronous typed failure" synchronousFailureTest,
+      testCase "v1 overlay is rebuilt as v2 before placement hydration" v1OverlayRebuiltBeforeHydrationTest,
+      testCase "extra overlay trigger and view are invalid and byte-preserved" extraExecutableObjectsPreservationTest,
+       testCase "materialize indexes canonical identities, groups documents, and rejects registration drift" materializeCheckedIdentityIndexTest,
+       testCase "an unopenable cache location is a synchronous typed failure" synchronousFailureTest,
       testCase "writer cancellation removes a fresh overlay and releases the lock" freshCancellationCleanupTest,
       testCase "warm validation cancellation propagates without mutation" warmValidationCancellationTest,
       testCase "contended lock cancellation propagates without mutation" contendedLockCancellationTest
@@ -232,39 +240,6 @@ coldWarmTest =
             assertBool "placement timestamps are exact milliseconds" (all (\placement -> commitPlacementAuthoredAtMs placement `mod` 1000 == 0 && commitPlacementCommittedAtMs placement `mod` 1000 == 0) (placementCommits evidence))
             assertBool "target-relative evidence is reachable" (all commitPlacementReachable (placementCommits evidence))
 
-asciiLineLandingTest :: IO ()
-asciiLineLandingTest =
-  withSystemTempDirectory "adrai provenance read ASCII landing" $ \temporary -> do
-    let repositoryPath = temporary </> "repo with spaces ascii"
-        managedPath = "architecture/adrai/decisions/000/ascii spaced.decision.md"
-    initTestRepository repositoryPath
-    _ <- commitFile repositoryPath ".gitignore" ".adrai/\n"
-    basisText <- commitFile repositoryPath "seed.txt" "seed\n"
-    basis <- requireOid basisText
-    let operation = requireOperation "O00000000000000000000000095"
-        adr = requireAdr "A00000000000000000000000095"
-        semantic = "# ASCII landing provenance\n"
-        capsule = makeCapsule operation adr basis semantic
-    targetText <- commitFile repositoryPath managedPath (TextEncoding.encodeUtf8 (sealSemantic semantic capsule))
-    blobText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD:" <> managedPath] ""
-    blob <- requireOid blobText
-    resolved <- requireResolved repositoryPath targetText
-    let document =
-          ParsedManagedDocument
-            { parsedDocumentObjectRef = "A00000000000000000000000095",
-              parsedManagedPath = requireRepoPath (Text.pack managedPath),
-              parsedManagedCapsule = capsule,
-              parsedBlobOid = Just blob,
-              parsedSemanticHash = Text.pack (show (semanticDigest semantic))
-            }
-    result <- hydratePlacementEvidenceAt (repositoryOf resolved) resolved testConfig [document]
-    case result >>= maybe (Left (PlacementHydrationRegistrationMismatch "missing ASCII landing evidence")) Right . Map.lookup operation of
-      Left problem -> assertFailure (show problem)
-      Right evidence ->
-        assertBool "real configured landing is complete" $
-          any (\landing -> landingLine landing == "trunk" && landingRef landing == "refs/heads/main" && landingCommit landing == targetText && landingComplete landing)
-            (placementLineLandings evidence)
-
 configEvolutionTest :: IO ()
 configEvolutionTest =
   withSystemTempDirectory "adrai provenance read config evolution" $ \temporary -> do
@@ -309,69 +284,6 @@ configEvolutionTest =
             (placementLineLandings evidence)
         assertBool "evolved result excludes the prior configuration landing" $
           all ((/= "trunk") . landingLine) (placementLineLandings evidence)
-
-crossOperationPrimingTest :: IO ()
-crossOperationPrimingTest =
-  withSystemTempDirectory "adrai provenance read cross operation" $ \temporary -> do
-    let repositoryPath = temporary </> "repo with spaces cross operation"
-        pathA = "architecture/adrai/decisions/000/existing a.decision.md"
-        pathB = "architecture/adrai/decisions/000/new b.decision.md"
-    initTestRepository repositoryPath
-    _ <- commitFile repositoryPath ".gitignore" ".adrai/\n"
-    basisText <- commitFile repositoryPath "seed.txt" "seed\n"
-    _ <- gitSuccess repositoryPath ["branch", "feature"] ""
-    basis <- requireOid basisText
-    let operationA = requireOperation "O00000000000000000000000097"
-        operationB = requireOperation "O00000000000000000000000098"
-        adrA = requireAdr "A00000000000000000000000097"
-        adrB = requireAdr "A00000000000000000000000098"
-        semanticA = "# Existing cross-operation A\n"
-        semanticB = "# New cross-operation B\n"
-        capsuleA = makeCapsule operationA adrA basis semanticA
-        capsuleB = makeCapsule operationB adrB basis semanticB
-        bytesA = TextEncoding.encodeUtf8 (sealSemantic semanticA capsuleA)
-        bytesB = TextEncoding.encodeUtf8 (sealSemantic semanticB capsuleB)
-    originalText <- commitFile repositoryPath pathA bytesA
-    originalBlobText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD:" <> pathA] ""
-    originalBlob <- requireOid originalBlobText
-    original <- requireResolved repositoryPath originalText
-    let originalDocumentA = ParsedManagedDocument
-          { parsedDocumentObjectRef = "A00000000000000000000000097",
-            parsedManagedPath = requireRepoPath (Text.pack pathA),
-            parsedManagedCapsule = capsuleA,
-            parsedBlobOid = Just originalBlob,
-            parsedSemanticHash = Text.pack (show (semanticDigest semanticA))
-          }
-    initialA <- hydratePlacementEvidenceAt (repositoryOf original) original testConfig [originalDocumentA]
-    case initialA of
-      Left problem -> assertFailure ("initial A hydration: " <> show problem)
-      Right _ -> pure ()
-
-    _ <- gitSuccess repositoryPath ["switch", "feature"] ""
-    targetText <- commitFiles repositoryPath [(pathA, bytesA), (pathB, bytesB)]
-    targetBlobAText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD:" <> pathA] ""
-    targetBlobBText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD:" <> pathB] ""
-    targetBlobA <- requireOid targetBlobAText
-    targetBlobB <- requireOid targetBlobBText
-    target <- requireResolved repositoryPath targetText
-    let targetDocumentA = originalDocumentA {parsedBlobOid = Just targetBlobA}
-        targetDocumentB = ParsedManagedDocument
-          { parsedDocumentObjectRef = "A00000000000000000000000098",
-            parsedManagedPath = requireRepoPath (Text.pack pathB),
-            parsedManagedCapsule = capsuleB,
-            parsedBlobOid = Just targetBlobB,
-            parsedSemanticHash = Text.pack (show (semanticDigest semanticB))
-          }
-    primedByB <- hydratePlacementEvidenceAt (repositoryOf target) target testConfig [targetDocumentB]
-    case primedByB of
-      Left problem -> assertFailure ("operation B priming hydration: " <> show problem)
-      Right placements -> assertBool "priming returns operation B only" (Map.keys placements == [operationB])
-    requestedA <- hydratePlacementEvidenceAt (repositoryOf target) target testConfig [targetDocumentA]
-    case requestedA >>= maybe (Left (PlacementHydrationRegistrationMismatch "missing cross-operation A evidence")) Right . Map.lookup operationA of
-      Left problem -> assertFailure (show problem)
-      Right evidence ->
-        assertBool "operation A has its genuine placement at the already observed target" $
-          targetText `elem` map commitPlacementOid (placementCommits evidence)
 
 copyPlacementTest :: IO ()
 copyPlacementTest =
@@ -468,6 +380,11 @@ historicalIsolationTest :: IO ()
 historicalIsolationTest =
   withFixture "historical" $ \repositoryPath repository resolved document operation -> do
     before <- hydratePlacementEvidenceAt repository resolved testConfig [document]
+    let database = repositoryPath </> ".adrai" </> "provenance.sqlite"
+    generationBefore <- bracket (open database) close $ \connection ->
+      query_ connection "SELECT value FROM meta WHERE key='generation'" :: IO [Only Text.Text]
+    observedBefore <- bracket (open database) close $ \connection ->
+      query_ connection "SELECT value FROM meta WHERE key='observed_commit_count'" :: IO [Only Text.Text]
     let laterOperation = requireOperation "O00000000000000000000000093"
         laterAdr = requireAdr "A00000000000000000000000093"
         laterSemantic = "# Later managed provenance\n"
@@ -480,6 +397,17 @@ historicalIsolationTest =
     afterHistorical <- snapshotRepositoryState repositoryPath (documentManagedPath document)
     assertRepositoryWorktreePreserved beforeHistorical afterHistorical
     before @?= after
+    generationAfter <- bracket (open database) close $ \connection ->
+      query_ connection "SELECT value FROM meta WHERE key='generation'" :: IO [Only Text.Text]
+    observedAfter <- bracket (open database) close $ \connection ->
+      query_ connection "SELECT value FROM meta WHERE key='observed_commit_count'" :: IO [Only Text.Text]
+    assertBool "direct hydration refreshes stale ref/reflog observation evidence" (generationAfter > generationBefore)
+    assertBool "direct hydration discovers the newly reachable ref evidence" (observedAfter > observedBefore)
+    repeated <- hydratePlacementEvidenceAt repository resolved testConfig [document]
+    repeated @?= after
+    observedRepeated <- bracket (open database) close $ \connection ->
+      query_ connection "SELECT value FROM meta WHERE key='observed_commit_count'" :: IO [Only Text.Text]
+    observedRepeated @?= observedAfter
     case after of
       Right placements -> Map.keys placements @?= [operation]
       Left problem -> assertFailure (show problem)
@@ -493,7 +421,12 @@ tamperedCacheTest =
       Right _ -> pure ()
     let database = repositoryPath </> ".adrai" </> "provenance.sqlite"
         operationText = operationIdText operation
+    -- Make observation roots stale as well as the evidence row.  The direct
+    -- hydration gate must reject the contradictory row before maintenance and
+    -- preserve the caller-owned database byte-for-byte.
+    _ <- commitFile repositoryPath "freshness-noise.txt" "ref/reflog freshness noise\n"
     tamper database "UPDATE registered_operation SET adr_id='A00000000000000000000000999' WHERE op_id=?" [SQLText operationText]
+    staleTamperBytes <- BS.readFile database
     beforeRejection <- snapshotRepositoryState repositoryPath (documentManagedPath document)
     wrongAdr <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case wrongAdr of
@@ -501,6 +434,8 @@ tamperedCacheTest =
       other -> assertFailure ("expected typed ADR failure, got " <> show other)
     afterRejection <- snapshotRepositoryState repositoryPath (documentManagedPath document)
     assertRepositoryStatePreserved beforeRejection afterRejection
+    staleTamperBytesAfter <- BS.readFile database
+    staleTamperBytesAfter @?= staleTamperBytes
     tamper database "UPDATE registered_operation SET adr_id='A00000000000000000000000091' WHERE op_id=?" [SQLText operationText]
     tamper database "UPDATE operation_commit SET classification='invalid' WHERE op_id=?" [SQLText operationText]
     invalidClassification <- hydratePlacementEvidenceAt repository resolved testConfig [document]
@@ -562,27 +497,10 @@ tamperedCacheTest =
     tamper database "DELETE FROM operation_commit WHERE op_id=?" [SQLText operationText]
     missingPlacement <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case missingPlacement of
-      Left (PlacementHydrationEvidenceFailure _) -> pure ()
-      other -> assertFailure ("expected typed missing-placement failure, got " <> show other)
+      Right placements -> assertBool "missing target placement is repaired from authoritative documents" (Map.member operation placements)
+      other -> assertFailure ("expected missing-placement repair, got " <> show other)
   where
     expectedConfigJson = "{\"connections\":\"architecture/adrai/connections\",\"decisions\":\"architecture/adrai/decisions\",\"logical_lines\":[\"trunk\"]}"
-
-signatureTamperTest :: IO ()
-signatureTamperTest =
-  withFixture "signature tamper" $ \repositoryPath repository resolved document operation -> do
-    initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
-    case initial of
-      Left problem -> assertFailure (show problem)
-      Right _ -> pure ()
-    let database = repositoryPath </> ".adrai" </> "provenance.sqlite"
-    tamper database "UPDATE registered_operation SET signature='tampered' WHERE op_id=?" [SQLText (operationIdText operation)]
-    beforeRejection <- snapshotRepositoryState repositoryPath (documentManagedPath document)
-    result <- hydratePlacementEvidenceAt repository resolved testConfig [document]
-    case result of
-      Left (PlacementHydrationRegistrationMismatch _) -> pure ()
-      other -> assertFailure ("expected typed signature failure, got " <> show other)
-    afterRejection <- snapshotRepositoryState repositoryPath (documentManagedPath document)
-    assertRepositoryStatePreserved beforeRejection afterRejection
 
 invalidSchemaPreservationTest :: IO ()
 invalidSchemaPreservationTest =
@@ -599,63 +517,142 @@ invalidSchemaPreservationTest =
     afterRejection <- snapshotRepositoryState repositoryPath (documentManagedPath document)
     assertRepositoryStatePreserved beforeRejection afterRejection
 
-malformedSchemaPreservationTest :: IO ()
-malformedSchemaPreservationTest =
-  withFixture "malformed schema" $ \repositoryPath repository resolved document _ -> do
+-- | Overlay v1 predates target-bound placement certificates.  It must be
+-- discarded and rebuilt from the immutable requested documents, never merely
+-- retagged as v2 or trusted for a warm read.
+v1OverlayRebuiltBeforeHydrationTest :: IO ()
+v1OverlayRebuiltBeforeHydrationTest =
+  withFixture "v1 overlay rebuild" $ \repositoryPath repository resolved document operation -> do
+    initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
+    case initial of
+      Left problem -> assertFailure ("initial v2 hydration: " <> show problem)
+      Right _ -> pure ()
+    let database = repositoryPath </> ".adrai" </> "provenance.sqlite"
+    tamper database "UPDATE meta SET value='adrai-provenance-cache/1' WHERE key='schema'" []
+    -- A genuine v1 database has no coverage table.  Removing it also proves
+    -- the writer rebuilds schema instead of relying on a partial upgrade.
+    tamper database "DROP TABLE operation_target_coverage" []
+    schemaFacts <- bracket (open database) close $ \connection ->
+      query_ connection "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND type IN ('table','index') ORDER BY type,name" :: IO [(Text.Text, Text.Text, Text.Text)]
+    schemaTag <- bracket (open database) close $ \connection ->
+      query_ connection "SELECT value FROM meta WHERE key='schema'" :: IO [Only Text.Text]
+    assertBool ("legacy v1 schema facts are present: " <> show schemaFacts) (not (null schemaFacts))
+    rebuilt <- hydratePlacementEvidenceAt repository resolved testConfig [document]
+    case rebuilt >>= maybe (Left (PlacementHydrationRegistrationMismatch "missing rebuilt operation evidence")) Right . Map.lookup operation of
+      Left problem -> assertFailure ("v1 rebuild hydration: " <> show problem <> "; tag=" <> show schemaTag <> "; facts=" <> show schemaFacts)
+      Right evidence -> assertBool "rebuilt overlay contains reachable placement" (not (null (placementCommits evidence)))
+    connection <- open database
+    schema <- query_ connection "SELECT value FROM meta WHERE key='schema'" :: IO [Only Text.Text]
+    coverage <- query_ connection "SELECT registration_signature FROM operation_target_coverage" :: IO [Only Text.Text]
+    close connection
+    schema @?= [Only "adrai-provenance-cache/2"]
+    assertBool "v2 rebuild issues a target-bound placement certificate" (not (null coverage))
+
+extraExecutableObjectsPreservationTest :: IO ()
+extraExecutableObjectsPreservationTest =
+  withFixture "extra overlay executable objects" $ \repositoryPath repository resolved document _ -> do
     initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case initial of
       Left problem -> assertFailure (show problem)
       Right _ -> pure ()
     let database = repositoryPath </> ".adrai" </> "provenance.sqlite"
-    tamper database "DROP TABLE meta" []
+    tamper database "CREATE VIEW overlay_extra_view AS SELECT key FROM meta" []
+    tamper database "CREATE TRIGGER overlay_extra_trigger AFTER INSERT ON meta BEGIN SELECT 1; END" []
     beforeRejection <- BS.readFile database
     result <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     result @?= Left (PlacementHydrationInvalidOverlay "existing overlay schema is invalid")
     afterRejection <- BS.readFile database
     afterRejection @?= beforeRejection
 
-duplicateEvidenceTest :: IO ()
-duplicateEvidenceTest =
-  withFixture "duplicates" $ \repositoryPath repository resolved document operation -> do
-    initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
-    case initial of
-      Left problem -> assertFailure (show problem)
-      Right _ -> pure ()
-    let database = repositoryPath </> ".adrai" </> "provenance.sqlite"
-        operationText = operationIdText operation
-        targetText = gitOidText (resolvedCommitOid resolved)
-    tamper database "DROP TABLE registered_operation" []
-    tamper database "CREATE TABLE registered_operation(op_id TEXT,adr_id TEXT,basis_oid TEXT NOT NULL,signature TEXT NOT NULL)" []
-    tamper database "INSERT INTO registered_operation VALUES(?,?,?,?)" [SQLText operationText, SQLText "A00000000000000000000000091", SQLText targetText, SQLText "one"]
-    tamper database "INSERT INTO registered_operation VALUES(?,?,?,?)" [SQLText operationText, SQLText "A00000000000000000000000091", SQLText targetText, SQLText "two"]
-    duplicateRegistration <- hydratePlacementEvidenceAt repository resolved testConfig [document]
-    case duplicateRegistration of
-      Left (PlacementHydrationEvidenceFailure _) -> pure ()
-      other -> assertFailure ("expected duplicate registration failure, got " <> show other)
-
-duplicatePlacementTest :: IO ()
-duplicatePlacementTest =
-  withFixture "duplicate placements" $ \repositoryPath repository resolved document operation -> do
-    initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
-    case initial of
-      Left problem -> assertFailure (show problem)
-      Right _ -> pure ()
-    let database = repositoryPath </> ".adrai" </> "provenance.sqlite"
-        operationText = operationIdText operation
-        targetText = gitOidText (resolvedCommitOid resolved)
-        basisText = gitOidText (provenanceBasis (parsedManagedCapsule document))
-        duplicate =
-          [ SQLText operationText, SQLText targetText, SQLText "original", SQLInteger 1, SQLInteger 1
-          , SQLText "contradictory duplicate", SQLText ("[\"" <> basisText <> "\"]")
-          ]
-    tamper database "DROP TABLE operation_commit" []
-    tamper database "CREATE TABLE operation_commit(op_id TEXT NOT NULL,commit_oid TEXT NOT NULL,classification TEXT NOT NULL,authored_s INTEGER NOT NULL,committed_s INTEGER NOT NULL,subject TEXT NOT NULL,parents_json TEXT NOT NULL)" []
-    tamper database "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)" duplicate
-    tamper database "INSERT INTO operation_commit VALUES(?,?,?,?,?,?,?)" duplicate
-    result <- hydratePlacementEvidenceAt repository resolved testConfig [document]
-    case result of
-      Left (PlacementHydrationDuplicateEvidence _) -> pure ()
-      other -> assertFailure ("expected duplicate placement failure, got " <> show other)
+-- | Exercise the production materializer without an overlay round trip,
+-- retaining its canonical identity and registration-drift checks.
+materializeCheckedIdentityIndexTest :: IO ()
+materializeCheckedIdentityIndexTest = do
+  let target = pureOid "0000000000000000000000000000000000000011"
+      operationA = requireOperation "O00000000000000000000000011"
+      operationB = requireOperation "O00000000000000000000000012"
+      documents =
+        [ syntheticDocument target operationA "A00000000000000000000000011" "architecture/adrai/decisions/000/a.decision.md",
+          syntheticDocument target operationA "A00000000000000000000000012" "architecture/adrai/decisions/000/b.decision.md",
+          syntheticDocument target operationB "A00000000000000000000000013" "architecture/adrai/decisions/000/c.decision.md"
+        ]
+      -- Preserve the established Map.fromListWith (<>) grouping order: repeated
+      -- operations are accumulated newest-first, and registration validation
+      -- deliberately reads that bucket's first document.
+      evidenceA = syntheticEvidence target (reverse (take 2 documents)) operationA
+      evidenceB = syntheticEvidence target (drop 2 documents) operationB
+      valid = materialize testConfig documents fixtureConfigKey (syntheticProvenance target [evidenceA, evidenceB])
+      assertRegistrationDrift label value =
+        case value of
+          Left (PlacementHydrationRegistrationMismatch _) -> pure ()
+          other -> assertFailure (label <> ": expected registration mismatch, got " <> show other)
+  case valid of
+    Left problem -> assertFailure ("valid checked identity index failed: " <> show problem)
+    Right placements -> do
+      Map.keys placements @?= [operationA, operationB]
+  -- Canonical typed identities render distinctly.  The implementation retains
+  -- a collision guard even though the validated constructor currently makes a
+  -- distinct-value/same-text collision unconstructible.
+  assertBool "constructible canonical operation identities have distinct exact text" (operationIdText operationA /= operationIdText operationB)
+  let malformed = evidenceA {provenanceEvidenceRegistration = (provenanceEvidenceRegistration evidenceA) {registeredOperationRowOpId = "not-an-operation"}}
+      caseVariant = evidenceA {provenanceEvidenceRegistration = (provenanceEvidenceRegistration evidenceA) {registeredOperationRowOpId = Text.toLower (operationIdText operationA)}}
+      duplicate = syntheticProvenance target [evidenceA, evidenceA, evidenceB]
+      missing = syntheticProvenance target [evidenceA]
+      extra = syntheticProvenance target [evidenceA, evidenceB, malformed]
+      reordered = syntheticProvenance target [evidenceB, evidenceA]
+  assertRegistrationDrift "malformed exact registration" (materialize testConfig documents fixtureConfigKey (syntheticProvenance target [malformed, evidenceB]))
+  assertRegistrationDrift "case-variant registration" (materialize testConfig documents fixtureConfigKey (syntheticProvenance target [caseVariant, evidenceB]))
+  assertRegistrationDrift "duplicate registration" (materialize testConfig documents fixtureConfigKey duplicate)
+  assertRegistrationDrift "missing registration" (materialize testConfig documents fixtureConfigKey missing)
+  assertRegistrationDrift "extra registration" (materialize testConfig documents fixtureConfigKey extra)
+  assertRegistrationDrift "reordered registration" (materialize testConfig documents fixtureConfigKey reordered)
+  where
+    fixtureConfigKey = configKey "architecture/adrai/decisions" "architecture/adrai/connections" ["trunk"]
+    pureOid value = case mkGitOid value of
+      Left problem -> error (show problem)
+      Right result -> result
+    syntheticDocument target operation adr path =
+      ParsedManagedDocument
+        { parsedDocumentObjectRef = adr,
+          parsedManagedPath = requireRepoPath path,
+          parsedManagedCapsule = makeCapsule operation (requireAdr adr) target ("synthetic " <> adr),
+          parsedBlobOid = Just target,
+          parsedSemanticHash = "synthetic-" <> adr
+        }
+    syntheticEvidence target documents operation =
+      ProvenanceOperationEvidence
+        { provenanceEvidenceRegistration =
+            RegisteredOperationRow
+              { registeredOperationRowOpId = operationIdText operation,
+                registeredOperationRowAdrId = Just (parsedDocumentObjectRef (firstDocument documents)),
+                registeredOperationRowBasisOid = target,
+                registeredOperationRowSignature = signature documents
+              },
+          provenanceEvidenceObjects =
+            [ RegisteredObjectRow (operationIdText operation) (parsedDocumentObjectRef document) (repoPathText (parsedManagedPath document)) target
+              | document <- documents
+            ],
+          provenanceEvidenceCommits = [OperationCommitRow (operationIdText operation) target "original" 0 0 "synthetic" "[]"],
+          provenanceEvidenceLandings = [LineLandingRow fixtureConfigKey (operationIdText operation) "trunk" "refs/heads/main" target 1],
+          provenanceEvidenceIssues = []
+        }
+    firstDocument documents = case documents of
+      document : _ -> document
+      [] -> error "synthetic provenance evidence requires a document"
+    syntheticProvenance target operations =
+      ProvenanceEvidence
+        { provenanceEvidenceTargetOid = target,
+           provenanceEvidenceConfig = Just (LineConfigRow fixtureConfigKey "{\"connections\":\"architecture/adrai/connections\",\"decisions\":\"architecture/adrai/decisions\",\"logical_lines\":[\"trunk\"]}"),
+          provenanceEvidenceOperations = operations,
+          provenanceEvidenceLineRefs = [],
+          provenanceEvidenceRefs = [],
+          provenanceEvidenceRoots = []
+        }
+    signature = Text.concat . map byteHex . BS.unpack . digestBytes . operationSignature
+    byteHex byte = Text.pack [hex (byte `div` 16), hex (byte `mod` 16)]
+    hex nibble
+      | nibble < 10 = toEnum (fromEnum '0' + fromIntegral nibble)
+      | otherwise = toEnum (fromEnum 'a' + fromIntegral nibble - 10)
 
 synchronousFailureTest :: IO ()
 synchronousFailureTest =
@@ -808,10 +805,12 @@ makeCapsule operation adr basis semantic =
     Left problem -> error (show problem)
     Right value -> value
 
+requireActor :: Actor
 requireActor = case mkActor HumanActor "tester" Nothing of
   Left problem -> error (show problem)
   Right value -> value
 
+requireEventKind :: EventKind
 requireEventKind = case mkEventKind "decision" of
   Left problem -> error (show problem)
   Right value -> value

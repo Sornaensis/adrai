@@ -36,7 +36,9 @@ tests =
         map length chunks @?= [256, 45]
         concat chunks @?= map oid [0 .. 300]
         objectBatchRequestCount values @?= 2
+        objectInfoBatchSessionCount values @?= 1
         objectBatchRequestCount [] @?= 0
+        objectInfoBatchSessionCount [] @?= 0
         objectBatchRequestCount [oid 42, oid 42] @?= 1,
       testCase "persistent batch input writes bare OIDs and flushes exactly once per window" $ do
         writes <- newIORef []
@@ -163,6 +165,11 @@ tests =
         assertBool "negative size" (isLeft (decodeGitObjectInfoHeader expected (returned <> " blob -1")))
         assertBool "Word64 overflow" (isLeft (decodeGitObjectInfoHeader expected (returned <> " blob 18446744073709551616")))
         decodeGitBlobHeader expected (returned <> " blob 7") returned "blob" "7" @?= Right 7
+        assertBool "blob negative size" (isLeft (decodeGitBlobHeader expected (returned <> " blob -1") returned "blob" "-1"))
+        let abovePlatformInt = BS8.pack (show (toInteger (maxBound :: Int) + 1))
+        assertBool
+          "blob size above the platform Int range"
+          (isLeft (decodeGitBlobHeader expected (returned <> " blob " <> abovePlatformInt) returned "blob" abovePlatformInt))
         assertBool "blob mismatch" (isLeft (decodeGitBlobHeader expected (other <> " blob 7") other "blob" "7"))
         assertBool "blob type" (isLeft (decodeGitBlobHeader expected (returned <> " commit 7") returned "commit" "7"))
         decodeGitBlobPayload expected 3 "abc" "\n" @?= Right (GitBlob expected "abc")
@@ -170,6 +177,8 @@ tests =
         assertBool "missing framing LF" (isLeft (decodeGitBlobPayload expected 3 "abc" "x"))
         validateGitBatchTrailing BS.empty @?= Right ()
         assertBool "trailing bytes" (isLeft (validateGitBatchTrailing "x"))
+        validateObjectInfoBatchTrailing BS.empty @?= Right ()
+        assertBool "object-info trailing bytes" (isLeft (validateObjectInfoBatchTrailing "x"))
     , testCase "environment overrides isolate alternate Git indexes" $
         withSystemTempDirectory "adrai-git-environment" $ \temporary -> do
           let repositoryPath = temporary </> "repository"

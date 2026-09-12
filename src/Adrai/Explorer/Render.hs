@@ -73,7 +73,6 @@ import Adrai.Query
     ExplodedOperation (..),
     ExplodedItem (..),
     CollapsedProvenance (..),
-    ParentDiff (..),
     ProjectionCounts (..),
     PublicIssue (..),
     ProvenanceProjection (..),
@@ -85,21 +84,13 @@ import Adrai.Query
     SearchResult (..),
   )
 import Adrai.Types
-  ( AdrId (..),
-    Actor (..),
+  ( Actor (..),
     actorId,
-    AdraiError (..),
-    ExitClass (..),
-    OperationId (..),
-    RecordId (..),
     operationIdText,
     recordIdText,
-    StateToken (..),
-    ViewMode (..),
     adrIdText,
     stateTokenText,
   )
-import Data.List (intercalate)
 import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -154,15 +145,12 @@ wrapLine _ "" = []
 wrapLine cols line
   | T.length line <= cols = [line]
   | otherwise =
-      let (prefix, suffix) = T.break (\c -> c == ' ' || c == '\t') (T.drop (cols - 1) line)
+      let (prefix, _) = T.break (\c -> c == ' ' || c == '\t') (T.drop (cols - 1) line)
       in case T.uncons (T.drop (T.length prefix + 1) line) of
            Nothing -> [line]
            Just (_, rest) ->
              let wrapped = T.take (cols - 1) line
              in wrapped : wrapLine cols (T.drop (T.length wrapped) rest)
-
-isSpace :: Char -> Bool
-isSpace c = c `elem` (" \t\n\r" :: String)
 
 -- ---------------------------------------------------------------------------
 -- Terminal width detection
@@ -191,14 +179,13 @@ renderSearchResult index result =
     <> ansiBold (id_ <> " ")
     <> title
     <> " "
-    <> ansiBlue ("[" <> printf "%.4f" score <> suffix <> ansiReset)
+    <> ansiBlue ("[" <> formatScore score <> suffix <> ansiReset)
   where
-    printf fmt v = T.pack (formatDouble fmt v)
-    formatDouble fmt v =
+    formatScore v =
       let intPart = floor v :: Int
           frac = (abs (v - fromIntegral intPart)) * 10000
-          fracStr = padLeft4 (show (floor frac))
-      in show intPart <> "." <> fracStr
+          fracStr = padLeft4 (show (floor frac :: Int))
+      in T.pack (show intPart <> "." <> fracStr)
 
     padLeft4 :: String -> String
     padLeft4 s
@@ -259,7 +246,9 @@ renderCollapsed proj =
     conflictLine :: ResolutionState -> [Text]
     conflictLine r
       | resolutionStateRequired r =
-          [ ansiYellow ("CONFLICT: " <> resolutionSummary (head (resolutionStateConflicts r))) ]
+          case resolutionStateConflicts r of
+            conflict : _ -> [ansiYellow ("CONFLICT: " <> resolutionSummary conflict)]
+            [] -> []
       | otherwise = []
 
     statusText :: Text -> Text
@@ -336,7 +325,9 @@ renderLineage proj =
         r
           | not (resolutionStateResolved r)
             && not (null (resolutionStateConflicts r)) ->
-            [ ansiYellow ("! " <> resolutionSummary (head (resolutionStateConflicts r))) ]
+            case resolutionStateConflicts r of
+              conflict : _ -> [ansiYellow ("! " <> resolutionSummary conflict)]
+              [] -> []
         _ -> []
 
     renderOperation :: Int -> ExplodedOperation -> [Text]
@@ -351,14 +342,21 @@ renderLineage proj =
           ++ concat [ renderItem item | item <- explodedOperationItems op ]
           ++ [""]
       where
-        actorName a = actorId a
+        printf :: String -> Double -> Text
         printf fmt n = T.pack (formatInt fmt n)
-        formatInt ('0':'.':d:rest) v =
-          let frac = (abs (v :: Double)) * 10000
-              fracStr = padLeft4 (show (floor frac))
-          in show (floor v) <> "." <> fracStr <> formatInt rest 0
+
+        formatInt :: String -> Double -> String
+        formatInt ('0':'.':_:rest) v =
+          let frac = abs v * 10000
+              fracStr = padLeft4 (show (floor frac :: Int))
+          in show (floor v :: Int) <> "." <> fracStr <> formatInt rest 0
         formatInt (h:t) v = h : formatInt t v
         formatInt "" _ = ""
+
+        padLeft4 :: String -> String
+        padLeft4 s
+          | length s >= 4 = take 4 s
+          | otherwise = replicate (4 - length s) '0' <> s
 
         renderItem :: ExplodedItem -> [Text]
         renderItem item =
@@ -367,14 +365,14 @@ renderLineage proj =
               parents = if null (explodedItemParents item)
                         then ""
                         else "  ← " <> T.intercalate "," (map (T.take 10) (explodedItemParents item))
-          in case explodedItemType item of
-               "decision" ->
-                 [ indent <> "D " <> ansiYellow (explodedItemEvent item) <> "  " <> ansiBlue prefix <> parents
-                   | diff <- explodedItemDiffs item
-                   ]
-               _ ->
-                 [ indent <> "C " <> ansiCyan (maybe "" (\r -> r <> " ") (explodedItemRelation item)) <> "  " <> ansiBlue prefix <> parents
-                 ] ++ metadataLines
+           in case explodedItemType item of
+                "decision" ->
+                  replicate
+                    (length (explodedItemDiffs item))
+                    (indent <> "D " <> ansiYellow (explodedItemEvent item) <> "  " <> ansiBlue prefix <> parents)
+                _ ->
+                  [ indent <> "C " <> ansiCyan (maybe "" (\r -> r <> " ") (explodedItemRelation item)) <> "  " <> ansiBlue prefix <> parents
+                  ] ++ metadataLines
           where
             metadataLines = case explodedItemType item of
               "connection" -> case explodedItemRelation item of
@@ -405,7 +403,6 @@ renderConflict adr conflicts
 renderConflictsEntry :: ResolutionEntry -> [Text]
 renderConflictsEntry entry =
   let label = conflictLabel (resolutionConflictKind entry)
-      count = resolutionHeadCount entry
       heads = resolutionHeads entry
       summary = resolutionSummary entry
   in  [ ansiYellow ("  " <> label <> ": " <> summary) ]
@@ -477,28 +474,3 @@ renderHelp =
   , ""
   , ansiBold "Exit: " <> ansiCyan "exit" <> " / " <> ansiCyan "quit"
   ]
-
--- ---------------------------------------------------------------------------
--- Internal helpers
--- ---------------------------------------------------------------------------
-
-formatDouble :: String -> Double -> String
-formatDouble ('.':d:rest) v =
-  let intPart  = floor v :: Int
-      frac     = (abs (v - fromIntegral intPart)) * 10000
-      fracStr  = padLeft4 (show (floor frac))
-  in  show intPart <> "." <> fracStr <> formatDouble rest 0
-formatDouble (h:t) v = h : formatDouble t v
-formatDouble "" _    = ""
-
-padLeft4 :: String -> String
-padLeft4 s
-  | length s >= 4 = take 4 s
-  | otherwise     = replicate (4 - length s) '0' <> s
-
-countChangedLines :: Text -> Int
-countChangedLines txt = length $ filter isChange $ T.unpack txt
-  where
-    isChange '+' = True
-    isChange '-' = True
-    isChange _   = False

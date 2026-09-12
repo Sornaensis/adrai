@@ -30,8 +30,7 @@ import Adrai.Fixture.CompilerRepository
   )
 import Adrai.Format (renderDigest)
 import Adrai.Format.Document
-  ( ManagedRecord (..),
-    ParsedManagedDocument (..),
+  ( ParsedManagedDocument (..),
     parseManagedDocument,
     parsedManagedRecord
   )
@@ -77,7 +76,6 @@ import Adrai.Types
     mkRepoPath,
     recordObjectRef
   )
-import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Text as Text
 import Data.Text (Text)
@@ -108,7 +106,7 @@ tests =
 -- assertion reports the actual digest: update both sides of the equation
 -- together only when the frame format change is intentional.
 goldenColdMaterializationFingerprint :: Text
-goldenColdMaterializationFingerprint = "sha256:xSl_EAlUQySjtO3M_8iLk8sVx2NQxILlfGODTO4GD7I"
+goldenColdMaterializationFingerprint = "sha256:jlNp8rk6ZFnCtvZgVwsmBrkgyMfiXpL50Onda4BvAoE"
 
 goldenSourceFingerprint :: Text
 goldenSourceFingerprint = "sha256:LwtXmmMXX-IYLVlEQHKtNsl4s07MskGuF9jctUN7al8"

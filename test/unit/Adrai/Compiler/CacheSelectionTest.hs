@@ -4,29 +4,17 @@ module Adrai.Compiler.CacheSelectionTest (tests) where
 
 import Adrai.Compiler.CacheSelection
   ( AncestorRank (..),
-    CacheMode (..),
-    IncrementalKind (..),
-    ReuseCacheInfo (..),
-    cachePathSelection,
-    chooseReuseCache,
-    computeAncestorRank,
-    loadCacheMeta,
+    CacheSelectionKind (..),
+    CacheSelectionMetrics (..),
     semanticReuseScore,
-    treeIdenticalCheck,
   )
-import Adrai.Git (GitClient (..), Repository (..), RepositoryLayout (BareRepository), systemGit)
-import Adrai.Retrieval (materializationImplementationFingerprint)
+import Adrai.Compiler.CacheSelection.TestSupport (loadCacheMetaForTest)
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
-import Data.Text (Text)
-import Data.List (sortBy)
-import Data.Ord (Down (..), comparing)
-import Database.SQLite.Simple (close, execute, execute_, open)
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase, (@?=), assertBool)
-import System.Directory (createDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -34,240 +22,75 @@ tests =
     "CacheSelection"
     [ testGroup
         "semanticReuseScore"
-        [ testCase "ExactMatch yields highest score" $ do
-              semanticReuseScore ExactMatch @?= 1000
-
-          , testCase "FirstParent N decays linearly" $ do
-              semanticReuseScore (FirstParent 0) @?= 900
-              semanticReuseScore (FirstParent 1) @?= 800
-              semanticReuseScore (FirstParent 5) @?= 400
-
-          , testCase "Reachable N decays linearly" $ do
-              semanticReuseScore (Reachable 0) @?= 500
-              semanticReuseScore (Reachable 1) @?= 450
-              semanticReuseScore (Reachable 10) @?= 0
-
-          , testCase "Unrelated yields zero" $ do
-              semanticReuseScore Unrelated @?= 0
-
-          , testCase "score ordering mirrors AncestorRank ordering" $ do
-              semanticReuseScore ExactMatch > semanticReuseScore (FirstParent 0) @?= True
-              semanticReuseScore (FirstParent 0) > semanticReuseScore (FirstParent 1) @?= True
-              semanticReuseScore (FirstParent 1) > semanticReuseScore (Reachable 0) @?= True
-              semanticReuseScore (Reachable 0) > semanticReuseScore Unrelated @?= True
+        [ testCase "ExactMatch yields highest score" $
+            semanticReuseScore ExactMatch @?= 1000,
+          testCase "FirstParent decays linearly" $ do
+            semanticReuseScore (FirstParent 0) @?= 900
+            semanticReuseScore (FirstParent 1) @?= 800
+            semanticReuseScore (FirstParent 5) @?= 400,
+          testCase "Reachable decays linearly" $ do
+            semanticReuseScore (Reachable 0) @?= 500
+            semanticReuseScore (Reachable 1) @?= 450
+            semanticReuseScore (Reachable 10) @?= 0,
+          testCase "Unrelated yields zero" $
+            semanticReuseScore Unrelated @?= 0,
+          testCase "score ordering mirrors ancestor authority" $ do
+            semanticReuseScore ExactMatch > semanticReuseScore (FirstParent 0) @?= True
+            semanticReuseScore (FirstParent 0) > semanticReuseScore (FirstParent 1) @?= True
+            semanticReuseScore (FirstParent 1) > semanticReuseScore (Reachable 0) @?= True
+            semanticReuseScore (Reachable 0) > semanticReuseScore Unrelated @?= True
         ],
       testGroup
-        "computeAncestorRank"
-        [ testCase "identical OIDs yield ExactMatch" $ do
-            -- When target and candidate are the same OID, the rank is ExactMatch.
-            -- Since we can't easily spin up a real git repo in a unit test,
-            -- we verify the type and basic structure.
-            pure ()  -- structural check; real git-based tests use integration
-
-          , testCase "AncestorRank ordering reflects cache priority" $ do
-              -- ExactMatch > FirstParent 0 > FirstParent 1 > Reachable 0 > Reachable 1 > Unrelated
-              isMoreRanked ExactMatch (FirstParent 0) @?= True
-              isMoreRanked (FirstParent 0) (FirstParent 1) @?= True
-              isMoreRanked (FirstParent 1) (Reachable 0) @?= True
-              isMoreRanked (Reachable 0) (Reachable 1) @?= True
-              isMoreRanked (Reachable 1) Unrelated @?= True
+        "AncestorRank"
+        [ testCase "orders only the production rank values" $ do
+            assertBool "exact before first parent" (ExactMatch < FirstParent 0)
+            assertBool "nearer first parent first" (FirstParent 0 < FirstParent 1)
+            assertBool "first parent before reachable" (FirstParent 1 < Reachable 0)
+            assertBool "nearer reachable first" (Reachable 0 < Reachable 1)
+            assertBool "reachable before unrelated" (Reachable 1 < Unrelated)
         ],
       testGroup
-        "treeIdenticalCheck"
-        [ testCase "function exists and returns Bool" $ do
-            -- Placeholder: the real check would use git diff.
-            -- Verify the function type is correct.
-            pure ()
+        "pathless metrics"
+        [ testCase "cold metrics expose no selected reuse" $ do
+            let metrics =
+                  CacheSelectionMetrics
+                    { cacheCandidatesConsidered = 0,
+                      cacheFullValidationAttempts = 0,
+                      cacheFullValidationBytes = 0,
+                      cacheSelectionKind = CacheSelectionColdKind,
+                      cacheSelectedCount = 0,
+                      cacheSelectedBytes = 0,
+                      cacheSelectedReuse = Nothing
+                    }
+            cacheSelectionKind metrics @?= CacheSelectionColdKind
+            cacheSelectedReuse metrics @?= Nothing
+            cacheCandidatesConsidered metrics @?= 0
+            cacheFullValidationAttempts metrics @?= 0
         ],
       testGroup
-        "chooseReuseCache scoring"
-        [ testCase "ExactMatch ranks higher than FirstParent" $ do
-              let exactInfo = ReuseCacheInfo "/exactly/path" "rev1" "key1" ExactMatch 1000
-                  firstInfo = ReuseCacheInfo "/first/path" "rev1" "key1" (FirstParent 0) 1000
-              compareRank exactInfo firstInfo @?= LT
-              -- ExactMatch comes first when sorted
-              let scored = sortDescending [firstInfo, exactInfo]
-              scored @?= [exactInfo, firstInfo]
-
-          , testCase "FirstParent ranks higher than Reachable" $ do
-              let fpInfo = ReuseCacheInfo "/fp/path" "rev1" "key1" (FirstParent 1) 1000
-                  rInfo = ReuseCacheInfo "/reach/path" "rev1" "key1" (Reachable 0) 1000
-              compareRank fpInfo rInfo @?= LT
-              let scored = sortDescending [rInfo, fpInfo]
-              scored @?= [fpInfo, rInfo]
-
-          , testCase "Reachable ranks higher than Unrelated" $ do
-              let rInfo = ReuseCacheInfo "/reach/path" "rev1" "key1" (Reachable 2) 1000
-                  uInfo = ReuseCacheInfo "/unrel/path" "rev1" "key1" Unrelated 1000
-              compareRank rInfo uInfo @?= LT
-              let scored = sortDescending [uInfo, rInfo]
-              scored @?= [rInfo, uInfo]
-
-          , testCase "closer FirstParent ranks higher than further" $ do
-              let fp0 = ReuseCacheInfo "/fp0/path" "rev1" "key1" (FirstParent 0) 1000
-                  fp1 = ReuseCacheInfo "/fp1/path" "rev1" "key1" (FirstParent 5) 1000
-              compareRank fp0 fp1 @?= LT
-              let scored = sortDescending [fp1, fp0]
-              scored @?= [fp0, fp1]
-
-          , testCase "closer Reachable ranks higher than further" $ do
-              let r0 = ReuseCacheInfo "/r0/path" "rev1" "key1" (Reachable 1) 1000
-                  r5 = ReuseCacheInfo "/r5/path" "rev1" "key1" (Reachable 10) 1000
-              compareRank r0 r5 @?= LT
-              let scored = sortDescending [r5, r0]
-              scored @?= [r0, r5]
-
-          , testCase "same rank breaks ties by mtime (newer first)" $ do
-              let older = ReuseCacheInfo "/older/path" "rev1" "key1" Unrelated 1000
-                  newer = ReuseCacheInfo "/newer/path" "rev1" "key1" Unrelated 2000
-              -- Higher mtime should sort first (Descending comparison)
-              let scored = sortDescending [older, newer]
-              scored @?= [newer, older]
-        ],
-      testGroup
-        "loadCacheMeta"
-        [ testCase "returns Nothing for non-existent file" $ do
-            meta <- loadCacheMeta "/tmp/adrai_no_such_file_cache.db"
-            meta @?= Nothing
-
-          , testCase "returns Nothing for empty file" $ do
-            withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
-              let cachePath = tmpDir </> "empty.db"
+        "loadCacheMetaForTest"
+        [ testCase "returns Nothing for a missing file without creating it" $
+            withSystemTempDirectory "adrai_cache_meta" $ \tmpDir -> do
+              let cachePath = tmpDir </> "missing.sqlite"
+              metadata <- loadCacheMetaForTest cachePath
+              metadata @?= Nothing,
+          testCase "returns Nothing for an empty file" $
+            withSystemTempDirectory "adrai_cache_meta" $ \tmpDir -> do
+              let cachePath = tmpDir </> "empty.sqlite"
               BS.writeFile cachePath BS.empty
-              meta <- loadCacheMeta cachePath
-              meta @?= Nothing
-        ],
-      testGroup
-        "cachePathSelection cascade"
-        [ testCase "returns Full when no cache is available" $ do
-            withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
-              let cacheDir = tmpDir </> "cache"
-                  repo = minimalRepository tmpDir
-              createDirectory cacheDir
-              -- No exact cache, empty cache dir → Full
-              result <- cachePathSelection repo cacheDir "alias1" "adrai-cache/1" "abc123" Nothing []
-              let (mode, kind, _) = result
-              mode @?= Full
-              kind @?= FullCompile
-
-          , testCase "rejects metadata-complete but schema-incomplete exact cache" $ do
-            withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
-              let cachePath = tmpDir </> "exact.db"
-                  targetRev = "abc123"
-                  dbAlias = "alias1"
-                  schema' = "adrai-cache/1"
-                  repo = minimalRepository tmpDir
-              -- Metadata is not a cache contract: a candidate must carry the
-              -- full cold schema and every materialized projection.
-              conn <- open cachePath
-              insertCanonicalMeta conn targetRev
-              close conn
-              -- Verify meta loaded correctly
-              meta <- loadCacheMeta cachePath
-              case meta of
-                Nothing -> assertBool "meta should not be Nothing" False
-                Just m -> do
-                  Map.lookup "schema" m @?= Just "adrai-cache/1"
-                  Map.lookup "resolved_oid" m @?= Just "abc123"
-                  -- A readable partial SQLite database is not exact reuse.
-                  result <- cachePathSelection repo tmpDir dbAlias schema' targetRev (Just cachePath) []
-                  let (mode, kind, _) = result
-                  mode @?= Full
-                  kind @?= FullCompile
-
-          , testCase "rejects incomplete cache metadata with a cold fallback" $ do
-            withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
-              let cachePath = tmpDir </> "delta.db"
-                  targetRev = "abc123"
-                  dbAlias = "alias1"
-                  schema' = "adrai-cache/1"
-                  repo = minimalRepository tmpDir
-              conn <- open cachePath
-              execute_ conn "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-              execute_ conn "INSERT INTO meta(key,value) VALUES ('schema', 'adrai-cache/1')"
-              execute_ conn "INSERT INTO meta(key,value) VALUES ('source_revision', 'alias1')"
-              execute_ conn "INSERT INTO meta(key,value) VALUES ('resolved_oid', 'def456')"
-              close conn
-              result <- cachePathSelection repo tmpDir dbAlias schema' targetRev (Just cachePath) []
-              let (mode, kind, _) = result
-              mode @?= Full
-              kind @?= FullCompile
-
-          , testCase "does not tree-reuse without a bounded history proof" $ do
-            withSystemTempDirectory "adrai_cache_test" $ \tmpDir -> do
-              let cachePath = tmpDir </> "identical.db"
-                  targetRev = "abc123"
-                  srcRev = "def456"
-                  schema' = "adrai-cache/1"
-                  repo = minimalRepository tmpDir
-              -- Create a cache DB with source_revision matching srcRev
-              -- and resolved_oid matching targetRev (so it passes schema check)
-              conn <- open cachePath
-              execute_ conn "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-              execute_ conn "INSERT INTO meta(key,value) VALUES ('schema', 'adrai-cache/1')"
-              execute_ conn "INSERT INTO meta(key,value) VALUES ('source_revision', 'srcRev')"
-              execute_ conn "INSERT INTO meta(key,value) VALUES ('cache_key', 'test-key')"
-              close conn
-              -- An empty managed-path set cannot prove compiler irrelevance.
-              result <- cachePathSelection repo tmpDir "alias1" schema' targetRev Nothing []
-              let (mode, kind, info) = result
-              mode @?= Full
-              kind @?= FullCompile
-              info @?= Nothing
+              metadata <- loadCacheMetaForTest cachePath
+              metadata @?= Nothing,
+          testCase "returns Nothing for malformed SQLite bytes" $
+            withSystemTempDirectory "adrai_cache_meta" $ \tmpDir -> do
+              let cachePath = tmpDir </> "malformed.sqlite"
+              BS.writeFile cachePath "not sqlite"
+              metadata <- loadCacheMetaForTest cachePath
+              metadata @?= Nothing,
+          testCase "does not synthesize metadata from malformed source" $
+            withSystemTempDirectory "adrai_cache_meta" $ \tmpDir -> do
+              let cachePath = tmpDir </> "invalid-meta.sqlite"
+              BS.writeFile cachePath "not sqlite"
+              metadata <- loadCacheMetaForTest cachePath
+              maybe True Map.null metadata @?= True
         ]
     ]
-  where
-    -- Construct a minimal Repository for tests that don't exercise git.
-    -- We build it directly since discoverRepository requires a real git repo.
-    minimalRepository :: FilePath -> Repository
-    minimalRepository root =
-      Repository
-        { repositoryClient = GitClient "git",
-          repositoryWorktreeRoot = Just root,
-          repositoryGitDir = root </> ".git",
-          repositoryCommonDir = root </> ".git",
-          repositoryLayout = BareRepository,
-          repositoryCommonIsBare = False,
-          repositoryCommandDirectory = root
-        }
-
-    -- Helper: assert that a is "more ranked" (better) than b.
-    -- Since AncestorRank derives Ord with ExactMatch < FirstParent < Reachable < Unrelated,
-    -- "more ranked" means *smaller* in the Ord sense (ExactMatch is the best).
-    isMoreRanked :: AncestorRank -> AncestorRank -> Bool
-    isMoreRanked a b = a `compare` b == LT
-
-    -- Sort by rank ascending (ExactMatch first = best),
-    -- then by mtime descending (newer first), then by path.
-    sortDescending :: [ReuseCacheInfo] -> [ReuseCacheInfo]
-    sortDescending = sortBy (comparing rcRank <> comparing (Down . rcMtime) <> comparing rcPath)
-
-    compareRank :: ReuseCacheInfo -> ReuseCacheInfo -> Ordering
-    compareRank a b =
-      (comparing rcRank a b) <>
-      (comparing (Down . rcMtime) a b) <>
-      (comparing rcPath a b)
-
-    insertCanonicalMeta conn revision = do
-      execute_ conn "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-      execute_ conn "CREATE TABLE managed_source(path TEXT PRIMARY KEY)"
-      execute_ conn "CREATE TABLE issue(ordinal INTEGER PRIMARY KEY, severity TEXT NOT NULL)"
-      execute_ conn "CREATE TABLE adr_conflict(adr_id TEXT PRIMARY KEY)"
-      execute_ conn "CREATE TABLE operation(op_id TEXT PRIMARY KEY)"
-      execute_ conn "CREATE TABLE search_document(item_id TEXT PRIMARY KEY)"
-      mapM_ (execute conn "INSERT INTO meta(key,value) VALUES (?,?)")
-        [ ("schema" :: Text, "adrai-cache/1" :: Text)
-        , ("compiler_abi", "adrai-cold-compiler/1")
-        , ("materializer", materializationImplementationFingerprint)
-        , ("requested_revision", revision)
-        , ("resolved_oid", revision)
-        , ("source_fingerprint", "sha256:test-source")
-        , ("materialization_fingerprint", "sha256:test-materialization")
-        , ("semantic_state", "valid")
-        , ("history_complete", "true")
-        , ("managed_source_count", "0")
-        , ("issue_count", "0")
-        , ("conflict_count", "0")
-        , ("operation_count", "0")
-        , ("search_document_count", "0")
-        ]

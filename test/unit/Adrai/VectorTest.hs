@@ -8,6 +8,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
+import GHC.Float (castDoubleToWord64, castWord64ToDouble)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, testCase)
 
@@ -144,11 +145,17 @@ embedderContract = do
 
 persistenceContract :: IO ()
 persistenceContract = do
+  let negativeZero = castWord64ToDouble 0x8000000000000000
+      negativeZeroBytes = BS.pack [0, 0, 0, 128]
   unpackVector BS.empty @?= Right (denseVector [])
   dot (denseVector []) (denseVector []) @?= Right 0
   dot (denseVector [1]) (denseVector [1, 2]) @?= Left (VectorDimensionMismatch 1 2)
   unpackVector (BS.pack [0, 1, 2]) @?= Left (InvalidVectorBlobLength 3)
-  packVector (denseVector [-0.0]) @?= BS.pack [0, 0, 0, 128]
+  packVector (denseVector [negativeZero]) @?= negativeZeroBytes
+  case unpackVector negativeZeroBytes of
+    Left failure -> assertBool (show failure) False
+    Right vector -> map castDoubleToWord64 (denseValues vector) @?= [0x8000000000000000]
+  map castDoubleToWord64 (denseValues (canonicalFloat32Vector (denseVector [negativeZero]))) @?= [0x8000000000000000]
   packVector (denseVector [1.0, -2.5]) @?= BS.pack [0, 0, 128, 63, 0, 0, 32, 192]
 
 lshGeometryContract :: IO ()

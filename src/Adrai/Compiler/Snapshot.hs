@@ -14,16 +14,6 @@ module Adrai.Compiler.Snapshot
     compilerDiagnosticCodeText,
     CompilerDiagnostic (..),
     AnalyzedRepositorySnapshot (..),
-    analyzedRawObservation,
-    analyzedManagedEntries,
-    analyzedNonblobObservations,
-    analyzedDiagnostics,
-    analyzedDocuments,
-    analyzedReduction,
-    analyzedConflicts,
-    analyzedHistoryComplete,
-    analyzedHistoryCommitsScanned,
-    analyzedSourceFingerprint,
     ParsedReducedRepositorySnapshot,
     parsedReducedAnalyzed,
     parsedReducedDocuments,
@@ -364,7 +354,16 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
     Left problem -> pure (Left problem)
     Right deltas ->
       withAttributionEitherPhase attribution HistoryReplayParse $ do
-        result <- go Map.empty remainingChildren [] nodes (groupDeltas deltas)
+        let deltaGroups = groupDeltas deltas
+            hasBlobRequests = any (nodeHasBlob deltaGroups) nodes
+        result <-
+          if hasBlobRequests
+            then do
+              completed <-
+                withBlobBatchSession repository $ \session ->
+                  promoteBlobSessionError <$> go (Just session) Map.empty remainingChildren [] nodes deltaGroups
+              pure (either (Left . RepositorySnapshotGitError) id completed)
+            else go Nothing Map.empty remainingChildren [] nodes deltaGroups
         if attributionEnabled attribution
           then do
             parsed <- maybe (pure 0) readIORef parseCount
@@ -388,9 +387,9 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
           | node <- nodes,
             parentOid <- gitCommitNodeParents node
         ]
-    go :: Map GitOid HistoryState -> Map GitOid Int -> [CompilerDiagnostic] -> [GitCommitNode] -> Map GitOid [GitHistoryTreeDelta] -> IO (Either RepositorySnapshotError [CompilerDiagnostic])
-    go _ _ diagnostics [] _ = pure (Right (reverse diagnostics))
-    go states refcounts diagnostics remaining deltaGroups = do
+    go :: Maybe (GitBlobBatchSession scope) -> Map GitOid HistoryState -> Map GitOid Int -> [CompilerDiagnostic] -> [GitCommitNode] -> Map GitOid [GitHistoryTreeDelta] -> IO (Either RepositorySnapshotError [CompilerDiagnostic])
+    go _ _ _ diagnostics [] _ = pure (Right (reverse diagnostics))
+    go maybeSession states refcounts diagnostics remaining deltaGroups = do
       -- A single commit is allowed to touch more than the ordinary batch
       -- budget.  It must not, however, turn that budget into an unbounded
       -- retention exception: process its edges in bounded chunks before
@@ -400,29 +399,29 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
           case Map.lookup (gitCommitNodeOid node) deltaGroups of
             Nothing -> pure (Left (missingDelta node))
             Just nodeDeltas -> do
-              advanced <- advanceNode states refcounts diagnostics node (observeNodeStreaming parseCount requestCount repository states nodeDeltas)
+              advanced <- advanceNode states refcounts diagnostics node (observeNodeStreaming maybeSession parseCount requestCount repository states (gitCommitNodeOid node) nodeDeltas)
               case advanced of
                 Left problem -> pure (Left problem)
                 Right (states', refcounts', diagnostics') ->
-                  go states' refcounts' diagnostics' laterNodes deltaGroups
+                  go maybeSession states' refcounts' diagnostics' laterNodes deltaGroups
         _ -> do
           let (batchNodes, laterNodes) = takeHistoryBlobBatch deltaGroups remaining
               batchChanges = concatMap (nodeChanges deltaGroups) batchNodes
-          blobsResult <- readChangedBlobs requestCount repository batchChanges
+          blobsResult <- readChangedBlobs maybeSession requestCount repository batchChanges
           case first RepositorySnapshotGitError blobsResult of
             Left problem -> pure (Left problem)
-            Right blobs -> processBatch states refcounts diagnostics batchNodes laterNodes deltaGroups blobs
+            Right blobs -> processBatch maybeSession states refcounts diagnostics batchNodes laterNodes deltaGroups blobs
 
     -- Every history read is a finite buffered Git window.  The compact parent
     -- state still advances one commit at a time, preserving edge order while
     -- each window retains at most 'historyBlobBatchLimit' blobs.
-    processBatch states refcounts diagnostics [] laterNodes deltaGroups _ =
-      go states refcounts diagnostics laterNodes deltaGroups
-    processBatch states refcounts diagnostics (node : pendingNodes) laterNodes deltaGroups blobs =
+    processBatch maybeSession states refcounts diagnostics [] laterNodes deltaGroups _ =
+      go maybeSession states refcounts diagnostics laterNodes deltaGroups
+    processBatch maybeSession states refcounts diagnostics (node : pendingNodes) laterNodes deltaGroups blobs =
       case Map.lookup (gitCommitNodeOid node) deltaGroups of
         Nothing -> pure (Left (missingDelta node))
         Just nodeDeltas -> do
-          advanced <- advanceNode states refcounts diagnostics node (observeNode parseCount states nodeDeltas blobs)
+          advanced <- advanceNode states refcounts diagnostics node (observeNode parseCount states (gitCommitNodeOid node) nodeDeltas blobs)
           case advanced of
             Left problem -> pure (Left problem)
             Right (states', refcounts', diagnostics') ->
@@ -430,7 +429,7 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
               -- preloaded into this map has consumed them.  Besides avoiding
               -- duplicate cat-file requests, this keeps the retained blob
               -- map bounded to this one ordinary batch.
-              processBatch states' refcounts' diagnostics' pendingNodes laterNodes deltaGroups blobs
+              processBatch maybeSession states' refcounts' diagnostics' pendingNodes laterNodes deltaGroups blobs
 
     advanceNode states refcounts diagnostics node observed = do
       result <- observed
@@ -472,20 +471,20 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
           | count > 0 && count + nodeBlobCount deltaGroups node > historyBlobBatchLimit = (reverse reversedNodes, remaining)
           | otherwise = collect (count + nodeBlobCount deltaGroups node) (node : reversedNodes) rest
 
-    observeNode counter states nodeDeltas blobs = do
+    observeNode counter states nodeOid nodeDeltas blobs = do
       edgeStates <- traverse (observeEdge counter states blobs) nodeDeltas
-      pure (sequence edgeStates >>= finishObservedNode nodeDeltas)
+      pure (sequence edgeStates >>= finishObservedNode nodeOid)
 
     -- Process each edge of an oversized node with a bounded blob map.  The
     -- mutable state retains only parsed identities, never the blob bytes.
-    observeNodeStreaming counter blobRequests gitRepository states nodeDeltas = do
-      edgeStates <- traverse (observeEdgeStreaming counter blobRequests gitRepository states) nodeDeltas
-      pure (finishObservedNode nodeDeltas =<< sequence edgeStates)
+    observeNodeStreaming maybeSession counter blobRequests gitRepository states nodeOid nodeDeltas = do
+      edgeStates <- traverse (observeEdgeStreaming maybeSession counter blobRequests gitRepository states) nodeDeltas
+      pure (finishObservedNode nodeOid =<< sequence edgeStates)
 
-    finishObservedNode nodeDeltas edgeStates = do
+    finishObservedNode nodeOid edgeStates = do
       (primary, convergencePairs) <-
         maybe
-          (Left (missingDeltaForOid (gitHistoryTreeDeltaCommit (head nodeDeltas))))
+          (Left (missingDeltaForOid nodeOid))
           Right
           (historyConvergencePairs (map edgeChildState edgeStates))
       -- Ordinary history nodes produce no pairs, avoiding an O(live managed
@@ -493,9 +492,8 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
       -- comparing every independently reconstructed child to the first edge.
       if all (uncurry (==)) convergencePairs
         then Right ()
-        else Left (divergentMergeState (gitHistoryTreeDeltaCommit (head nodeDeltas)))
-      let nodeOid = gitHistoryTreeDeltaCommit (head nodeDeltas)
-          edgeDiagnostics = concatMap (edgeIssues nodeOid) edgeStates
+        else Left (divergentMergeState nodeOid)
+      let edgeDiagnostics = concatMap (edgeIssues nodeOid) edgeStates
           historicalNonblobs =
             [ nonblobDiagnostic CompilerHistoryOrigin (Just nodeOid) (RepositoryTreeObservation entry Nothing)
               | nodeOid /= targetOid,
@@ -516,7 +514,7 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
             childState <- applyChangesAtParseSeam counter blobs parentState (selectedChanges edge)
             pure (fmap (\child -> (edge, parentState, child)) childState)
 
-    observeEdgeStreaming counter blobRequests gitRepository states edge = do
+    observeEdgeStreaming maybeSession counter blobRequests gitRepository states edge = do
       let parentState =
             case gitHistoryTreeDeltaParent edge of
               Nothing -> Right emptyHistoryState
@@ -524,7 +522,7 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
       case parentState of
         Left problem -> pure (Left problem)
         Right state -> do
-          childState <- applyChangesStreaming counter blobRequests gitRepository state (selectedChanges edge)
+          childState <- applyChangesStreaming maybeSession counter blobRequests gitRepository state (selectedChanges edge)
           pure (fmap (\child -> (edge, state, child)) childState)
 
     edgeIssues nodeOid (edge, parentState, childState) =
@@ -540,6 +538,8 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
             gitTreeObjectType entry == GitBlobObject
         ]
 
+    nodeHasBlob deltaGroups node = nodeBlobCount deltaGroups node > 0
+
     historyBlobBatchLimit = 256
 
     groupDeltas = foldl' (\groups delta -> Map.insertWith (flip (<>)) (gitHistoryTreeDeltaCommit delta) [delta] groups) Map.empty
@@ -548,8 +548,8 @@ observeCommitTrees attribution parseCount requestCount revision paths targetOid 
     missingParent oid = RepositorySnapshotGitError (GitInvalidOutput "history tree deltas" (GitMalformedTreeRecord (TextEncoding.encodeUtf8 ("missing live parent state for " <> gitOidText oid))))
     divergentMergeState oid = RepositorySnapshotGitError (GitInvalidOutput "history tree deltas" (GitMalformedTreeRecord (TextEncoding.encodeUtf8 ("merge parent deltas reconstruct different child trees for " <> gitOidText oid))))
 
-readChangedBlobs :: Maybe (IORef Int) -> Repository -> [GitTreeChange] -> IO (Either GitError (Map GitOid GitBlob))
-readChangedBlobs requestCount repository changes = do
+readChangedBlobs :: Maybe (GitBlobBatchSession scope) -> Maybe (IORef Int) -> Repository -> [GitTreeChange] -> IO (Either GitError (Map GitOid GitBlob))
+readChangedBlobs maybeSession requestCount repository changes = do
   let objectIds =
         [ gitTreeOid entry
           | change <- changes,
@@ -558,17 +558,19 @@ readChangedBlobs requestCount repository changes = do
         ]
       requested = Map.keys (Map.fromList [(objectId, ()) | objectId <- objectIds])
   incrementHistoryCounter requestCount (length requested)
-  readBlobBatch repository requested
+  case maybeSession of
+    Nothing -> readBlobBatch repository requested
+    Just session -> readBlobBatchFromSession session requested
 
 -- | Stream one oversized edge in fixed OID batches.  Each map becomes
 -- unreachable before the next batch is requested, including when the edge is
 -- a single large root commit.
-applyChangesStreaming :: Maybe (IORef Int) -> Maybe (IORef Int) -> Repository -> HistoryState -> [GitTreeChange] -> IO (Either RepositorySnapshotError HistoryState)
-applyChangesStreaming parseCount requestCount repository initial changes = go initial (chunkChanges historyBlobBatchLimit changes)
+applyChangesStreaming :: Maybe (GitBlobBatchSession scope) -> Maybe (IORef Int) -> Maybe (IORef Int) -> Repository -> HistoryState -> [GitTreeChange] -> IO (Either RepositorySnapshotError HistoryState)
+applyChangesStreaming maybeSession parseCount requestCount repository initial changes = go initial (chunkChanges historyBlobBatchLimit changes)
   where
     go state [] = pure (Right state)
     go state (chunk : remaining) = do
-      blobs <- readChangedBlobs requestCount repository chunk
+      blobs <- readChangedBlobs maybeSession requestCount repository chunk
       case first RepositorySnapshotGitError blobs of
         Left problem -> pure (Left problem)
         Right available -> do

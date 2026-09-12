@@ -18,20 +18,16 @@ module Adrai.Compiler.DocumentCache
   )
 where
 
-import Adrai.Sqlite (asQuery)
 import Data.String (fromString)
 import Control.Exception (SomeException, try)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Text (Text)
-import qualified Data.Text as Text
 import Database.SQLite.Simple
-  ( Connection,
-    FromRow (fromRow),
+  ( FromRow (fromRow),
     Only (..),
     SQLData (SQLText),
-    execute_,
     field,
     open,
     query,

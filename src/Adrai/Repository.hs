@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE StrictData #-}
 
 -- | Immutable, raw repository observations at one resolved commit.
@@ -7,25 +8,10 @@
 -- reduction, provenance, caches, SQLite, queries, and public rendering.
 module Adrai.Repository
   ( RepositoryRevisionKey (..),
-    repositoryRevisionNamespace,
-    repositoryRevisionOid,
     ResolvedRepositoryRevision (..),
-    resolvedRepository,
-    resolvedRequestedRevision,
-    resolvedCommitOid,
-    resolvedRevisionKey,
     RepositoryConfigFailure (..),
     RawRepositoryConfigObservation (..),
-    rawRepositoryConfigOrigin,
-    rawRepositoryConfigResult,
-    rawRepositoryConfigManagedPaths,
-    rawRepositoryConfigEntry,
-    rawRepositoryConfigBlob,
     RawRepositorySnapshotObservation (..),
-    rawRepositorySnapshotRevision,
-    rawRepositorySnapshotConfig,
-    rawRepositorySnapshotManagedPaths,
-    rawRepositorySnapshotEntries,
     RepositoryConfigOrigin (..),
     RepositoryConfigObservation,
     repositoryConfigOrigin,
@@ -34,8 +20,6 @@ module Adrai.Repository
     repositoryConfigEntry,
     repositoryConfigBlob,
     RepositoryTreeObservation (..),
-    repositoryTreeEntry,
-    repositoryTreeBlob,
     RepositorySnapshot,
     repositorySnapshotRevision,
     repositorySnapshotConfig,
@@ -45,6 +29,7 @@ module Adrai.Repository
     resolveRepositoryRevision,
     observeRawRepositorySnapshotAt,
     observeManagedTreeAt,
+    promoteBlobSessionError,
     repositorySnapshotAt,
     repositorySnapshot,
     isManagedSourcePath,
@@ -183,16 +168,40 @@ repositorySnapshotAt revision = do
 
 observeRawRepositorySnapshotAt :: ResolvedRepositoryRevision -> IO (Either RepositorySnapshotError RawRepositorySnapshotObservation)
 observeRawRepositorySnapshotAt revision = do
-  configResult <- observeRawConfig revision
-  case configResult of
-    Left problem -> pure (Left problem)
-    Right configObservation ->
-      case rawRepositoryConfigManagedPaths configObservation of
-        Nothing -> pure (Right (assembleRaw configObservation []))
-        Just managedPaths -> do
-          entries <- observeManagedTreeAt revision (resolvedCommitOid revision) managedPaths
-          pure (assembleRaw configObservation <$> entries)
+  entryResult <- lookupTreeEntryAt repository commitOid configPath
+  case entryResult of
+    Left problem -> pure (Left (RepositorySnapshotGitError problem))
+    -- A committed configuration is itself a blob request, so keep the same
+    -- caller-scoped child for the later managed-tree reads.  The tree listing
+    -- may run while the session is idle; no second cat-file is introduced.
+    Right entry@(Just configEntry)
+      | gitTreeObjectType configEntry == GitBlobObject ->
+          do
+            completed <-
+              withBlobBatchSession repository $ \session -> do
+                configResult <- observeRawConfigEntry revision (Just session) entry
+                case configResult of
+                  Left problem -> pure (promoteBlobSessionError (Left problem))
+                  Right configObservation ->
+                    case rawRepositoryConfigManagedPaths configObservation of
+                      Nothing -> pure (Right (Right (assembleRaw configObservation [])))
+                      Just managedPaths -> do
+                        entries <- observeManagedTreeAtWithSession (Just session) revision commitOid managedPaths
+                        pure (promoteBlobSessionError (assembleRaw configObservation <$> entries))
+            pure (either (Left . RepositorySnapshotGitError) id completed)
+    Right entry -> do
+      configResult <- observeRawConfigEntry revision Nothing entry
+      case configResult of
+        Left problem -> pure (Left problem)
+        Right configObservation ->
+          case rawRepositoryConfigManagedPaths configObservation of
+            Nothing -> pure (Right (assembleRaw configObservation []))
+            Just managedPaths -> do
+              entries <- observeManagedTreeAtWithSession Nothing revision commitOid managedPaths
+              pure (assembleRaw configObservation <$> entries)
   where
+    repository = resolvedRepository revision
+    commitOid = resolvedCommitOid revision
     assembleRaw configObservation entries =
       RawRepositorySnapshotObservation
         { rawRepositorySnapshotRevision = revision,
@@ -201,12 +210,18 @@ observeRawRepositorySnapshotAt revision = do
           rawRepositorySnapshotEntries = entries
         }
 
-observeRawConfig :: ResolvedRepositoryRevision -> IO (Either RepositorySnapshotError RawRepositoryConfigObservation)
-observeRawConfig revision = do
-  entryResult <- lookupTreeEntryAt repository commitOid configPath
-  case entryResult of
-    Left problem -> pure (Left (RepositorySnapshotGitError problem))
-    Right Nothing ->
+-- | A blob protocol failure must escape the session callback as its outer
+-- failure so the process owner skips EOF proof and cancels the exact child.
+-- Domain/config failures remain ordinary snapshot results.
+promoteBlobSessionError :: Either RepositorySnapshotError value -> Either GitError (Either RepositorySnapshotError value)
+promoteBlobSessionError result =
+  case result of
+    Left (RepositorySnapshotGitError problem) -> Left problem
+    _ -> Right result
+
+observeRawConfigEntry :: ResolvedRepositoryRevision -> Maybe (GitBlobBatchSession scope) -> Maybe GitTreeEntry -> IO (Either RepositorySnapshotError RawRepositoryConfigObservation)
+observeRawConfigEntry revision maybeSession = \case
+  Nothing ->
       pure
         ( Right
             RawRepositoryConfigObservation
@@ -217,7 +232,7 @@ observeRawConfig revision = do
                 rawRepositoryConfigBlob = Nothing
               }
         )
-    Right (Just entry)
+  Just entry
       | gitTreeObjectType entry /= GitBlobObject ->
           pure
             ( Right
@@ -230,7 +245,10 @@ observeRawConfig revision = do
                   }
             )
       | otherwise -> do
-          blobsResult <- readBlobBatch repository [gitTreeOid entry]
+          blobsResult <-
+            case maybeSession of
+              Nothing -> readBlobBatch repository [gitTreeOid entry]
+              Just session -> readBlobBatchFromSession session [gitTreeOid entry]
           pure $ do
             blobs <- first RepositorySnapshotGitError blobsResult
             blob <- maybe (Left (RepositorySnapshotMissingBatchBlob (gitTreeOid entry))) Right (Map.lookup (gitTreeOid entry) blobs)
@@ -248,11 +266,13 @@ observeRawConfig revision = do
                 }
   where
     repository = resolvedRepository revision
-    commitOid = resolvedCommitOid revision
 
 observeManagedTreeAt :: ResolvedRepositoryRevision -> GitOid -> ManagedPaths -> IO (Either RepositorySnapshotError [RepositoryTreeObservation])
-observeManagedTreeAt revision commitOid paths = do
-  listed <- listTreeEntriesAt repository commitOid roots
+observeManagedTreeAt = observeManagedTreeAtWithSession Nothing
+
+observeManagedTreeAtWithSession :: Maybe (GitBlobBatchSession scope) -> ResolvedRepositoryRevision -> GitOid -> ManagedPaths -> IO (Either RepositorySnapshotError [RepositoryTreeObservation])
+observeManagedTreeAtWithSession maybeSession revision commitOid paths = do
+  listed <- listTreeEntriesForRepositoryValidationAt repository commitOid roots
   case first RepositorySnapshotGitError listed >>= validateSelectedEntries . filter (isSelectedManagedPath paths . gitTreePath) of
     Left problem -> pure (Left problem)
     Right selected -> do
@@ -261,7 +281,10 @@ observeManagedTreeAt revision commitOid paths = do
               | entry <- selected,
                 gitTreeObjectType entry == GitBlobObject
             ]
-      folded <- foldBlobBatchInOrder repository (map gitTreeOid blobEntries) (blobEntries, []) assembleBlobObservation
+      folded <-
+        case maybeSession of
+          Nothing -> foldBlobBatchInOrder repository (map gitTreeOid blobEntries) (blobEntries, []) assembleBlobObservation
+          Just session -> foldBlobBatchInOrderFromSession session (map gitTreeOid blobEntries) (blobEntries, []) assembleBlobObservation
       case first RepositorySnapshotGitError folded of
         Left problem -> pure (Left problem)
         Right (_, reversedObservations) ->
@@ -324,7 +347,9 @@ validateSelectedEntries entries = do
   traverse_ validateGroup (Map.toAscList grouped)
   Right (sortOn (repoPathText . gitTreePath) (mapMaybe listToMaybe (Map.elems grouped)))
   where
-    grouped = Map.fromListWith (<>) [(gitTreePath entry, [entry]) | entry <- entries]
+    -- The Git listing has already imposed the repository-validation ordering.
+    -- Keep that order when retaining duplicate candidates for the domain error.
+    grouped = Map.fromListWith (flip (<>)) [(gitTreePath entry, [entry]) | entry <- entries]
     validateGroup (path, candidates) =
       case candidates of
         [] -> Right ()

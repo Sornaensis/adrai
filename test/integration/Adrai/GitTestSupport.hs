@@ -4,6 +4,8 @@
 module Adrai.GitTestSupport
   ( initTestRepository,
     initBareRepository,
+    cloneIndependentBareRepository,
+    cloneIndependentDepthOneRepository,
     commitFile,
     commitFiles,
     hashObject,
@@ -311,6 +313,114 @@ initBareRepository directory = do
   createDirectoryIfMissing True directory
   _ <- gitSuccess directory ["init", "--bare", "--initial-branch=main"] BS.empty
   pure ()
+
+-- | Make a local bare clone without sharing object storage with its source.
+cloneIndependentBareRepository :: FilePath -> FilePath -> IO ()
+cloneIndependentBareRepository source destination =
+  withTemporaryBundle destination $ \bundle -> do
+    _ <- gitSuccess source ["bundle", "create", bundle, "--all", "HEAD"] BS.empty
+    initBareRepository destination
+    _ <- gitSuccess destination ["bundle", "unbundle", bundle] BS.empty
+    copySourceRefs source destination
+    preserveHead source destination
+    assertBareRepository destination
+    assertIndependentFixtureRepository destination
+
+-- | Make an independent local clone and mark its checked-out branch boundary
+-- as shallow using Git's native common-directory @shallow@ file. Local clones
+-- use bundle staging rather than @clone@ transport behavior.
+cloneIndependentDepthOneRepository :: FilePath -> Text -> FilePath -> IO ()
+cloneIndependentDepthOneRepository source branch destination =
+  withTemporaryBundle destination $ \bundle -> do
+    let selectedRef = "refs/heads/" <> branch
+        selectedCommit = selectedRef <> "^{commit}"
+    headOid <- outputText <$> gitSuccess source ["rev-parse", Text.unpack selectedCommit] BS.empty
+    sourceTree <- outputText <$> gitSuccess source ["rev-parse", Text.unpack (headOid <> "^{tree}")] BS.empty
+    _ <- gitSuccess source ["bundle", "create", bundle, Text.unpack selectedRef] BS.empty
+    initTestRepository destination
+    _ <- gitSuccess destination ["bundle", "unbundle", bundle] BS.empty
+    _ <- gitSuccess destination ["update-ref", Text.unpack selectedRef, Text.unpack headOid] BS.empty
+    _ <- gitSuccess destination ["symbolic-ref", "HEAD", Text.unpack selectedRef] BS.empty
+    _ <- gitSuccess destination ["reset", "--hard", Text.unpack headOid] BS.empty
+    commonDirectory <- gitCommonDirectory destination
+    BS.writeFile (commonDirectory </> "shallow") (TextEncoding.encodeUtf8 (headOid <> "\n"))
+    assertIndependentFixtureRepository destination
+    destinationHead <- outputText <$> gitSuccess destination ["rev-parse", "HEAD"] BS.empty
+    if destinationHead /= headOid
+      then fail ("fixture depth-one clone resolved the wrong HEAD: " <> destination)
+      else pure ()
+    destinationTree <- outputText <$> gitSuccess destination ["rev-parse", "HEAD^{tree}"] BS.empty
+    if destinationTree /= sourceTree
+      then fail ("fixture depth-one clone tree differs from selected branch: " <> destination)
+      else pure ()
+    refs <- Text.lines . outputText <$> gitSuccess destination ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/tags"] BS.empty
+    if refs /= [selectedRef]
+      then fail ("fixture depth-one clone retained an unrelated ref: " <> destination)
+      else pure ()
+    shallow <- outputText <$> gitSuccess destination ["rev-parse", "--is-shallow-repository"] BS.empty
+    if shallow /= "true"
+      then fail ("fixture depth-one clone was not shallow: " <> destination)
+      else pure ()
+    reachable <- Text.lines . outputText <$> gitSuccess destination ["rev-list", "--max-count=2", "HEAD"] BS.empty
+    if reachable /= [headOid]
+      then fail ("fixture shallow history did not stop at HEAD: " <> destination)
+      else pure ()
+    (parentExit, _, _) <- gitResult destination ["rev-parse", "HEAD^"] BS.empty
+    case parentExit of
+      ExitFailure _ -> pure ()
+      ExitSuccess -> fail ("fixture shallow parent remained available: " <> destination)
+
+withTemporaryBundle :: FilePath -> (FilePath -> IO value) -> IO value
+withTemporaryBundle destination action = bracket acquire release action
+  where
+    parent = takeDirectory destination
+    acquire = do
+      createDirectoryIfMissing True parent
+      (bundle, handle) <- openTempFile parent "adrai-fixture-bundle-"
+      hClose handle
+      removeFile bundle
+      pure bundle
+    release bundle = do
+      exists <- doesFileExist bundle
+      if exists then removeFile bundle else pure ()
+
+copySourceRefs :: FilePath -> FilePath -> IO ()
+copySourceRefs source destination = do
+  references <- Text.lines . outputText <$> gitSuccess source ["show-ref", "--heads", "--tags"] BS.empty
+  mapM_ copyReference references
+  where
+    copyReference line =
+      case Text.words line of
+        [oid, reference] -> void $ gitSuccess destination ["update-ref", Text.unpack reference, Text.unpack oid] BS.empty
+        _ -> fail ("fixture source emitted malformed show-ref output: " <> Text.unpack line)
+
+preserveHead :: FilePath -> FilePath -> IO ()
+preserveHead source destination = do
+  (symbolicExit, symbolicOutput, _) <- gitResult source ["symbolic-ref", "-q", "HEAD"] BS.empty
+  case symbolicExit of
+    ExitSuccess -> void $ gitSuccess destination ["symbolic-ref", "HEAD", Text.unpack (outputText symbolicOutput)] BS.empty
+    ExitFailure _ -> do
+      headOid <- outputText <$> gitSuccess source ["rev-parse", "HEAD"] BS.empty
+      void $ gitSuccess destination ["update-ref", "--no-deref", "HEAD", Text.unpack headOid] BS.empty
+
+assertBareRepository :: FilePath -> IO ()
+assertBareRepository destination = do
+  bare <- outputText <$> gitSuccess destination ["rev-parse", "--is-bare-repository"] BS.empty
+  if bare == "true"
+    then pure ()
+    else fail ("fixture bare clone was not bare: " <> destination)
+
+assertIndependentFixtureRepository :: FilePath -> IO ()
+assertIndependentFixtureRepository destination = do
+  commonDirectory <- gitCommonDirectory destination
+  alternates <- doesFileExist (commonDirectory </> "objects" </> "info" </> "alternates")
+  if alternates
+    then fail ("fixture repository retained object alternates: " <> destination)
+    else pure ()
+  (originExit, _, _) <- gitResult destination ["config", "--get-regexp", "^remote\\.origin\\."] BS.empty
+  case originExit of
+    ExitFailure _ -> pure ()
+    ExitSuccess -> fail ("fixture repository retained an origin configuration: " <> destination)
 
 commitFile :: FilePath -> FilePath -> ByteString -> IO Text
 commitFile repository relativePath bytes = commitFiles repository [(relativePath, bytes)]

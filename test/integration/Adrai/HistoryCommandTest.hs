@@ -394,7 +394,8 @@ testHistoryRevealsDivergentAmendments =
               amendAdr repo id'
                 (Just "Amended on A")
                 Nothing
-                Nothing
+                "## Decision\nHistory branch A amendment.\n"
+                "amend on history branch A"
 
             -- Switch back to main and create feature/b
             git repo ["switch", "main"]
@@ -403,7 +404,8 @@ testHistoryRevealsDivergentAmendments =
               amendAdr repo id'
                 (Just "Amended on B")
                 Nothing
-                Nothing
+                "## Decision\nHistory branch B amendment.\n"
+                "amend on history branch B"
 
             -- Merge both back into main
             git repo ["switch", "main"]

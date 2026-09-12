@@ -11,6 +11,7 @@
 -- caller-resolved revision.
 module Adrai.Provenance.Read
   ( PlacementHydrationError (..),
+    materialize,
     hydratePlacementEvidenceAt,
     hydratePlacementEvidenceAtWith,
     hydratePlacementEvidenceAtWithHooks,
@@ -29,7 +30,9 @@ import Adrai.History
     PlacementEvidence (..),
   )
 import Adrai.Provenance
-  ( provenanceBasis,
+  ( OverlayFingerprint (..),
+    mkGitOid,
+    provenanceBasis,
     provenanceOperationId,
   )
 import Adrai.Provenance.Classification
@@ -39,9 +42,11 @@ import Adrai.Provenance.Classification
 import Adrai.Provenance.Ensure
   ( configKey,
     ensureProvenance,
+    openReadOnly,
     readProvenanceEvidenceAtWith,
   )
 import Adrai.Provenance.Lock (withOverlayLock)
+import Adrai.Provenance.Discovery (observationFingerprint, observationRoots)
 import Adrai.Provenance.Overlay
   ( LineConfigRow (..),
     LineLandingRow (..),
@@ -52,7 +57,8 @@ import Adrai.Provenance.Overlay
     RegisteredObjectRow (..),
     RegisteredOperationRow (..),
     createOverlaySchema,
-    overlayValidWith,
+    OverlaySchemaState (..),
+    overlaySchemaState,
     provenanceDatabasePath,
   )
 import Adrai.Repository
@@ -68,6 +74,7 @@ import Adrai.Types
     ManagedPaths (..),
     OperationId,
     digestBytes,
+    mkOperationId,
     operationIdText,
     repoPathText,
   )
@@ -80,7 +87,7 @@ import Control.Exception
     throwIO,
     try,
   )
-import Control.Monad (forM_, unless, void, when)
+import Control.Monad (forM, forM_, unless, void, when)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -93,7 +100,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Vector as Vector
-import Database.SQLite.Simple (Only (..), close, open, query, withTransaction)
+import Database.SQLite.Simple (Only (..), close, open, query, query_, withTransaction)
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.FilePath ((</>))
 
@@ -113,6 +120,8 @@ data PlacementHydrationError
   | PlacementHydrationDuplicateEvidence Text
   | PlacementHydrationSynchronousFailure Text
   deriving (Eq, Show)
+
+type ExpectedOperationIndex = Map Text (OperationId, [ParsedManagedDocument])
 
 data LockedHydration value
   = LockedHydrationReady (Either PlacementHydrationError value)
@@ -172,24 +181,55 @@ hydratePlacementEvidenceAtWithHooks repository revision config documents validat
             requestedConfig = configKey decisions connections lineIds
         createDirectoryIfMissing True cacheDirectory
         lockedHydration <- withOverlayLock cacheDirectory $ do
-          overlayExists <- doesFileExist overlayDatabase
-          valid <- if overlayExists then overlayValidWith overlayDatabase validationHook else pure True
+          existingOverlay <- doesFileExist overlayDatabase
+          shape <- if not existingOverlay then pure Nothing else do
+            checked <- try @SomeException $
+              bracket (openReadOnly overlayDatabase) close $ \connection -> do
+                state <- overlaySchemaState connection
+                when (state == OverlaySchemaV2) validationHook
+                pure state
+            case checked of
+              Left exception -> rethrowAsync exception >> pure (Just OverlaySchemaInvalid)
+              Right state -> pure (Just state)
+          -- Only the frozen exact v1 shape is rebuildable.  Any malformed,
+          -- partial, retagged, or unknown overlay is caller-owned evidence and
+          -- remains byte-preserved.
+          case shape of
+            Just OverlaySchemaV1 -> removeFreshOverlay overlayDatabase
+            _ -> pure ()
+          let overlayExists = existingOverlay && shape /= Just OverlaySchemaV1
+          valid <- case shape of
+            Nothing -> pure True
+            Just OverlaySchemaV1 -> pure True
+            Just OverlaySchemaV2 -> pure True
+            Just _ -> pure False
           if not valid
             then pure (LockedHydrationReady (Left (PlacementHydrationInvalidOverlay "existing overlay schema is invalid")))
             else do
-              preflight <-
-                if not overlayExists
-                  then pure Nothing
-                  else do
-                    targetObserved <- overlayHasObservedTarget overlayDatabase target
-                    evidenceResult <- readProvenanceEvidenceAtWith repository overlayDatabase target operationTexts requestedConfig (pure ())
-                    pure $ case evidenceResult of
-                      Right evidence -> Just (materialize config documents requestedConfig evidence)
-                      Left problem
-                        | preflightMayRequireMaintenance targetObserved problem -> Nothing
-                        | otherwise -> Just (Left (PlacementHydrationEvidenceFailure problem))
+              signatureFailure <- if overlayExists then registeredSignatureFailure overlayDatabase documents else pure Nothing
+              preflight <- case signatureFailure of
+                Just failure -> pure (Just (Left failure))
+                Nothing
+                  | not overlayExists -> pure Nothing
+                  | otherwise -> do
+                      -- Reject contradictory exact-v2 evidence before any
+                      -- writer action, then compare the same current
+                      -- ref/reflog-root fingerprint that Ensure uses.  This
+                      -- preserves malformed/tampered bytes while allowing a
+                      -- valid-but-stale overlay to be refreshed under lock.
+                      evidenceResult <- readProvenanceEvidenceAtWith repository overlayDatabase target operationTexts requestedConfig (pure ())
+                      case evidenceResult of
+                        Left problem
+                          | preflightMayRequireMaintenance problem -> pure Nothing
+                          | otherwise -> pure (Just (Left (PlacementHydrationEvidenceFailure problem)))
+                        Right evidence -> do
+                          case materialize config documents requestedConfig evidence of
+                            Left failure -> pure (Just (Left failure))
+                            Right hydrated -> do
+                              current <- overlayObservationFresh repository overlayDatabase target
+                              pure (if current then Just (Right hydrated) else Nothing)
               case preflight of
-                Just (Left failure) -> pure (LockedHydrationReady (Left failure))
+                Just hydration -> pure (LockedHydrationReady hydration)
                 _ -> do
                   maintenanceAttempt <- try @SomeException $
                     bracket (open overlayDatabase) close $ \connection -> do
@@ -220,6 +260,39 @@ hydratePlacementEvidenceAtWithHooks repository revision config documents validat
     operationIds = Set.toAscList (Set.fromList (map (provenanceOperationId . parsedManagedCapsule) documents))
     operationTexts = map operationIdText operationIds
 
+-- | Compare an exact-v2 archive's persisted observation fingerprint with the
+-- current roots, read-only and under the caller-held overlay lock.
+overlayObservationFresh :: Repository -> FilePath -> GitOid -> IO Bool
+overlayObservationFresh repository database target =
+  bracket (openReadOnly database) close $ \connection -> do
+    stored <- query connection "SELECT value FROM meta WHERE key='observation_fingerprint'" () :: IO [Only Text]
+    roots <- query_ connection "SELECT commit_oid FROM observation_root" :: IO [Only Text]
+    priorRoots <- forM roots $ \(Only raw) ->
+      case mkGitOid raw of
+        Left problem -> throwIO (userError ("invalid observation root: " <> show problem))
+        Right oid -> pure oid
+    (currentRefs, currentRoots) <- observationRoots repository target priorRoots >>= either (throwIO . userError . show) pure
+    OverlayFingerprint actual <- observationFingerprint currentRefs currentRoots
+    pure (stored == [Only actual])
+
+-- | Reject an already-registered signature before the broader evidence read.
+-- This is a read-only, exact-v2 preflight: it preserves a caller-owned
+-- tampered overlay byte-for-byte while avoiding a maintenance attempt.
+registeredSignatureFailure :: FilePath -> [ParsedManagedDocument] -> IO (Maybe PlacementHydrationError)
+registeredSignatureFailure database documents =
+  bracket (openReadOnly database) close $ \connection -> do
+    let expected = Map.map (digestHex . operationSignature) $
+          Map.fromListWith (<>)
+            [ (operationIdText (provenanceOperationId (parsedManagedCapsule document)), [document])
+            | document <- documents
+            ]
+    mismatches <- fmap concat $ forM (Map.toAscList expected) $ \(operation, signature) -> do
+      rows <- query connection "SELECT signature FROM registered_operation WHERE op_id=?" (Only operation) :: IO [Only Text]
+      pure [operation | Only actual <- rows, actual /= signature]
+    pure $ case mismatches of
+      operation : _ -> Just (PlacementHydrationRegistrationMismatch ("signature mismatch for " <> operation))
+      [] -> Nothing
+
 removeFreshOverlay :: FilePath -> IO ()
 removeFreshOverlay database =
   forM_ [database, database <> "-journal", database <> "-wal", database <> "-shm"] $ \path -> do
@@ -232,29 +305,18 @@ removeFreshOverlay database =
 cleanupFreshOverlay :: FilePath -> IO ()
 cleanupFreshOverlay database = mask_ (void (try @SomeException (removeFreshOverlay database)))
 
--- | Only a genuinely absent operation registration or configuration can be
--- completed by maintenance.  Every other evidence failure is a corrupt or
--- contradictory existing-cache fact and must be returned without rewriting
--- that cache.
-preflightMayRequireMaintenance :: Bool -> ProvenanceEvidenceError -> Bool
-preflightMayRequireMaintenance targetObserved problem = case problem of
+-- | Missing target placement can be repaired from the caller's authoritative
+-- target documents; all other contradictory evidence remains fail-closed.
+preflightMayRequireMaintenance :: ProvenanceEvidenceError -> Bool
+preflightMayRequireMaintenance problem = case problem of
   ProvenanceEvidenceMissingRegistration _ -> True
   ProvenanceEvidenceMissingConfig _ -> True
-  -- An unseen immutable target is a legitimate cache delta.  If the target was
-  -- already observed, a missing placement is contradictory cache evidence and
-  -- must remain fail-closed rather than being silently repaired.
-  ProvenanceEvidenceMissingTargetPlacement _ -> not targetObserved
+  -- A target may already be observed through a ref or reflog while an operation
+  -- that exists only at that target has never been requested for placement.
+  -- Re-run maintenance with the caller's authoritative target documents; all
+  -- other malformed or contradictory evidence remains fail-closed.
+  ProvenanceEvidenceMissingTargetPlacement _ -> True
   _ -> False
-
-overlayHasObservedTarget :: FilePath -> GitOid -> IO Bool
-overlayHasObservedTarget database target =
-  bracket (open database) close $ \connection -> do
-    rows <- query connection
-      "SELECT EXISTS(SELECT 1 FROM observed_commit WHERE commit_oid=?)"
-      (Only (gitOidText target))
-      :: IO [Only Int]
-    pure (rows == [Only 1])
-
 
 -- | Convert the lossless evidence authority rows into the public history
 -- evidence only after rejecting inconsistent cache facts.
@@ -266,26 +328,41 @@ materialize
   -> Either PlacementHydrationError (Map OperationId PlacementEvidence)
 materialize config documents expectedConfig evidence = do
   validateConfig config expectedConfig (provenanceEvidenceConfig evidence)
-  let expected = Map.fromListWith (<>)
-        [ (provenanceOperationId (parsedManagedCapsule document), [document])
-          | document <- documents
-        ]
-      operations = provenanceEvidenceOperations evidence
-  unless (map (operationIdText . fst) (Map.toAscList expected) == map (registeredOperationRowOpId . provenanceEvidenceRegistration) operations)
+  expected <- checkedExpectedIndex documents
+  let operations = provenanceEvidenceOperations evidence
+  unless (Map.keys expected == map (registeredOperationRowOpId . provenanceEvidenceRegistration) operations)
     (Left (PlacementHydrationRegistrationMismatch "returned operation set differs from snapshot"))
-  pairs <- traverse (materializeOperation config expected) operations
-  pure (Map.fromList pairs)
+  Map.fromList <$> traverse (materializeOperation config expected) operations
+
+-- | Construct the one authoritative exact-text operation index before any
+-- evidence traversal.  Do not normalize persisted identities: registration
+-- text must name exactly the typed operation carried by the parsed capsule.
+checkedExpectedIndex :: [ParsedManagedDocument] -> Either PlacementHydrationError ExpectedOperationIndex
+checkedExpectedIndex documents =
+  foldl' insertDocument (Right Map.empty) documents
+  where
+    insertDocument indexed document = do
+      result <- indexed
+      let operation = provenanceOperationId (parsedManagedCapsule document)
+          text = operationIdText operation
+      parsed <- either (const (Left (PlacementHydrationRegistrationMismatch ("invalid operation id " <> text)))) Right (mkOperationId text)
+      unless (parsed == operation)
+        (Left (PlacementHydrationRegistrationMismatch ("noncanonical operation id " <> text)))
+      case Map.lookup text result of
+        Nothing -> Right (Map.insert text (operation, [document]) result)
+        Just (existing, bucket)
+          | existing /= operation -> Left (PlacementHydrationRegistrationMismatch ("ambiguous operation id " <> text))
+          | otherwise -> Right (Map.insert text (existing, document : bucket) result)
 
 materializeOperation
   :: Config
-  -> Map OperationId [ParsedManagedDocument]
+  -> ExpectedOperationIndex
   -> ProvenanceOperationEvidence
   -> Either PlacementHydrationError (OperationId, PlacementEvidence)
 materializeOperation config expected operation = do
   let registration = provenanceEvidenceRegistration operation
       operationText = registeredOperationRowOpId registration
-  operationId <- lookupOperation operationText expected
-  documents <- maybe (Left (PlacementHydrationRegistrationMismatch "unknown operation")) Right (Map.lookup operationId expected)
+  (operationId, documents) <- maybe (Left (PlacementHydrationRegistrationMismatch ("invalid operation id " <> operationText))) Right (Map.lookup operationText expected)
   validateRegistration operationText documents registration
   validateObjects operationText documents (provenanceEvidenceObjects operation)
   placements <- traverse (toPlacement operationText) (provenanceEvidenceCommits operation)
@@ -309,12 +386,6 @@ materializeOperation config expected operation = do
         introductions
         orderedLandings
     )
-
-lookupOperation :: Text -> Map OperationId [ParsedManagedDocument] -> Either PlacementHydrationError OperationId
-lookupOperation operationText expected =
-  case [operation | operation <- Map.keys expected, operationIdText operation == operationText] of
-    [operation] -> Right operation
-    _ -> Left (PlacementHydrationRegistrationMismatch ("invalid operation id " <> operationText))
 
 validateRegistration :: Text -> [ParsedManagedDocument] -> RegisteredOperationRow -> Either PlacementHydrationError ()
 validateRegistration operationText documents registration = do

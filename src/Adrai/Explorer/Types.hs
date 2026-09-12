@@ -51,16 +51,14 @@ module Adrai.Explorer.Types
   )
 where
 
-import Adrai.Domain (Domain (..), domainText)
+import Adrai.Domain (Domain)
 import Adrai.Types
-  ( AdrId (..),
+  ( AdrId,
     Actor,
     ActorKind (..),
-    RepoPath (..),
-    adrIdText,
+    RepoPath,
     mkActor,
     mkAdrId,
-    mkRepoPath,
   )
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -92,7 +90,10 @@ defaultSession =
       sessionFilePath      = Nothing,
       sessionRevision      = "HEAD",
       sessionQuery         = "",
-      sessionActor         = let Right a = mkActor HumanActor "user" Nothing in a
+      sessionActor         =
+        case mkActor HumanActor "user" Nothing of
+          Right actor -> actor
+          Left problem -> error ("default actor construction failed: " <> show problem)
     }
 
 -- | How to display ADR details.

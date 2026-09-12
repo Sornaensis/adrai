@@ -26,6 +26,22 @@ tests =
 parserContract :: IO ()
 parserContract = do
   parseAttributionArtifact validArtifact @?= Right expectedArtifact
+  parseAttributionArtifact postCloseRefreshArtifact
+    @?= Right
+      (AttributionArtifact
+        [ AttributionStart 1 PostCloseProvenanceRefresh 20,
+          AttributionEnd 2 PostCloseProvenanceRefresh 20 24 4 True
+        ])
+  parseAttributionArtifact postClosePipelineArtifact
+    @?= Right
+      (AttributionArtifact
+        [ AttributionStart 1 CompileOutcomeEvaluation 30,
+          AttributionEnd 2 CompileOutcomeEvaluation 30 31 1 True,
+          AttributionStart 3 PostCloseProvenanceRefresh 31,
+          AttributionEnd 4 PostCloseProvenanceRefresh 31 34 3 True,
+          AttributionStart 5 PostCloseFingerprintValidation 34,
+          AttributionEnd 6 PostCloseFingerprintValidation 34 39 5 True
+        ])
   assertLeft "out-of-order sequence" (parseAttributionArtifact (replace "end\t3" "end\t4" validArtifact))
   assertLeft "wrong elapsed arithmetic" (parseAttributionArtifact (replace "\t5\tok" "\t6\tok" validArtifact))
   assertLeft "unfinished start" (parseAttributionArtifact "adrai-cold-compile-attribution-v1\nstart\t1\tclipreflight\t10\n")
@@ -43,6 +59,18 @@ parserContract = do
         <> "start\t1\tclipreflight\t10\n"
         <> "counter\t2\tclipreflight\trows\t3\n"
         <> "end\t3\tclipreflight\t10\t15\t5\tok\n"
+    postCloseRefreshArtifact =
+      "adrai-cold-compile-attribution-v1\n"
+        <> "start\t1\tpostcloseprovenancerefresh\t20\n"
+        <> "end\t2\tpostcloseprovenancerefresh\t20\t24\t4\tok\n"
+    postClosePipelineArtifact =
+      "adrai-cold-compile-attribution-v1\n"
+        <> "start\t1\tcompileoutcomeevaluation\t30\n"
+        <> "end\t2\tcompileoutcomeevaluation\t30\t31\t1\tok\n"
+        <> "start\t3\tpostcloseprovenancerefresh\t31\n"
+        <> "end\t4\tpostcloseprovenancerefresh\t31\t34\t3\tok\n"
+        <> "start\t5\tpostclosefingerprintvalidation\t34\n"
+        <> "end\t6\tpostclosefingerprintvalidation\t34\t39\t5\tok\n"
 
 evidenceContract :: IO ()
 evidenceContract =
@@ -66,7 +94,7 @@ lifecycleContract =
     let output = root </> "cold.tsv"
     observer <- newFileColdCompileAttribution output
     withAttributionPhase observer CliPreflight $ recordAttributionCounter observer CounterRows 2
-    failed <- try (withAttributionPhase observer Verification (ioError (userError "expected failure"))) :: IO (Either SomeException ())
+    failed <- try (withAttributionPhase observer PostCloseProvenanceRefresh (ioError (userError "expected failure"))) :: IO (Either SomeException ())
     case failed of
       Left _ -> pure ()
       Right () -> assertFailure "expected profiled failure"
@@ -76,6 +104,7 @@ lifecycleContract =
       Left problem -> assertFailure (problem <> ": " <> artifact)
       Right (AttributionArtifact rows) -> do
         let outcomes = [succeeded | AttributionEnd _ _ _ _ _ succeeded <- rows]
+        [phase | AttributionEnd _ phase _ _ _ _ <- rows] @?= [CliPreflight, PostCloseProvenanceRefresh]
         outcomes @?= [True, False]
 
 forcingAndTypedFailureContract :: IO ()

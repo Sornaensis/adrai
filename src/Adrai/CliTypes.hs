@@ -51,18 +51,12 @@ import Adrai.History
   )
 import Adrai.Query
   ( CompareOptions (..),
-    CompareProjection,
-    CompareSnapshot,
     compareSnapshots,
     compareProjectionJson,
     ProjectionMode (..),
     SearchRequest (..),
-    SearchError (..),
-    defaultSearchRequest,
     runCurrentSearch,
     searchProjectionJson,
-    searchResultMatches,
-    searchResultCounts,
     projectCollapsed,
     projectExploded,
     collapsedProjectionJson,
@@ -71,26 +65,22 @@ import Adrai.Query
     explodedIncludeRawSemantic,
     RelevantRequest (..),
     RelevantSource (..),
-    RelevantProjection (..),
     runRelevant,
     relevantProjectionJson,
   )
 import Adrai.Retrieval
   ( RetrievalMode (..),
-    retrievalModeName,
     SearchMaterialization (..),
   )
 import Adrai.Sqlite (ColdDatabaseStats (..))
 import Adrai.Types
   ( ViewMode (..),
-    RepoPath (..),
     ActorKind (..),
     actorId,
     actorKind,
     RevisionSelector (..),
     mkActor,
     mkRepoPath,
-    RepoPathViolation (..),
   )
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
@@ -489,7 +479,7 @@ searchCommandRequest cmd = do
               requestedKind <- maybe (Left "search actor kind must be human, llm, or service") Right (textToActorKind kind)
               actor <- case mkActor requestedKind identifier Nothing of
                 Left problem -> Left ("invalid search actor: " <> Text.pack (show problem))
-                Right value -> Right value
+                Right parsedActor -> Right parsedActor
               Right (ActorSelector (actorKind actor) (actorId actor))
         _ -> Left "search actor must have the form kind:identifier"
 

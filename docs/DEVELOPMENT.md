@@ -4,19 +4,18 @@ ADRAI is a native Haskell project built with Stack. The executable entry point i
 
 ## Build and test
 
-```console
-stack build
-stack test adrai:adrai-test
-```
+Use [Testing](TESTING.md) for the canonical retained-test runner and its
+artifact-binding workflow. The complete gate executes every registered test
+in the ordinary, cache-selection, stress, and benchmark-registration
+components, enables the stress cases with `--run-stress`, and includes the
+named reliability repeats, fixture setup, and owned-descendant cleanup within
+one aggregate 600-second deadline. A timeout, omitted test, or surviving
+descendant fails the gate.
 
-The ordinary suite combines unit, property, golden, and integration tests. Larger or specialized gates are separate components so routine test runs do not construct stress fixtures:
-
-```console
-stack test adrai:adrai-stress-test
-stack test adrai:adrai-cache-selection-test
-stack test adrai:adrai-benchmark-registration-test
-stack bench adrai:adrai-bench
-```
+Compilation is a separate, consistently configured pedantic build of all
+components. Tests and benchmarks are compiled but not executed, and build time
+is not part of the retained-test runtime. Running benchmarks is an optional
+performance investigation outside retained-test acceptance.
 
 Golden tests are read-only by default. Their fixture directories under `test/golden/` document the explicit regeneration switches. Regeneration must remain Haskell-owned and must not execute or import a prototype implementation.
 

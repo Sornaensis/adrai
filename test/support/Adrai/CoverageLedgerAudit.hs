@@ -326,12 +326,14 @@ evidenceProblems evidence =
 
 -- | The ledger records commands that can be executed without accidentally
 -- constructing the intentionally expensive stress fixtures.  Ordinary-suite
--- commands need only target @adrai-test@; a stress target must pass the
+-- commands need only target @adrai-test@ or the isolated cache-selection
+-- component; a stress target must pass the
 -- opt-in through Stack's test-arguments option.
 validEvidenceCommand :: Text.Text -> Bool
 validEvidenceCommand command =
   case shellWords command of
     Just ("stack" : "test" : "adrai:adrai-test" : _) -> True
+    Just ("stack" : "test" : "adrai:adrai-cache-selection-test" : _) -> True
     Just ("stack" : "test" : "adrai:adrai-stress-test" : arguments) -> hasStressOptIn arguments
     _ -> False
 
@@ -349,8 +351,8 @@ hasStressOptIn arguments =
 -- safe command must deliver the focused pattern as one argv element.
 decodeStressCommandArguments :: Text.Text -> Maybe [Text.Text]
 decodeStressCommandArguments command = do
-  words <- shellWords command
-  case words of
+  commandWords <- shellWords command
+  case commandWords of
     "stack" : "test" : "adrai:adrai-stress-test" : arguments -> decodeStressTestArguments arguments
     _ -> Nothing
 
@@ -565,7 +567,7 @@ exactStates = ["planned", "partial", "covered", "installed-haskell-equivalent", 
 exactClosureStates = ["covered", "installed-haskell-equivalent", "not-applicable"]
 exactGapStates = ["planned", "partial"]
 exactPhases = ["P2", "P3", "P4", "P5", "P6", "P7"]
-exactTypes = ["unit", "property", "integration", "golden", "e2e"]
+exactTypes = ["unit", "property", "integration", "golden", "e2e", "cache-selection"]
 
 exactTypeDirectories :: [(Text.Text, Text.Text)]
 exactTypeDirectories =
@@ -573,7 +575,8 @@ exactTypeDirectories =
     ("property", "test/property/"),
     ("integration", "test/integration/"),
     ("golden", "test/golden/"),
-    ("e2e", "test/e2e/")
+    ("e2e", "test/e2e/"),
+    ("cache-selection", "test/cache-selection/")
   ]
 
 translationStates :: [Text.Text]

@@ -19,6 +19,7 @@
 -- * @_issue_key@
 module Adrai.Provenance.Classification
   ( operationSignature
+  , operationMemberSignature
   , ParsedManagedDocument (..)
   , RegisteredOperationData (..)
   , RegisteredObjectData (..)
@@ -27,8 +28,15 @@ module Adrai.Provenance.Classification
   , StoredCommitData (..)
   , storeNewCommits
   , loadCommitRows
+  , loadCommitRowsWithQueryObserver
   , candidateCommits
+  , candidateCommitsWithQueryObserver
+  , findAllOpTrailers
   , processCandidates
+  , processCandidatesWithQueryObserver
+  , basisObjectRequestCount
+  , groupTreeObservationRequests
+  , treeObservationRequestCount
   , decodeExactBlobTreeEntry
   , canonicalParentsJson
   , pruneUnavailablePlacements
@@ -42,7 +50,6 @@ import Adrai.Git
     GitOid(..),
     GitObjectType (GitBlobObject, GitCommitObject),
     GitObjectInfo (..),
-    GitProcessResult (..),
     Repository (..),
     batchObjectInfo,
     decodeGitTreeOutput,
@@ -50,7 +57,10 @@ import Adrai.Git
     gitTreeOid,
     gitTreePath,
     gitOidText,
-    runRepository,
+    lookupTreeObjectInfoAtRevisions,
+    objectBatchRequestCount,
+    treePathBatchSessionCount,
+    treePathRevisionLsTreeChildCount,
   )
 import Adrai.Provenance
   ( ProvenanceCapsule,
@@ -71,19 +81,15 @@ import Adrai.Provenance.Overlay
   )
 import Adrai.Types
   ( Digest(..),
-    OperationId (..),
     RepoPath (..),
-    digestBytes,
     mkRepoPath,
-    operationIdText,
     repoPathText,
   )
-import Control.Exception (SomeException, try)
-import Control.Monad (forM, forM_, foldM, when)
-import Data.Bits ((.&.), (.|.), shiftL, shiftR)
+import Control.Exception (SomeException, throwIO, toException, try)
+import Control.Monad (forM_, when)
+import Data.Bits ((.&.), shiftR)
 import Data.List (sort, sortBy)
 import qualified Data.Aeson as Aeson
-import Data.Bifunctor (first)
 import Data.Ord (comparing)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -105,7 +111,6 @@ import Database.SQLite.Simple
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as BSL
-import System.Exit (ExitCode (ExitSuccess))
 
 -- | Parsed managed document, minimal view for provenance classification.
 data ParsedManagedDocument = ParsedManagedDocument
@@ -129,15 +134,29 @@ _parsedSubjectAdrText doc =
 -- | SHA-256 digest of a sorted operation member list. Mirrors Python @_operation_signature().
 operationSignature :: [ParsedManagedDocument] -> Digest
 operationSignature members =
+  operationMemberSignature
+    [ ( parsedDocumentObjectRef doc,
+        repoPathText (parsedManagedPath doc),
+        maybe "" gitOidText (parsedBlobOid doc),
+        parsedSemanticHash doc
+      )
+      | doc <- members
+    ]
+
+-- | SHA-256 digest of the canonical operation-member registration payload.
+-- Both parsed source and immutable cache rows use this one representation so
+-- a no-parse seed cannot silently drift from normal registration.
+operationMemberSignature :: [(Text, Text, Text, Text)] -> Digest
+operationMemberSignature members =
   let payload =
         [ Aeson.Array
             (Vector.fromList
-              [ Aeson.String (_parsedObjectId doc),
-                Aeson.String (repoPathText (parsedManagedPath doc)),
-                Aeson.String (maybe "" gitOidText (parsedBlobOid doc)),
-                Aeson.String (parsedSemanticHash doc)
+              [ Aeson.String objectId,
+                Aeson.String path,
+                Aeson.String blobOid,
+                Aeson.String semanticDigest
               ])
-          | doc <- sortBy (comparing (repoPathText . parsedManagedPath)) members
+          | (objectId, path, blobOid, semanticDigest) <- sortBy (comparing (\(objectId, path, _, _) -> (path, objectId))) members
         ]
       json = Aeson.Array (Vector.fromList payload)
       encoded = BSL.toStrict (Aeson.encode json)
@@ -161,8 +180,18 @@ data RegisteredObjectData = RegisteredObjectData
 registeredOperations
   :: Connection
   -> IO (Either SomeException (Map Text RegisteredOperationData))
-registeredOperations conn = do
+registeredOperations = registeredOperationsWithQueryObserver (pure ())
+
+-- | Internal variant used by the bounded candidate-query seam.  The observer
+-- runs immediately before each SQLite read, so callers can assert statement
+-- fan-out without treating expected row writes as query work.
+registeredOperationsWithQueryObserver
+  :: IO ()
+  -> Connection
+  -> IO (Either SomeException (Map Text RegisteredOperationData))
+registeredOperationsWithQueryObserver beforeQuery conn = do
   result <- try @SomeException $ do
+    beforeQuery
     ops <- query_ conn "SELECT op_id,adr_id,basis_oid,signature FROM registered_operation"
       :: IO [(Text, Maybe Text, Text, Text)]
     let baseMap = Map.fromList
@@ -174,6 +203,7 @@ registeredOperations conn = do
                 })
           | (oid, adrId, basis, signature) <- ops
           ]
+    beforeQuery
     objs <- query_ conn "SELECT op_id,object_id,path,blob_oid FROM registered_object ORDER BY op_id,path"
       :: IO [(Text, Text, Text, Text)]
     let updated = foldl (\m (oid, objId, path, blobOid) ->
@@ -200,27 +230,28 @@ registerOperationGroups conn groups = do
     let go [] acc = pure (Right (reverse acc))
         go ((opId, members):rest) acc
           | opId `Set.member` existingOps = go rest acc
-          | otherwise = do
-              let sig = operationSignature members
-                  firstDoc = head members
-                  basis = provenanceBasis (parsedManagedCapsule firstDoc)
-                  adrId = _parsedSubjectAdrText firstDoc
-              execute conn
-                "INSERT INTO registered_operation VALUES(?,?,?,?)"
-                [ SQLText opId
-                , maybe SQLNull SQLText adrId
-                , SQLText (gitOidText basis)
-                , SQLText (digestToHex sig)
-                ]
-              forM_ members $ \doc ->
+          | otherwise = case members of
+              [] -> go rest acc
+              firstDoc:_ -> do
+                let sig = operationSignature members
+                    basis = provenanceBasis (parsedManagedCapsule firstDoc)
+                    adrId = _parsedSubjectAdrText firstDoc
                 execute conn
-                  "INSERT INTO registered_object VALUES(?,?,?,?)"
+                  "INSERT INTO registered_operation VALUES(?,?,?,?)"
                   [ SQLText opId
-                  , SQLText (parsedDocumentObjectRef doc)
-                  , SQLText (repoPathText (parsedManagedPath doc))
-                  , SQLText (maybe "" gitOidText (parsedBlobOid doc))
+                  , maybe SQLNull SQLText adrId
+                  , SQLText (gitOidText basis)
+                  , SQLText (digestToHex sig)
                   ]
-              go rest (opId : acc)
+                forM_ members $ \doc ->
+                  execute conn
+                    "INSERT INTO registered_object VALUES(?,?,?,?)"
+                    [ SQLText opId
+                    , SQLText (parsedDocumentObjectRef doc)
+                    , SQLText (repoPathText (parsedManagedPath doc))
+                    , SQLText (maybe "" gitOidText (parsedBlobOid doc))
+                    ]
+                go rest (opId : acc)
     go sortedGroups []
   case result of
     Right val -> pure val
@@ -248,7 +279,7 @@ storeNewCommits repo conn commits = do
       else do
         snapshots <- addedPathsForCommits repo commits
         case snapshots of
-          Left _ -> pure (Right (Map.empty, Map.empty))
+          Left e -> pure (Left (toException (userError ("managed-path discovery failed: " <> show e))) )
           Right allPaths -> do
             -- We need commit log snapshots too. Use the Discovery module function.
             -- But addedPathsForCommits already returns both. Actually, looking at
@@ -256,7 +287,7 @@ storeNewCommits repo conn commits = do
             -- and we also need commit observations. Let me use commitLogSnapshotForOids.
             obs <- commitLogSnapshotForOids repo commits
             case obs of
-              Left _ -> pure (Right (Map.empty, Map.empty))
+              Left e -> pure (Left (toException (userError ("commit discovery failed: " <> show e))) )
               Right observations -> do
                 let commitMap = Map.fromList
                       [ (commitObservationOid o,
@@ -316,7 +347,15 @@ loadCommitRows
   -> Connection
   -> [GitOid]
   -> IO (Either SomeException (Map GitOid StoredCommitData))
-loadCommitRows repo conn oids = do
+loadCommitRows = loadCommitRowsWithQueryObserver (pure ())
+
+loadCommitRowsWithQueryObserver
+  :: IO ()
+  -> Repository
+  -> Connection
+  -> [GitOid]
+  -> IO (Either SomeException (Map GitOid StoredCommitData))
+loadCommitRowsWithQueryObserver beforeQuery repo conn oids = do
   result <- try @SomeException $ do
     let unique = dedupList oids
     if null unique
@@ -324,6 +363,7 @@ loadCommitRows repo conn oids = do
       else do
         let placeholders = Text.intercalate "," (replicate (length unique) "?")
             params = map (\oid -> SQLText (gitOidText oid)) unique
+        beforeQuery
         rows <- query conn
           (asQuery ("SELECT commit_oid,parents_json,authored_s,committed_s,subject,message "
            <> "FROM commit_observation WHERE commit_oid IN (" <> placeholders <> ")"))
@@ -347,10 +387,32 @@ loadCommitRows repo conn oids = do
         if null missingOids
           then pure (Right existing)
           else do
-            stored <- loadCommitRows repo conn missingOids
+            -- A missing observation is repaired by one bounded Git discovery
+            -- pass.  Recursing here previously retried the identical database
+            -- miss forever and could turn a missing object into an apparent
+            -- empty successful classification.
+            stored <- storeNewCommits repo conn missingOids
             case stored of
               Left e -> pure (Left e)
-              Right missingData -> pure (Right (Map.union existing missingData))
+              Right _ -> do
+                -- Observe immediately before the repair-path read as well as
+                -- before the initial lookup: callers use this hook to count
+                -- every SQLite authority boundary.
+                beforeQuery
+                repaired <- query conn
+                  (asQuery ("SELECT commit_oid,parents_json,authored_s,committed_s,subject,message "
+                    <> "FROM commit_observation WHERE commit_oid IN (" <> Text.intercalate "," (replicate (length missingOids) "?") <> ")"))
+                  (map (SQLText . gitOidText) missingOids)
+                  :: IO [(Text, Text, Integer, Integer, Text, Text)]
+                let repairedMap = Map.fromList
+                      [ (GitOid oid,
+                          StoredCommitData (Text.words parents) authored committed subject message)
+                      | (oid, parents, authored, committed, subject, message) <- repaired
+                      ]
+                    stillMissing = filter (`Map.notMember` repairedMap) missingOids
+                if null stillMissing
+                  then pure (Right (Map.union existing repairedMap))
+                  else throwIO (userError ("missing commit observation after Git discovery: " <> show stillMissing))
   case result of
     Right val -> pure val
     Left e  -> pure (Left e)
@@ -369,9 +431,20 @@ candidateCommits
   -> [GitOid]
   -> [Text]
   -> IO (Either SomeException (Map Text (Set GitOid)))
-candidateCommits conn newCommits newOpIds = do
+candidateCommits = candidateCommitsWithQueryObserver (pure ())
+
+-- | Candidate construction performs one grouped read for registrations and
+-- two grouped reads for the supplied commit set.  The observer is an inert
+-- test seam that counts those reads; production uses 'candidateCommits'.
+candidateCommitsWithQueryObserver
+  :: IO ()
+  -> Connection
+  -> [GitOid]
+  -> [Text]
+  -> IO (Either SomeException (Map Text (Set GitOid)))
+candidateCommitsWithQueryObserver beforeQuery conn newCommits newOpIds = do
   result <- try @SomeException $ do
-    operations <- registeredOperations conn
+    operations <- registeredOperationsWithQueryObserver beforeQuery conn
     case operations of
       Left e -> pure (Left e)
       Right ops -> do
@@ -391,12 +464,14 @@ candidateCommits conn newCommits newOpIds = do
           else do
             let placeholders = Text.intercalate "," (replicate (length newCommits) "?")
                 candidateParams = map (SQLText . gitOidText) newCommits
+            beforeQuery
             pathCommits <- query conn
               (asQuery ("SELECT path,commit_oid FROM managed_path_addition "
                <> "WHERE commit_oid IN (" <> placeholders <> ")"))
               candidateParams
               :: IO [(Text, Text)]
 
+            beforeQuery
             msgCommits <- query conn
               (asQuery ("SELECT commit_oid,message FROM commit_observation "
                <> "WHERE commit_oid IN (" <> placeholders <> ")"))
@@ -417,32 +492,22 @@ candidateCommits conn newCommits newOpIds = do
                     Map.alter (Just . maybe (Set.singleton (GitOid commitOid)) (Set.insert (GitOid commitOid)))
                       opId m')
                     m
-                    (findAllOpTrailers msg (Map.keys ops)))
+                     (findAllOpTrailers msg (Map.keys ops)))
                   pathCandidates
                   msgCommits
-            finalCandidates <- foldM (\m opId ->
+            let pathsByCommit = Map.fromListWith Set.union
+                  [ (GitOid commitOid, Set.singleton path) | (path, commitOid) <- pathCommits ]
+                finalCandidates = foldl (\m opId ->
                   case Map.lookup opId ops of
-                    Nothing -> pure m
+                    Nothing -> m
                     Just opData ->
                       let opPaths = Set.fromList [regObjectPath obj | obj <- regOpObjects opData]
-                      in if Set.null opPaths
-                         then pure m
-                         else do
-                           let pathPh = Text.intercalate "," (replicate (Set.size opPaths) "?")
-                               pathParams = map (\p -> SQLText p) (Set.toList opPaths)
-                           qualifyingCommits <- query conn
-                             (asQuery ("SELECT DISTINCT commit_oid FROM managed_path_addition "
-                              <> "WHERE path IN (" <> pathPh <> ")"))
-                             pathParams
-                             :: IO [Only Text]
-                           let qualifying = [ GitOid co
-                                             | Only co <- qualifyingCommits
-                                             , let allPathsInCommit = all (\p -> any (\(p2, c2) -> p2 == p && c2 == co) pathCommits) (Set.toList opPaths)
-                                             , allPathsInCommit
-                                             ]
-                           let updated = Map.alter (\_ -> Just (Set.union (Map.findWithDefault Set.empty opId m) (Set.fromList qualifying)))
-                                   opId m
-                           pure updated)
+                          qualifying = Set.fromList
+                            [ commitOid
+                            | (commitOid, paths) <- Map.toList pathsByCommit
+                            , opPaths `Set.isSubsetOf` paths
+                            ]
+                      in Map.insertWith Set.union opId qualifying m)
                   trailerCandidates newOpIds
 
             pure (Right finalCandidates)
@@ -478,9 +543,21 @@ processCandidates
   -> Map Text (Set GitOid)
   -> [Text]
   -> IO (Either SomeException ())
-processCandidates repo conn candidates newOpIds = do
+processCandidates = processCandidatesWithQueryObserver (pure ())
+
+-- | Testable form of 'processCandidates'.  The observer runs before each
+-- SQLite read; production delegates with a no-op observer.  This keeps the
+-- grouped-plan contract measurable without changing reconciliation semantics.
+processCandidatesWithQueryObserver
+  :: IO ()
+  -> Repository
+  -> Connection
+  -> Map Text (Set GitOid)
+  -> [Text]
+  -> IO (Either SomeException ())
+processCandidatesWithQueryObserver beforeQuery repo conn candidates newOpIds = do
   result <- try @SomeException $ do
-    ops <- registeredOperations conn
+    ops <- registeredOperationsWithQueryObserver beforeQuery conn
     case ops of
       Left e -> pure (Left e)
       Right operations -> do
@@ -491,35 +568,45 @@ processCandidates repo conn candidates newOpIds = do
               ]
         let allNewOps = dedupList newOpIds
 
-        commitRows <- loadCommitRows repo conn allCommits
+        commitRows <- loadCommitRowsWithQueryObserver beforeQuery repo conn allCommits
         case commitRows of
           Left e -> pure (Left e)
           Right rows -> do
-            -- Check basis commits for new operations
+            -- All newly registered operation bases are one finite object
+            -- observation.  A fresh overlay formerly opened one cat-file
+            -- process per operation here, which made a cold compile grow with
+            -- the number of managed documents before any tree classification
+            -- even started.
+            let bases =
+                  [ regOpBasis opData
+                  | opId <- allNewOps
+                  , Just opData <- [Map.lookup opId operations]
+                  ]
+            basisInfo <- batchObjectInfo repo bases
+            observedTrees <- observeCandidateTrees repo operations candidates rows
+
+            -- Check basis commits for new operations from that shared batch.
             forM_ (zip allNewOps [Map.lookup op operations | op <- allNewOps]) $ \(opId, maybeOpData) ->
               case maybeOpData of
                 Nothing -> pure ()
                 Just opData -> do
                   let basis = regOpBasis opData
                       basisText = gitOidText basis
-                  basisInfo <- batchObjectInfo repo [basis]
+                      unavailableBasis = recordIssue conn "warning" "BASIS_COMMIT_UNAVAILABLE"
+                        ("operation " <> opId <> " records basis " <> basisText <>
+                         ", but that commit is not available in the local object database")
+                        Nothing (Just opId) Nothing (Just opId)
                   case basisInfo of
                     Right info -> case Map.lookup basis info of
                       Just (Just oi)
                         | objectInfoType oi == GitCommitObject -> pure ()
-                        | otherwise -> recordIssue conn "warning" "BASIS_COMMIT_UNAVAILABLE"
-                          ("operation " <> opId <> " records basis " <> basisText <>
-                           ", but that commit is not available in the local object database")
-                          Nothing (Just opId) Nothing (Just opId)
-                    Left _ -> recordIssue conn "warning" "BASIS_COMMIT_UNAVAILABLE"
-                      ("operation " <> opId <> " records basis " <> basisText <>
-                       ", but that commit is not available in the local object database")
-                      Nothing (Just opId) Nothing (Just opId)
+                      _ -> unavailableBasis
+                    Left _ -> unavailableBasis
 
             -- Classify each operation + candidate commit
             forM_ (Map.toList candidates) $ \(opId, commitSet) -> do
               case Map.lookup opId operations of
-                Nothing -> pure ()
+                Nothing -> throwIO (userError ("candidate references missing registered operation: " <> Text.unpack opId))
                 Just opData -> do
                   let objectIds = Set.fromList [regObjectObjectId obj | obj <- regOpObjects opData]
                       opObjects = regOpObjects opData
@@ -528,37 +615,40 @@ processCandidates repo conn candidates newOpIds = do
                     let commitText = gitOidText commitOid
                         row = Map.lookup commitOid rows
                     case row of
-                      Nothing -> pure ()
+                      Nothing -> throwIO (userError ("candidate references missing commit observation: " <> Text.unpack commitText))
                       Just commitData -> do
                         let hasTrailer = opId `elem` findAllOpTrailers
                               (storedCommitMessage commitData)
                               (Map.keys operations)
 
-                        contains <- checkContainsAllObjects repo opObjects [commitOid]
+                        let contains = containsRegisteredObjects observedTrees opObjects commitOid
 
                         when contains $ do
                           let firstParentTexts = case storedCommitParents commitData of
                                 [] -> []
                                 (p:_) -> [p]
-                          firstParentContains <- if null firstParentTexts
-                            then pure False
-                            else do
-                              let firstParentOids = catMaybesList (map textToGitOid firstParentTexts)
-                              checkContainsAllObjects repo opObjects firstParentOids
+                          let firstParentOids = catMaybesList (map textToGitOid firstParentTexts)
+                              firstParentContains = not (null firstParentTexts)
+                                && all (containsRegisteredObjects observedTrees opObjects) firstParentOids
 
                           if firstParentContains
-                            then recordIssue conn "warning" "REDUNDANT_OPERATION_TRAILER"
-                              ("commit " <> commitText <> " repeats ADRAI-Op " <> opId <>
-                               ", but its first parent already contains every sealed operation file")
-                              Nothing (Just opId) Nothing (Just opId)
+                            then do
+                              -- Reconciliation is canonical: a commit whose
+                              -- first parent already has every sealed object
+                              -- is not a placement, even if an earlier warm
+                              -- pass had inserted it.
+                              execute conn "DELETE FROM operation_commit WHERE op_id=? AND commit_oid=?"
+                                [SQLText opId, SQLText commitText]
+                              when hasTrailer $
+                                recordIssue conn "warning" "REDUNDANT_OPERATION_TRAILER"
+                                  ("commit " <> commitText <> " repeats ADRAI-Op " <> opId <>
+                                   ", but its first parent already contains every sealed operation file")
+                                  Nothing (Just opId) Nothing (Just opId)
                             else do
                               let nonFirstParentTexts = drop 1 (storedCommitParents commitData)
-                              intro <- if null nonFirstParentTexts
-                                then pure False
-                                else do
-                                  let nonFirstParentOids = catMaybesList (map textToGitOid nonFirstParentTexts)
-                                      introCheck = checkContainsAllObjects repo opObjects nonFirstParentOids
-                                  introCheck
+                              let nonFirstParentOids = catMaybesList (map textToGitOid nonFirstParentTexts)
+                                  intro = not (null nonFirstParentTexts)
+                                    && all (containsRegisteredObjects observedTrees opObjects) nonFirstParentOids
 
                               let basis = regOpBasis opData
                                   firstParentIsBasis = case storedCommitParents commitData of
@@ -573,7 +663,7 @@ processCandidates repo conn candidates newOpIds = do
                                   Nothing (Just opId) Nothing (Just opId)
                                 Just parentsJson -> do
                                   execute conn
-                                    "INSERT OR IGNORE INTO operation_commit VALUES(?,?,?,?,?,?,?)"
+                                    "INSERT OR REPLACE INTO operation_commit VALUES(?,?,?,?,?,?,?)"
                                     [ SQLText opId
                                     , SQLText commitText
                                     , SQLText (operationClassificationValue classification)
@@ -592,62 +682,118 @@ processCandidates repo conn candidates newOpIds = do
                                        " but current operation contains " <> actualText)
                                       Nothing (Just opId) Nothing (Just opId)
 
-                        when (not contains && hasTrailer) $ do
-                          recordIssue conn "warning" "TRAILER_WITHOUT_SEALED_OBJECTS"
-                            ("commit " <> commitText <> " carries ADRAI-Op " <> opId <>
-                             " but not the sealed operation files")
-                            Nothing (Just opId) Nothing (Just opId)
+                        when (not contains) $ do
+                          execute conn "DELETE FROM operation_commit WHERE op_id=? AND commit_oid=?"
+                            [SQLText opId, SQLText commitText]
+                          when hasTrailer $
+                            recordIssue conn "warning" "TRAILER_WITHOUT_SEALED_OBJECTS"
+                              ("commit " <> commitText <> " carries ADRAI-Op " <> opId <>
+                               " but not the sealed operation files")
+                              Nothing (Just opId) Nothing (Just opId)
 
-            -- New operations with no placement
-            forM_ allNewOps $ \opId -> do
-              placed <- query conn (asQuery "SELECT 1 FROM operation_commit WHERE op_id=?") [SQLText opId]
-                :: IO [(Only Integer)]
-              when (null placed) $ do
-                case Map.lookup opId operations of
-                  Nothing -> pure ()
-                  Just opData -> recordIssue conn "warning" "NO_OPERATION_COMMIT"
-                    ("no available commit could be bound to operation " <> opId)
-                    Nothing (Just opId) Nothing (Just opId)
+            -- New operations with no placement.  One projection avoids a
+            -- SELECT per registered operation and deliberately does not use
+            -- a giant IN list, so SQLite variable limits cannot change the
+            -- maintenance result.  We retain allNewOps order for diagnostics.
+            beforeQuery
+            placedRows <- query_ conn "SELECT DISTINCT op_id FROM operation_commit" :: IO [Only Text]
+            let placedOperations = Set.fromList (map fromOnly placedRows)
+            forM_ [opId | opId <- allNewOps, opId `Set.notMember` placedOperations] $ \opId ->
+              case Map.lookup opId operations of
+                Nothing -> pure ()
+                Just _ -> recordIssue conn "warning" "NO_OPERATION_COMMIT"
+                  ("no available commit could be bound to operation " <> opId)
+                  Nothing (Just opId) Nothing (Just opId)
             pure (Right ())
   case result of
     Right val -> pure val
     Left e  -> pure (Left e)
 
-checkContainsAllObjects
+-- | Gather all exact tree facts needed by this reconciliation in bounded
+-- groups.  One bounded multi-revision cat-file plan observes every candidate,
+-- first-parent, and merge-parent exact path; all classification checks then
+-- consult that same immutable observation.  Git errors and malformed protocol
+-- output remain fatal to the enclosing reconciliation, preserving fail-closed
+-- behaviour.
+observeCandidateTrees
   :: Repository
-  -> [RegisteredObjectData]
-  -> [GitOid]
-  -> IO Bool
-checkContainsAllObjects repo objects commits = do
-  if null objects
-    then pure True
-    else do
-      let specs =
-            [ (oid, regObjectPath obj, regObjectBlobOid obj)
-            | oid <- commits
-            , obj <- objects
-            ]
-      results <- forM specs $ \(commitOid, path, expectedBlobOid) ->
-        checkCommitPath repo commitOid path expectedBlobOid
-      pure (and results)
+  -> Map Text RegisteredOperationData
+  -> Map Text (Set GitOid)
+  -> Map GitOid StoredCommitData
+  -> IO (Map GitOid (Map RepoPath (Maybe GitObjectInfo)))
+observeCandidateTrees repo operations candidates rows = do
+  let requests = groupTreeObservationRequests
+        [ (observedCommit, mapMaybeRegisteredPath opObjects)
+        | (opId, candidateSet) <- Map.toList candidates
+        , Just opData <- [Map.lookup opId operations]
+        , let opObjects = regOpObjects opData
+        , candidate <- Set.toList candidateSet
+        , observedCommit <- candidate : catMaybesList (map textToGitOid (maybe [] storedCommitParents (Map.lookup candidate rows)))
+        ]
+      expectedBlobOids =
+        [ blobOid
+        | (opId, candidateSet) <- Map.toList candidates
+        , not (Set.null candidateSet)
+        , Just operation <- [Map.lookup opId operations]
+        , object <- regOpObjects operation
+        , Just blobOid <- [textToGitOid (regObjectBlobOid object)]
+        ]
+  result <- lookupTreeObjectInfoAtRevisions repo requests expectedBlobOids
+  case result of
+    Left problem -> throwIO (userError ("grouped cat-file tree observation failed: " <> show problem))
+    Right entries -> pure entries
+  where
+    mapMaybeRegisteredPath = foldr addPath []
+    addPath object paths =
+      case mkRepoPath (regObjectPath object) of
+        Left _ -> paths
+        Right path -> path : paths
 
-checkCommitPath
-  :: Repository
+-- | The number of bounded bare-object request windows required for a basis
+-- set.  A caller-scoped persistent session may serve all nonempty windows in
+-- one process; this value intentionally does not count processes.
+-- Keeping this visible makes the fresh-overlay invariant testable: duplicate
+-- operation bases are coalesced before the single 'batchObjectInfo' call.
+basisObjectRequestCount :: [GitOid] -> Int
+basisObjectRequestCount = objectBatchRequestCount
+
+-- | Coalesce all requested managed paths for each observed commit.  Candidate
+-- and parent checks share this plan, so adding operation members never creates
+-- a process per member and duplicate commits remain one observation group.
+groupTreeObservationRequests :: [(GitOid, [RepoPath])] -> Map GitOid (Set RepoPath)
+groupTreeObservationRequests =
+  Map.fromListWith Set.union . map (\(commitOid, paths) -> (commitOid, Set.fromList paths))
+
+-- | Context-aware exact tree-path child count for a grouped observation plan.
+-- Line-safe requests share one persistent correlated @cat-file@ child, while
+-- paths with line-protocol framing bytes retain the literal @ls-tree -z@
+-- fallback.  This uses the same eligibility and argv splitter as execution,
+-- so the result is a truthful total process fan-out rather than a former
+-- 256-item-only estimate.
+treeObservationRequestCount :: FilePath -> FilePath -> [(GitOid, [RepoPath])] -> Either GitError Int
+treeObservationRequestCount executable commandDirectory requests =
+  let grouped = groupTreeObservationRequests requests
+   in (treePathBatchSessionCount grouped +) <$> treePathRevisionLsTreeChildCount executable commandDirectory grouped
+
+containsRegisteredObjects
+  :: Map GitOid (Map RepoPath (Maybe GitObjectInfo))
+  -> [RegisteredObjectData]
   -> GitOid
-  -> Text
-  -> Text
-  -> IO Bool
-checkCommitPath repo commitOid path expectedBlobOid =
-  let args = ["--literal-pathspecs", "ls-tree", "-z", "--full-tree", Text.unpack (gitOidText commitOid),
-              "--", Text.unpack path]
-  in do
-    result <- runRepository repo "ls-tree path" args mempty
-    case result of
-      Left _ -> pure False
-      Right proc ->
-        if processExitCode proc /= ExitSuccess
-          then pure False
-          else pure (decodeExactBlobTreeEntry path expectedBlobOid (processStdout proc))
+  -> Bool
+containsRegisteredObjects observedTrees objects commitOid =
+  case Map.lookup commitOid observedTrees of
+    Nothing -> False
+    Just entries -> all (matches entries) objects
+  where
+    matches entries object =
+      case (mkRepoPath (regObjectPath object), mkGitOid (regObjectBlobOid object)) of
+        (Right path, Right expectedOid) ->
+          case Map.lookup path entries of
+            Just (Just info) ->
+              objectInfoOid info == expectedOid
+                && objectInfoType info == GitBlobObject
+            _ -> False
+        _ -> False
 
 -- | Validate the exact, single NUL-framed response expected from an argv-based
 -- @git ls-tree -z -- <path>@ request.  The Git decoder operates on raw bytes,
@@ -695,7 +841,14 @@ parseObjectsTrailer message =
              stripped = Text.strip raw
          in if stripped == "bootstrap"
             then Just (Set.fromList ["bootstrap"])
-            else Just (Set.fromList (filter (not . Text.null) (Text.words stripped)))
+             else
+               Just
+                 ( Set.fromList
+                     [ objectId
+                     | field <- Text.splitOn "," stripped
+                     , objectId <- Text.words (Text.strip field)
+                     ]
+                 )
 
 -- | Prune unavailable placements.
 pruneUnavailablePlacements

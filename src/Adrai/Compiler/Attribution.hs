@@ -60,7 +60,10 @@ data AttributionPhase
   | SearchInserts
   | FtsInserts
   | Verification
+  | CompileOutcomeEvaluation
   | DatabaseClose
+  | PostCloseProvenanceRefresh
+  | PostCloseFingerprintValidation
   | ImmutablePublication
   | CurrentAliasCopy
   | CacheSelection

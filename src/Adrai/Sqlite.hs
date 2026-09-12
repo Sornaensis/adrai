@@ -23,11 +23,13 @@ module Adrai.Sqlite
     PassageFtsCandidates (..),
     SearchStorageComponent (..),
     SearchStorageError (..),
+    SearchMaterializationLoadError (..),
     searchStorageErrorToAdraiError,
     searchOrdinarySchemaDdl,
     initializeFtsTargets,
     initializeSearchSchema,
     replaceSearchMaterialization,
+    loadSearchMaterialization,
     coldSchemaDdl,
     ColdDatabaseError (..),
     ColdDatabaseStats (..),
@@ -43,9 +45,12 @@ where
 import Adrai.Retrieval
   ( LocalAlias,
     QueryPlan (..),
+    SectionKind,
     SearchDocument (..),
     SearchMaterialization (..),
     SearchPassage (..),
+    chunkSearchDocument,
+    materializationAliases,
     sectionKindName,
     materializationImplementationFingerprint,
   )
@@ -236,6 +241,13 @@ data SearchStorageComponent
 data SearchStorageError = SearchStorageError SearchStorageComponent
   deriving (Eq, Show)
 
+-- | A cache archive is an untrusted persistence boundary.  Loading is
+-- deliberately separate from ordinary search storage failures so callers can
+-- fail closed to a cold in-memory compilation without exposing a partially
+-- decoded materialization.
+newtype SearchMaterializationLoadError = SearchMaterializationLoadError Text
+  deriving (Eq, Show)
+
 searchStorageErrorToAdraiError :: SearchStorageError -> AdraiError
 searchStorageErrorToAdraiError (SearchStorageError component) =
   AdraiError ExitUserError ("Search materialization storage failed for " <> storageComponentName component <> ".")
@@ -256,7 +268,7 @@ searchOrdinarySchemaDdl =
         <> "adr_id TEXT NOT NULL,"
         <> "candidate_record_id TEXT NOT NULL,"
         <> "title TEXT NOT NULL,summary TEXT NOT NULL,context TEXT NOT NULL,decision TEXT NOT NULL,"
-        <> "consequences TEXT NOT NULL,domains TEXT NOT NULL,rationale TEXT NOT NULL,identifiers TEXT NOT NULL,"
+        <> "consequences TEXT NOT NULL,domains TEXT NOT NULL,rationale TEXT NOT NULL,identifier_source TEXT NOT NULL,identifiers TEXT NOT NULL,"
         <> "other TEXT NOT NULL,scope TEXT NOT NULL,source_paths TEXT NOT NULL,"
         <> "obsolete INTEGER NOT NULL CHECK(obsolete IN (0,1)),"
         <> "conflicted INTEGER NOT NULL CHECK(conflicted IN (0,1)),state_token TEXT NOT NULL)"
@@ -312,7 +324,7 @@ coldSchemaDdl =
     ( "operation_member",
       "CREATE TABLE operation_member("
         <> "operation_id TEXT NOT NULL REFERENCES operation(operation_id) ON DELETE CASCADE,"
-        <> "object_id TEXT NOT NULL,object_type TEXT NOT NULL,event_kind TEXT NOT NULL,semantic_digest TEXT NOT NULL,path TEXT NOT NULL,"
+        <> "object_id TEXT NOT NULL,object_type TEXT NOT NULL,event_kind TEXT NOT NULL,semantic_digest TEXT NOT NULL,path TEXT NOT NULL,blob_oid TEXT NOT NULL,"
         <> "PRIMARY KEY(operation_id,object_id))"
     ),
     ( "operation_member_parent",
@@ -562,14 +574,15 @@ insertRepositoryConfig connection analyzed =
 -- from the parsedByPath lookup).
 insertManagedSources :: Connection -> AnalyzedRepositorySnapshot -> IO ()
 insertManagedSources connection analyzed =
-  foldBlobBatchInOrder
-    (resolvedRepository revision)
-    blobObjectIds
-    observations
-    writeObservationRow
-    >>= \case
-      Left problem -> ioError (userError (show problem))
-      Right trailingObservations -> forM_ trailingObservations (insertSourceRow Nothing)
+  case blobObjectIds of
+    [] -> forM_ observations (insertSourceRow Nothing)
+    _ -> do
+      completed <-
+        withBlobBatchSession (resolvedRepository revision) $ \session ->
+          foldBlobBatchInOrderFromSession session blobObjectIds observations writeObservationRow
+      case completed of
+        Left problem -> ioError (userError (show problem))
+        Right trailingObservations -> forM_ trailingObservations (insertSourceRow Nothing)
   where
     rawObservation = analyzedRawObservation analyzed
     revision = rawRepositorySnapshotRevision rawObservation
@@ -667,7 +680,7 @@ insertAdrConflictIssues connection diagnosticCount conflicts =
 
 insertSemanticRows :: Connection -> AnalyzedRepositorySnapshot -> IO ()
 insertSemanticRows connection analyzed = do
-  insertOperations connection documents
+  insertOperations connection blobOids documents
   forM_ documents (insertParsedDocument connection)
   forM_ (sortBy (comparing reducedAdrId) (graphReductionAdrs reduction)) $ \reduced -> do
     insertReducedAdr connection reduced
@@ -676,9 +689,14 @@ insertSemanticRows connection analyzed = do
   where
     documents = analyzedDocuments analyzed
     reduction = analyzedReduction analyzed
+    blobOids =
+      Map.fromList
+        [ (repoPathText (gitTreePath (repositoryTreeEntry observation)), gitOidText (gitTreeOid (repositoryTreeEntry observation)))
+          | observation <- rawRepositorySnapshotEntries (analyzedRawObservation analyzed)
+        ]
 
-insertOperations :: Connection -> [ParsedManagedDocument] -> IO ()
-insertOperations connection documents = do
+insertOperations :: Connection -> Map Text Text -> [ParsedManagedDocument] -> IO ()
+insertOperations connection blobOids documents = do
   forM_ (Map.toAscList grouped) $ \(operationId, members) -> do
     let context = provenanceOperationContext (parsedManagedCapsule (firstMember members))
         actor = operationContextActor context
@@ -703,15 +721,18 @@ insertOperations connection documents = do
     forM_ (sortBy (comparing (objectRefText . parsedDocumentObject)) members) $ \document -> do
       let capsule = parsedManagedCapsule document
           objectId = parsedDocumentObject document
+          path = pathFor document
+          blobOid = blobOidFor document
       execute
         connection
-        "INSERT INTO operation_member(operation_id,object_id,object_type,event_kind,semantic_digest,path) VALUES (?,?,?,?,?,?)"
+        "INSERT INTO operation_member(operation_id,object_id,object_type,event_kind,semantic_digest,path,blob_oid) VALUES (?,?,?,?,?,?,?)"
         [ SQLText (operationIdText operationId),
           SQLText (objectRefText objectId),
           SQLText (parsedDocumentType document),
           SQLText (eventKindText (provenanceEventKind capsule)),
           SQLText (digestValue (provenanceSemanticDigest capsule)),
-          SQLText (repoPathText (parsedManagedPath document))
+           SQLText path,
+           SQLText blobOid
         ]
       forM_ (zip [0 :: Int64 ..] (provenanceParents capsule)) $ \(ordinal, parent) ->
         execute
@@ -730,6 +751,12 @@ insertOperations connection documents = do
         ]
     firstMember [] = error "internal error: empty operation group"
     firstMember (member : _) = member
+    pathFor document = repoPathText (parsedManagedPath document)
+    blobOidFor document =
+      Map.findWithDefault
+        (error "internal error: parsed operation member is absent from the requested revision tree")
+        (pathFor document)
+        blobOids
 
 insertParsedDocument :: Connection -> ParsedManagedDocument -> IO ()
 insertParsedDocument connection document =
@@ -809,7 +836,7 @@ insertColdMeta connection analyzed materializationFingerprint stats =
 
 coldMetaValues :: AnalyzedRepositorySnapshot -> Digest -> ColdDatabaseStats -> [(Text, Text)]
 coldMetaValues analyzed materializationFingerprint stats =
-  [ ("schema", "adrai-cache/1"),
+  [ ("schema", "adrai-cache/3"),
     ("compiler_abi", "adrai-cold-compiler/1"),
     ("materializer", materializationImplementationFingerprint),
     ("requested_revision", revisionSpecText (resolvedRequestedRevision revision)),
@@ -902,6 +929,11 @@ verifyColdDatabase connection analyzed materialization materializationFingerprin
     "operation member/object rows"
     "SELECT object_id FROM operation_member"
     "SELECT object_id FROM (SELECT record_id AS object_id FROM decision_record UNION ALL SELECT connection_id AS object_id FROM connection_record)"
+  verifyBidirectionalProjection
+    connection
+    "operation member/requested-revision blob rows"
+    "SELECT m.path,m.blob_oid FROM operation_member m"
+    "SELECT m.path,s.oid FROM operation_member m JOIN managed_source s ON s.path=m.path"
   forM_ [SearchExactTarget, SearchStemmedTarget, SearchIdentifierTarget] $ \target ->
     verifyBidirectionalProjection
       connection
@@ -1137,6 +1169,249 @@ loadLocalAliases connection = do
     Left _ -> Left (SearchStorageError SearchAliasStorage)
     Right aliases -> Right aliases
 
+-- | Strictly reconstruct the complete search materialization from a published
+-- cache.  This never repairs or normalizes archive data: every decoded row
+-- must be precisely reproducible from the reconstructed document corpus.
+-- Callers must still establish the publication contract before using this
+-- loader; this additional check keeps an accepted archive from becoming a
+-- type-confusion or cross-table authority.
+loadSearchMaterialization :: Connection -> IO (Either SearchMaterializationLoadError SearchMaterialization)
+loadSearchMaterialization connection = do
+  documentsResult <- trySql (query_ connection documentLoaderQuery :: IO [RawDocumentRow])
+  passagesResult <- trySql (query_ connection passageLoaderQuery :: IO [RawPassageRow])
+  aliasesResult <- trySql (query_ connection aliasLoaderQuery :: IO [RawAliasRow])
+  pure $ do
+    documentsRaw <- sqlResult "search_document" documentsResult
+    passagesRaw <- sqlResult "search_section" passagesResult
+    aliasesRaw <- sqlResult "local_alias" aliasesResult
+    documents <- traverse decodeDocument documentsRaw
+    ensureUnique "search document item_id" (map searchDocumentItemId documents)
+    aliases <- traverse decodeAlias aliasesRaw
+    ensureUnique "local alias" (map fst aliases)
+    passages <- traverse decodePassage passagesRaw
+    ensureSequentialRowIds passages
+    let materialization = SearchMaterialization documents (map snd passages) aliases
+        expectedAliases = materializationAliases documents
+    if aliases /= expectedAliases
+      then invalid "local_alias rows do not exactly match the materialized document corpus"
+      else do
+        expectedPassages <-
+          firstLoad "search document cannot be deterministically chunked" $
+            concat <$> traverse chunkSearchDocument documents
+        let expected = sortBy (comparing searchPassageId) expectedPassages
+            actual = map snd passages
+        if actual == expected
+          then Right materialization
+          else invalid "search_section rows do not exactly match the materialized document corpus"
+  where
+    sqlResult label result =
+      case result of
+        Left _ -> invalid (label <> " could not be read with the declared cache schema")
+        Right rows -> Right rows
+
+data RawDocumentRow = RawDocumentRow
+  SQLData SQLData SQLData SQLData SQLData SQLData SQLData SQLData SQLData
+  SQLData SQLData SQLData SQLData SQLData SQLData SQLData SQLData SQLData
+
+instance FromRow RawDocumentRow where
+  fromRow =
+    RawDocumentRow <$> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
+      <*> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field <*> field
+
+data RawPassageRow = RawPassageRow
+  SQLData SQLData SQLData SQLData SQLData SQLData SQLData SQLData SQLData
+  SQLData SQLData SQLData SQLData
+
+instance FromRow RawPassageRow where
+  fromRow =
+    RawPassageRow <$> field <*> field <*> field <*> field <*> field <*> field <*> field
+      <*> field <*> field <*> field <*> field <*> field <*> field
+
+data RawAliasRow = RawAliasRow SQLData SQLData
+
+instance FromRow RawAliasRow where
+  fromRow = RawAliasRow <$> field <*> field
+
+documentLoaderQuery :: Query
+documentLoaderQuery =
+  "SELECT item_id,adr_id,candidate_record_id,title,summary,context,decision,consequences,domains,rationale,identifier_source,identifiers,other,scope,source_paths,obsolete,conflicted,state_token FROM search_document ORDER BY item_id"
+
+passageLoaderQuery :: Query
+passageLoaderQuery =
+  "SELECT passage_rowid,item_id,search_item_id,adr_id,candidate_record_id,section_kind,ordinal,line_start,line_end,text,weight,source_paths,identifiers FROM search_section ORDER BY passage_rowid"
+
+aliasLoaderQuery :: Query
+aliasLoaderQuery = "SELECT alias,expansion FROM local_alias ORDER BY alias"
+
+decodeDocument :: RawDocumentRow -> Either SearchMaterializationLoadError SearchDocument
+decodeDocument (RawDocumentRow itemRaw adrRaw recordRaw titleRaw summaryRaw contextRaw decisionRaw consequencesRaw domainsRaw rationaleRaw identifierSourceRaw identifiersRaw otherRaw scopeRaw sourcePathsRaw obsoleteRaw conflictedRaw stateRaw) = do
+  itemId <- requiredText "search_document.item_id" itemRaw
+  adr <- typedId "search_document.adr_id" mkAdrId adrRaw
+  record <- typedId "search_document.candidate_record_id" mkRecordId recordRaw
+  title <- requiredText "search_document.title" titleRaw
+  summary <- requiredText "search_document.summary" summaryRaw
+  context <- requiredText "search_document.context" contextRaw
+  decision <- requiredText "search_document.decision" decisionRaw
+  consequences <- requiredText "search_document.consequences" consequencesRaw
+  domains <- newlineList "search_document.domains" domainsRaw
+  rationale <- requiredText "search_document.rationale" rationaleRaw
+  identifierSource <- requiredText "search_document.identifier_source" identifierSourceRaw
+  identifiers <- requiredText "search_document.identifiers" identifiersRaw
+  other <- requiredText "search_document.other" otherRaw
+  scope <- newlineList "search_document.scope" scopeRaw
+  sourcePaths <- newlineList "search_document.source_paths" sourcePathsRaw
+  obsolete <- strictBool "search_document.obsolete" obsoleteRaw
+  conflicted <- strictBool "search_document.conflicted" conflictedRaw
+  state <- typedId "search_document.state_token" mkStateToken stateRaw
+  let expectedItem = if conflicted then adrIdText adr <> "@" <> recordIdText record else adrIdText adr
+  if itemId /= expectedItem
+    then invalid "search_document.item_id is inconsistent with its ADR, candidate, or conflict state"
+    else
+      Right
+        SearchDocument
+          { searchDocumentItemId = itemId,
+            searchDocumentAdrId = adr,
+            searchDocumentCandidateRecordId = record,
+            searchDocumentTitle = title,
+            searchDocumentSummary = summary,
+            searchDocumentContext = context,
+            searchDocumentDecision = decision,
+            searchDocumentConsequences = consequences,
+            searchDocumentDomains = domains,
+            searchDocumentRationale = rationale,
+            searchDocumentOther = other,
+            searchDocumentScope = scope,
+            searchDocumentObsolete = obsolete,
+            searchDocumentConflicted = conflicted,
+            searchDocumentStateToken = state,
+            searchDocumentSourcePaths = sourcePaths,
+            searchDocumentIdentifierSource = identifierSource,
+            searchDocumentIdentifiers = identifiers
+          }
+
+decodePassage :: RawPassageRow -> Either SearchMaterializationLoadError (Int64, SearchPassage)
+decodePassage (RawPassageRow rowIdRaw itemRaw documentItemRaw adrRaw recordRaw kindRaw ordinalRaw lineStartRaw lineEndRaw textRaw weightRaw sourcePathsRaw identifiersRaw) = do
+  rowId <- positiveInteger "search_section.passage_rowid" rowIdRaw
+  itemId <- requiredText "search_section.item_id" itemRaw
+  documentItemId <- requiredText "search_section.search_item_id" documentItemRaw
+  adr <- typedId "search_section.adr_id" mkAdrId adrRaw
+  record <- typedId "search_section.candidate_record_id" mkRecordId recordRaw
+  kindText <- requiredText "search_section.section_kind" kindRaw
+  kind <- sectionKind kindText
+  ordinal <- boundedInt "search_section.ordinal" 0 ordinalRaw
+  lineStart <- boundedInt "search_section.line_start" 1 lineStartRaw
+  lineEnd <- boundedInt "search_section.line_end" (fromIntegral lineStart) lineEndRaw
+  text <- requiredText "search_section.text" textRaw
+  weight <- finiteWeight weightRaw
+  sourcePaths <- newlineList "search_section.source_paths" sourcePathsRaw
+  identifiers <- requiredText "search_section.identifiers" identifiersRaw
+  Right
+    ( rowId,
+      SearchPassage
+        { searchPassageId = itemId,
+          searchPassageDocumentItemId = documentItemId,
+          searchPassageAdrId = adr,
+          searchPassageCandidateRecordId = record,
+          searchPassageSectionKind = kind,
+          searchPassageOrdinal = ordinal,
+          searchPassageLineStart = lineStart,
+          searchPassageLineEnd = lineEnd,
+          searchPassageText = text,
+          searchPassageWeight = weight,
+          searchPassageSourcePaths = sourcePaths,
+          searchPassageIdentifiers = identifiers
+        }
+    )
+
+decodeAlias :: RawAliasRow -> Either SearchMaterializationLoadError LocalAlias
+decodeAlias (RawAliasRow aliasRaw expansionRaw) =
+  (,) <$> requiredText "local_alias.alias" aliasRaw <*> requiredText "local_alias.expansion" expansionRaw
+
+requiredText :: Text -> SQLData -> Either SearchMaterializationLoadError Text
+requiredText label value =
+  case value of
+    SQLText text
+      | Text.any (== '\NUL') text -> invalid (label <> " contains NUL")
+      | otherwise -> Right text
+    _ -> invalid (label <> " is not TEXT")
+
+typedId :: Text -> (Text -> Either violation value) -> SQLData -> Either SearchMaterializationLoadError value
+typedId label constructor value = do
+  text <- requiredText label value
+  firstLoad (label <> " is invalid") (constructor text)
+
+newlineList :: Text -> SQLData -> Either SearchMaterializationLoadError [Text]
+newlineList label value = do
+  text <- requiredText label value
+  if Text.null text
+    then Right []
+    else do
+      let entries = Text.splitOn "\n" text
+      if any (Text.null . Text.strip) entries || any (Text.any (== '\r')) entries || Text.intercalate "\n" entries /= text
+        then invalid (label <> " is not a canonical newline-delimited list")
+        else Right entries
+
+strictBool :: Text -> SQLData -> Either SearchMaterializationLoadError Bool
+strictBool label value =
+  case value of
+    SQLInteger 0 -> Right False
+    SQLInteger 1 -> Right True
+    _ -> invalid (label <> " is not INTEGER 0 or 1")
+
+positiveInteger :: Text -> SQLData -> Either SearchMaterializationLoadError Int64
+positiveInteger label value =
+  case value of
+    SQLInteger integer | integer > 0 -> Right integer
+    _ -> invalid (label <> " is not a positive INTEGER")
+
+boundedInt :: Text -> Int64 -> SQLData -> Either SearchMaterializationLoadError Int
+boundedInt label lower value = do
+  integer <- positiveOrZero label value
+  if integer < lower || integer > fromIntegral (maxBound :: Int)
+    then invalid (label <> " is outside the supported bounds")
+    else Right (fromIntegral integer)
+
+positiveOrZero :: Text -> SQLData -> Either SearchMaterializationLoadError Int64
+positiveOrZero label value =
+  case value of
+    SQLInteger integer | integer >= 0 -> Right integer
+    _ -> invalid (label <> " is not a non-negative INTEGER")
+
+finiteWeight :: SQLData -> Either SearchMaterializationLoadError Double
+finiteWeight value =
+  case value of
+    SQLFloat weight | finite weight && weight > 0 -> Right weight
+    SQLInteger weight | weight > 0 -> Right (fromIntegral weight)
+    _ -> invalid "search_section.weight is not a positive finite REAL"
+  where
+    finite weight = not (isNaN weight || isInfinite weight)
+
+sectionKind :: Text -> Either SearchMaterializationLoadError SectionKind
+sectionKind text =
+  case filter ((== text) . sectionKindName) [minBound .. maxBound] of
+    [kind] -> Right kind
+    _ -> invalid "search_section.section_kind is invalid"
+
+ensureSequentialRowIds :: [(Int64, SearchPassage)] -> Either SearchMaterializationLoadError ()
+ensureSequentialRowIds passages =
+  if map fst passages == [1 .. fromIntegral (length passages)]
+    then ensureUnique "search section item_id" (map (searchPassageId . snd) passages)
+    else invalid "search_section.passage_rowid values are not canonical"
+
+ensureUnique :: Text -> [Text] -> Either SearchMaterializationLoadError ()
+ensureUnique label = go Set.empty
+  where
+    go _ [] = Right ()
+    go seen (value : rest)
+      | Set.member value seen = invalid (label <> " is duplicated")
+      | otherwise = go (Set.insert value seen) rest
+
+firstLoad :: Text -> Either violation value -> Either SearchMaterializationLoadError value
+firstLoad label = either (const (invalid label)) Right
+
+invalid :: Text -> Either SearchMaterializationLoadError value
+invalid = Left . SearchMaterializationLoadError
+
 -- | Bounds temporary SQL parameter rows while reusing each statement for a
 -- deterministic chunk.  Materialization already owns the source lists, so
 -- never construct a second corpus-sized matrix of SQLData values.
@@ -1156,7 +1431,7 @@ boundedChunks amount values =
 
 searchDocumentStatement :: Query
 searchDocumentStatement =
-  "INSERT INTO search_document(item_id,adr_id,candidate_record_id,title,summary,context,decision,consequences,domains,rationale,identifiers,other,scope,source_paths,obsolete,conflicted,state_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  "INSERT INTO search_document(item_id,adr_id,candidate_record_id,title,summary,context,decision,consequences,domains,rationale,identifier_source,identifiers,other,scope,source_paths,obsolete,conflicted,state_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 searchDocumentParameters :: SearchDocument -> [SQLData]
 searchDocumentParameters document =
@@ -1168,9 +1443,10 @@ searchDocumentParameters document =
     SQLText (searchDocumentContext document),
     SQLText (searchDocumentDecision document),
     SQLText (searchDocumentConsequences document),
-    SQLText (Text.intercalate "\n" (searchDocumentDomains document)),
-    SQLText (searchDocumentRationale document),
-    SQLText (searchDocumentIdentifiers document),
+     SQLText (Text.intercalate "\n" (searchDocumentDomains document)),
+     SQLText (searchDocumentRationale document),
+     SQLText (searchDocumentIdentifierSource document),
+     SQLText (searchDocumentIdentifiers document),
     SQLText (searchDocumentOther document),
     SQLText (Text.intercalate "\n" (searchDocumentScope document)),
     SQLText (Text.intercalate "\n" (searchDocumentSourcePaths document)),

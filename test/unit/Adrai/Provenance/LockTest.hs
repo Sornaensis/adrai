@@ -29,18 +29,15 @@ import Control.Exception
     try,
   )
 import Control.Monad (forM_)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text (Text)
-import qualified Data.Text as Text
 import Database.SQLite.Simple
-  ( Connection,
-    Only (..),
+  ( Only (..),
     execute_,
     open,
     query_,
     close,
   )
-import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -58,6 +55,7 @@ tests =
               assertBool "should acquire lock on new db" (isJust result)
               case result of
                 Just lock -> releaseOverlayLock lock
+                Nothing -> assertFailure "new database fixture must acquire the lock"
         , testCase "Returns Nothing when already held" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath = tmpDir </> "test_provenance.sqlite"
@@ -72,6 +70,7 @@ tests =
                   close inspection
                   rows @?= [Only (lockHolderPid lock)]
                   releaseOverlayLock lock
+                Nothing -> assertFailure "first acquisition must succeed"
         , testCase "Lock DB path is correct" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath   = tmpDir </> "subdir" </> "provenance.sqlite"
@@ -81,6 +80,7 @@ tests =
                 Just lock@OverlayLock{..} -> do
                   lockPath @?= expected
                   releaseOverlayLock lock
+                Nothing -> assertFailure "path fixture must acquire the lock"
         , testCase "Lock table is created" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath = tmpDir </> "provenance.sqlite"
@@ -93,6 +93,7 @@ tests =
                   close conn
                   assertBool "overlay_lock table should exist" (tables == [Only "overlay_lock"])
                   releaseOverlayLock lock
+                Nothing -> assertFailure "table fixture must acquire the lock"
         , testCase "Multiple acquire/release cycles work" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath = tmpDir </> "provenance.sqlite"
@@ -101,6 +102,7 @@ tests =
                 assertBool ("cycle " <> show i <> " should succeed") (isJust result)
                 case result of
                   Just lock -> releaseOverlayLock lock
+                  Nothing -> assertFailure "each acquisition cycle must succeed"
         , testCase "Cancellation after singleton claim rolls back and permits retry" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath = tmpDir </> "provenance.sqlite"
@@ -125,6 +127,32 @@ tests =
               length (filter isJust [first, second]) @?= 1
               forM_ first releaseOverlayLock
               forM_ second releaseOverlayLock
+        , testCase "Waits for lock-database startup write instead of surfacing SQLite busy" $
+            withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
+              let dbPath = tmpDir </> "provenance.sqlite"
+              initialized <- acquireOverlayLock dbPath
+              lockDb <- case initialized of
+                Nothing -> assertFailure "startup fixture must acquire the lock" >> fail "unreachable"
+                Just lock -> do
+                  let path = lockPath lock
+                  releaseOverlayLock lock
+                  pure path
+              writer <- open lockDb
+              execute_ writer "BEGIN IMMEDIATE"
+              finished <- newEmptyMVar
+              _ <- forkIO $ do
+                outcome <- try @SomeException (withOverlayLock dbPath (pure ()))
+                putMVar finished outcome
+              -- The contender has opened the same lock DB while this
+              -- transaction prevents its schema/claim write.  Releasing the
+              -- writer must let the configured SQLite busy wait complete.
+              threadDelay 200000
+              execute_ writer "COMMIT"
+              close writer
+              outcome <- takeMVar finished
+              case outcome of
+                Left problem -> assertFailure ("contended lock acquisition failed: " <> show problem)
+                Right () -> pure ()
         , testCase "An ignored insert with the same token cannot claim or delete the owner" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath = tmpDir </> "provenance.sqlite"
@@ -167,6 +195,8 @@ tests =
                   assertBool "re-acquire should succeed" (isJust result2)
                   case result2 of
                     Just lock2 -> releaseOverlayLock lock2
+                    Nothing -> assertFailure "re-acquisition must succeed"
+                Nothing -> assertFailure "first acquisition must succeed"
         , testCase "Release cancellation closes and removes the owned row before rethrow" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath = tmpDir </> "provenance.sqlite"
@@ -215,11 +245,12 @@ tests =
               assertBool "should be able to re-acquire after failure" (isJust canAcquire)
               case canAcquire of
                 Just lock -> releaseOverlayLock lock
+                Nothing -> assertFailure "failed action must release the lock"
         , testCase "Multiple sequential withOverlayLock calls work" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath = tmpDir </> "provenance.sqlite"
               forM_ [1 :: Int .. 5] $ \_ -> do
-                _ <- withOverlayLock dbPath (pure 1)
+                _ <- withOverlayLock dbPath (pure (1 :: Int))
                 pure ()
               pure ()
         , testCase "Action cancellation is rethrown after releasing the lock" $
