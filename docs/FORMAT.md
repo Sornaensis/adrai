@@ -35,7 +35,7 @@ Repository reads are revision-local: sparse checkouts, staged changes, dirty fil
 
 ## Generated database
 
-The SQLite schema is `adrai-cache/1`. It contains source observations, diagnostics, conflicts, reduced semantics, operations, search documents, passages, and FTS5 indexes. It is a derived artifact under `.adrai/`, not repository source or a portable interchange format.
+The SQLite schema is `adrai-cache/3`. It contains source observations, diagnostics, conflicts, reduced semantics, operations (whose members carry the authoritative requested-revision blob OID), search documents, passages, and FTS5 indexes. It is a derived artifact under `.adrai/`, not repository source or a portable interchange format. Cache v1 and v2 are incompatible and are always rebuilt cold.
 
 Compilation publishes schema and data atomically and verifies foreign keys, row counts, operation membership, and ordinary/FTS key parity before commit. Invalid source can still produce diagnostic data, but normalized semantic and search rows are withheld. Logical fingerprints are canonical; raw SQLite page bytes are not.
 

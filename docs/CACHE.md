@@ -5,7 +5,7 @@ ADRAI stores generated data under the repository's ignored `.adrai/` directory:
 - `.adrai/index.sqlite` is the mutable alias for the current compiled index.
 - `.adrai/cache/<commit-oid>.sqlite` is an immutable, revision-addressed snapshot.
 
-Both use the `adrai-cache/1` SQLite/FTS5 schema. They are derived artifacts and must not be committed.
+Both use the `adrai-cache/3` SQLite/FTS5 schema. They are derived artifacts and must not be committed. Cache v1 and v2 are incompatible and are rebuilt cold; they are never reused, seeded, or cloned across revisions.
 
 ## Reuse
 
