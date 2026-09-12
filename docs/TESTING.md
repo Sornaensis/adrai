@@ -142,9 +142,9 @@ multiset from the verified partitions, retained components, and expanded repeat
 counts and requires exact equality with the configured queue before dispatch.
 Quoted command lines are checked against the Windows 32,767-character limit.
 
-The current source ledger declares 852 unique ordinary tests, 9 cache-selection
-tests, 28 stress tests, and 6 benchmark-registration tests: 895 unique
-registrations. The explicit competing-target repeat makes 896 executions. The
+The current source ledger declares 865 unique ordinary tests, 9 cache-selection
+tests, 28 stress tests, and 6 benchmark-registration tests: 908 unique
+registrations. The explicit competing-target repeat makes 909 executions. The
 runner does not hardcode these totals. A fresh matching build must list every
 actual registration and prove exact equality before dispatch.
 
@@ -166,7 +166,7 @@ that frozen input set. It is not an elapsed-time forecast for another snapshot:
 | `D` | 2 | The former 3-test job was censored at 29.257487 seconds. |
 | `cache` | 9 | Unstarted. |
 | `C` | 4 | Unstarted. |
-| `Rest` | 547 | Unstarted. |
+| `Rest` | 560 | Unstarted. |
 | `stress` | 28 | Unstarted; the gate still requires actual `--run-stress`. |
 | `E` | 2 | Unstarted. |
 | `registration` | 6 | Unstarted. |

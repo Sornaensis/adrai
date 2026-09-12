@@ -27,7 +27,10 @@ Golden tests are read-only by default. Their fixture directories under `test/gol
 - `Adrai.Service.*` owns revision-bound queries and transactional mutations.
 - `Adrai.CliRunner` parses and dispatches the public executable.
 - `Adrai.Explorer.*` implements the terminal UI.
-- `Adrai.Web.*` is currently scaffold-only.
+- `Adrai.Web.Api`, `Adrai.Web.Security`, `Adrai.Web.Events`, and
+  `Adrai.Web.Watch` define the repository-bound transport, admission, event,
+  and fact-observation contracts. The listener, dispatch, watcher runtime,
+  assets, and Elm application remain later increments.
 
 Keep these boundaries narrow: low-level Git observation should not parse ADRAI documents or mutate refs, and repository reads must not fall back to ambient worktree bytes after resolving a revision.
 

@@ -81,6 +81,12 @@ import Adrai.CliTypes
     RelevantCommand (..),
     relevantCommandRequest,
     CompareCommand (..),
+    CreateRequest (..),
+    AmendRequest (..),
+    ScopeRequest (..),
+    DomainRequest (..),
+    ObsoleteCliRequest (..),
+    ReactivateCliRequest (..),
   )
 import Adrai.History
   ( ActorSelector (..),
@@ -103,7 +109,7 @@ import Adrai.Provenance.RecoveryWitness (ProvenanceRecoveryWitness)
 import Adrai.Provenance.Lock (withOverlayLock)
 import Adrai.Provenance.Overlay (OverlaySchemaState (..), createOverlaySchema, overlaySchemaState, provenanceDatabasePath)
 import Adrai.Repository (RepositorySnapshot, repositoryObservedConfig, repositorySnapshotConfig, repositorySnapshotEntries, repositorySnapshotManagedPaths, repositoryTreeBlob, resolvedCommitOid, resolveRepositoryRevision, repositorySnapshot)
-import Adrai.Scope (ScopePattern, mkScopePattern, scopePatternErrorText, scopePatternText)
+import Adrai.Scope (mkScopePattern, scopePatternErrorText, scopePatternText)
 import Adrai.Explorer.Interactive (interactiveSession)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
 import Adrai.Service.Query
@@ -168,7 +174,6 @@ import Adrai.Types
      AdrId,
      RecordId,
      RepoPath,
-     StateToken,
      ManagedPaths (..),
      ProvenanceInputs (..),
      actorId,
@@ -1713,73 +1718,6 @@ transactionConflict problem =
 data CliFailure
   = CliUserFailure Text
   | CliConflictFailure Text
-
-data CreateRequest = CreateRequest
-  { requestTitle :: Text
-  , requestSummary :: Text
-  , requestBody :: Text
-  , requestDomains :: [Domain]
-  , requestScopes :: [ScopePattern]
-  , requestActor :: Actor
-  , requestInputDigest :: Maybe Digest
-  , requestPromptDigest :: Maybe Digest
-  , requestContextDigest :: Maybe Digest
-  }
-  deriving (Eq, Show)
-
-data AmendRequest = AmendRequest
-  { amendRequestAdr :: AdrId
-  , amendRequestExpectedState :: Maybe StateToken
-  , amendRequestChangeSummary :: Text
-  , amendRequestTitle :: Text
-  , amendRequestSummary :: Text
-  , amendRequestBody :: Text
-  , amendRequestActor :: Actor
-  , amendRequestInputDigest :: Maybe Digest
-  , amendRequestPromptDigest :: Maybe Digest
-  , amendRequestContextDigest :: Maybe Digest
-  }
-  deriving (Eq, Show)
-
-data ScopeRequest = ScopeRequest
-  { scopeRequestAdr :: AdrId
-  , scopeRequestExpectedState :: Maybe StateToken
-  , scopeRequestReason :: Text
-  , scopeRequestChange :: ScopeChangeRequest
-  , scopeRequestActor :: Actor
-  , scopeRequestInputDigest :: Maybe Digest
-  , scopeRequestPromptDigest :: Maybe Digest
-  , scopeRequestContextDigest :: Maybe Digest
-  }
-  deriving (Eq, Show)
-
-data DomainRequest = DomainRequest
-  { domainRequestAdr :: AdrId
-  , domainRequestExpectedState :: Maybe StateToken
-  , domainRequestReason :: Text
-  , domainRequestChange :: DomainChangeRequest
-  , domainRequestActor :: Actor
-  , domainRequestInputDigest :: Maybe Digest
-  , domainRequestPromptDigest :: Maybe Digest
-  , domainRequestContextDigest :: Maybe Digest
-  }
-  deriving (Eq, Show)
-
--- | CLI provenance accompanies the typed status intent without asking the
--- service to derive facts from the repository a second time.
-data ObsoleteCliRequest = ObsoleteCliRequest
-  { obsoleteIntent :: ObsoleteRequest
-  , obsoleteRequestActor :: Actor
-  , obsoleteRequestInputs :: ProvenanceInputs
-  }
-  deriving (Eq, Show)
-
-data ReactivateCliRequest = ReactivateCliRequest
-  { reactivateIntent :: ReactivateRequest
-  , reactivateRequestActor :: Actor
-  , reactivateRequestInputs :: ProvenanceInputs
-  }
-  deriving (Eq, Show)
 
 data StructuredCreate = StructuredCreate
   { structuredTitle :: Maybe Text

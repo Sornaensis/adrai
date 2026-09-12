@@ -857,7 +857,20 @@
         "ADRAI.P4-07.ProvenanceRead.contended lock cancellation propagates without mutation",
         "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.launcher scrubs hostile mixed-case Git environment controls",
         "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.public commands preserve a staged binary and return canonical exits",
-        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads"
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads",
+        "ADRAI.P7-01.web-contracts.exact method and route matrix is closed",
+        "ADRAI.P7-01.web-contracts.wrong methods invalid ids and missing routes are distinct",
+        "ADRAI.P7-01.web-contracts.query codecs reject duplicates unknown fields and bounds",
+        "ADRAI.P7-01.web-contracts.all mutations require their distinct state preconditions",
+        "ADRAI.P7-01.web-contracts.amend conversion preserves shared typed request and rejects unknown JSON",
+        "ADRAI.P7-01.web-contracts.binding accepts linked worktrees and rejects bare or undiscovered repositories",
+        "ADRAI.P7-01.web-contracts.response metadata preserves the exact query snapshot and compare operands",
+        "ADRAI.P7-01.web-contracts.repository state tokens are distinct from ADR state tokens",
+        "ADRAI.P7-01.web-contracts.events encode adrai events v1 and authenticate before data",
+        "ADRAI.P7-01.web-contracts.credentials admit cookie bearer and bootstrap while confining query tokens",
+        "ADRAI.P7-01.web-contracts.host origin null-origin and bound-port checks fail closed",
+        "ADRAI.P7-01.web-contracts.mutations require bearer JSON and accept the matching browser cookie",
+        "ADRAI.P7-01.web-contracts.credentials frames and admission diagnostics are redacted"
       ]
     },
     {

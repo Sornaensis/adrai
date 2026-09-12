@@ -34,12 +34,19 @@ module Adrai.CliTypes
     relevantCommandJson,
     CompareCommand (..),
     compareCommandJson,
+    CreateRequest (..),
+    AmendRequest (..),
+    ScopeRequest (..),
+    DomainRequest (..),
+    ObsoleteCliRequest (..),
+    ReactivateCliRequest (..),
     toAesonValue,
     textToActorKind,
   )
 where
 
 import Adrai.Compiler (ColdCompilerResult (..))
+import Adrai.Domain (Domain)
 import Adrai.History
   ( HistoryOptions (..),
     HistoryOrder (..),
@@ -73,12 +80,24 @@ import Adrai.Retrieval
     SearchMaterialization (..),
   )
 import Adrai.Sqlite (ColdDatabaseStats (..))
+import Adrai.Scope (ScopePattern)
+import Adrai.Service.Mutation
+  ( DomainChangeRequest,
+    ObsoleteRequest,
+    ReactivateRequest,
+    ScopeChangeRequest,
+  )
 import Adrai.Types
   ( ViewMode (..),
     ActorKind (..),
     actorId,
     actorKind,
     RevisionSelector (..),
+    Actor,
+    AdrId,
+    Digest,
+    ProvenanceInputs,
+    StateToken,
     mkActor,
     mkRepoPath,
   )
@@ -93,6 +112,74 @@ import Control.Exception (bracket)
 import Database.SQLite.Simple (Connection, close, open)
 import Adrai.Format.Json (JsonValue (..))
 import qualified Adrai.Query as Query
+
+-- | Shared, already-materialised mutation inputs.  Keeping these records out
+-- of 'Adrai.CliRunner' lets the web contract reuse the exact service-facing
+-- values without introducing a runner/server import cycle.
+data CreateRequest = CreateRequest
+  { requestTitle :: Text
+  , requestSummary :: Text
+  , requestBody :: Text
+  , requestDomains :: [Domain]
+  , requestScopes :: [ScopePattern]
+  , requestActor :: Actor
+  , requestInputDigest :: Maybe Digest
+  , requestPromptDigest :: Maybe Digest
+  , requestContextDigest :: Maybe Digest
+  }
+  deriving (Eq, Show)
+
+data AmendRequest = AmendRequest
+  { amendRequestAdr :: AdrId
+  , amendRequestExpectedState :: Maybe StateToken
+  , amendRequestChangeSummary :: Text
+  , amendRequestTitle :: Text
+  , amendRequestSummary :: Text
+  , amendRequestBody :: Text
+  , amendRequestActor :: Actor
+  , amendRequestInputDigest :: Maybe Digest
+  , amendRequestPromptDigest :: Maybe Digest
+  , amendRequestContextDigest :: Maybe Digest
+  }
+  deriving (Eq, Show)
+
+data ScopeRequest = ScopeRequest
+  { scopeRequestAdr :: AdrId
+  , scopeRequestExpectedState :: Maybe StateToken
+  , scopeRequestReason :: Text
+  , scopeRequestChange :: ScopeChangeRequest
+  , scopeRequestActor :: Actor
+  , scopeRequestInputDigest :: Maybe Digest
+  , scopeRequestPromptDigest :: Maybe Digest
+  , scopeRequestContextDigest :: Maybe Digest
+  }
+  deriving (Eq, Show)
+
+data DomainRequest = DomainRequest
+  { domainRequestAdr :: AdrId
+  , domainRequestExpectedState :: Maybe StateToken
+  , domainRequestReason :: Text
+  , domainRequestChange :: DomainChangeRequest
+  , domainRequestActor :: Actor
+  , domainRequestInputDigest :: Maybe Digest
+  , domainRequestPromptDigest :: Maybe Digest
+  , domainRequestContextDigest :: Maybe Digest
+  }
+  deriving (Eq, Show)
+
+data ObsoleteCliRequest = ObsoleteCliRequest
+  { obsoleteIntent :: ObsoleteRequest
+  , obsoleteRequestActor :: Actor
+  , obsoleteRequestInputs :: ProvenanceInputs
+  }
+  deriving (Eq, Show)
+
+data ReactivateCliRequest = ReactivateCliRequest
+  { reactivateIntent :: ReactivateRequest
+  , reactivateRequestActor :: Actor
+  , reactivateRequestInputs :: ProvenanceInputs
+  }
+  deriving (Eq, Show)
 
 -- | Helper for optional JSON fields: returns 'Aeson.Null' for 'Nothing',
 -- otherwise applies the projection function to the wrapped value.

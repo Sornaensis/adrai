@@ -1000,10 +1000,23 @@
         "ADRAI.P4-07.ProvenanceRead.an unopenable cache location is a synchronous typed failure",
         "ADRAI.P4-07.ProvenanceRead.writer cancellation removes a fresh overlay and releases the lock",
         "ADRAI.P4-07.ProvenanceRead.warm validation cancellation propagates without mutation",
-        "ADRAI.P4-07.ProvenanceRead.contended lock cancellation propagates without mutation"
+        "ADRAI.P4-07.ProvenanceRead.contended lock cancellation propagates without mutation",
+        "ADRAI.P7-01.web-contracts.exact method and route matrix is closed",
+        "ADRAI.P7-01.web-contracts.wrong methods invalid ids and missing routes are distinct",
+        "ADRAI.P7-01.web-contracts.query codecs reject duplicates unknown fields and bounds",
+        "ADRAI.P7-01.web-contracts.all mutations require their distinct state preconditions",
+        "ADRAI.P7-01.web-contracts.amend conversion preserves shared typed request and rejects unknown JSON",
+        "ADRAI.P7-01.web-contracts.binding accepts linked worktrees and rejects bare or undiscovered repositories",
+        "ADRAI.P7-01.web-contracts.response metadata preserves the exact query snapshot and compare operands",
+        "ADRAI.P7-01.web-contracts.repository state tokens are distinct from ADR state tokens",
+        "ADRAI.P7-01.web-contracts.events encode adrai events v1 and authenticate before data",
+        "ADRAI.P7-01.web-contracts.credentials admit cookie bearer and bootstrap while confining query tokens",
+        "ADRAI.P7-01.web-contracts.host origin null-origin and bound-port checks fail closed",
+        "ADRAI.P7-01.web-contracts.mutations require bearer JSON and accept the matching browser cookie",
+        "ADRAI.P7-01.web-contracts.credentials frames and admission diagnostics are redacted"
       ],
       "rationale": "Exact complement of the thirteen anchored intact groups, proved against the full current ordinary registration before dispatch.",
-      "costProvenance": "Static retained count 547 after extracting Query, Environment, compiled-search SQLite, and MutationE2E; no measured balance claim."
+      "costProvenance": "Static retained count 560 after adding the P7-01 pure web contracts; no measured balance claim."
     }
   ],
   "queue": [

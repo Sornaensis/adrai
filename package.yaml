@@ -96,6 +96,7 @@ library:
     - Adrai.Web.Assets
     - Adrai.Web.Events
     - Adrai.Web.Server
+    - Adrai.Web.Security
     - Adrai.Web.Socket
     - Adrai.Web.Watch
 

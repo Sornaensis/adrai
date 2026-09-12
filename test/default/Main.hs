@@ -84,6 +84,7 @@ import qualified Adrai.TypesTest
 import qualified Adrai.VectorProperties
 import qualified Adrai.VectorQualityTest
 import qualified Adrai.VectorTest
+import qualified Adrai.WebContractTest
 import Control.Concurrent (getNumCapabilities, threadDelay)
 import Control.Exception (bracket)
 import qualified Data.ByteString.Char8 as BS8
@@ -567,4 +568,7 @@ tests =
       testGroup
           "P5-05"
           [ Adrai.MutationE2ETest.tests ]
+      , testGroup
+          "P7-01"
+          [ Adrai.WebContractTest.tests ]
     ]
