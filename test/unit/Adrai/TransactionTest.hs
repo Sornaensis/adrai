@@ -13,6 +13,7 @@ import Adrai.Format.Document
   )
 import Adrai.Git
   ( GitOid (..),
+    GitHeadState (..),
     Repository (..),
     RepositoryLayout (MainWorktree),
     discoverRepository,
@@ -55,12 +56,13 @@ import Adrai.Provenance.Git.Lock
     withGitLock,
     withGitLockWith,
   )
-import Control.Concurrent (newEmptyMVar, putMVar, readMVar, takeMVar)
-import Control.Concurrent.Async (async, wait)
+import Control.Concurrent (isEmptyMVar, newEmptyMVar, putMVar, readMVar, takeMVar)
+import Control.Concurrent.Async (async, cancel, wait, waitCatch)
 import Adrai.Service.Transaction
   ( GeneratedFile (..),
     AppendOnlyDependencies (..),
     AppendOnlyTestHooks (..),
+    ExpectedRepositoryBasis (..),
     BootstrapDependencies (..),
     TransactionConfig (..),
     TransactionError (..),
@@ -68,6 +70,9 @@ import Adrai.Service.Transaction
     commitAppendOnlyOperation,
     commitAppendOnlyOperationWith,
     commitAppendOnlyOperationWithHooks,
+    commitAppendOnlyOperationCheckedWithHooks,
+    commitAppendOnlyOperationCheckedPublishing,
+    commitAppendOnlyOperationCheckedPublishingWithHooks,
     commitBootstrapFiles,
     commitBootstrapFilesWith,
     defaultBootstrapDependencies,
@@ -86,6 +91,7 @@ import Adrai.Types
      mkOperationId,
      mkRepoPath,
      mkRecordId,
+     mkGitRef,
      gitRefText,
      repoPathText,
    )
@@ -95,7 +101,7 @@ import qualified Data.ByteString.Char8 as BS8
 import Data.Either (isLeft)
 import Data.Time.Clock (addUTCTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
-import Control.Exception (AsyncException (ThreadKilled), SomeException, throwIO, try)
+import Control.Exception (AsyncException (ThreadKilled), SomeException, fromException, throwIO, try)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -117,7 +123,106 @@ tests =
        in testGroup
             "Transaction contract"
             [ testGroup "repository-common mutation lock" (gitLockTests getTransactionSeed),
-      testCase "Git plumbing accepts one bare 40- or 64-hex OID with trailing stdout framing" $
+      testCase "checked basis rejects a same-OID branch switch after lock acquisition before effects" $ do
+        withSeed "adrai checked basis ref race" $ \_ repositoryPath repository parentText -> do
+            parent <- requireGitOid parentText
+            ref <- either (assertFailure . show) pure (mkGitRef "refs/heads/main")
+            _ <- gitSuccess repositoryPath ["branch", "other", Text.unpack parentText] BS.empty
+            (operationText, generated) <- transactionGeneratedFile parent
+            let config = TransactionConfig operationText "adrai: checked ref race" Map.empty parent [generated]
+                hooks = defaultAppendOnlyTestHooks
+                  { appendOnlyAfterLockAcquiredHook = do
+                      _ <- gitSuccess repositoryPath ["symbolic-ref", "HEAD", "refs/heads/other"] BS.empty
+                      pure ()
+                  }
+                expected = ExpectedRepositoryBasis parent (GitHeadAttached ref)
+                generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+            indexBefore <- gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty
+            result <- commitAppendOnlyOperationCheckedWithHooks defaultAppendOnlyDependencies hooks expected repository config
+            case result of
+              Left (Stage3ValidateState message) -> assertBool "typed basis mismatch" ("expected repository HEAD/ref basis mismatch" `Text.isInfixOf` message)
+              other -> assertFailure ("expected locked basis rejection, got " <> show other)
+            gitSuccess repositoryPath ["rev-parse", "refs/heads/main"] BS.empty >>= assertEqual "main remains pinned" (TextEncoding.encodeUtf8 (parentText <> "\n"))
+            gitSuccess repositoryPath ["rev-parse", "refs/heads/other"] BS.empty >>= assertEqual "other remains pinned" (TextEncoding.encodeUtf8 (parentText <> "\n"))
+            gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty >>= assertEqual "index remains unchanged" indexBefore
+            doesFileExist generatedPath >>= assertBool "generated file is absent" . not
+        withSeed "adrai checked publisher sync" $ \_ repositoryPath repository parentText -> do
+            parent <- requireGitOid parentText
+            ref <- either (assertFailure . show) pure (mkGitRef "refs/heads/main")
+            (operationText, generated) <- transactionGeneratedFile parent
+            let expected = ExpectedRepositoryBasis parent (GitHeadAttached ref)
+                config = TransactionConfig operationText "adrai: publisher sync" Map.empty parent [generated]
+            result <- commitAppendOnlyOperationCheckedPublishing (\_ -> throwIO (userError "publisher sync failure")) expected repository config
+            success <- either (assertFailure . show) pure result
+            assertBool "synchronous publication failure is retained beside the durable result" (maybe False (Text.isInfixOf "publisher sync failure") (transactionPublicationError success))
+            gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty >>= assertEqual "the sync-failed publication still committed" (TextEncoding.encodeUtf8 (gitOidText (transactionCommitOid success) <> "\n"))
+        withSeed "adrai checked publisher async" $ \_ repositoryPath repository parentText -> do
+            parent <- requireGitOid parentText
+            ref <- either (assertFailure . show) pure (mkGitRef "refs/heads/main")
+            (operationText, generated) <- transactionGeneratedFile parent
+            let expected = ExpectedRepositoryBasis parent (GitHeadAttached ref)
+                config = TransactionConfig operationText "adrai: publisher async" Map.empty parent [generated]
+            result <- try @SomeException (commitAppendOnlyOperationCheckedPublishing (\_ -> throwIO ThreadKilled) expected repository config)
+            case result of
+              Left failure -> assertBool "asynchronous cancellation propagates" (case fromException failure :: Maybe AsyncException of Just ThreadKilled -> True; _ -> False)
+              Right value -> assertFailure ("expected publisher cancellation, got " <> show value)
+            advanced <- gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+            assertBool "publisher cancellation does not roll back the committed ref" (advanced /= TextEncoding.encodeUtf8 (parentText <> "\n"))
+        withSeed "adrai checked publisher post-index sync" $ \_ repositoryPath repository parentText -> do
+          parent <- requireGitOid parentText
+          ref <- either (assertFailure . show) pure (mkGitRef "refs/heads/main")
+          (operationText, generated) <- transactionGeneratedFile parent
+          published <- newEmptyMVar
+          let expected = ExpectedRepositoryBasis parent (GitHeadAttached ref)
+              config = TransactionConfig operationText "adrai: publisher post-index sync" Map.empty parent [generated]
+              hooks = defaultAppendOnlyTestHooks {appendOnlyBeforePostCasIndexRefreshHook = ioError (userError "post-publication refresh failure")}
+          result <- commitAppendOnlyOperationCheckedPublishingWithHooks hooks (\_ -> putMVar published ()) expected repository config
+          success <- either (assertFailure . show) pure result
+          readMVar published
+          assertBool "post-publication refresh failure is a warning" (not (transactionIndexUpdated success))
+          assertEqual "successful publication has no publication error" Nothing (transactionPublicationError success)
+          gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty >>= assertEqual "post-publication refresh failure preserves commit" (TextEncoding.encodeUtf8 (gitOidText (transactionCommitOid success) <> "\n"))
+        withSeed "adrai checked publisher post-index cancel" $ \_ repositoryPath repository parentText -> do
+          parent <- requireGitOid parentText
+          ref <- either (assertFailure . show) pure (mkGitRef "refs/heads/main")
+          (operationText, generated) <- transactionGeneratedFile parent
+          published <- newEmptyMVar
+          refreshing <- newEmptyMVar
+          blocked <- newEmptyMVar
+          let expected = ExpectedRepositoryBasis parent (GitHeadAttached ref)
+              config = TransactionConfig operationText "adrai: publisher post-index cancel" Map.empty parent [generated]
+              hooks = defaultAppendOnlyTestHooks {appendOnlyBeforePostCasIndexRefreshHook = putMVar refreshing () >> takeMVar blocked}
+          worker <- async (commitAppendOnlyOperationCheckedPublishingWithHooks hooks (\_ -> putMVar published ()) expected repository config)
+          takeMVar published
+          takeMVar refreshing
+          cancel worker
+          waitCatch worker >>= either (const (pure ())) (assertFailure . ("expected externally delivered cancellation, got " <>) . show)
+          advanced <- gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+          assertBool "external cancellation after publication does not roll back the ref" (advanced /= TextEncoding.encodeUtf8 (parentText <> "\n"))
+        withSeed "adrai checked publisher ambiguous CAS" $ \_ repositoryPath repository parentText -> do
+          parent <- requireGitOid parentText
+          ref <- either (assertFailure . show) pure (mkGitRef "refs/heads/main")
+          (operationText, generated) <- transactionGeneratedFile parent
+          published <- newEmptyMVar
+          let expected = ExpectedRepositoryBasis parent (GitHeadAttached ref)
+              config = TransactionConfig operationText "adrai: publisher ambiguous CAS" Map.empty parent [generated]
+              hooks =
+                defaultAppendOnlyTestHooks
+                  { appendOnlyBeforeRefUpdateHook = do
+                      _ <- gitSuccess repositoryPath ["commit", "--allow-empty", "-m", "external CAS winner"] BS.empty
+                      pure ()
+                  }
+              generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+          result <- commitAppendOnlyOperationCheckedPublishingWithHooks hooks (\_ -> putMVar published ()) expected repository config
+          case result of
+            Left (Stage8UpdateRef detail) -> assertBool "unexpected target ref is reported" ("unexpected commit" `Text.isInfixOf` detail)
+            other -> assertFailure ("expected ambiguous publisher CAS failure, got " <> show other)
+          isEmptyMVar published >>= assertBool "an unclassified CAS outcome is never published"
+          generatedAfter <- BS.readFile generatedPath
+          assertEqual "an unclassified CAS outcome preserves generated bytes" (genFileBytes generated) generatedAfter
+          advanced <- gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty
+          assertBool "the external CAS winner remains authoritative" (advanced /= TextEncoding.encodeUtf8 (parentText <> "\n"))
+      , testCase "Git plumbing accepts one bare 40- or 64-hex OID with trailing stdout framing" $
         mapM_ assertAccepted acceptedOutputs,
       testCase "Git plumbing rejects non-bare or malformed OID output" $
         mapM_ assertRejected rejectedOutputs,

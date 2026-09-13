@@ -26,6 +26,7 @@ module Adrai.Service.Query
     runSearch,
     runSearchWithHooks,
     runRelevantQuery,
+    runRelevantQueryAtHead,
     runRelevantQueryWithHooks,
     readSnapshotAt,
     loadExactQueryContextForTest,
@@ -72,7 +73,7 @@ import Adrai.Compiler.CacheSelection
   )
 import qualified Adrai.Format.Document as Document
 import Adrai.Format.Config (parseConfigText)
-import Adrai.Git (GitBlob (..), Repository, RevisionSpec (..), gitOidText, gitTreeOid, gitTreePath, readRegularBlobAt, readWorktreeFileBytes)
+import Adrai.Git (GitBlob (..), GitOid, Repository, RevisionSpec (..), gitOidText, gitTreeOid, gitTreePath, readRegularBlobAt, readWorktreeFileBytes)
 import Adrai.History (PlacementEvidence, ReadSnapshot (..), RevisionIdentity (..))
 import Adrai.History
   ( HistoryError (..),
@@ -384,11 +385,21 @@ runRelevantQuery :: Repository -> RelevantRequest -> IO (Either RelevantFailure 
 runRelevantQuery = runRelevantQueryWithHooks defaultQueryExecutionHooks
 
 runRelevantQueryWithHooks :: QueryExecutionHooks -> Repository -> RelevantRequest -> IO (Either RelevantFailure RelevantProjection)
-runRelevantQueryWithHooks hooks repository request = do
-  let requestedRevision =
-        case relevantRequestRevision request of
-          AtRevision revision -> revision
-          WorkingRevision -> "HEAD"
+runRelevantQueryWithHooks hooks repository request =
+  runRelevantQueryAtRequested hooks repository request requestedRevision
+  where
+    requestedRevision = case relevantRequestRevision request of
+      AtRevision revision -> revision
+      WorkingRevision -> "HEAD"
+
+-- | Preserve worktree-source semantics while pinning repository context to a
+-- caller-captured HEAD commit.
+runRelevantQueryAtHead :: Repository -> GitOid -> RelevantRequest -> IO (Either RelevantFailure RelevantProjection)
+runRelevantQueryAtHead repository oid request =
+  runRelevantQueryAtRequested defaultQueryExecutionHooks repository request (gitOidText oid)
+
+runRelevantQueryAtRequested :: QueryExecutionHooks -> Repository -> RelevantRequest -> Text -> IO (Either RelevantFailure RelevantProjection)
+runRelevantQueryAtRequested hooks repository request requestedRevision = do
   revisionResult <- resolveRepositoryRevision repository (RevisionSpec requestedRevision)
   case revisionResult of
     Left problem -> pure (Left (RelevantRepositoryFailure (Text.pack (show problem))))

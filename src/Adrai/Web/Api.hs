@@ -751,12 +751,12 @@ data ApiResult
   | ApiRelevantResult Query.RelevantProjection
   | ApiConflictsResult ConflictsResult
   | ApiDoctorResult DoctorOutput
-  | ApiCreateResult Mutation.CreateResult [Domain] PostCommit.PostCommitIndexResult
-  | ApiAmendResult Mutation.AmendResult PostCommit.PostCommitIndexResult
-  | ApiScopeResult Mutation.ScopeChangeResult PostCommit.PostCommitIndexResult
-  | ApiDomainResult Mutation.DomainChangeResult PostCommit.PostCommitIndexResult
-  | ApiObsoleteResult Mutation.ObsoleteResult PostCommit.PostCommitIndexResult
-  | ApiReactivateResult Mutation.ReactivateResult PostCommit.PostCommitIndexResult
+  | ApiCreateResult Mutation.CreateResult [Domain] PostCommit.PostCommitIndexResult (Maybe Text)
+  | ApiAmendResult Mutation.AmendResult PostCommit.PostCommitIndexResult (Maybe Text)
+  | ApiScopeResult Mutation.ScopeChangeResult PostCommit.PostCommitIndexResult (Maybe Text)
+  | ApiDomainResult Mutation.DomainChangeResult PostCommit.PostCommitIndexResult (Maybe Text)
+  | ApiObsoleteResult Mutation.ObsoleteResult PostCommit.PostCommitIndexResult (Maybe Text)
+  | ApiReactivateResult Mutation.ReactivateResult PostCommit.PostCommitIndexResult (Maybe Text)
   deriving (Eq, Show)
 
 apiResultPayload :: ApiResult -> Aeson.Value
@@ -770,8 +770,8 @@ apiResultPayload result = case result of
   ApiRelevantResult projection -> toAesonValue (Query.relevantProjectionJson projection)
   ApiConflictsResult value -> conflictsResultJson value
   ApiDoctorResult value -> doctorOutputJson value
-  ApiCreateResult mutation domains indexed ->
-    mutationJson (Mutation.createOperationId mutation) (Mutation.createCommitOid mutation) (Mutation.createCreatedPaths mutation) (Mutation.createIndexUpdated mutation) indexed
+  ApiCreateResult mutation domains indexed publicationWarning ->
+    mutationJson (Mutation.createOperationId mutation) (Mutation.createCommitOid mutation) (Mutation.createCreatedPaths mutation) (Mutation.createIndexUpdated mutation) indexed publicationWarning
       [ "adr" Aeson..= adrIdText (Mutation.createAdrId mutation),
         "record" Aeson..= recordIdText (Mutation.createRecordId mutation),
         "scope" Aeson..= connectionIdText (Mutation.createScopeId mutation),
@@ -779,23 +779,23 @@ apiResultPayload result = case result of
         "domains" Aeson..= map domainText domains,
         "status" Aeson..= connectionIdText (Mutation.createStatusId mutation)
       ]
-  ApiAmendResult mutation indexed ->
-    mutationJson (Mutation.amendOperationId mutation) (Mutation.amendCommitOid mutation) (Mutation.amendCreatedPaths mutation) (Mutation.amendIndexUpdated mutation) indexed
+  ApiAmendResult mutation indexed publicationWarning ->
+    mutationJson (Mutation.amendOperationId mutation) (Mutation.amendCommitOid mutation) (Mutation.amendCreatedPaths mutation) (Mutation.amendIndexUpdated mutation) indexed publicationWarning
       [ "adr" Aeson..= adrIdText (Mutation.amendAdrId mutation),
         "record" Aeson..= recordIdText (Mutation.amendRecordId mutation),
         "amends" Aeson..= amendParents (Mutation.amendAmends mutation),
         "connection" Aeson..= connectionIdText (Mutation.amendConnectionId mutation)
       ]
-  ApiScopeResult mutation indexed ->
-    mutationJson (Mutation.scopeChangeOperationId mutation) (Mutation.scopeChangeCommitOid mutation) (Mutation.scopeChangeCreatedPaths mutation) (Mutation.scopeChangeIndexUpdated mutation) indexed
+  ApiScopeResult mutation indexed publicationWarning ->
+    mutationJson (Mutation.scopeChangeOperationId mutation) (Mutation.scopeChangeCommitOid mutation) (Mutation.scopeChangeCreatedPaths mutation) (Mutation.scopeChangeIndexUpdated mutation) indexed publicationWarning
       [ "adr" Aeson..= adrIdText (Mutation.scopeChangeAdrId mutation),
         "scope" Aeson..= connectionIdText (Mutation.scopeChangeConnectionId mutation),
         "scope_parents" Aeson..= map connectionIdText (Mutation.scopeChangeParents mutation),
         "mode" Aeson..= Mutation.scopeChangeMode mutation,
         "applies_to" Aeson..= map Scope.scopePatternText (Mutation.scopeChangeEffective mutation)
       ]
-  ApiDomainResult mutation indexed ->
-    mutationJson (Mutation.domainChangeOperationId mutation) (Mutation.domainChangeCommitOid mutation) (Mutation.domainChangeCreatedPaths mutation) (Mutation.domainChangeIndexUpdated mutation) indexed
+  ApiDomainResult mutation indexed publicationWarning ->
+    mutationJson (Mutation.domainChangeOperationId mutation) (Mutation.domainChangeCommitOid mutation) (Mutation.domainChangeCreatedPaths mutation) (Mutation.domainChangeIndexUpdated mutation) indexed publicationWarning
       [ "adr" Aeson..= adrIdText (Mutation.domainChangeAdrId mutation),
         "domain" Aeson..= connectionIdText (Mutation.domainChangeConnectionId mutation),
         "domain_parents" Aeson..= map connectionIdText (Mutation.domainChangeParents mutation),
@@ -805,8 +805,8 @@ apiResultPayload result = case result of
         "removed" Aeson..= map domainText (Mutation.domainChangeRemoved mutation),
         "refinements" Aeson..= map domainRefinementText (Mutation.domainChangeRefinements mutation)
       ]
-  ApiObsoleteResult mutation indexed ->
-    mutationJson (Mutation.obsoleteOperationId mutation) (Mutation.obsoleteCommitOid mutation) (Mutation.obsoleteCreatedPaths mutation) (Mutation.obsoleteIndexUpdated mutation) indexed
+  ApiObsoleteResult mutation indexed publicationWarning ->
+    mutationJson (Mutation.obsoleteOperationId mutation) (Mutation.obsoleteCommitOid mutation) (Mutation.obsoleteCreatedPaths mutation) (Mutation.obsoleteIndexUpdated mutation) indexed publicationWarning
       [ "adr" Aeson..= adrIdText (Mutation.obsoleteAdrId mutation),
         "connection" Aeson..= connectionIdText (Mutation.obsoleteConnectionId mutation),
         "obsolete" Aeson..= True,
@@ -814,8 +814,8 @@ apiResultPayload result = case result of
         "covered_records" Aeson..= map recordIdText (Mutation.obsoleteRecordHeads mutation),
         "replacement" Aeson..= fmap adrIdText (Mutation.obsoleteReplacementAdr mutation)
       ]
-  ApiReactivateResult mutation indexed ->
-    mutationJson (Mutation.reactivateOperationId mutation) (Mutation.reactivateCommitOid mutation) (Mutation.reactivateCreatedPaths mutation) (Mutation.reactivateIndexUpdated mutation) indexed
+  ApiReactivateResult mutation indexed publicationWarning ->
+    mutationJson (Mutation.reactivateOperationId mutation) (Mutation.reactivateCommitOid mutation) (Mutation.reactivateCreatedPaths mutation) (Mutation.reactivateIndexUpdated mutation) indexed publicationWarning
       [ "adr" Aeson..= adrIdText (Mutation.reactivateAdrId mutation),
         "connection" Aeson..= connectionIdText (Mutation.reactivateConnectionId mutation),
         "obsolete" Aeson..= False,
@@ -868,8 +868,8 @@ conflictsResultJson (ConflictsResult conflicts) = Aeson.object
     axisText Graph.DomainAxis = "domain"
     axisText Graph.StatusAxis = "status"
 
-mutationJson :: String -> GitOid -> [RepoPath] -> Bool -> PostCommit.PostCommitIndexResult -> [Pair] -> Aeson.Value
-mutationJson operation commit created indexUpdated indexed routeFields =
+mutationJson :: String -> GitOid -> [RepoPath] -> Bool -> PostCommit.PostCommitIndexResult -> Maybe Text -> [Pair] -> Aeson.Value
+mutationJson operation commit created indexUpdated indexed publicationWarning routeFields =
   Aeson.object
     ( [ "committed" Aeson..= True,
         "operation" Aeson..= operation,
@@ -879,6 +879,7 @@ mutationJson operation commit created indexUpdated indexed routeFields =
         "indexed" Aeson..= PostCommit.postCommitIndexed indexed
       ]
         <> indexFields indexed
+        <> maybe [] (\warning -> ["publication_warning" Aeson..= warning]) publicationWarning
         <> routeFields
     )
 

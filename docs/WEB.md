@@ -1,20 +1,21 @@
 # Web interface contract
 
-The repository-bound web contract is available as Haskell modules, but the
-`adrai web` executable, HTTP listener, browser assets, filesystem observer, and
-Elm application are not exposed yet. `Adrai.Web.Api`, `Adrai.Web.Security`,
-`Adrai.Web.Events`, and `Adrai.Web.Watch` are the production contract consumed
-by those later runtime increments.
+`adrai web` starts the repository-bound Haskell HTTP service and serves its
+embedded API-only bootstrap page. The page reports that the API is ready; the
+live event stream, filesystem observer, and Elm explorer remain later work.
 
 ## Repository binding and routes
 
-The future process starts in the current worktree and binds permanently to its
+The process starts in the current worktree and binds permanently to its
 canonical worktree root, per-worktree Git directory, and common Git directory.
 It accepts main and linked worktrees and rejects direct bare and non-Git
 launches. Requests cannot carry a repository, local path source, Git executable
 or arguments, shell command, or file contents. `WebOptions` models an optional
 validated port and browser opening; runtime selection is restricted to
-`127.0.0.1`.
+`127.0.0.1`. Start it with `adrai web --no-open`; omit `--no-open` to ask the
+OS to open the one-time bootstrap URL. `--port PORT` selects a loopback port,
+while omission asks the OS for an available port. Web startup rejects every
+explicit global `--repo` override.
 
 The exact GET routes are:
 
@@ -41,8 +42,14 @@ default to their CLI values and have a maximum of 100; encoded query data has a
 
 Every response carries a monotonic process generation and an explicit `as_of`.
 A successful one-snapshot query reports the exact resolved commit used to build
-its payload, and compare reports both exact operands. Pre-authentication,
-no-commit, and failure responses use an explicit unavailable reason. JSON puts
+its payload, and compare reports both exact operands. Snapshot identity and its
+generation are captured together under the shared Git lock; a successful
+mutation publishes its commit generation after the ref CAS and before releasing
+that lock. A competing observation receives a bounded `repository-busy` 503.
+If generation publication fails after a durable commit, the mutation remains
+`committed: true`, carries a `publication_warning`, and reports unavailable
+freshness metadata instead of claiming a published commit generation.
+Pre-authentication, no-commit, and failure responses use an explicit unavailable reason. JSON puts
 metadata beside the unchanged shared projection; non-JSON responses use
 `X-Adrai-Generation` and `X-Adrai-As-Of`. Events carry the same concepts in the
 `adrai/events/v1` envelope. Clients discard responses or events older than the
@@ -91,8 +98,9 @@ requires that token. Existing-ADR operations require it plus the existing ADR
 kinds are not interchangeable. The HTTP runtime must carry the captured
 repository basis into the transaction and enforce the comparison under the Git
 lock. A web preflight comparison outside the transaction is insufficient.
-Extending the create service with this expected-basis CAS while preserving the
-CLI's current behavior belongs to the server increment.
+The HTTP mutation adapter passes this expected basis into the shared service,
+which verifies it under the existing Git lock before any effect. Existing CLI
+callers retain their prior behavior.
 
 `Adrai.Web.Watch` is a separate, qualified fact-observation facade. Its injected
 selectors have these shapes:
@@ -108,4 +116,5 @@ facts or explicit observation failures. It does not reduce graphs, rank search,
 infer invalidation semantics, or alter
 `Adrai.Repository.repositorySnapshot`. Runtime fsnotify/verification,
 single-flight compilation, and event translation belong to the observation
-increment.
+increment. The admitted `/api/v1/events` route currently returns a typed 503
+with unavailable metadata.

@@ -28,6 +28,7 @@ module Adrai.Service.Transaction
     GeneratedFile (..),
     -- * Transaction configuration
     TransactionConfig (..),
+    ExpectedRepositoryBasis (..),
     AppendOnlyDependencies (..),
     defaultAppendOnlyDependencies,
     AppendOnlyTestHooks (..),
@@ -41,8 +42,13 @@ module Adrai.Service.Transaction
     commitTree,
     -- * Core transaction functions
     commitAppendOnlyOperation,
+    commitAppendOnlyOperationChecked,
+    commitAppendOnlyOperationCheckedPublishing,
+    commitAppendOnlyOperationCheckedPublishingWithHooks,
     commitAppendOnlyOperationWith,
+    commitAppendOnlyOperationCheckedWith,
     commitAppendOnlyOperationWithHooks,
+    commitAppendOnlyOperationCheckedWithHooks,
     commitBootstrapFiles,
     commitBootstrapFilesWith,
   )
@@ -112,7 +118,7 @@ import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.Map.Strict as Map
-import Data.IORef (IORef, newIORef, modifyIORef', readIORef)
+import Data.IORef (IORef, newIORef, modifyIORef', readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text as Text
@@ -170,8 +176,13 @@ data TransactionResult = TransactionResult
   , transactionCommitOid    :: GitOid
   , transactionCreatedPaths :: [RepoPath]
   , transactionIndexUpdated :: Bool
+  , transactionPublicationError :: Maybe Text
   }
   deriving (Eq, Show)
+
+data AppendOnlyCompletion
+  = AppendOnlyComplete TransactionResult
+  | AppendOnlyPrepared GitOid
 
 -- | A file generated for the transaction, to be written into the worktree.
 data GeneratedFile = GeneratedFile
@@ -187,6 +198,15 @@ data TransactionConfig = TransactionConfig
   , configTrailers     :: Map.Map String String
   , configExpectedHead :: GitOid
   , configGenerated    :: [GeneratedFile]
+  }
+  deriving (Eq, Show)
+
+-- | Exact repository state captured by a caller before constructing a
+-- mutation.  Checked entry points compare both the attached/detached HEAD
+-- identity and the resolved commit while holding the shared Git lock.
+data ExpectedRepositoryBasis = ExpectedRepositoryBasis
+  { expectedBasisHead :: GitOid,
+    expectedBasisHeadState :: GitHeadState
   }
   deriving (Eq, Show)
 
@@ -232,13 +252,14 @@ defaultAppendOnlyDependencies =
 -- tests.  They intentionally do not alter the long-standing public
 -- 'AppendOnlyDependencies' constructor.
 data AppendOnlyTestHooks = AppendOnlyTestHooks
-  { appendOnlyAfterGeneratedParentCreationHook :: GeneratedFile -> IO (),
+  { appendOnlyAfterLockAcquiredHook :: IO (),
+    appendOnlyAfterGeneratedParentCreationHook :: GeneratedFile -> IO (),
     appendOnlyBeforeRefUpdateHook :: IO (),
     appendOnlyBeforePostCasIndexRefreshHook :: IO ()
   }
 
 defaultAppendOnlyTestHooks :: AppendOnlyTestHooks
-defaultAppendOnlyTestHooks = AppendOnlyTestHooks (\_ -> pure ()) (pure ()) (pure ())
+defaultAppendOnlyTestHooks = AppendOnlyTestHooks (pure ()) (\_ -> pure ()) (pure ()) (pure ())
 
 -- | Narrow test seam for the bootstrap write/rollback boundaries. Production
 -- uses 'defaultBootstrapDependencies'; it has no observable effect there.
@@ -998,19 +1019,48 @@ removeOwnedDirectory root directory
 commitAppendOnlyOperation :: Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
 commitAppendOnlyOperation = commitAppendOnlyOperationWith defaultAppendOnlyDependencies
 
+commitAppendOnlyOperationChecked :: ExpectedRepositoryBasis -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
+commitAppendOnlyOperationChecked basis = commitAppendOnlyOperationCheckedWith defaultAppendOnlyDependencies basis
+
+-- | Checked service variant which publishes the authoritative commit while
+-- the shared Git lock remains held.  A synchronous publication failure is
+-- recorded on the durable result; asynchronous cancellation is rethrown only
+-- after the transaction has completed its finite committed cleanup.
+commitAppendOnlyOperationCheckedPublishing :: (GitOid -> IO ()) -> ExpectedRepositoryBasis -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
+commitAppendOnlyOperationCheckedPublishing publish basis repository config =
+  commitAppendOnlyOperationMaybeCheckedWithHooks defaultAppendOnlyDependencies defaultAppendOnlyTestHooks (Just basis) (Just publish) repository config
+
+commitAppendOnlyOperationCheckedPublishingWithHooks :: AppendOnlyTestHooks -> (GitOid -> IO ()) -> ExpectedRepositoryBasis -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
+commitAppendOnlyOperationCheckedPublishingWithHooks hooks publish basis repository config =
+  commitAppendOnlyOperationMaybeCheckedWithHooks defaultAppendOnlyDependencies hooks (Just basis) (Just publish) repository config
+
 commitAppendOnlyOperationWith :: AppendOnlyDependencies -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
 commitAppendOnlyOperationWith dependencies repository config =
   commitAppendOnlyOperationWithHooks dependencies defaultAppendOnlyTestHooks repository config
 
+commitAppendOnlyOperationCheckedWith :: AppendOnlyDependencies -> ExpectedRepositoryBasis -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
+commitAppendOnlyOperationCheckedWith dependencies basis repository config =
+  commitAppendOnlyOperationCheckedWithHooks dependencies defaultAppendOnlyTestHooks basis repository config
+
 commitAppendOnlyOperationWithHooks :: AppendOnlyDependencies -> AppendOnlyTestHooks -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
-commitAppendOnlyOperationWithHooks dependencies hooks repository config@TransactionConfig{..} = do
+commitAppendOnlyOperationWithHooks dependencies hooks repository config =
+  commitAppendOnlyOperationMaybeCheckedWithHooks dependencies hooks Nothing Nothing repository config
+
+commitAppendOnlyOperationCheckedWithHooks :: AppendOnlyDependencies -> AppendOnlyTestHooks -> ExpectedRepositoryBasis -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
+commitAppendOnlyOperationCheckedWithHooks dependencies hooks basis repository config =
+  commitAppendOnlyOperationMaybeCheckedWithHooks dependencies hooks (Just basis) Nothing repository config
+
+commitAppendOnlyOperationMaybeCheckedWithHooks :: AppendOnlyDependencies -> AppendOnlyTestHooks -> Maybe ExpectedRepositoryBasis -> Maybe (GitOid -> IO ()) -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
+commitAppendOnlyOperationMaybeCheckedWithHooks dependencies hooks expectedBasis publisher repository config@TransactionConfig{..} = do
   -- Validate worktree root present (reject bare repos)
   case repositoryWorktreeRoot repository of
     Nothing ->
       return (Left (Stage1ResolveRepo "worktree root is missing"))
     Just _ -> do
+      durableWitness <- newIORef Nothing
       -- Stage 2: Acquire lock
       lockResult <- try @SomeException $ withGitLock repository $ do
+        appendOnlyAfterLockAcquiredHook hooks
         -- Establish physical containment before probing, snapshotting, or
         -- writing a generated destination, and repeat it at later boundaries.
         contained <- resolveGeneratedDestinations repository False configGenerated
@@ -1030,6 +1080,11 @@ commitAppendOnlyOperationWithHooks dependencies hooks repository config@Transact
         -- Pin the exact attached ref before writing.  Rollback must never use
         -- whichever branch HEAD happens to name later.
         pinnedHead <- repositoryHeadState repository
+        case (expectedBasis, pinnedHead) of
+          (Just basis, Right actualState)
+            | expectedBasisHeadState basis /= actualState ->
+                throwIO (Stage3ValidateState "expected repository HEAD/ref basis mismatch")
+          _ -> pure ()
         targetRef <- case pinnedHead of
           Left err -> throwIO (Stage3ValidateState ("get branch ref: " <> T.pack (show err)))
           Right GitHeadDetached -> throwIO (Stage3ValidateState "HEAD detached; attach a branch first")
@@ -1043,6 +1098,11 @@ commitAppendOnlyOperationWithHooks dependencies hooks repository config@Transact
           Left err ->
             throwIO (Stage3ValidateState ("resolve HEAD: " <> T.pack (show err)))
           Right oldHead -> do
+            case expectedBasis of
+              Just basis
+                | expectedBasisHead basis /= oldHead ->
+                    throwIO (Stage3ValidateState ("expected repository commit mismatch: expected " <> gitOidText (expectedBasisHead basis) <> " got " <> gitOidText oldHead))
+              _ -> pure ()
             -- Validate expected head matches
             when (oldHead /= configExpectedHead) $
               throwIO (Stage3ValidateState ("expected head mismatch: " <> T.pack configOperationId <> " expected " <> gitOidText configExpectedHead <> " got " <> gitOidText oldHead))
@@ -1074,58 +1134,86 @@ commitAppendOnlyOperationWithHooks dependencies hooks repository config@Transact
                           appendOnlyBeforeRefUpdateHook hooks
                           preCasContained <- resolveGeneratedDestinations repository True configGenerated
                           void (either throwIO pure preCasContained)
-                          let refText = gitRefText targetRef
-                          casResult <-
-                            runRepository
-                              repository
-                              "update-ref"
-                              [ "update-ref",
-                                "-m",
-                                "adrai " <> configOperationId,
-                                Text.unpack refText,
-                                Text.unpack (gitOidText newCommit),
-                                Text.unpack (gitOidText oldHead)
-                              ]
-                              BS.empty
-                          case casResult of
-                            Left err -> throwIO (Stage8UpdateRef ("update-ref failed: " <> T.pack (show err)))
-                            Right res2
-                              | processExitCode res2 /= ExitSuccess ->
-                                  throwIO (Stage8UpdateRef ("update-ref exited " <> T.pack (show (processExitCode res2))))
-                              | otherwise -> do
-                                  appendOnlyAfterSuccessfulCas dependencies
-                                  -- The successful CAS made @newCommit@ authoritative.
-                                  -- Never consult mutable HEAD here: another process may
-                                  -- have checked out a different branch between CAS and
-                                  -- this caller-index refresh.
-                                  indexUpdated <-
-                                    if null generatedPaths
-                                      then pure True
-                                      else do
-                                        appendOnlyBeforePostCasIndexRefreshHook hooks
-                                        postCasContained <- resolveGeneratedDestinations repository True configGenerated
-                                        case postCasContained of
-                                          Left _ -> pure False
-                                          Right _ -> do
-                                            refreshResult <-
-                                              runRepository
-                                                repository
-                                                "reset index"
-                                                (["reset", "-q", Text.unpack (gitOidText newCommit), "--"] <> map (T.unpack . repoPathText) generatedPaths)
-                                                BS.empty
-                                            pure $ case refreshResult of
-                                              Left _ -> False
-                                              Right res -> processExitCode res == ExitSuccess
-                                  return
-                                   TransactionResult
-                                     { transactionOperationId = configOperationId,
-                                       transactionCommitOid = newCommit,
-                                       transactionCreatedPaths = generatedPaths,
-                                       transactionIndexUpdated = indexUpdated
-                                     }
+                          case publisher of
+                            Just _ -> pure (AppendOnlyPrepared newCommit)
+                            Nothing -> do
+                              casResult <-
+                                runRepository
+                                  repository
+                                  "update-ref"
+                                  [ "update-ref",
+                                    "-m",
+                                    "adrai " <> configOperationId,
+                                    Text.unpack (gitRefText targetRef),
+                                    Text.unpack (gitOidText newCommit),
+                                    Text.unpack (gitOidText oldHead)
+                                  ]
+                                  BS.empty
+                              case casResult of
+                                Left err -> throwIO (Stage8UpdateRef ("update-ref failed: " <> T.pack (show err)))
+                                Right casProcess
+                                  | processExitCode casProcess /= ExitSuccess -> throwIO (Stage8UpdateRef ("update-ref exited " <> T.pack (show (processExitCode casProcess))))
+                                  | otherwise -> do
+                                      -- Preserve the established CLI/test behavior when no
+                                      -- commit publisher is installed.
+                                      appendOnlyAfterSuccessfulCas dependencies
+                                      indexUpdated <- refreshAppendOnlyIndex hooks repository newCommit configGenerated generatedPaths
+                                      pure (AppendOnlyComplete TransactionResult
+                                        { transactionOperationId = configOperationId,
+                                          transactionCommitOid = newCommit,
+                                          transactionCreatedPaths = generatedPaths,
+                                          transactionIndexUpdated = indexUpdated,
+                                          transactionPublicationError = Nothing
+                                        })
               case attempt of
-                Right transactionResult -> pure transactionResult
-                Left originalFailure -> do
+                 Right (AppendOnlyComplete transactionResult) -> pure transactionResult
+                 Right (AppendOnlyPrepared newCommit) -> do
+                   -- Restore only the CAS action.  Its continuation is masked, so no
+                   -- cancellation gap exists between a successful update and the
+                   -- authoritative-ref classification below.
+                   casAttempt <- try @SomeException (restore (runAppendOnlyCas repository targetRef oldHead newCommit configOperationId >>= either throwIO pure))
+                   committedFailure <- case casAttempt of
+                     Right () -> pure Nothing
+                     Left originalFailure -> do
+                       inspected <- try @SomeException (appendOnlyInspectRef dependencies repository targetRef oldHead (Just newCommit))
+                       case inspected of
+                         Right (Right actual)
+                           | actual == newCommit -> pure (Just originalFailure)
+                           | actual == oldHead -> do
+                               writtenFiles <- readIORef writtenFilesRef
+                               rethrowAfterRollback originalFailure (rollbackAppendOnlyFailure dependencies repository oldHead (Just newCommit) snapshot writtenFiles)
+                           | otherwise -> rethrowUnclassifiedCas originalFailure "target ref moved to an unexpected commit after CAS"
+                         Right (Left _) -> rethrowUnclassifiedCas originalFailure "target ref could not be classified after CAS"
+                         Left inspectionFailure -> case fromException inspectionFailure :: Maybe SomeAsyncException of
+                           Just cancellation -> throwIO cancellation
+                           Nothing -> rethrowUnclassifiedCas originalFailure "target ref inspection failed after CAS"
+                   published <- case publisher of
+                     Just publish -> try @SomeException (publish newCommit)
+                     Nothing -> pure (Right ())
+                   refreshed <- try @SomeException (refreshAppendOnlyIndex hooks repository newCommit configGenerated generatedPaths)
+                   let publicationError = case published of
+                         Left failure | Nothing <- (fromException failure :: Maybe SomeAsyncException) -> Just (T.pack (show failure))
+                         _ -> Nothing
+                       indexUpdated = either (const False) id refreshed
+                       casCancellation = committedFailure >>= (fromException :: SomeException -> Maybe SomeAsyncException)
+                       publicationCancellation = either (fromException :: SomeException -> Maybe SomeAsyncException) (const Nothing) published
+                       refreshCancellation = either (fromException :: SomeException -> Maybe SomeAsyncException) (const Nothing) refreshed
+                       transactionResult = TransactionResult
+                         { transactionOperationId = configOperationId,
+                           transactionCommitOid = newCommit,
+                           transactionCreatedPaths = generatedPaths,
+                           transactionIndexUpdated = indexUpdated,
+                           transactionPublicationError = publicationError
+                         }
+                   writeIORef durableWitness (Just transactionResult)
+                   case casCancellation of
+                     Just cancellation -> throwIO cancellation
+                     Nothing -> case publicationCancellation of
+                       Just cancellation -> throwIO cancellation
+                       Nothing -> case refreshCancellation of
+                         Just cancellation -> throwIO cancellation
+                         Nothing -> pure transactionResult
+                 Left originalFailure -> do
                   maybeNewCommit <- readIORef newCommitRef
                   writtenFiles <- readIORef writtenFilesRef
                   rethrowAfterRollback originalFailure (rollbackAppendOnlyFailure dependencies repository oldHead maybeNewCommit snapshot writtenFiles))
@@ -1133,11 +1221,59 @@ commitAppendOnlyOperationWithHooks dependencies hooks repository config@Transact
         Left err -> do
           case (fromException err :: Maybe SomeAsyncException) of
             Just asyncFailure -> throwIO asyncFailure
-            Nothing ->
-              case fromException err of
-                Just txErr -> return (Left txErr)
-                Nothing -> return (Left (Stage2AcquireLock (T.pack (show err))))
+            Nothing -> do
+              committed <- readIORef durableWitness
+              case committed of
+                Just result -> return (Right result)
+                Nothing -> case fromException err of
+                  Just txErr -> return (Left txErr)
+                  Nothing -> return (Left (Stage2AcquireLock (T.pack (show err))))
         Right result -> return (Right result)
+
+runAppendOnlyCas :: Repository -> GitRef -> GitOid -> GitOid -> String -> IO (Either TransactionError ())
+runAppendOnlyCas repository targetRef oldHead newCommit operationId = do
+  casResult <-
+    runRepository
+      repository
+      "update-ref"
+      [ "update-ref",
+        "-m",
+        "adrai " <> operationId,
+        Text.unpack (gitRefText targetRef),
+        Text.unpack (gitOidText newCommit),
+        Text.unpack (gitOidText oldHead)
+      ]
+      BS.empty
+  pure $ case casResult of
+    Left err -> Left (Stage8UpdateRef ("update-ref failed: " <> T.pack (show err)))
+    Right result
+      | processExitCode result /= ExitSuccess -> Left (Stage8UpdateRef ("update-ref exited " <> T.pack (show (processExitCode result))))
+      | otherwise -> Right ()
+
+rethrowUnclassifiedCas :: SomeException -> Text -> IO value
+rethrowUnclassifiedCas originalFailure message =
+  case fromException originalFailure :: Maybe SomeAsyncException of
+    Just cancellation -> throwIO cancellation
+    Nothing -> throwIO (Stage8UpdateRef message)
+
+refreshAppendOnlyIndex :: AppendOnlyTestHooks -> Repository -> GitOid -> [GeneratedFile] -> [RepoPath] -> IO Bool
+refreshAppendOnlyIndex hooks repository newCommit generated generatedPaths
+  | null generatedPaths = pure True
+  | otherwise = do
+      appendOnlyBeforePostCasIndexRefreshHook hooks
+      postCasContained <- resolveGeneratedDestinations repository True generated
+      case postCasContained of
+        Left _ -> pure False
+        Right _ -> do
+          refreshResult <-
+            runRepository
+              repository
+              "reset index"
+              (["reset", "-q", Text.unpack (gitOidText newCommit), "--"] <> map (T.unpack . repoPathText) generatedPaths)
+              BS.empty
+          pure $ case refreshResult of
+            Left _ -> False
+            Right res -> processExitCode res == ExitSuccess
 
 -- ---------------------------------------------------------------------------
 -- Core transaction: commitBootstrapFiles
@@ -1354,7 +1490,8 @@ commitBootstrapFilesAfterBackup dependencies repository config@TransactionConfig
                                         { transactionOperationId = configOperationId,
                                           transactionCommitOid = newCommit,
                                           transactionCreatedPaths = generatedPaths,
-                                          transactionIndexUpdated = indexUpdated
+                                          transactionIndexUpdated = indexUpdated,
+                                          transactionPublicationError = Nothing
                                         }
 
       case lockResult of
@@ -1370,9 +1507,10 @@ commitBootstrapFilesAfterBackup dependencies repository config@TransactionConfig
                     ( Right
                         TransactionResult
                           { transactionOperationId = configOperationId,
-                            transactionCommitOid = committed,
-                            transactionCreatedPaths = generatedPaths,
-                            transactionIndexUpdated = False
+                              transactionCommitOid = committed,
+                              transactionCreatedPaths = generatedPaths,
+                              transactionIndexUpdated = False,
+                              transactionPublicationError = Nothing
                           }
                     )
             (_, Just (Left conflict)) -> pure (Left conflict)

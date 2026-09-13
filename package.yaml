@@ -144,6 +144,7 @@ tests:
       - test/property
       - test/golden
       - test/integration
+      - test/web-api
       - test/support
     dependencies:
       - adrai:internal

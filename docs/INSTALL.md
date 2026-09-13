@@ -28,3 +28,7 @@ adrai --help
 If Stack's binary directory is not on `PATH`, use `stack path --local-bin` to locate the installed executable.
 
 See [Usage](USAGE.md) for the repository setup flow.
+
+The executable embeds `web/static/index.html`, `web/static/app.css`, and the
+checked-in `web/dist/app.js`. No Node or Elm toolchain is needed to run the
+current API-only web service.

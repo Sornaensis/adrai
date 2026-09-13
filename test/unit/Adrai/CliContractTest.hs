@@ -1980,7 +1980,7 @@ mutationCliContractTests =
         (requireRight (mkConnectionId "C0123456789ABCDEFGHJKMNPQRS"))
         (requireRight (mkConnectionId "C1123456789ABCDEFGHJKMNPQRS"))
         (requireRight (mkConnectionId "C2123456789ABCDEFGHJKMNPQRS"))
-        oid [path] True
+        oid [path] True Nothing
     amendResult =
       AmendResult
         "operation-43"
@@ -1988,7 +1988,7 @@ mutationCliContractTests =
         (requireRight (mkRecordId "R0123456789ABCDEFGHJKMNPQRS"))
         [requireRight (mkRecordId "R1123456789ABCDEFGHJKMNPQRS")]
         (requireRight (mkConnectionId "C3123456789ABCDEFGHJKMNPQRS"))
-        oid path [path] True
+        oid path [path] True Nothing
     scopeResult =
       ScopeChangeResult
         "operation-44"
@@ -1997,7 +1997,7 @@ mutationCliContractTests =
         [requireRight (mkConnectionId "C3123456789ABCDEFGHJKMNPQRS")]
         "mixed"
         [requireRight (mkScopePattern "src/**"), requireRight (mkScopePattern "test/**")]
-        oid path [path] True
+        oid path [path] True Nothing
     domainResult =
       DomainChangeResult
         "operation-45"
@@ -2009,19 +2009,19 @@ mutationCliContractTests =
         [requireRight (mkDomain "platform")]
         [requireRight (mkDomain "platform.api")]
         [requireRight (parseDomainRefinement "platform=platform.api")]
-        oid path [path] True
+        oid path [path] True Nothing
     obsoleteResult =
       ObsoleteResult "operation-46" (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
         (requireRight (mkConnectionId "C6123456789ABCDEFGHJKMNPQRS"))
         [requireRight (mkConnectionId "C5123456789ABCDEFGHJKMNPQRS")]
         [requireRight (mkRecordId "R0123456789ABCDEFGHJKMNPQRS")]
-        (Just (requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS"))) False oid path [path] True
+        (Just (requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS"))) False oid path [path] True Nothing
     reactivateResult =
       ReactivateResult "operation-47" (requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS"))
         (requireRight (mkConnectionId "C7123456789ABCDEFGHJKMNPQRS"))
         [requireRight (mkConnectionId "C6123456789ABCDEFGHJKMNPQRS")]
         [requireRight (mkRecordId "R0123456789ABCDEFGHJKMNPQRS")]
-        True oid path [path] True
+        True oid path [path] True Nothing
     indexedResult = PostCommitIndexResult True (Just "fixture.sqlite") (Just oid) [] Nothing
     indexFailureResult = PostCommitIndexResult False Nothing Nothing [] (Just (PostCommitIndexOpenFailure "readonly"))
     request =

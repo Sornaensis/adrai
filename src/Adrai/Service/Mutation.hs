@@ -26,22 +26,35 @@ module Adrai.Service.Mutation
     initCommand,
     CreateResult (..),
     createAdrCommand,
+    createAdrCommandChecked,
+    createAdrCommandAutoChecked,
+    createAdrCommandAutoCheckedPublishing,
     AmendResult (..),
     amendAdrCommand,
     amendCurrentAdrCommand,
+    amendCurrentAdrCommandChecked,
+    amendCurrentAdrCommandCheckedPublishing,
     amendAdmCommand,
     ScopeChangeRequest (..),
     ScopeChangeResult (..),
     changeScopeCommand,
+    changeScopeCommandChecked,
+    changeScopeCommandCheckedPublishing,
     DomainChangeRequest (..),
     DomainChangeResult (..),
     changeDomainCommand,
+    changeDomainCommandChecked,
+    changeDomainCommandCheckedPublishing,
     ObsoleteRequest (..),
     ObsoleteResult (..),
     obsoleteCommand,
+    obsoleteCommandChecked,
+    obsoleteCommandCheckedPublishing,
     ReactivateRequest (..),
     ReactivateResult (..),
     reactivateCommand,
+    reactivateCommandChecked,
+    reactivateCommandCheckedPublishing,
   )
 where
 
@@ -54,6 +67,7 @@ import Adrai.Git
     repositoryHeadState,
     RevisionSpec (RevisionSpec),
     GitOid (..),
+    gitOidText,
     GitBlob (..),
     GitTreeEntry (..),
     processExitCode,
@@ -61,11 +75,14 @@ import Adrai.Git
   )
 import Adrai.Service.Transaction
   ( TransactionConfig (..),
+    ExpectedRepositoryBasis (..),
     GeneratedFile (..),
     TransactionResult (..),
     TransactionError (..),
     commitBootstrapFiles,
     commitAppendOnlyOperation,
+    commitAppendOnlyOperationChecked,
+    commitAppendOnlyOperationCheckedPublishing,
     nullOid,
   )
 import Adrai.Provenance
@@ -131,7 +148,8 @@ import Adrai.Scope
   ( ScopePattern,
   )
 import Adrai.Identity
-  ( sortableOperationId,
+  ( sortableAdrId,
+    sortableOperationId,
     sortableRecordId,
     sortableConnectionId,
   )
@@ -173,6 +191,11 @@ import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Random (StdGen, getStdRandom, uniformR)
+
+data MutationBasis = MutationBasis
+  { mutationExpectedBasis :: ExpectedRepositoryBasis,
+    mutationCommitPublisher :: Maybe (GitOid -> IO ())
+  }
 
 -- | Result of the 'initCommand' bootstrap operation.
 data InitResult
@@ -311,6 +334,7 @@ data CreateResult
       , createCommitOid    :: GitOid
       , createCreatedPaths :: [RepoPath]
       , createIndexUpdated :: Bool
+      , createPublicationError :: Maybe T.Text
       }
   deriving (Eq, Show)
 
@@ -355,13 +379,59 @@ createAdrCommand
   patterns
   inputDigest
   promptDigest
-  contextDigest = do
-    oldHeadResult <- resolveRevision repository (RevisionSpec "HEAD")
+  contextDigest =
+    createAdrCommandWithBasis Nothing repository managedPaths actor adrId _recordId title summary body domains patterns inputDigest promptDigest contextDigest
+
+createAdrCommandChecked ::
+  ExpectedRepositoryBasis ->
+  Repository ->
+  ManagedPaths ->
+  Actor ->
+  AdrId ->
+  RecordId ->
+  T.Text ->
+  T.Text ->
+  T.Text ->
+  [Domain] ->
+  [ScopePattern] ->
+  Maybe Digest ->
+  Maybe Digest ->
+  Maybe Digest ->
+  IO (Either TransactionError CreateResult)
+createAdrCommandChecked basis = createAdrCommandWithBasis (Just (MutationBasis basis Nothing))
+
+createAdrCommandAutoChecked :: ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> T.Text -> T.Text -> T.Text -> [Domain] -> [ScopePattern] -> Maybe Digest -> Maybe Digest -> Maybe Digest -> IO (Either TransactionError CreateResult)
+createAdrCommandAutoChecked basis repository managedPaths actor title summary body domains patterns inputDigest promptDigest contextDigest = do
+  timestampMs <- currentTimestamp
+  entropy <- randomEntropy
+  let timestamp = encodeTimestampMs timestampMs
+  case (sortableAdrId timestamp entropy, sortableRecordId timestamp entropy) of
+    (Right adr, Right record) ->
+      createAdrCommandChecked basis repository managedPaths actor adr record title summary body domains patterns inputDigest promptDigest contextDigest
+    _ -> pure (Left (Stage3ValidateState "failed to generate sortable create identifiers"))
+
+createAdrCommandAutoCheckedPublishing :: (GitOid -> IO ()) -> ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> T.Text -> T.Text -> T.Text -> [Domain] -> [ScopePattern] -> Maybe Digest -> Maybe Digest -> Maybe Digest -> IO (Either TransactionError CreateResult)
+createAdrCommandAutoCheckedPublishing publisher basis repository managedPaths actor title summary body domains patterns inputDigest promptDigest contextDigest = do
+  timestampMs <- currentTimestamp
+  entropy <- randomEntropy
+  let timestamp = encodeTimestampMs timestampMs
+  case (sortableAdrId timestamp entropy, sortableRecordId timestamp entropy) of
+    (Right adr, Right record) ->
+      createAdrCommandWithBasis (Just (MutationBasis basis (Just publisher))) repository managedPaths actor adr record title summary body domains patterns inputDigest promptDigest contextDigest
+    _ -> pure (Left (Stage3ValidateState "failed to generate sortable create identifiers"))
+
+createAdrCommandWithBasis :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> RecordId -> T.Text -> T.Text -> T.Text -> [Domain] -> [ScopePattern] -> Maybe Digest -> Maybe Digest -> Maybe Digest -> IO (Either TransactionError CreateResult)
+createAdrCommandWithBasis expectedBasis repository managedPaths actor adrId _recordId title summary body domains patterns inputDigest promptDigest contextDigest = do
+    oldHeadResult <- case expectedBasis of
+      Nothing -> resolveRevision repository (RevisionSpec "HEAD")
+      Just basis -> pure (Right (expectedBasisHead (mutationExpectedBasis basis)))
     case oldHeadResult of
       Left err ->
         pure (Left (Stage3ValidateState ("resolve HEAD: " <> T.pack (show err))))
       Right oldHead -> do
-        headStateResult <- repositoryHeadState repository
+        headStateResult <- case expectedBasis of
+          Nothing -> repositoryHeadState repository
+          Just basis -> pure (Right (expectedBasisHeadState (mutationExpectedBasis basis)))
         let branchName =
               case headStateResult of
                 Right (GitHeadAttached ref) ->
@@ -462,7 +532,7 @@ createAdrCommand
                         , configExpectedHead = oldHead
                         , configGenerated = generated
                         }
-                commitAppendOnlyOperation repository config >>= \case
+                commitAppendOnlyWithBasis expectedBasis repository config >>= \case
                   Left transactionError ->
                     pure (Left transactionError)
                   Right TransactionResult {..} ->
@@ -478,6 +548,7 @@ createAdrCommand
                             , createCommitOid = transactionCommitOid
                             , createCreatedPaths = transactionCreatedPaths
                             , createIndexUpdated = transactionIndexUpdated
+                            , createPublicationError = transactionPublicationError
                             }
                       )
           _ ->
@@ -566,7 +637,8 @@ data AmendResult
         amendCommitOid    :: GitOid,
         amendUpdatedPath  :: RepoPath,
         amendCreatedPaths :: [RepoPath],
-        amendIndexUpdated :: Bool
+        amendIndexUpdated :: Bool,
+        amendPublicationError :: Maybe T.Text
       }
   deriving (Eq, Show)
 
@@ -597,7 +669,7 @@ amendAdrCommand
   newTitle
   newSummary
   newBody
-  inputs = amendWithSource repository actor adrId (selectAmendmentSource adrId recordId) "Amends current decision head.\n" newTitle newSummary newBody inputs
+  inputs = amendWithSource Nothing repository actor adrId (selectAmendmentSource adrId recordId) "Amends current decision head.\n" newTitle newSummary newBody inputs
 
 -- | Amend the uniquely current committed decision for an ADR.  The optional
 -- state token is checked against the same committed graph snapshot that
@@ -614,17 +686,27 @@ amendCurrentAdrCommand ::
   ProvenanceInputs ->
   IO (Either TransactionError AmendResult)
 amendCurrentAdrCommand repository actor adrId expectedState changeSummary newTitle newSummary newBody inputs =
+  amendCurrentAdrCommandWithBasis Nothing repository actor adrId expectedState changeSummary newTitle newSummary newBody inputs
+
+amendCurrentAdrCommandChecked :: ExpectedRepositoryBasis -> Repository -> Actor -> AdrId -> Maybe StateToken -> T.Text -> T.Text -> T.Text -> T.Text -> ProvenanceInputs -> IO (Either TransactionError AmendResult)
+amendCurrentAdrCommandChecked basis = amendCurrentAdrCommandWithBasis (Just (MutationBasis basis Nothing))
+
+amendCurrentAdrCommandCheckedPublishing :: (GitOid -> IO ()) -> ExpectedRepositoryBasis -> Repository -> Actor -> AdrId -> Maybe StateToken -> T.Text -> T.Text -> T.Text -> T.Text -> ProvenanceInputs -> IO (Either TransactionError AmendResult)
+amendCurrentAdrCommandCheckedPublishing publisher basis = amendCurrentAdrCommandWithBasis (Just (MutationBasis basis (Just publisher)))
+
+amendCurrentAdrCommandWithBasis :: Maybe MutationBasis -> Repository -> Actor -> AdrId -> Maybe StateToken -> T.Text -> T.Text -> T.Text -> T.Text -> ProvenanceInputs -> IO (Either TransactionError AmendResult)
+amendCurrentAdrCommandWithBasis expectedBasis repository actor adrId expectedState changeSummary newTitle newSummary newBody inputs =
   case normalizeChangeSummary changeSummary of
     Left err -> pure (Left err)
     Right rationale ->
-      amendWithSource repository actor adrId (selectCurrentAmendmentSource adrId expectedState newTitle newSummary newBody) rationale newTitle newSummary newBody inputs
+      amendWithSource expectedBasis repository actor adrId (selectCurrentAmendmentSource adrId expectedState newTitle newSummary newBody) rationale newTitle newSummary newBody inputs
 
-amendWithSource :: Repository -> Actor -> AdrId -> ([ParsedManagedDocument] -> Either TransactionError (Maybe DecisionRecord, [RecordId], [Domain])) -> T.Text -> T.Text -> T.Text -> T.Text -> ProvenanceInputs -> IO (Either TransactionError AmendResult)
-amendWithSource repository actor adrId selectSource rationale newTitle newSummary newBody inputs =
-  requireAttachedHead repository >>= \case
+amendWithSource :: Maybe MutationBasis -> Repository -> Actor -> AdrId -> ([ParsedManagedDocument] -> Either TransactionError (Maybe DecisionRecord, [RecordId], [Domain])) -> T.Text -> T.Text -> T.Text -> T.Text -> ProvenanceInputs -> IO (Either TransactionError AmendResult)
+amendWithSource expectedBasis repository actor adrId selectSource rationale newTitle newSummary newBody inputs =
+  mutationReadContext expectedBasis repository >>= \case
     Left err -> pure (Left err)
-    Right branchName -> do
-      snapshotResult <- repositorySnapshot repository (RevisionSpec "HEAD")
+    Right (branchName, revision) -> do
+      snapshotResult <- repositorySnapshot repository revision
       case snapshotResult of
         Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
         Right snapshot -> case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot of
@@ -654,26 +736,27 @@ amendWithSource repository actor adrId selectSource rationale newTitle newSummar
       entropy <- randomEntropy
       case (sortableOperationId timestampBytes entropy, sortableRecordId timestampBytes entropy, sortableConnectionId timestampBytes (createConnectionEntropy "amends" entropy)) of
         (Right opId, Right amendedId, Right connectionId) -> do
-           let amendedRecord = DecisionRecord adrId amendedId title summary currentDomains body
-               amendsConnection = ConnectionRecord connectionId (AmendsConnection (AmendsPayload adrId amendedId sourceHeads)) amendmentRationale
-               members = [ManagedDecision amendedRecord, ManagedConnection amendsConnection]
-               paths = repositorySnapshotManagedPaths snapshot
-           case traverse (sealAmendMember opId (repositorySnapshotRevision snapshot) branchName actor timestampMs sourceHeads inputs paths) members of
-             Left err -> pure (Left err)
-             Right generated -> do
-               let operationText = T.unpack (operationIdText opId)
-                   config = TransactionConfig operationText ("adrai: amend " <> adrIdText adrId)
-                     (Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", intercalate "," [T.unpack (recordIdText amendedId), T.unpack (connectionIdText connectionId)])])
-                     (resolvedCommitOid (repositorySnapshotRevision snapshot)) generated
-               commitAppendOnlyOperation repository config >>= \case
-                 Left transactionError -> pure (Left transactionError)
-                 Right TransactionResult {..} -> case (sourceHeads, transactionCreatedPaths) of
-                   (_ : _, decisionPath : _) -> pure (Right AmendResult
-                     { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId, amendAmends = sourceHeads,
-                       amendConnectionId = connectionId, amendCommitOid = transactionCommitOid, amendUpdatedPath = decisionPath,
-                       amendCreatedPaths = transactionCreatedPaths, amendIndexUpdated = transactionIndexUpdated })
-                   ([], _) -> pure (Left (Stage3ValidateState "amend target ADR has no current decision"))
-                   (_, []) -> pure (Left (Stage8UpdateRef "amend transaction reported no created paths"))
+          let amendedRecord = DecisionRecord adrId amendedId title summary currentDomains body
+              amendsConnection = ConnectionRecord connectionId (AmendsConnection (AmendsPayload adrId amendedId sourceHeads)) amendmentRationale
+              members = [ManagedDecision amendedRecord, ManagedConnection amendsConnection]
+              paths = repositorySnapshotManagedPaths snapshot
+          case traverse (sealAmendMember opId (repositorySnapshotRevision snapshot) branchName actor timestampMs sourceHeads inputs paths) members of
+            Left err -> pure (Left err)
+            Right generated -> do
+              let operationText = T.unpack (operationIdText opId)
+                  config = TransactionConfig operationText ("adrai: amend " <> adrIdText adrId)
+                    (Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", intercalate "," [T.unpack (recordIdText amendedId), T.unpack (connectionIdText connectionId)])])
+                    (resolvedCommitOid (repositorySnapshotRevision snapshot)) generated
+              commitAppendOnlyWithBasis expectedBasis repository config >>= \case
+                Left transactionError -> pure (Left transactionError)
+                Right TransactionResult {..} -> case (sourceHeads, transactionCreatedPaths) of
+                  (_ : _, decisionPath : _) -> pure (Right AmendResult
+                    { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId, amendAmends = sourceHeads,
+                      amendConnectionId = connectionId, amendCommitOid = transactionCommitOid, amendUpdatedPath = decisionPath,
+                      amendCreatedPaths = transactionCreatedPaths, amendIndexUpdated = transactionIndexUpdated,
+                      amendPublicationError = transactionPublicationError })
+                  ([], _) -> pure (Left (Stage3ValidateState "amend target ADR has no current decision"))
+                  (_, []) -> pure (Left (Stage8UpdateRef "amend transaction reported no created paths"))
         _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
 
 -- | Backwards-compatible spelling retained for existing explorer callers.
@@ -697,6 +780,26 @@ requireAttachedHead repository = do
     Right GitHeadDetached -> pure (Left (Stage3ValidateState "HEAD is detached; attach a branch first"))
     Right (GitHeadAttached ref) ->
       pure (Right (fromMaybe (gitRefText ref) (T.stripPrefix "refs/heads/" (gitRefText ref))))
+
+mutationReadContext :: Maybe MutationBasis -> Repository -> IO (Either TransactionError (T.Text, RevisionSpec))
+mutationReadContext Nothing repository =
+  fmap (fmap (\branch -> (branch, RevisionSpec "HEAD"))) (requireAttachedHead repository)
+mutationReadContext (Just basis) _ =
+  case expectedBasisHeadState (mutationExpectedBasis basis) of
+    GitHeadDetached -> pure (Left (Stage3ValidateState "HEAD is detached; attach a branch first"))
+    GitHeadAttached ref ->
+      pure
+        ( Right
+            ( fromMaybe (gitRefText ref) (T.stripPrefix "refs/heads/" (gitRefText ref)),
+              RevisionSpec (gitOidText (expectedBasisHead (mutationExpectedBasis basis)))
+            )
+        )
+
+commitAppendOnlyWithBasis :: Maybe MutationBasis -> Repository -> TransactionConfig -> IO (Either TransactionError TransactionResult)
+commitAppendOnlyWithBasis Nothing = commitAppendOnlyOperation
+commitAppendOnlyWithBasis (Just basis) = case mutationCommitPublisher basis of
+  Nothing -> commitAppendOnlyOperationChecked (mutationExpectedBasis basis)
+  Just publisher -> commitAppendOnlyOperationCheckedPublishing publisher (mutationExpectedBasis basis)
 
 committedDocuments :: ManagedPaths -> RepositorySnapshot -> Either TransactionError [ParsedManagedDocument]
 committedDocuments paths snapshot =
@@ -815,7 +918,8 @@ data ScopeChangeResult
         scopeChangeCommitOid  :: GitOid,
         scopeChangeNewPath    :: RepoPath,
         scopeChangeCreatedPaths :: [RepoPath],
-        scopeChangeIndexUpdated :: Bool
+        scopeChangeIndexUpdated :: Bool,
+        scopeChangePublicationError :: Maybe T.Text
       }
   deriving (Eq, Show)
 
@@ -856,14 +960,23 @@ changeScopeCommand
   expectedState
   reason
   request
-  inputs =
+  inputs = changeScopeCommandWithBasis Nothing repository _managedPaths actor adrId expectedState reason request inputs
+
+changeScopeCommandChecked :: ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> ScopeChangeRequest -> ProvenanceInputs -> IO (Either TransactionError ScopeChangeResult)
+changeScopeCommandChecked basis = changeScopeCommandWithBasis (Just (MutationBasis basis Nothing))
+
+changeScopeCommandCheckedPublishing :: (GitOid -> IO ()) -> ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> ScopeChangeRequest -> ProvenanceInputs -> IO (Either TransactionError ScopeChangeResult)
+changeScopeCommandCheckedPublishing publisher basis = changeScopeCommandWithBasis (Just (MutationBasis basis (Just publisher)))
+
+changeScopeCommandWithBasis :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> ScopeChangeRequest -> ProvenanceInputs -> IO (Either TransactionError ScopeChangeResult)
+changeScopeCommandWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs =
     case normalizeScopeReason reason of
       Left err -> pure (Left err)
       Right rationale ->
-        requireAttachedHead repository >>= \case
+        mutationReadContext expectedBasis repository >>= \case
           Left err -> pure (Left err)
-          Right branchName ->
-            repositorySnapshot repository (RevisionSpec "HEAD") >>= \case
+          Right (branchName, revision) ->
+            repositorySnapshot repository revision >>= \case
               Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
               Right snapshot ->
                 case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot >>= selectScopeUpdate adrId expectedState request of
@@ -900,7 +1013,7 @@ changeScopeCommand
                     , configExpectedHead = resolvedCommitOid (repositorySnapshotRevision snapshot)
                     , configGenerated = [generated]
                     }
-              commitAppendOnlyOperation repository config >>= \case
+              commitAppendOnlyWithBasis expectedBasis repository config >>= \case
                 Left transactionError -> pure (Left transactionError)
                 Right TransactionResult {..} -> case transactionCreatedPaths of
                   [newPath] -> pure (Right ScopeChangeResult
@@ -914,6 +1027,7 @@ changeScopeCommand
                     , scopeChangeNewPath = newPath
                     , scopeChangeCreatedPaths = transactionCreatedPaths
                     , scopeChangeIndexUpdated = transactionIndexUpdated
+                    , scopeChangePublicationError = transactionPublicationError
                     })
                   _ -> pure (Left (Stage8UpdateRef "scope transaction did not report exactly one created path"))
         _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
@@ -1055,7 +1169,8 @@ data DomainChangeResult
         domainChangeCommitOid  :: GitOid,
         domainChangeNewPath    :: RepoPath,
         domainChangeCreatedPaths :: [RepoPath],
-        domainChangeIndexUpdated :: Bool
+        domainChangeIndexUpdated :: Bool,
+        domainChangePublicationError :: Maybe T.Text
       }
   deriving (Eq, Show)
 
@@ -1089,12 +1204,21 @@ changeDomainCommand
   _managedPaths
   actor
   adrId
-  expectedState reason request inputs =
+  expectedState reason request inputs = changeDomainCommandWithBasis Nothing repository _managedPaths actor adrId expectedState reason request inputs
+
+changeDomainCommandChecked :: ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> DomainChangeRequest -> ProvenanceInputs -> IO (Either TransactionError DomainChangeResult)
+changeDomainCommandChecked basis = changeDomainCommandWithBasis (Just (MutationBasis basis Nothing))
+
+changeDomainCommandCheckedPublishing :: (GitOid -> IO ()) -> ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> DomainChangeRequest -> ProvenanceInputs -> IO (Either TransactionError DomainChangeResult)
+changeDomainCommandCheckedPublishing publisher basis = changeDomainCommandWithBasis (Just (MutationBasis basis (Just publisher)))
+
+changeDomainCommandWithBasis :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> DomainChangeRequest -> ProvenanceInputs -> IO (Either TransactionError DomainChangeResult)
+changeDomainCommandWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs =
     case normalizeDomainReason reason of
       Left err -> pure (Left err)
-      Right rationale -> requireAttachedHead repository >>= \case
+      Right rationale -> mutationReadContext expectedBasis repository >>= \case
         Left err -> pure (Left err)
-        Right branchName -> repositorySnapshot repository (RevisionSpec "HEAD") >>= \case
+        Right (branchName, revision) -> repositorySnapshot repository revision >>= \case
           Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
           Right snapshot -> case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot >>= selectDomainUpdate adrId expectedState request of
             Left err -> pure (Left err)
@@ -1109,7 +1233,7 @@ changeDomainCommand
                       paths = repositorySnapshotManagedPaths snapshot
                   case sealDomainUpdate opId (repositorySnapshotRevision snapshot) branchName actor timestampMs parents inputs paths record of
                     Left err -> pure (Left err)
-                    Right generated -> commitAppendOnlyOperation repository TransactionConfig
+                    Right generated -> commitAppendOnlyWithBasis expectedBasis repository TransactionConfig
                       { configOperationId = T.unpack (operationIdText opId), configSubject = "adrai: domain " <> adrIdText adrId
                       , configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))]
                       , configExpectedHead = resolvedCommitOid (repositorySnapshotRevision snapshot), configGenerated = [generated] } >>= \case
@@ -1120,7 +1244,8 @@ changeDomainCommand
                             , domainChangeParents = parents, domainChangeMode = mode, domainChangeAdded = added, domainChangeRemoved = removed
                             , domainChangeEffective = effective, domainChangeRefinements = refinements
                             , domainChangeCommitOid = transactionCommitOid, domainChangeNewPath = newPath, domainChangeCreatedPaths = transactionCreatedPaths
-                            , domainChangeIndexUpdated = transactionIndexUpdated })
+                            , domainChangeIndexUpdated = transactionIndexUpdated,
+                              domainChangePublicationError = transactionPublicationError })
                           _ -> pure (Left (Stage8UpdateRef "domain transaction did not report exactly one created path"))
                 _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))
 
@@ -1267,7 +1392,8 @@ data ObsoleteResult
         obsoleteCommitOid   :: GitOid,
         obsoleteNewPath     :: RepoPath,
         obsoleteCreatedPaths :: [RepoPath],
-        obsoleteIndexUpdated :: Bool
+        obsoleteIndexUpdated :: Bool,
+        obsoletePublicationError :: Maybe T.Text
       }
   deriving (Eq, Show)
 
@@ -1293,9 +1419,19 @@ obsoleteCommand
   adrId
   intent
   inputs =
+    obsoleteCommandWithBasis Nothing repository managedPaths actor adrId intent inputs
+
+obsoleteCommandChecked :: ObsoleteIntent intent => ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> intent -> ProvenanceInputs -> IO (Either TransactionError ObsoleteResult)
+obsoleteCommandChecked basis = obsoleteCommandWithBasis (Just (MutationBasis basis Nothing))
+
+obsoleteCommandCheckedPublishing :: ObsoleteIntent intent => (GitOid -> IO ()) -> ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> intent -> ProvenanceInputs -> IO (Either TransactionError ObsoleteResult)
+obsoleteCommandCheckedPublishing publisher basis = obsoleteCommandWithBasis (Just (MutationBasis basis (Just publisher)))
+
+obsoleteCommandWithBasis :: ObsoleteIntent intent => Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> intent -> ProvenanceInputs -> IO (Either TransactionError ObsoleteResult)
+obsoleteCommandWithBasis expectedBasis repository managedPaths actor adrId intent inputs =
     case toObsoleteRequest intent >>= normalizeObsoleteRequest of
       Left err -> pure (Left err)
-      Right request -> statusTransition repository managedPaths actor adrId request StatusObsolete inputs
+      Right request -> statusTransition expectedBasis repository managedPaths actor adrId request StatusObsolete inputs
 
 -- ---------------------------------------------------------------------------
 -- Reactivate ADR
@@ -1320,7 +1456,8 @@ data ReactivateResult
         reactivateCommitOid   :: GitOid,
         reactivateNewPath     :: RepoPath,
         reactivateCreatedPaths :: [RepoPath],
-        reactivateIndexUpdated :: Bool
+        reactivateIndexUpdated :: Bool,
+        reactivatePublicationError :: Maybe T.Text
       }
   deriving (Eq, Show)
 
@@ -1346,9 +1483,19 @@ reactivateCommand
   adrId
   intent
   inputs =
+    reactivateCommandWithBasis Nothing repository managedPaths actor adrId intent inputs
+
+reactivateCommandChecked :: ReactivateIntent intent => ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> intent -> ProvenanceInputs -> IO (Either TransactionError ReactivateResult)
+reactivateCommandChecked basis = reactivateCommandWithBasis (Just (MutationBasis basis Nothing))
+
+reactivateCommandCheckedPublishing :: ReactivateIntent intent => (GitOid -> IO ()) -> ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> intent -> ProvenanceInputs -> IO (Either TransactionError ReactivateResult)
+reactivateCommandCheckedPublishing publisher basis = reactivateCommandWithBasis (Just (MutationBasis basis (Just publisher)))
+
+reactivateCommandWithBasis :: ReactivateIntent intent => Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> intent -> ProvenanceInputs -> IO (Either TransactionError ReactivateResult)
+reactivateCommandWithBasis expectedBasis repository managedPaths actor adrId intent inputs =
     case toReactivateRequest intent >>= normalizeReactivateRequest of
       Left err -> pure (Left err)
-      Right request -> fmap (fmap toReactivateResult) (statusTransition repository managedPaths actor adrId (asObsoleteRequest request) StatusActive inputs)
+      Right request -> fmap (fmap toReactivateResult) (statusTransition expectedBasis repository managedPaths actor adrId (asObsoleteRequest request) StatusActive inputs)
 
 -- | The typed request is the public service input.  The 'RecordId' instances
 -- keep the terminal explorer compiling until its deliberately separate status
@@ -1403,6 +1550,7 @@ toReactivateResult result =
     , reactivateNewPath = obsoleteNewPath result
     , reactivateCreatedPaths = obsoleteCreatedPaths result
     , reactivateIndexUpdated = obsoleteIndexUpdated result
+    , reactivatePublicationError = obsoletePublicationError result
     }
 
 normalizeStatusReason :: T.Text -> T.Text -> Either TransactionError T.Text
@@ -1412,12 +1560,12 @@ normalizeStatusReason operation raw
   where
     normalized = T.strip (normalizeLineEndings raw)
 
-statusTransition :: Repository -> ManagedPaths -> Actor -> AdrId -> ObsoleteRequest -> StatusState -> ProvenanceInputs -> IO (Either TransactionError ObsoleteResult)
-statusTransition repository _managedPaths actor adrId request desiredState inputs =
-  requireAttachedHead repository >>= \case
+statusTransition :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> ObsoleteRequest -> StatusState -> ProvenanceInputs -> IO (Either TransactionError ObsoleteResult)
+statusTransition expectedBasis repository _managedPaths actor adrId request desiredState inputs =
+  mutationReadContext expectedBasis repository >>= \case
     Left err -> pure (Left err)
-    Right branchName ->
-      repositorySnapshot repository (RevisionSpec "HEAD") >>= \case
+    Right (branchName, revision) ->
+      repositorySnapshot repository revision >>= \case
         Left err -> pure (Left (Stage3ValidateState ("read committed HEAD: " <> T.pack (show err))))
         Right snapshot ->
           case committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot >>= selectStatusTransition adrId request desiredState of
@@ -1438,7 +1586,7 @@ statusTransition repository _managedPaths actor adrId request desiredState input
                   case sealStatusTransition opId (repositorySnapshotRevision snapshot) branchName actor timestampMs parents recordHeads inputs paths record of
                     Left err -> pure (Left err)
                     Right generated ->
-                      commitAppendOnlyOperation repository TransactionConfig
+                      commitAppendOnlyWithBasis expectedBasis repository TransactionConfig
                         { configOperationId = T.unpack (operationIdText opId)
                         , configSubject = "adrai: " <> statusOperationLabel desiredState <> " " <> adrIdText adrId
                         , configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))]
@@ -1459,6 +1607,7 @@ statusTransition repository _managedPaths actor adrId request desiredState input
                               , obsoleteNewPath = newPath
                               , obsoleteCreatedPaths = transactionCreatedPaths
                               , obsoleteIndexUpdated = transactionIndexUpdated
+                              , obsoletePublicationError = transactionPublicationError
                               })
                             _ -> pure (Left (Stage8UpdateRef "status transaction did not report exactly one created path"))
                 _ -> pure (Left (Stage3ValidateState "failed to generate sortable identifiers"))

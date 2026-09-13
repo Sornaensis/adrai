@@ -95,9 +95,12 @@ credentialMatches (ProcessSecret expected) candidate =
 
 data BoundAuthority = BoundAuthority
   { boundPort :: Int,
-    boundProcessId :: Text
+    _boundProcessId :: Text
   }
-  deriving (Eq, Show)
+  deriving (Eq)
+
+instance Show BoundAuthority where
+  show authority = "BoundAuthority {host=" <> show (authorityHost authority) <> ", process=<redacted>}"
 
 mkBoundAuthority :: Int -> Text -> Either SecurityError BoundAuthority
 mkBoundAuthority port processId
@@ -126,7 +129,7 @@ sessionCookie authority secret =
     <> "=" <> processSecretText secret
     <> "; Path=/; HttpOnly; SameSite=Strict"
 
-data SecurityMethod = SecurityGet | SecurityPost
+data SecurityMethod = SecurityGet | SecurityPost | SecurityOther Text
   deriving (Eq, Show)
 
 data AdmissionTarget

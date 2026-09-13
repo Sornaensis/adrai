@@ -11,8 +11,8 @@
   "components": [
     {
       "name": "adrai-test",
-      "registrationCount": 852,
-      "registrationState": "declared registry after all frozen round-nine source removals; bounded List verification is pending",
+      "registrationCount": 875,
+      "registrationState": "verified by the retained runner against the current registry",
       "staticEvidence": {
         "nativeHelperRootProcessesRound6": 12,
         "nativeHelperDescendantProcessesRound6": 1,
@@ -327,10 +327,10 @@
       {
         "id": "T",
         "component": "adrai-test",
-        "selectedTests": 47,
+        "selectedTests": 48,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "Exactly two shared resources are acquired in the selected process: the committed transaction seed and the unborn-repository seed.",
-        "privateCopies": "Exactly 45 private copies remain after two redundant shared-seed per-case copies are removed: 43 copies of the committed transaction seed and two copies of the unborn-repository seed.",
+        "privateCopies": "Exactly 51 private copies remain after the checked-basis and publication regressions: 49 copies of the committed transaction seed and two copies of the unborn-repository seed.",
         "childProcesses": "Round eight removes five Transaction registrations after transferring linked index/branch, canonical common-lock, live contention, absolute-child rejection and Stage7 state assertions. In the affected Env/T scope, harness Git processes fall from 119 to 26, direct native transactions from three to zero, lock attempts from fourteen to five and releases from ten to three. The round-seven whole-T total of 101 setup Git children is historical and is not presented as the current whole-job count."
       },
       {
@@ -363,9 +363,9 @@
       {
         "id": "Rest",
         "component": "adrai-test",
-        "selectedTests": 547,
+        "selectedTests": 569,
         "selectedProcessLaunches": 1,
-        "resourceSeeds": "Selected-resource constructors outside the thirteen anchored groups are input dependent; exact construction count is unmeasured.",
+        "resourceSeeds": "Selected-resource constructors outside the thirteen anchored groups are input dependent; the nine P7-02 cases acquire bounded loopback fixtures and four use a temporary initialized Git repository; exact construction count elsewhere is unmeasured.",
         "privateCopies": "Unmeasured; fixture-local private copies and temporary repositories are created by the selected cases.",
         "childProcesses": "Unmeasured; this complement retains remaining unit, property, golden and integration cases after extracting Query, Environment, compiled-search SQLite and MutationE2E."
       },

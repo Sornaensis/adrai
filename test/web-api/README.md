@@ -1,3 +1,6 @@
-# Web API tests
+# Web API runtime tests
 
-This directory will own request/response and protocol tests for the future Haskell web API. The web API is not implemented yet.
+These retained tests start the package WAI/Warp application on a real IPv4
+loopback socket. They keep browser opening injected and exercise credential,
+route, unavailable-events, occupied-port, and shutdown behavior without a live
+watcher or Elm client.

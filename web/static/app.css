@@ -12,3 +12,7 @@ main {
   margin: 4rem auto;
   padding: 0 1rem;
 }
+
+p {
+  line-height: 1.5;
+}

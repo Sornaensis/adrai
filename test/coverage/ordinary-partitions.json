@@ -89,6 +89,7 @@
         "ADRAI.Transaction contract.repository-common mutation lock.owner close failure restores exclusion until a successful retry",
         "ADRAI.Transaction contract.repository-common mutation lock.withGitLock owner pre-close failure preserves action precedence and permits retry",
         "ADRAI.Transaction contract.repository-common mutation lock.withGitLock cleans up after synchronous and asynchronous actions",
+        "ADRAI.Transaction contract.checked basis rejects a same-OID branch switch after lock acquisition before effects",
         "ADRAI.Transaction contract.Git plumbing accepts one bare 40- or 64-hex OID with trailing stdout framing",
         "ADRAI.Transaction contract.Git plumbing rejects non-bare or malformed OID output",
         "ADRAI.Transaction contract.Stage7 failure restores caller index and generated worktree state exactly",
@@ -1013,10 +1014,19 @@
         "ADRAI.P7-01.web-contracts.credentials admit cookie bearer and bootstrap while confining query tokens",
         "ADRAI.P7-01.web-contracts.host origin null-origin and bound-port checks fail closed",
         "ADRAI.P7-01.web-contracts.mutations require bearer JSON and accept the matching browser cookie",
-        "ADRAI.P7-01.web-contracts.credentials frames and admission diagnostics are redacted"
+        "ADRAI.P7-01.web-contracts.credentials frames and admission diagnostics are redacted",
+        "ADRAI.P7-02.web server runtime.real loopback bootstrap exchanges the query credential for a secure cookie",
+        "ADRAI.P7-02.web server runtime.real loopback admission protects unknown routes",
+        "ADRAI.P7-02.web server runtime.authenticated events report unavailable snapshot metadata",
+        "ADRAI.P7-02.web server runtime.shared query routes retain exact response snapshots",
+        "ADRAI.P7-02.web server runtime.all six HTTP mutations commit through checked shared services",
+        "ADRAI.P7-02.web server runtime.oversized inputs recover and stale repository bases preserve HEAD",
+        "ADRAI.P7-02.web server runtime.built web command and repository bindings start and stop cleanly",
+        "ADRAI.P7-02.web server runtime.an occupied explicit port fails without stealing the listener",
+        "ADRAI.P7-02.web server runtime.server shutdown releases the acquired port"
       ],
       "rationale": "Exact complement of the thirteen anchored intact groups, proved against the full current ordinary registration before dispatch.",
-      "costProvenance": "Static retained count 560 after adding the P7-01 pure web contracts; no measured balance claim."
+      "costProvenance": "Static Rest count 569 after adding nine compact P7-02 runtime checks; the locked basis-race regression is in partition T."
     }
   ],
   "queue": [

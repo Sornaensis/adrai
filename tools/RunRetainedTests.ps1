@@ -122,6 +122,13 @@ function Get-BuildInputInventory {
         $candidate = Join-Path $Root $relative
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { $paths.Add($candidate) }
     }
+    foreach ($relative in @('web/static/index.html', 'web/static/app.css', 'web/dist/app.js')) {
+        $candidate = Join-Path $Root $relative
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "Required embedded web input is missing: $candidate"
+        }
+        $paths.Add($candidate)
+    }
     foreach ($directoryName in @('src', 'app', 'bench', 'test')) {
         $directory = Join-Path $Root $directoryName
         if (-not (Test-Path -LiteralPath $directory -PathType Container)) {

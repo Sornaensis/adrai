@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE RecordWildCards #-}
 
@@ -98,8 +99,10 @@ import Adrai.History
   )
 import Adrai.Retrieval (RetrievalMode (FtsRetrieval, HybridRetrieval, VectorRetrieval))
 import Adrai.Types (ViewMode (CollapsedView, ExplodedView))
+import qualified Adrai.Web.Api as WebApi
+import qualified Adrai.Web.Server as WebServer
 import Adrai.Domain (Domain, canonicalDomains, domainErrorText, domainText, domainRefinementText, mkDomain, parseDomainRefinement)
-import Adrai.Git (GitHeadState (..), GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitBlobBytes, gitOidText, isShallowRepository, repositoryHeadState, repositoryWorktreeRoot, resolveRevision, systemGit)
+import Adrai.Git (GitHeadState (..), GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitBlobBytes, gitOidText, repositoryHeadState, repositoryWorktreeRoot, resolveRevision, systemGit)
 import Adrai.Identity (sortableAdrId, sortableRecordId)
 import qualified Adrai.Format as Format
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
@@ -140,6 +143,7 @@ import Adrai.Service.PostCommitIndex
   )
 import Adrai.Service.PostCommitIndex.Internal (clonePostCommitIndexTrustedSource)
 import Adrai.Service.Transaction (TransactionError (..))
+import qualified Adrai.Service.Runtime as Runtime
 import Adrai.Compiler.CacheSync (syncProvenanceSnapshot)
 import Adrai.Compiler.Attribution
   ( AttributionCounter (CounterBytes, CounterChanges, CounterCurrentEntries, CounterSelectedNodes),
@@ -210,6 +214,7 @@ import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as ByteString
 import Data.Bifunctor (first)
+import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Scientific as Scientific
@@ -423,6 +428,7 @@ data CliCommand
   | CmdReactivate ReactivateCommand
   | CmdScope ScopeCommand
   | CmdDomain DomainCommand
+  | CmdWeb WebApi.WebOptions
   | CmdExplore
   deriving (Eq, Show)
 
@@ -447,8 +453,20 @@ parser =
        <> Opt.command "reactivate" (info (CmdReactivate <$> reactivateParser) (progDesc "reactivate an ADR"))
        <> Opt.command "scope" (info (CmdScope <$> scopeParser) (progDesc "change an ADR scope"))
        <> Opt.command "domain" (info (CmdDomain <$> domainParser) (progDesc "change an ADR domain"))
+       <> Opt.command "web" (info (CmdWeb <$> webParser) (progDesc "serve the repository web API"))
        <> Opt.command "explore" (info (pure CmdExplore) (progDesc "open the terminal explorer"))
     )
+
+webParser :: Parser WebApi.WebOptions
+webParser =
+  WebApi.WebOptions
+    <$> optional (option (Opt.eitherReader parsePort) (long "port" <> metavar "PORT" <> help "loopback port (default: operating-system assigned)"))
+    <*> Opt.flag True False (long "no-open" <> help "do not open the browser")
+  where
+    parsePort raw =
+      case reads raw of
+        [(value, "")] -> first (const "PORT must be between 1 and 65535") (WebApi.mkBoundPort value)
+        _ -> Left "PORT must be a decimal integer between 1 and 65535"
 
 globalConfigParser :: Parser CliConfig
 globalConfigParser =
@@ -688,27 +706,42 @@ compareParser =
 run :: IO ()
 run = do
   arguments <- getArgs
-  case Opt.execParserPure Opt.defaultPrefs parserInfo arguments of
-    Opt.Success invocation -> dispatch invocation >>= exitWith
-    Opt.Failure failure -> do
-      let (message, parserExit) = Opt.renderFailure failure "adrai"
-          exitCode = if parserExit == ExitSuccess then ExitSuccess else ExitFailure 2
-      writeUtf8 stderr (Text.pack message)
-      exitWith exitCode
-    Opt.CompletionInvoked completion -> Opt.execCompletion completion "adrai" >>= putStr
+  if explicitRepoWithWeb arguments
+    then writeUtf8 stderr "web does not accept --repo; run it from the target worktree\n" >> exitWith (ExitFailure 2)
+    else case Opt.execParserPure Opt.defaultPrefs parserInfo arguments of
+      Opt.Success invocation -> dispatch invocation >>= exitWith
+      Opt.Failure failure -> do
+        let (message, parserExit) = Opt.renderFailure failure "adrai"
+            exitCode = if parserExit == ExitSuccess then ExitSuccess else ExitFailure 2
+        writeUtf8 stderr (Text.pack message)
+        exitWith exitCode
+      Opt.CompletionInvoked completion -> Opt.execCompletion completion "adrai" >>= putStr
   where
     parserInfo = info parser (progDesc "ADRAI - Architecture Decision Record tool")
 
 parseArguments :: [String] -> Either CliRendered CliInvocation
 parseArguments arguments =
-  case Opt.execParserPure Opt.defaultPrefs parserInfo arguments of
-    Opt.Success invocation -> Right invocation
-    Opt.Failure failure ->
-      let (message, _) = Opt.renderFailure failure "adrai"
-       in Left (CliRendered "" (Text.pack message) (ExitFailure 2))
-    Opt.CompletionInvoked _ -> Left (CliRendered "" "" ExitSuccess)
+  if explicitRepoWithWeb arguments
+    then Left (CliRendered "" "web does not accept --repo; run it from the target worktree\n" (ExitFailure 2))
+    else case Opt.execParserPure Opt.defaultPrefs parserInfo arguments of
+      Opt.Success invocation -> Right invocation
+      Opt.Failure failure ->
+        let (message, _) = Opt.renderFailure failure "adrai"
+         in Left (CliRendered "" (Text.pack message) (ExitFailure 2))
+      Opt.CompletionInvoked _ -> Left (CliRendered "" "" ExitSuccess)
   where
     parserInfo = info parser (progDesc "ADRAI - Architecture Decision Record tool")
+
+explicitRepoWithWeb :: [String] -> Bool
+explicitRepoWithWeb = scan False
+  where
+    scan _ [] = False
+    scan _ ["--repo"] = False
+    scan _ ("--repo" : _value : rest) = scan True rest
+    scan _ (value : rest) | "--repo=" `isPrefixOf` value = scan True rest
+    scan seen (value : _)
+      | "-" `isPrefixOf` value = False
+      | otherwise = seen && value == "web"
 
 -- | Dispatch a parsed command to its handler.
 dispatch :: CliInvocation -> IO ExitCode
@@ -818,6 +851,10 @@ dispatchWith dependencies (CliInvocation config (CmdCompare command)) = do
   case result of
     Left failure -> renderFailure failure
     Right projection -> emitRendered (renderCompareOutcome command projection)
+dispatchWith _ (CliInvocation config (CmdWeb options)) = do
+  WebServer.runWebServerAt (configRepo config) options >>= \case
+    Left problem -> renderFailure (CliUserFailure problem)
+    Right () -> pure ExitSuccess
 dispatchWith _ (CliInvocation config CmdExplore) = do
   actorResult <- pure (mkActor HumanActor "terminal-explorer" Nothing)
   case actorResult of
@@ -1148,130 +1185,7 @@ runProductionDoctor config command = do
   repositoryResult <- discoverRepository systemGit (configRepo config)
   case repositoryResult of
     Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
-    Right repository -> do
-      revisionResult <- resolveRepositoryRevision repository (RevisionSpec (doctorAt command))
-      case revisionResult of
-        Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
-        Right revision -> do
-          shallowResult <- isShallowRepository repository
-          case shallowResult of
-            Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
-            Right shallow -> do
-              databaseResult <- prepareIndexPath repository
-              case databaseResult of
-                Left problem -> pure (Left (CliUserFailure problem))
-                Right database -> do
-                  let target = resolvedCommitOid revision
-                  snapshotResult <- prepareCacheSnapshotPath repository target
-                  case snapshotResult of
-                    Left problem -> pure (Left (CliUserFailure problem))
-                    Right archive -> do
-                      exactDecision <- publishCurrentAliasExactDecision archive target database
-                      case exactDecision of
-                        Left problem -> pure (Left problem)
-                        Right True -> loadDoctorOutput database target shallow
-                        Right False -> do
-                          snapshot <- repositorySnapshot repository (RevisionSpec (gitOidText target))
-                          case snapshot of
-                            Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
-                            Right currentSnapshot -> do
-                              indexed <- indexCommittedWithAttributionAndProvenance inertColdCompileAttribution archive repository target currentSnapshot Nothing
-                              case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
-                                (True, Just published, Just indexedRevision, Nothing)
-                                  | published /= archive -> pure (Left (CliUserFailure "doctor published an unexpected cache snapshot path"))
-                                  | indexedRevision /= target -> pure (Left (CliUserFailure "doctor published an unexpected revision"))
-                                  | otherwise -> do
-                                      aliased <- publishCurrentAliasChecked published indexedRevision database
-                                      case aliased of
-                                        Left problem -> pure (Left problem)
-                                        Right () -> loadDoctorOutput database indexedRevision shallow
-                                (_, _, _, Just problem) -> pure (Left (CliUserFailure ("doctor failed: " <> Text.pack (show problem))))
-                                _ -> pure (Left (CliUserFailure "doctor returned an incomplete index result"))
-
-loadDoctorOutput :: FilePath -> GitOid -> Bool -> IO (Either CliFailure DoctorOutput)
-loadDoctorOutput database expectedRevision shallow = do
-  captured <- try (bracket (open database) close readRows) :: IO (Either SomeException DoctorRows)
-  case captured of
-    Left exception ->
-      case fromException exception of
-        Just cancellation -> throwIO (cancellation :: SomeAsyncException)
-        Nothing -> pure (Left (CliUserFailure ("unable to read doctor database: " <> Text.pack (displayException exception))))
-    Right (metadata, issues, conflicts) ->
-      pure (first CliUserFailure (doctorOutputFromRows database expectedRevision shallow metadata issues conflicts))
-  where
-    readRows connection = do
-      metadata <- query_ connection "SELECT key,value FROM meta ORDER BY key"
-      issues <- query_ connection "SELECT ordinal,code,severity,origin,adr_id,object_id,path,message FROM issue ORDER BY ordinal"
-      conflicts <- query_ connection "SELECT adr_id,state_token,summaries FROM adr_conflict ORDER BY adr_id"
-      pure (metadata, issues, conflicts)
-
-type DoctorRows =
-  ( [(Text, Text)]
-  , [(Int, Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)]
-  , [(Text, Text, Text)]
-  )
-
-doctorOutputFromRows
-  :: FilePath
-  -> GitOid
-  -> Bool
-  -> [(Text, Text)]
-  -> [(Int, Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)]
-  -> [(Text, Text, Text)]
-  -> Either Text DoctorOutput
-doctorOutputFromRows database expectedRevision shallow metadata issueRows conflictRows = do
-  compiled <- compileResultFromMeta database expectedRevision metadata
-  if coldCompilerIssueCount compiled == length issueRows
-    then pure ()
-    else Left "doctor issue rows do not match compiled issue count"
-  issues <- traverse materializeIssue issueRows
-  let errorCount = length (filter ((== "error") . doctorIssueSeverity) issues)
-      warningCount = length issues - errorCount
-  Right
-    DoctorOutput
-      { doctorOk = errorCount == 0
-      , doctorRevision = gitOidText expectedRevision
-      , doctorDatabase = Just database
-      , doctorShallow = shallow
-      , doctorIssues = issues
-      , doctorCacheStatus = []
-      , doctorCounts = DoctorCounts errorCount warningCount
-      , doctorCurrentAccess = Nothing
-      , doctorDatabaseBuild = Nothing
-      }
-  where
-    conflicts = Map.fromList [(adr, (token, summaries)) | (adr, token, summaries) <- conflictRows]
-
-    materializeIssue (_, code, severity, _, adr, objectId, path, message)
-      | severity /= "error" && severity /= "warning" =
-          Left ("doctor database has invalid issue severity: " <> severity)
-      | code == "ADR_CONFLICT" =
-          case adr >>= (`Map.lookup` conflicts) of
-            Nothing -> Left "doctor conflict issue is missing its conflict details"
-            Just (token, summaries) ->
-              Right
-                DoctorIssue
-                  { doctorIssueSeverity = severity
-                  , doctorIssueCode = code
-                  , doctorIssueMessage = message
-                  , doctorIssueAdrId = adr
-                  , doctorIssueObjectId = objectId
-                  , doctorIssuePath = path
-                  , doctorIssueStateToken = Just token
-                  , doctorIssueConflicts = map Aeson.String (Text.splitOn "\n" summaries)
-                  }
-      | otherwise =
-          Right
-            DoctorIssue
-              { doctorIssueSeverity = severity
-              , doctorIssueCode = code
-              , doctorIssueMessage = message
-              , doctorIssueAdrId = adr
-              , doctorIssueObjectId = objectId
-              , doctorIssuePath = path
-              , doctorIssueStateToken = Nothing
-              , doctorIssueConflicts = []
-              }
+    Right repository -> first CliUserFailure <$> Runtime.runDoctorAt repository (doctorAt command)
 
 loadPublishedCompileResult :: FilePath -> GitOid -> IO (Either CliFailure CompileResult)
 loadPublishedCompileResult database expectedRevision = do
@@ -1351,9 +1265,6 @@ compiledDatabaseFactsFromExactArchive ExactArchiveCompileFacts {..} =
 -- cache hit.
 data CompileCacheResultMode = CompileCacheFull | CompileCacheExact | CompileCacheTreeIdentical
   deriving (Eq, Show)
-
-compileResultFromMeta :: FilePath -> GitOid -> [(Text, Text)] -> Either Text CompileResult
-compileResultFromMeta = compileResultFromMetaMode CompileCacheFull
 
 compileResultFromFacts :: CompileCacheResultMode -> FilePath -> GitOid -> CompiledDatabaseFacts -> Either Text CompileResult
 compileResultFromFacts mode database expectedRevision facts = do

@@ -85,6 +85,7 @@ import qualified Adrai.VectorProperties
 import qualified Adrai.VectorQualityTest
 import qualified Adrai.VectorTest
 import qualified Adrai.WebContractTest
+import qualified Adrai.WebServerTest
 import Control.Concurrent (getNumCapabilities, threadDelay)
 import Control.Exception (bracket)
 import qualified Data.ByteString.Char8 as BS8
@@ -571,4 +572,7 @@ tests =
       , testGroup
           "P7-01"
           [ Adrai.WebContractTest.tests ]
+      , testGroup
+          "P7-02"
+          [ Adrai.WebServerTest.tests ]
     ]

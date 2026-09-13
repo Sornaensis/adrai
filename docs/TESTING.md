@@ -35,7 +35,7 @@ unrelated binaries are rejected. Build and artifact-discovery commands clear
 inherited `STACK_YAML` and pass the repository's hashed `stack.yaml` explicitly.
 Before compilation, build mode records a
 deterministic path and SHA-256 inventory of every file under `src`, `app`,
-`bench`, and `test`, plus the Stack and package configuration. It verifies that
+`bench`, and `test`, the three embedded web assets, plus the Stack and package configuration. It verifies that
 inventory again after compilation. The generated manifest also records Git
 HEAD and each executable path and SHA-256 hash. List, focused, and complete
 modes recompute the full input inventory and reject a changed input, stale
@@ -142,9 +142,9 @@ multiset from the verified partitions, retained components, and expanded repeat
 counts and requires exact equality with the configured queue before dispatch.
 Quoted command lines are checked against the Windows 32,767-character limit.
 
-The current source ledger declares 865 unique ordinary tests, 9 cache-selection
-tests, 28 stress tests, and 6 benchmark-registration tests: 908 unique
-registrations. The explicit competing-target repeat makes 909 executions. The
+The current source ledger declares 875 unique ordinary tests, 9 cache-selection
+tests, 28 stress tests, and 6 benchmark-registration tests: 918 unique
+registrations. The explicit competing-target repeat makes 919 executions. The
 runner does not hardcode these totals. A fresh matching build must list every
 actual registration and prove exact equality before dispatch.
 
@@ -166,7 +166,7 @@ that frozen input set. It is not an elapsed-time forecast for another snapshot:
 | `D` | 2 | The former 3-test job was censored at 29.257487 seconds. |
 | `cache` | 9 | Unstarted. |
 | `C` | 4 | Unstarted. |
-| `Rest` | 560 | Unstarted. |
+| `Rest` | 569 | Unstarted. |
 | `stress` | 28 | Unstarted; the gate still requires actual `--run-stress`. |
 | `E` | 2 | Unstarted. |
 | `registration` | 6 | Unstarted. |
@@ -246,6 +246,10 @@ Each run writes JSON evidence and separate stdout/stderr files under a new
 temporary directory unless `-EvidenceDirectory` supplies another path outside
 the repository. Evidence records artifact hashes, exact arguments, process IDs,
 durations, exit codes, timeout/orphan classification, and cleanup verification.
+
+Because the Haskell binary embeds `web/static/index.html`,
+`web/static/app.css`, and `web/dist/app.js`, List, Focused, and Complete reject
+any byte drift in those inputs relative to the build manifest.
 
 The accepted stress redesign reduces previous large capacity fixtures to the
 retained sizes declared by the test ledger. This gate proves the retained risk

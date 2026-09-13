@@ -169,9 +169,9 @@ testResponseMetadata = do
       repositoryWire = encoded (Api.responseJson (Api.ApiResponse single repositoryPayload))
   repositoryWire `contains` oidText @? "exact resolved OID missing"
   repositoryWire `contains` (Api.repositoryStateTokenText (Api.mkRepositoryStateToken bound oid headBasis)) @? "repository state token missing"
-  let created = Mutation.CreateResult "operation" adrId (typedRecord "R00000000000000000000000000") (typedConnection "C00000000000000000000000000") (typedConnection "C11111111111111111111111111") (typedConnection "C22222222222222222222222222") oid [Adrai.Types.RepoPath "architecture/adrai/decisions/a.md"] True
+  let created = Mutation.CreateResult "operation" adrId (typedRecord "R00000000000000000000000000") (typedConnection "C00000000000000000000000000") (typedConnection "C11111111111111111111111111") (typedConnection "C22222222222222222222222222") oid [Adrai.Types.RepoPath "architecture/adrai/decisions/a.md"] True Nothing
       indexed = PostCommit.PostCommitIndexResult True (Just "cache.db") (Just oid) [PostCommit.IndexWarning "warning" "retained"] Nothing
-      mutationWire = encoded (Api.apiResultPayload (Api.ApiCreateResult created [] indexed))
+      mutationWire = encoded (Api.apiResultPayload (Api.ApiCreateResult created [] indexed Nothing))
   mutationWire `contains` "\"committed\":true" @? "durable commit result lost"
   mutationWire `contains` "\"index_warnings\":1" @? "post-commit index warning lost"
   let unavailable = Api.ResponseMetadata (Api.mkGeneration 9) (Api.AsOfUnavailable "pre-authentication")

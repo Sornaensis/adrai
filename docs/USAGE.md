@@ -56,10 +56,16 @@ Use the identifier printed by `create` in place of `ADR_ID`.
 | `compile` | Build or reuse the repository's derived SQLite index. |
 | `doctor` | Report source, graph, provenance, and cache diagnostics. |
 | `explore` | Open the interactive terminal explorer. |
+| `web` | Start the authenticated loopback HTTP API and API-only bootstrap page. |
 
 Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands also accept `--json` for stable machine-readable output. Run `adrai COMMAND --help` for the complete option list.
 
 Mutation commands require an actor in `kind:identifier` form and create Git commits. Pass `--actor` or set `ADRAI_ACTOR`; valid kinds are `human`, `llm`, and `service`. Options such as `--expect STATE_TOKEN` provide optimistic concurrency checks when a caller is acting on previously read state.
+
+Run `adrai web --no-open` from a worktree to print a one-time authenticated
+loopback URL without opening a browser. Use `--port PORT` to request a specific
+port. Web mode is permanently bound to the current worktree and therefore does
+not accept the global `--repo` option.
 
 ## Exit status
 

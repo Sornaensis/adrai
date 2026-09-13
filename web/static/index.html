@@ -3,17 +3,28 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ADRAI web scaffold</title>
-    <link rel="stylesheet" href="./app.css">
+    <title>ADRAI web API</title>
+    <script>
+      (() => {
+        const url = new URL(window.location.href);
+        window.__ADRAI_TOKEN__ = url.searchParams.get("token");
+        url.searchParams.delete("token");
+        window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+        const css = document.createElement("link");
+        css.rel = "stylesheet";
+        css.href = "/app.css";
+        document.head.appendChild(css);
+        const app = document.createElement("script");
+        app.src = "/app.js";
+        app.defer = true;
+        document.head.appendChild(app);
+      })();
+    </script>
   </head>
   <body>
     <main>
-      <h1>ADRAI web scaffold</h1>
-      <p>The browser interface has not been implemented yet.</p>
+      <h1>ADRAI API is running</h1>
+      <p>The Elm repository explorer is pending.</p>
     </main>
-    <script src="../dist/app.js"></script>
-    <script>
-      Elm.Main.init({ flags: null });
-    </script>
   </body>
 </html>
