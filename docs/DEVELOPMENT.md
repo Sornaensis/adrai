@@ -28,11 +28,12 @@ Golden tests are read-only by default. Their fixture directories under `test/gol
 - `Adrai.CliRunner` parses and dispatches the public executable.
 - `Adrai.Explorer.*` implements the terminal UI.
 - `Adrai.Web.Application`, `Adrai.Web.Server`, and `Adrai.Web.Assets` implement
-  the authenticated loopback HTTP runtime over the shared service layer.
+  the authenticated loopback HTTP and WebSocket runtime over the shared service layer.
 - `Adrai.Web.Api`, `Adrai.Web.Security`, `Adrai.Web.Events`, and
-  `Adrai.Web.Watch` define the transport, admission, event, and observation
-  contracts. Live event delivery, watcher scheduling, and the Elm application
-  remain later increments.
+  `Adrai.Web.Socket` define admission and bounded event delivery.
+  `Adrai.Web.Watch` observes raw repository facts; `Adrai.Service.Compilation`
+  coordinates exact-revision archive creation. The Elm application remains a
+  later increment.
 
 Keep these boundaries narrow: low-level Git observation should not parse ADRAI documents or mutate refs, and repository reads must not fall back to ambient worktree bytes after resolving a revision.
 
@@ -42,6 +43,6 @@ Integration and E2E tests create temporary real Git repositories. They cover nor
 
 Deterministic fixture plans live in `test/support`. Keep logical plans independent from their Git or service interpreters, record counts and invariants near the fixture, and treat generator tags, seeds, and canonical digests as reviewed contract changes.
 
-The current API-only web runtime embeds the checked-in HTML, CSS, and JavaScript
+The current API-only web page embeds the checked-in HTML, CSS, and JavaScript
 bytes during the Haskell build. The Node version in `.node-version` is reserved
 for the later reproducible Elm build; see [Web interface](WEB.md).

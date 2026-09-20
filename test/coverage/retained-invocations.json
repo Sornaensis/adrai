@@ -11,7 +11,7 @@
   "components": [
     {
       "name": "adrai-test",
-      "registrationCount": 875,
+      "registrationCount": 881,
       "registrationState": "verified by the retained runner against the current registry",
       "staticEvidence": {
         "nativeHelperRootProcessesRound6": 12,
@@ -363,9 +363,9 @@
       {
         "id": "Rest",
         "component": "adrai-test",
-        "selectedTests": 569,
+        "selectedTests": 575,
         "selectedProcessLaunches": 1,
-        "resourceSeeds": "Selected-resource constructors outside the thirteen anchored groups are input dependent; the nine P7-02 cases acquire bounded loopback fixtures and four use a temporary initialized Git repository; exact construction count elsewhere is unmeasured.",
+        "resourceSeeds": "Selected-resource constructors outside the thirteen anchored groups are input dependent; the nine P7-02 and six P7-03 cases acquire bounded loopback, watcher and exact-compilation fixtures; exact construction count elsewhere is unmeasured.",
         "privateCopies": "Unmeasured; fixture-local private copies and temporary repositories are created by the selected cases.",
         "childProcesses": "Unmeasured; this complement retains remaining unit, property, golden and integration cases after extracting Query, Environment, compiled-search SQLite and MutationE2E."
       },

@@ -8,6 +8,8 @@ module Adrai.Service.Runtime
   ( prepareIndexPath,
     capturePostCommitIndex,
     indexCommitted,
+    ensureExactArchive,
+    runDoctorFromExactArchive,
     runDoctorAt,
   )
 where
@@ -44,7 +46,7 @@ import Adrai.Service.PostCommitIndex
     compilePostCommitIndexWithAttributionAndRefresh,
   )
 import Adrai.Service.PostCommitIndex.Internal (clonePostCommitIndexTrustedSource)
-import Adrai.Compiler.CacheSelection (withExactArchiveAliasRepair)
+import Adrai.Compiler.CacheSelection (validateExactCacheTarget, withExactArchiveAliasRepair, withValidatedExactCacheTargetConnection)
 import Adrai.Compiler.Attribution (inertColdCompileAttribution)
 import Adrai.Compiler.CacheSync (syncProvenanceSnapshot)
 import Control.Exception
@@ -63,12 +65,13 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Read as TextRead
-import Database.SQLite.Simple (Connection, Only (..), close, execute, open, query_, withTransaction)
+import Database.SQLite.Simple (Connection, Only (..), close, execute, execute_, open, query_, withTransaction)
 import Adrai.Provenance (OverlayFingerprint (..))
 import Adrai.Provenance.Ensure
   ( ProvenanceUpdate (..),
     configKey,
     ensureProvenanceWithRecoveryWitness,
+    openReadWriteExisting,
     seedRegisteredOperationsFromSemanticCache,
   )
 import Adrai.Provenance.Lock (withOverlayLock)
@@ -116,6 +119,53 @@ capturePostCommitIndex action = do
 indexCommitted :: FilePath -> Repository -> GitOid -> IO PostCommitIndexResult
 indexCommitted database repository commit =
   capturePostCommitIndex (compilePostCommitIndex repository commit database)
+
+-- | Ensure the immutable exact-revision archive exists and satisfies the full
+-- cache publication contract.  This deliberately does not publish or borrow
+-- the mutable current alias.
+ensureExactArchive :: Repository -> GitOid -> IO (Either Text FilePath)
+ensureExactArchive repository target = do
+  archiveResult <- prepareCacheSnapshotPath repository target
+  case archiveResult of
+    Left problem -> pure (Left problem)
+    Right archive -> do
+      reusable <- validateExactCacheTarget archive (gitOidText target)
+      if reusable
+        then pure (Right archive)
+        else do
+          snapshotResult <- repositorySnapshot repository (RevisionSpec (gitOidText target))
+          case snapshotResult of
+            Left problem -> pure (Left (Text.pack (show problem)))
+            Right snapshot -> do
+              indexed <- indexCommittedWithProvenance archive repository target snapshot
+              case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
+                (True, Just published, Just actual, Nothing)
+                  | published == archive && actual == target -> do
+                      accepted <- validateExactCacheTarget archive (gitOidText target)
+                      pure (if accepted then Right archive else Left "exact archive failed post-publication validation")
+                  | otherwise -> pure (Left "exact archive producer published an unexpected database or revision")
+                (_, _, _, Just problem) -> pure (Left ("exact archive compilation failed: " <> Text.pack (show problem)))
+                _ -> pure (Left "exact archive producer returned an incomplete result")
+
+-- | Project doctor output from one scoped, fully validated exact archive.
+-- Validation and reads share the same SQLite transaction and connection.
+runDoctorFromExactArchive :: Repository -> GitOid -> FilePath -> IO (Either Text DoctorOutput)
+runDoctorFromExactArchive repository target archive = do
+  shallow <- isShallowRepository repository
+  case shallow of
+    Left problem -> pure (Left (Text.pack (show problem)))
+    Right isShallow -> do
+      captured <- try @SomeException $ bracket (openReadWriteExisting archive) close $ \connection ->
+        withTransaction connection $ do
+          accepted <- withValidatedExactCacheTargetConnection (gitOidText target) connection $ \_ -> do
+            execute_ connection "PRAGMA query_only=ON"
+            loadDoctorOutputFromConnection archive target isShallow connection
+          pure (maybe (Left "exact doctor archive failed validation") id accepted)
+      case captured of
+        Left exception -> case fromException exception of
+          Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+          Nothing -> pure (Left ("unable to read exact doctor archive: " <> Text.pack (displayException exception)))
+        Right result -> pure result
 
 -- | Compile and read the exact requested revision using the same public
 -- post-commit compiler used after mutations.  The resolved OID, rather than a
@@ -276,54 +326,47 @@ publishExactArchive archive revision database = do
     Right (Just _) -> Right True
     Right Nothing -> Right False
 
-type DoctorRows =
-  ( [(Text, Text)],
-    [(Int, Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text)],
-    [(Text, Text, Text)]
-  )
-
 loadDoctorOutput :: FilePath -> GitOid -> Bool -> IO (Either Text DoctorOutput)
 loadDoctorOutput database expectedRevision shallow = do
-  captured <- try (bracket (open database) close readRows) :: IO (Either SomeException DoctorRows)
+  captured <- try (bracket (open database) close (loadDoctorOutputFromConnection database expectedRevision shallow)) :: IO (Either SomeException (Either Text DoctorOutput))
   case captured of
     Left exception ->
       case fromException exception of
         Just cancellation -> throwIO (cancellation :: SomeAsyncException)
         Nothing -> pure (Left ("unable to read doctor database: " <> Text.pack (displayException exception)))
-    Right (metadata, issueRows, conflictRows) -> pure (materialize metadata issueRows conflictRows)
-  where
-    readRows connection = do
-      metadata <- query_ connection "SELECT key,value FROM meta ORDER BY key"
-      issues <- query_ connection "SELECT ordinal,code,severity,origin,adr_id,object_id,path,message FROM issue ORDER BY ordinal"
-      conflicts <- query_ connection "SELECT adr_id,state_token,summaries FROM adr_conflict ORDER BY adr_id"
-      pure (metadata, issues, conflicts)
+    Right result -> pure result
 
-    materialize metadata issueRows conflictRows = do
-      resolved <- one metadata "resolved_oid"
-      if resolved == gitOidText expectedRevision then Right () else Left "compiled database revision does not match the requested revision"
-      _managedSources <- count metadata "managed_source_count"
-      issueCount <- count metadata "issue_count"
-      conflictCount <- count metadata "conflict_count"
-      _historyCommitsScanned <- count metadata "history_commits_scanned"
-      _operationCount <- count metadata "operation_count"
-      _searchDocuments <- count metadata "search_document_count"
-      _materializationFingerprint <- one metadata "materialization_fingerprint"
-      if conflictCount <= issueCount then Right () else Left "compiled database conflict count exceeds issue count"
-      if issueCount == length issueRows then Right () else Left "doctor issue rows do not match compiled issue count"
-      issues <- traverse (materializeIssue (Map.fromList [(adr, (token, summaries)) | (adr, token, summaries) <- conflictRows])) issueRows
-      let errors = length (filter ((== "error") . doctorIssueSeverity) issues)
-      Right
-        DoctorOutput
-          { doctorOk = errors == 0,
-            doctorRevision = gitOidText expectedRevision,
-            doctorDatabase = Just database,
-            doctorShallow = shallow,
-            doctorIssues = issues,
-            doctorCacheStatus = [],
-            doctorCounts = DoctorCounts errors (length issues - errors),
-            doctorCurrentAccess = Nothing,
-            doctorDatabaseBuild = Nothing
-          }
+loadDoctorOutputFromConnection :: FilePath -> GitOid -> Bool -> Connection -> IO (Either Text DoctorOutput)
+loadDoctorOutputFromConnection database expectedRevision shallow connection = do
+  metadata <- query_ connection "SELECT key,value FROM meta ORDER BY key"
+  issueRows <- query_ connection "SELECT ordinal,code,severity,origin,adr_id,object_id,path,message FROM issue ORDER BY ordinal"
+  conflictRows <- query_ connection "SELECT adr_id,state_token,summaries FROM adr_conflict ORDER BY adr_id"
+  pure $ do
+    resolved <- one metadata "resolved_oid"
+    if resolved == gitOidText expectedRevision then Right () else Left "compiled database revision does not match the requested revision"
+    _managedSources <- count metadata "managed_source_count"
+    issueCount <- count metadata "issue_count"
+    conflictCount <- count metadata "conflict_count"
+    _historyCommitsScanned <- count metadata "history_commits_scanned"
+    _operationCount <- count metadata "operation_count"
+    _searchDocuments <- count metadata "search_document_count"
+    _materializationFingerprint <- one metadata "materialization_fingerprint"
+    if conflictCount <= issueCount then Right () else Left "compiled database conflict count exceeds issue count"
+    if issueCount == length issueRows then Right () else Left "doctor issue rows do not match compiled issue count"
+    issues <- traverse (materializeIssue (Map.fromList [(adr, (token, summaries)) | (adr, token, summaries) <- conflictRows])) issueRows
+    let errors = length (filter ((== "error") . doctorIssueSeverity) issues)
+    Right
+      DoctorOutput
+        { doctorOk = errors == 0,
+          doctorRevision = gitOidText expectedRevision,
+          doctorDatabase = Just database,
+          doctorShallow = shallow,
+          doctorIssues = issues,
+          doctorCacheStatus = [],
+          doctorCounts = DoctorCounts errors (length issues - errors),
+          doctorCurrentAccess = Nothing,
+          doctorDatabaseBuild = Nothing
+        }
 
 materializeIssue :: Map.Map Text (Text, Text) -> (Int, Text, Text, Text, Maybe Text, Maybe Text, Maybe Text, Text) -> Either Text DoctorIssue
 materializeIssue conflicts (_, code, severity, _, adr, objectId, path, message)

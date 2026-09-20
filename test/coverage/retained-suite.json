@@ -880,7 +880,13 @@
         "ADRAI.P7-02.web server runtime.oversized inputs recover and stale repository bases preserve HEAD",
         "ADRAI.P7-02.web server runtime.built web command and repository bindings start and stop cleanly",
         "ADRAI.P7-02.web server runtime.an occupied explicit port fails without stealing the listener",
-        "ADRAI.P7-02.web server runtime.server shutdown releases the acquired port"
+        "ADRAI.P7-02.web server runtime.server shutdown releases the acquired port",
+        "ADRAI.P7-03.authenticated bounded websocket runtime",
+        "ADRAI.P7-03.fact watcher verifies and retries bounded changes",
+        "ADRAI.P7-03.exact revision compilation is one physical flight",
+        "ADRAI.P7-03.web exact compilation.real repository namespaces compile independently",
+        "ADRAI.P7-03.web exact compilation.server shutdown cancels the physical compiler and cleans its candidate",
+        "ADRAI.P7-03.web exact compilation.outstanding HTTP compilation retains its revision across CLI publication"
       ]
     },
     {

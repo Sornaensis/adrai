@@ -1,22 +1,45 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Adrai.WebServerTest (tests) where
+module Adrai.WebServerTest
+  ( tests,
+    testEventRuntime,
+    testWatchRuntime,
+    testCompilationRuntime,
+    dependencies,
+    withSeededRepository,
+    getJson,
+    getJsonStatus,
+    valueAt,
+    textAt,
+    gitHead,
+  ) where
 
 import qualified Adrai.Web.Api as Api
-import Adrai.Web.Application (ApplicationServices (..), defaultApplicationServices)
+import Adrai.Web.Application (ApplicationServices (..), applicationActiveFileRegistry, applicationEventCoordinator, defaultApplicationServices, newApplicationRuntime, publishWatcherEvent, stopApplicationRuntime)
 import Adrai.CliRunner (parseArguments)
-import Adrai.Git (discoverRepository, systemGit)
+import Adrai.Compiler.CacheSelection (validateExactCacheTarget)
+import Adrai.Format.Config (defaultConfigText)
+import Adrai.Git (Repository (..), RevisionSpec (RevisionSpec), discoverRepository, resolveRevision, systemGit)
+import Adrai.History (revisionRequested, revisionResolved)
+import Adrai.Provenance (gitOidText)
+import Adrai.Provenance.Git.Lock (withGitLock)
+import qualified Adrai.Service.Compilation as Compilation
 import qualified Adrai.Service.Mutation as Mutation
 import qualified Adrai.Service.Query as Query
+import qualified Adrai.Query as DomainQuery
+import qualified Adrai.Service.Runtime as Runtime
 import Adrai.Types (ViewMode (CollapsedView))
+import qualified Adrai.Types as Types
+import qualified Adrai.Web.Events as Events
 import Adrai.Web.Server (RunningServer (..), ServerDependencies (..), withWebServer)
 import qualified Adrai.Web.Security as Security
 import Adrai.Web.Socket (unavailableEventsTransport)
-import Control.Concurrent (newEmptyMVar, putMVar, takeMVar)
-import Control.Concurrent.Async (Async, async, wait)
-import Control.Exception (bracket, bracketOnError)
-import Control.Monad (forM, forM_)
+import qualified Adrai.Web.Watch as Watch
+import Control.Concurrent (newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
+import Control.Concurrent.Async (Async, async, cancel, poll, race, wait, waitCatch)
+import Control.Exception (SomeAsyncException, SomeException, bracket, bracketOnError, finally, fromException, throwIO, try)
+import Control.Monad (forM, forM_, void)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
@@ -24,23 +47,26 @@ import qualified Data.Aeson as Aeson
 import Data.Aeson.Types (Pair)
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
-import Data.IORef (atomicModifyIORef', newIORef, writeIORef)
+import Data.Bits ((.&.), xor)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Scientific as Scientific
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Network.Socket
-  ( Family (AF_INET), PortNumber, SockAddr (SockAddrInet), SocketOption (ReuseAddr), SocketType (Stream),
-    bind, close, connect, defaultProtocol, getSocketName, setSocketOption, socket, tupleToHostAddress )
+  ( Family (AF_INET), PortNumber, ShutdownCmd (ShutdownBoth), SockAddr (SockAddrInet), Socket, SocketOption (RecvBuffer, ReuseAddr), SocketType (Stream),
+    bind, close, connect, defaultProtocol, getSocketName, setSocketOption, shutdown, socket, tupleToHostAddress )
 import Network.Socket.ByteString (recv, sendAll)
-import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, listDirectory, removeFile)
+import qualified Network.WebSockets as WS
+import System.Directory (Permissions (writable), copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getPermissions, listDirectory, removeDirectory, removeDirectoryRecursive, removeFile, renameDirectory, setPermissions)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process (CreateProcess (..), StdStream (CreatePipe), callProcess, createProcess, proc, readCreateProcessWithExitCode, readProcess, terminateProcess, waitForProcess)
+import System.Process (CreateProcess (..), StdStream (CreatePipe), callProcess, createProcess, proc, readCreateProcessWithExitCode, readProcess, shell, terminateProcess, waitForProcess)
 import System.Exit (ExitCode (ExitSuccess))
 import System.IO (hGetLine)
 import Numeric (readHex)
+import Data.Word (Word8)
 import Database.SQLite.Simple (Only (..))
 import qualified Database.SQLite.Simple as SQLite
 import System.Timeout (timeout)
@@ -66,6 +92,8 @@ dependencies = ServerDependencies
     serverOpenBrowser = const (pure (Right ())),
     serverReady = const (pure ()),
     serverStopping = pure (),
+    serverEventCoordinatorReady = const (pure ()),
+    serverEventSendDeadline = pure (),
     serverApplicationServices = defaultApplicationServices,
     serverEventsTransport = unavailableEventsTransport
   }
@@ -126,6 +154,16 @@ testQueryRoutes = withSeededServer $ \root running -> do
   sharedShown <- Query.runShow repository (Query.ShowRequest adr CollapsedView current False) >>= either (assertFailure . Text.unpack . Query.showFailureText) pure
   httpShown <- getJson running ("/api/v1/adrs/" <> adr <> "?at=" <> current)
   valueAt ["data"] httpShown >>= (@?= Api.apiResultPayload (Api.ApiShowResult sharedShown))
+  defaultRelevant <- getJson running "/api/v1/relevant?file=seed.txt"
+  namedRelevant <- getJson running "/api/v1/relevant?file=seed.txt&at=main"
+  explicitRelevant <- getJson running ("/api/v1/relevant?file=seed.txt&at=" <> current)
+  mapM_ (\response -> valueAt ["data"] response >>= \value -> assertBool "relevant query returned a projection" (value /= Aeson.Null))
+    [defaultRelevant, namedRelevant, explicitRelevant]
+  currentOid <- resolveRevision repository (RevisionSpec current) >>= either (assertFailure . show) pure
+  relevantPath <- either (assertFailure . show) pure (Types.mkRepoPath "seed.txt")
+  BS.writeFile (root </> "seed.txt") "modified worktree relevance bytes"
+  Query.runRelevantQueryExact repository currentOid (DomainQuery.RelevantRequest relevantPath Types.WorkingRevision False 10)
+    >>= either (assertFailure . Text.unpack . Query.relevantFailureText) (const (pure ()))
   _ <- getJson running ("/api/v1/doctor?at=" <> current)
   let archive = root </> ".adrai" </> "cache" </> Text.unpack current <> ".sqlite"
   bracket (SQLite.open archive) SQLite.close $ \connection ->
@@ -135,14 +173,27 @@ testQueryRoutes = withSeededServer $ \root running -> do
   doctorExit @?= ExitSuccess
   cliDoctor <- maybe (assertFailure "CLI doctor did not return JSON") pure (Aeson.decodeStrict' (BS8.pack doctorStdout))
   httpDoctor <- getJson running ("/api/v1/doctor?at=" <> current)
-  valueAt ["data"] httpDoctor >>= (@?= cliDoctor)
-  bracket (SQLite.open (root </> ".adrai" </> "index.sqlite")) SQLite.close $ \connection -> do
+  let cliDatabase = root </> ".adrai" </> "index.sqlite"
+  valueAt ["database"] cliDoctor >>= (@?= Aeson.String (Text.pack cliDatabase))
+  validateExactCacheTarget archive current >>= assertBool "HTTP doctor reads a validated exact archive"
+  valueAt ["data", "database"] httpDoctor >>= (@?= Aeson.String (Text.pack archive))
+  let expectedHttpDoctor = case cliDoctor of
+        Aeson.Object fields -> Aeson.Object (KeyMap.insert "database" (Aeson.String (Text.pack archive)) fields)
+        other -> other
+  valueAt ["data"] httpDoctor >>= (@?= expectedHttpDoctor)
+  bracket (SQLite.open archive) SQLite.close $ \connection -> do
     [Only operationCommits] <- SQLite.query_ connection "SELECT COUNT(*) FROM operation_commit" :: IO [Only Int]
     [Only coverageRows] <- SQLite.query_ connection "SELECT COUNT(*) FROM operation_target_coverage" :: IO [Only Int]
     assertBool "committed overlay rows are visible to the published exact doctor cache" (operationCommits > 0 && coverageRows > 0)
   callProcess "git" ["-C", root, "commit", "--allow-empty", "-m", "move after exact request basis"]
   ambient <- gitHead root
   assertBool "ambient HEAD moved after the exact response basis" (ambient /= current)
+  pinnedNamed <- Query.runRelevantQueryExact repository currentOid (DomainQuery.RelevantRequest relevantPath (Types.AtRevision "main") False 10)
+    >>= either (assertFailure . Text.unpack . Query.relevantFailureText) pure
+  revisionRequested (DomainQuery.relevantProjectionRevision pinnedNamed) @?= "main"
+  revisionResolved (DomainQuery.relevantProjectionRevision pinnedNamed) @?= current
+  DomainQuery.relevantFileRevision (DomainQuery.relevantProjectionFile pinnedNamed) @?= current
+  DomainQuery.relevantFileSource (DomainQuery.relevantProjectionFile pinnedNamed) @?= "revision"
   let routes =
         [ "/api/v1/adrs/" <> adr <> "?at=" <> current,
           "/api/v1/history?adr=" <> adr <> "&at=" <> current,
@@ -170,7 +221,26 @@ testQueryRoutes = withSeededServer $ \root running -> do
     either (assertFailure . Text.unpack) pure started
 
 testMutationRoutes :: IO ()
-testMutationRoutes = withSeededServer $ \root running -> do
+testMutationRoutes = withSeededRepository $ \root -> do
+  blockNextArchive <- newIORef False
+  blockedArchive <- newIORef Nothing
+  let compileExact repository oid = do
+        shouldBlock <- atomicModifyIORef' blockNextArchive (\armed -> (False, armed))
+        if shouldBlock then do
+          let archive = root </> ".adrai" </> "cache" </> Text.unpack (gitOidText oid) <> ".sqlite"
+          createDirectoryIfMissing True (root </> ".adrai" </> "cache")
+          createDirectory archive
+          writeIORef blockedArchive (Just archive)
+        else pure ()
+        Runtime.ensureExactArchive repository oid
+      services = defaultApplicationServices {applicationCompileExact = compileExact}
+      injected = dependencies {serverApplicationServices = services}
+  started <- withWebServer injected root (Api.WebOptions Nothing False) $ \running _ ->
+    testMutationRoutesOnServer root running blockNextArchive blockedArchive
+  either (assertFailure . Text.unpack) pure started
+
+testMutationRoutesOnServer :: FilePath -> RunningServer -> IORef Bool -> IORef (Maybe FilePath) -> IO ()
+testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
   basis0 <- repositoryBasis running
   created <- postJson running "/api/v1/adrs" (createBody basis0)
   adr <- textAt ["data", "adr"] created
@@ -181,12 +251,15 @@ testMutationRoutes = withSeededServer $ \root running -> do
   mutateExisting running adr "scope" ["reason" Aeson..= ("broaden" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["docs/**"] :: [Text]), "remove" Aeson..= ([] :: [Text])] >>= assertCommitted
   mutateExisting running adr "domain" ["reason" Aeson..= ("broaden" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["ui"] :: [Text]), "remove" Aeson..= ([] :: [Text])] >>= assertCommitted
   mutateExisting running adr "obsolete" ["reason" Aeson..= ("retired" :: Text)] >>= assertCommitted
-  let currentIndex = root </> ".adrai" </> "index.sqlite"
-  exists <- doesFileExist currentIndex
-  if exists then removeFile currentIndex else pure ()
-  createDirectory currentIndex
+  writeIORef blockNextArchive True
   reactivated <- mutateExisting running adr "reactivate" ["reason" Aeson..= ("needed again" :: Text)]
   assertCommitted reactivated
+  reactivatedOid <- textAt ["data", "commit"] reactivated
+  durableHead <- gitHead root
+  reactivatedOid @?= durableHead
+  physicallyBlocked <- readIORef blockedArchive >>= maybe (assertFailure "the exact archive obstruction was not reached") pure
+  physicallyBlocked @?= root </> ".adrai" </> "cache" </> Text.unpack reactivatedOid <> ".sqlite"
+  doesDirectoryExist physicallyBlocked >>= (@?= True)
   valueAt ["data", "indexed"] reactivated >>= (@?= Aeson.Bool False)
   indexError <- valueAt ["data", "index_error"] reactivated
   assertBool "post-commit index failure is reported as a warning payload" (indexError /= Aeson.Null)
@@ -207,8 +280,8 @@ testMutationRoutes = withSeededServer $ \root running -> do
   withSeededRepository $ \orderedRoot -> do
     committed <- newEmptyMVar
     release <- newEmptyMVar
-    let delayedDispatch fallback allocate afterResolve publisher repo requestValue = do
-          outcome <- dispatchApplicationRequest defaultApplicationServices fallback allocate afterResolve publisher repo requestValue
+    let delayedDispatch compilation compileExact afterJoin fallback allocate afterResolve publisher repo requestValue = do
+          outcome <- dispatchApplicationRequest defaultApplicationServices compilation compileExact afterJoin fallback allocate afterResolve publisher repo requestValue
           case (requestValue, outcome) of
             (Api.ApiCreateRequest _ _, Right _) -> putMVar committed () >> takeMVar release
             _ -> pure ()
@@ -405,6 +478,760 @@ exerciseBuiltWeb executable root = do
   _ <- waitForProcess processHandle
   pure ()
 
+testEventRuntime :: IO ()
+testEventRuntime = withSeededServer $ \root running -> do
+  let authority = runningAuthority running
+      token = bootstrapToken running
+      headers =
+        [ ("Origin", TextEncoding.encodeUtf8 (Security.authorityOrigin authority)),
+          ("Authorization", TextEncoding.encodeUtf8 ("Bearer " <> token))
+        ]
+      authenticate = Aeson.encode (Aeson.object ["type" Aeson..= ("authenticate" :: Text), "credential" Aeson..= token])
+      awaitConfigWithoutRelevant label connection = loop (5 :: Int)
+        where
+          loop remaining
+            | remaining <= 0 = assertFailure (label <> ": no configuration-only event arrived within five bounded attempts")
+            | otherwise = do
+                BS.writeFile (root </> "seed.txt") (BS8.pack (label <> show remaining))
+                BS.appendFile (root </> ".adrai.toml") "\n"
+                received <- timeout 3000000 (WS.receiveData connection :: IO LBS.ByteString)
+                frame <- maybe (assertFailure (label <> ": event receive timed out")) pure received
+                let bytes = LBS.toStrict frame
+                if "configuration" `BS.isInfixOf` bytes && not ("relevant-worktree-file" `BS.isInfixOf` bytes)
+                  then pure ()
+                  else loop (remaining - 1)
+  port <- either assertFailure pure (authorityPort (Security.authorityHost authority))
+  session <- runOwnedWebSocketClient 20000000 port headers $ \connection -> do
+      WS.sendTextData connection authenticate
+      initial <- timeout 2000000 (WS.receiveData connection :: IO LBS.ByteString)
+      frame <- maybe (assertFailure "authenticated socket did not receive its initial resync") pure initial
+      assertBool "initial socket frame is a versioned invalidation" ("\"type\":\"repository-invalidated\"" `BS.isInfixOf` LBS.toStrict frame)
+      WS.sendTextData connection (Aeson.encode (Aeson.object ["type" Aeson..= ("active-files" :: Text), "paths" Aeson..= (["seed.txt"] :: [Text])]))
+      leaseAdded <- timeout 3000000 (WS.receiveData connection :: IO LBS.ByteString)
+      leaseAddedFrame <- maybe (assertFailure "active-files addition did not publish its interest transition") pure leaseAdded
+      assertBool "active-files addition publishes a relevant-interest transition" ("relevant-worktree-file" `BS.isInfixOf` LBS.toStrict leaseAddedFrame)
+      BS.writeFile (root </> "seed.txt") "leased relevant change"
+      leased <- timeout 3000000 (WS.receiveData connection :: IO LBS.ByteString)
+      leasedFrame <- maybe (assertFailure "leased relevant-file change was not delivered") pure leased
+      assertBool "active-files lease adds relevant-file invalidation" ("relevant-worktree-file" `BS.isInfixOf` LBS.toStrict leasedFrame)
+      WS.sendTextData connection (Aeson.encode (Aeson.object ["type" Aeson..= ("active-files" :: Text), "paths" Aeson..= ([] :: [Text])]))
+      leaseRemoved <- timeout 3000000 (WS.receiveData connection :: IO LBS.ByteString)
+      leaseRemovedFrame <- maybe (assertFailure "active-files removal did not publish its interest transition") pure leaseRemoved
+      assertBool "active-files removal publishes a relevant-interest transition" ("relevant-worktree-file" `BS.isInfixOf` LBS.toStrict leaseRemovedFrame)
+      awaitConfigWithoutRelevant "replace-set removes the old relevant lease" connection
+      WS.sendTextData connection authenticate
+      closed <- timeout 2000000 (trySynchronous (WS.receiveDataMessage connection))
+      assertBool "repeated authentication closes with the invalid-control rejection" (expectedClose "invalid or idle control stream" closed)
+  assertBool ("authenticated websocket session terminates within its owner bound: " <> show session) (maybe False (either (const False) (const True)) session)
+  rejected <- runOwnedWebSocketClient 5000000 port
+    [ ("Origin", "http://example.invalid"),
+      ("Authorization", TextEncoding.encodeUtf8 ("Bearer " <> token))
+    ]
+    (const (pure ()))
+  assertBool ("foreign-origin websocket handshake did not report HTTP 403: " <> show rejected) (expectedHandshakeStatus 403 rejected)
+  cookie <- sessionCookiePair running
+  let (cookieName, _) = Text.breakOn "=" cookie
+  ambiguous <- runOwnedWebSocketClient 5000000 port
+    (headers <> [("Cookie", TextEncoding.encodeUtf8 (cookieName <> "=wrong"))])
+    (const (pure ()))
+  assertBool ("credential-conflict websocket handshake did not report HTTP 401: " <> show ambiguous) (expectedHandshakeStatus 401 ambiguous)
+  wrongFrame <- runOwnedWebSocketClient 5000000 port headers $ \connection -> do
+      WS.sendTextData connection (Aeson.encode (Aeson.object ["type" Aeson..= ("authenticate" :: Text), "credential" Aeson..= ("wrong" :: Text)]))
+      result <- timeout 2000000 (trySynchronous (WS.receiveDataMessage connection))
+      assertBool "wrong websocket frame credential receives the authentication-rejected close" (expectedClose "authentication rejected" result)
+  assertBool "wrong websocket credential session remains bounded" (maybe False (either (const False) (const True)) wrongFrame)
+  binaryFrame <- runOwnedWebSocketClient 5000000 port headers $ \connection -> do
+      WS.sendTextData connection authenticate
+      _ <- WS.receiveDataMessage connection
+      WS.sendBinaryData connection ("binary-control" :: BS.ByteString)
+      result <- timeout 2000000 (trySynchronous (WS.receiveDataMessage connection))
+      assertBool "binary post-auth control receives the invalid-control close" (expectedClose "invalid or idle control stream" result)
+  assertBool "binary websocket control session remains bounded" (maybe False (either (const False) (const True)) binaryFrame)
+  putStrLn "p7-03-events: negative sessions complete"
+  reconnect <- runOwnedWebSocketClient 20000000 port headers $ \connection -> do
+      putStrLn "p7-03-events: reconnect admitted"
+      WS.sendTextData connection authenticate
+      frame <- timeout 2000000 (WS.receiveDataMessage connection)
+      assertBool "a reconnect receives a fresh initial resync after prior lease cleanup" (maybe False (const True) frame)
+      putStrLn "p7-03-events: reconnect initial received"
+      WS.sendClose connection ("test complete" :: Text)
+      putStrLn "p7-03-events: reconnect close sent"
+  assertBool "reconnect completed after invalid-session cleanup" (maybe False (either (const False) (const True)) reconnect)
+  putStrLn "p7-03-events: reconnect cleanup complete"
+  nonGet <- requestPrefix (Security.authorityHost authority)
+    ("POST /api/v1/events HTTP/1.1\r\nHost: " <> Security.authorityHost authority
+      <> "\r\nOrigin: " <> Security.authorityOrigin authority
+      <> "\r\nAuthorization: Bearer " <> token
+      <> "\r\nConnection: Upgrade, close\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nContent-Length: 0\r\n\r\n")
+  assertBool "a non-GET upgrade stays on the admitted HTTP error path" (not ("HTTP/1.1 101" `BS.isPrefixOf` nonGet) && "X-Adrai-Generation:" `BS.isInfixOf` nonGet)
+  fragmentedOversizeRejected authority token
+  putStrLn "p7-03-events: fragmented bound complete"
+  withRawPendingPeers 16 authority token $ \peers -> do
+    readers <- mapM (async . receiveUntilEof) peers
+    (`finally` do
+        mapM_ closeOwnedSocket peers
+        mapM_ waitCatch readers) $ do
+      mapM poll readers >>= assertBool "sixteen silent upgraded peers remain connected before the auth deadline" . all (\case Nothing -> True; Just _ -> False)
+      seventeenth <- runOwnedWebSocketClient 1500000 port headers (const (pure ()))
+      assertBool "the seventeenth pre-auth client is rejected with HTTP 400" (expectedHandshakeStatus 400 seventeenth)
+      ended <- timeout 7000000 (mapM waitCatch readers)
+      assertBool ("all sixteen silent raw peers receive server EOF before the client guard closes them: " <> show ended)
+        (maybe False (all (either (const False) id)) ended)
+      recovered <- runOwnedWebSocketClient 3000000 port headers $ \connection -> do
+        WS.sendTextData connection authenticate
+        initialFrame <- WS.receiveData connection :: IO LBS.ByteString
+        assertBool "a new client authenticates after all timed-out slots are released" ("repository-invalidated" `BS.isInfixOf` LBS.toStrict initialFrame)
+        WS.sendClose connection ("cap recovery complete" :: Text)
+      assertBool ("the released pending capacity admits a fresh authenticated WebSocket: " <> show recovered) (maybe False (either (const False) (const True)) recovered)
+  putStrLn "p7-03-events: pending cap complete"
+  Events.decodeClientFrame 4096 "{\"type\":\"active-files\",\"type\":\"active-files\",\"paths\":[]}" @?= Left Events.MalformedFrame
+  coordinator <- Events.newEventCoordinator
+  subscriber <- Events.registerSubscriberWithInitial coordinator (Events.EventAsOfUnavailable "test") >>= either (assertFailure . Text.unpack) pure
+  forM_ [1 :: Int .. 64] $ \_ -> do
+    _ <- Events.publishInvalidation coordinator (Events.EventAsOfUnavailable "test") [Events.HeadChanged]
+    pure ()
+  _ <- Events.publishInvalidation coordinator (Events.EventAsOfUnavailable "test") [Events.IndexChanged]
+  Events.readSubscriberEvent subscriber >>= \case
+    Events.SubscriberOverflow -> pure ()
+    Events.SubscriberEvent _ -> assertFailure "overflowed subscriber delivered a narrower event instead of closing"
+  Events.unregisterSubscriber coordinator subscriber
+  bracket (socket AF_INET Stream defaultProtocol) closeOwnedSocket $ \blockedPeer -> do
+    stopped <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \second _ ->
+      admitRawPendingPeer blockedPeer (runningAuthority second) (bootstrapToken second)
+    either (assertFailure . Text.unpack) pure stopped
+    reader <- async (receiveUntilEof blockedPeer)
+    observed <- timeout 3000000 (waitCatch reader)
+    case observed of
+      Just (Right True) -> pure ()
+      other -> do
+        closeOwnedSocket blockedPeer
+        _ <- waitCatch reader
+        assertFailure ("server shutdown did not physically end its blocked unauthenticated peer: " <> show other)
+  verifySlowNetworkSubscriber root
+
+verifySlowNetworkSubscriber :: FilePath -> IO ()
+verifySlowNetworkSubscriber root = do
+  coordinatorReady <- newEmptyMVar
+  sendDeadline <- newEmptyMVar
+  let liveDependencies =
+        dependencies
+          { serverEventCoordinatorReady = putMVar coordinatorReady,
+            serverEventSendDeadline = void (tryPutMVar sendDeadline ())
+          }
+  started <- withWebServer liveDependencies root (Api.WebOptions Nothing False) $ \running _ -> do
+    coordinator <- takeMVar coordinatorReady
+    let authority = runningAuthority running
+        token = bootstrapToken running
+    bracket (openRawSlowSubscriber authority token) closeOwnedSocket $ \slowPeer -> do
+      let largeButBoundedAsOf = Events.EventAsOfUnavailable (Text.replicate (64 * 1024) "s")
+      publisher <- async $ forM_ [1 :: Int .. 48] $ \_ ->
+        void (Events.publishInvalidation coordinator largeButBoundedAsOf [Events.HeadChanged])
+      published <- timeout 3000000 (waitCatch publisher)
+      case published of
+        Just (Right ()) -> pure ()
+        other -> do
+          closeOwnedSocket slowPeer
+          _ <- waitCatch publisher
+          assertFailure ("a physically nonreading subscriber blocked live event publication: " <> show other)
+      -- Fewer than the 64 queue slots are published. Keep the tiny-window peer
+      -- unread until the live sender's deadline abort has actually completed.
+      observedDeadline <- timeout 7000000 (takeMVar sendDeadline)
+      assertBool "the unread live sender reached its physical send deadline" (maybe False (const True) observedDeadline)
+      port <- either assertFailure pure (authorityPort (Security.authorityHost authority))
+      let headers =
+            [ ("Origin", TextEncoding.encodeUtf8 (Security.authorityOrigin authority)),
+              ("Authorization", TextEncoding.encodeUtf8 ("Bearer " <> token))
+            ]
+      recovered <- runOwnedWebSocketClient 3000000 port headers $ \connection -> do
+        WS.sendTextData connection (Aeson.encode (Aeson.object ["type" Aeson..= ("authenticate" :: Text), "credential" Aeson..= token]))
+        initial <- WS.receiveData connection :: IO LBS.ByteString
+        assertBool "another live subscriber receives its own resync after the slow peer closes" ("repository-invalidated" `BS.isInfixOf` LBS.toStrict initial)
+        WS.sendClose connection ("slow-peer recovery complete" :: Text)
+      assertBool "a new authenticated subscriber remains serviceable after the slow peer closes" (maybe False (either (const False) (const True)) recovered)
+      reader <- async (receiveUntilEof slowPeer)
+      ended <- timeout 2000000 (waitCatch reader)
+      case ended of
+        Just (Right True) -> pure ()
+        other -> do
+          closeOwnedSocket slowPeer
+          _ <- waitCatch reader
+          assertFailure ("the unread live subscriber was not physically closed after its send deadline: " <> show other)
+  either (assertFailure . Text.unpack) pure started
+
+testWatchRuntime :: IO ()
+testWatchRuntime = withSeededRepository $ \root -> do
+  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  bound <- either (assertFailure . show) pure (Api.validateRepositoryBinding (Right repository))
+  registry <- Watch.newActiveFileRegistry
+  client <- Watch.registerActiveClient registry >>= either (assertFailure . Text.unpack) pure
+  path <- either (assertFailure . show) pure (Types.mkRepoPath "seed.txt")
+  Watch.replaceActiveFiles registry client [path] >>= either (assertFailure . Text.unpack) pure
+  unionClient <- Watch.registerActiveClient registry >>= either (assertFailure . Text.unpack) pure
+  unionPath <- either (assertFailure . show) pure (Types.mkRepoPath "union.txt")
+  Watch.replaceActiveFiles registry unionClient [unionPath] >>= either (assertFailure . Text.unpack) pure
+  Watch.activeFileUnion registry >>= (@?= [path, unionPath])
+  Watch.unregisterActiveClient registry unionClient
+  Watch.activeFileUnion registry >>= (@?= [path])
+  createDirectoryIfMissing True (root </> "architecture" </> "adrai")
+  BS.writeFile (root </> "architecture" </> "adrai" </> "native-owned.txt") "owned managed bytes"
+  pauseAncestor <- newIORef False
+  ancestorOpened <- newEmptyMVar
+  resumeAncestor <- newEmptyMVar
+  let afterHandleOpen component = do
+        pause <- atomicModifyIORef' pauseAncestor $ \enabled ->
+          let fire = enabled && component == "architecture"
+           in (enabled && not fire, fire)
+        if pause then putMVar ancestorOpened () >> takeMVar resumeAncestor else pure ()
+  observer <- Watch.observerForRegistryWithHandleHook registry bound afterHandleOpen
+  let expectFactChange label invalidation action = do
+        left <- Watch.repositorySnapshot observer bound
+        _ <- action
+        right <- Watch.repositorySnapshot observer bound
+        case (left, right) of
+          (Watch.RepositorySnapshot _ leftFacts, Watch.RepositorySnapshot _ rightFacts) ->
+            assertBool label (invalidation `elem` Watch.diffRepositoryFacts leftFacts rightFacts)
+          _ -> assertFailure (label <> ": observation failed")
+      gitDirectory = Api.repoGitDirectory bound
+      commonDirectory = Api.repoCommonDirectory bound
+  callProcess "git" ["-C", root, "branch", "watch-same-oid"]
+  expectFactChange "same-OID attached branch switches change repository identity" Events.RepositoryIdentityChanged
+    (callProcess "git" ["-C", root, "checkout", "watch-same-oid"])
+  expectFactChange "attached-to-detached transition changes repository identity" Events.RepositoryIdentityChanged
+    (callProcess "git" ["-C", root, "checkout", "--detach", "HEAD"])
+  callProcess "git" ["-C", root, "checkout", "main"]
+  expectFactChange "index content changes are fingerprinted" Events.IndexChanged $ do
+    BS.writeFile (root </> "seed.txt") "staged watcher bytes"
+    callProcess "git" ["-C", root, "add", "--", "seed.txt"]
+  callProcess "git" ["-C", root, "reset", "--mixed", "HEAD"]
+  expectFactChange "sequencer markers are observed" Events.SequencerChanged
+    (BS.writeFile (gitDirectory </> "MERGE_HEAD") "0000000000000000000000000000000000000000\n")
+  removeFile (gitDirectory </> "MERGE_HEAD")
+  let configPath = root </> ".adrai.toml"
+  configPresent <- doesFileExist configPath
+  originalConfig <- if configPresent then BS.readFile configPath else pure (TextEncoding.encodeUtf8 defaultConfigText)
+  expectFactChange "configuration bytes are fingerprinted" Events.ConfigurationChanged
+    (BS.writeFile configPath (originalConfig <> "\n"))
+  if configPresent then BS.writeFile configPath originalConfig else removeFile configPath
+  let alternateConfig =
+        Text.replace "architecture/adrai/connections" "watch-alternate/connections"
+          (Text.replace "architecture/adrai/decisions" "watch-alternate/decisions" (TextEncoding.decodeUtf8 originalConfig))
+      alternateDecision = root </> "watch-alternate" </> "decisions" </> "reroot.md"
+  createDirectoryIfMissing True (root </> "watch-alternate" </> "decisions")
+  createDirectoryIfMissing True (root </> "watch-alternate" </> "connections")
+  BS.writeFile alternateDecision "alternate managed fact"
+  BS.writeFile configPath (TextEncoding.encodeUtf8 alternateConfig)
+  rerooted <- Watch.repositorySnapshot observer bound
+  BS.writeFile alternateDecision "alternate managed fact changed"
+  rerootedChanged <- Watch.repositorySnapshot observer bound
+  case (rerooted, rerootedChanged) of
+    (Watch.RepositorySnapshot _ leftFacts, Watch.RepositorySnapshot _ rightFacts) ->
+      assertBool "configuration changes refresh the managed observation roots" (Events.ManagedSourceChanged `elem` Watch.diffRepositoryFacts leftFacts rightFacts)
+    _ -> assertFailure "rerooted managed observation failed"
+  if configPresent then BS.writeFile configPath originalConfig else removeFile configPath
+  let managedDecision = root </> "architecture" </> "adrai" </> "decisions" </> "watch.md"
+  createDirectoryIfMissing True (root </> "architecture" </> "adrai" </> "decisions")
+  expectFactChange "managed source bytes are fingerprinted" Events.ManagedSourceChanged
+    (BS.writeFile managedDecision "managed fact")
+  expectFactChange "missing managed paths remain observable" Events.ManagedSourceChanged (removeFile managedDecision)
+  expectFactChange "recreated managed paths recover without restart" Events.ManagedSourceChanged
+    (BS.writeFile managedDecision "managed fact restored")
+  headForFacts <- gitHead root
+  let looseFactRef = commonDirectory </> "refs" </> "heads" </> "watch-raw-fact"
+  expectFactChange "common loose references are fingerprinted" Events.CommonReferencesChanged
+    (BS.writeFile looseFactRef (TextEncoding.encodeUtf8 (headForFacts <> "\n")))
+  removeFile looseFactRef
+  let packedRefsPath = commonDirectory </> "packed-refs"
+  packedPresent <- doesFileExist packedRefsPath
+  packedBefore <- if packedPresent then BS.readFile packedRefsPath else pure BS.empty
+  expectFactChange "packed references are fingerprinted" Events.PackedReferencesChanged
+    (BS.writeFile packedRefsPath ("# pack-refs with: peeled fully-peeled sorted \n" <> TextEncoding.encodeUtf8 headForFacts <> " refs/heads/watch-packed-fact\n"))
+  if packedPresent then BS.writeFile packedRefsPath packedBefore else removeFile packedRefsPath
+  let headLog = gitDirectory </> "logs" </> "HEAD"
+  reflogBefore <- BS.readFile headLog
+  expectFactChange "reflog bytes are fingerprinted" Events.ReflogsChanged (BS.writeFile headLog (reflogBefore <> "\n"))
+  BS.writeFile headLog reflogBefore
+  let worktreeMetadata = gitDirectory </> "watch-metadata"
+  expectFactChange "worktree Git metadata is fingerprinted" Events.WorktreeMetadataChanged
+    (BS.writeFile worktreeMetadata "worktree metadata")
+  removeFile worktreeMetadata
+  before <- Watch.repositorySnapshot observer bound
+  assertBool "the native scanner accepts the largest even UTF-16 byte length" (Watch.nativeNameLengthAcceptedForTest (replicate 32767 'a'))
+  assertBool "the native scanner rejects a wrapping UTF-16 byte length" (not (Watch.nativeNameLengthAcceptedForTest (replicate 32768 'a')))
+  assertBool "the native scanner counts surrogate pairs as two UTF-16 code units" (not (Watch.nativeNameLengthAcceptedForTest (replicate 16384 '\x1f600')))
+  BS.writeFile (root </> "seed.txt") "changed relevant bytes"
+  after <- Watch.repositorySnapshot observer bound
+  case (before, after) of
+    (Watch.RepositorySnapshot _ leftFacts, Watch.RepositorySnapshot _ rightFacts) ->
+      assertBool "active relevant-file content is fingerprinted" (Events.RelevantWorktreeFileChanged `elem` Watch.diffRepositoryFacts leftFacts rightFacts)
+    _ -> assertFailure "watch snapshots unexpectedly failed"
+  createDirectoryIfMissing True (root </> ".adrai")
+  cacheBefore <- Watch.repositorySnapshot observer bound
+  BS.writeFile (root </> ".adrai" </> "watch-noise.sqlite-wal") "cache noise"
+  cacheAfter <- Watch.repositorySnapshot observer bound
+  cacheAfter @?= cacheBefore
+  epoch <- case cacheAfter of
+    Watch.RepositorySnapshot observedEpoch _ -> pure observedEpoch
+    Watch.RepositorySnapshotFailed _ failure -> assertFailure (show failure)
+  secondPath <- either (assertFailure . show) pure (Types.mkRepoPath "other.txt")
+  Watch.replaceActiveFiles registry client [secondPath] >>= either (assertFailure . Text.unpack) pure
+  coordinator <- Events.newEventCoordinator
+  stale <- Events.publishInvalidationWhen (Watch.observationEpochMatches registry epoch) coordinator (Events.EventAsOfUnavailable "test") [Events.RelevantWorktreeFileChanged]
+  stale @?= Nothing
+  current <- Watch.repositorySnapshot observer bound
+  currentEpoch <- case current of
+    Watch.RepositorySnapshot observedEpoch _ -> pure observedEpoch
+    Watch.RepositorySnapshotFailed _ failure -> assertFailure (show failure)
+  fresh <- Events.publishInvalidationWhen (Watch.observationEpochMatches registry currentEpoch) coordinator (Events.EventAsOfUnavailable "test") [Events.RelevantWorktreeFileChanged]
+  assertBool "current scan epoch and generation enqueue commit atomically" (maybe False (const True) fresh)
+  BS.writeFile (root </> ".adrai.toml") (BS.replicate (16 * 1024 * 1024 + 1) 120)
+  bounded <- Watch.repositorySnapshot observer bound
+  case bounded of
+    Watch.RepositorySnapshotFailed _ _ -> pure ()
+    Watch.RepositorySnapshot _ _ -> assertFailure "oversized config escaped the global observation byte budget"
+  removeFile (root </> ".adrai.toml")
+  let entryBudgetDirectory = root </> "architecture" </> "adrai" </> "decisions" </> "entry-budget"
+  createDirectoryIfMissing True entryBudgetDirectory
+  forM_ [1 :: Int .. 4100] $ \index -> BS.writeFile (entryBudgetDirectory </> ("entry-" <> show index)) "x"
+  entryBounded <- Watch.repositorySnapshot observer bound
+  case entryBounded of
+    Watch.RepositorySnapshotFailed _ _ -> pure ()
+    Watch.RepositorySnapshot _ _ -> assertFailure "aggregate directory entries escaped the global 4096-entry observation budget"
+  removeDirectoryRecursive entryBudgetDirectory
+  Watch.replaceActiveFiles registry client [path] >>= either (assertFailure . Text.unpack) pure
+  attempts <- newIORef (0 :: Int)
+  delivered <- newEmptyMVar
+  watcher <- Watch.watchRepository observer bound $ \event -> do
+    attempt <- atomicModifyIORef' attempts (\value -> let next = value + 1 in (next, next))
+    if attempt == 1 then ioError (userError "simulated busy publication") else putMVar delivered event
+  BS.writeFile (root </> "seed.txt") "coalesced change one"
+  BS.writeFile (root </> "seed.txt") "coalesced change two"
+  BS.writeFile (root </> "seed.txt") "coalesced final bytes"
+  retried <- timeout 3000000 (takeMVar delivered)
+  watcherStopped <- timeout 3000000 (Watch.stopWatching watcher >> Watch.awaitWatcher watcher)
+  assertBool "fact watcher workers stop within the owner bound" (maybe False (const True) watcherStopped)
+  assertBool "periodic verification retries an unacknowledged publication" (maybe False (const True) retried)
+  count <- readIORef attempts
+  assertBool "publication was attempted again without another filesystem change" (count >= 2)
+  case retried of
+    Just (Watch.RepositoryFactsChanged _ eventSnapshot _) -> do
+      finalSnapshot <- Watch.repositorySnapshot observer bound
+      case (eventSnapshot, finalSnapshot) of
+        (Watch.RepositorySnapshot _ eventFacts, Watch.RepositorySnapshot _ finalFacts) ->
+          Watch.factsRelevantWorktreeIdentity eventFacts @?= Watch.factsRelevantWorktreeIdentity finalFacts
+        _ -> assertFailure "coalesced-hint snapshots failed"
+    Just (Watch.RepositoryObservationFailure _ failure) -> assertFailure ("coalesced hints ended in observation failure: " <> show failure)
+    Nothing -> pure ()
+  Watch.unregisterActiveClient registry client
+  Watch.activeFileUnion registry >>= (@?= [])
+  nativeBaseline <- Watch.repositorySnapshot observer bound
+  let ownedArchitecture = root </> "architecture-owned"
+      external = root </> "external-managed"
+      architecture = root </> "architecture"
+  createDirectoryIfMissing True (external </> "adrai")
+  BS.writeFile (external </> "adrai" </> "external-sentinel.txt") "must never be observed"
+  let controlLink = root </> "junction-control"
+  (controlExit, _, controlError) <- readCreateProcessWithExitCode (shell ("mklink /J \"" <> controlLink <> "\" \"" <> external <> "\"")) ""
+  assertBool ("junction control failed before the held-handle test: " <> controlError) (controlExit == ExitSuccess)
+  doesFileExist (controlLink </> "adrai" </> "external-sentinel.txt") >>= assertBool "junction control exposes the external sentinel"
+  removeDirectory controlLink
+  putStrLn "p7-03-watch: junction control complete"
+  writeIORef pauseAncestor True
+  nativeAfterSwap <- bracket
+    (async (Watch.repositorySnapshot observer bound))
+    (\worker -> do _ <- tryPutMVar resumeAncestor (); cancel worker; _ <- waitCatch worker; pure ())
+    (\worker -> do
+      opened <- timeout 2000000 (takeMVar ancestorOpened)
+      assertBool "native scan opened the managed ancestor before the swap" (maybe False (const True) opened)
+      renameDirectory architecture ownedArchitecture
+      let restoreArchitecture = do
+            replacement <- doesDirectoryExist architecture
+            original <- doesDirectoryExist ownedArchitecture
+            if original then do
+              if replacement then removeDirectory architecture else pure ()
+              renameDirectory ownedArchitecture architecture
+            else pure ()
+      (`finally` restoreArchitecture) $ do
+        (swapExit, _, swapError) <- readCreateProcessWithExitCode (shell ("mklink /J \"" <> architecture <> "\" \"" <> external <> "\"")) ""
+        assertBool ("held-ancestor junction replacement failed: " <> swapError) (swapExit == ExitSuccess)
+        doesFileExist (architecture </> "adrai" </> "external-sentinel.txt") >>= assertBool "the pathname was replaced by the external junction while the ancestor handle stayed open"
+        putMVar resumeAncestor ()
+        nativeOutcome <- timeout 3000000 (waitCatch worker)
+        case nativeOutcome of
+          Nothing -> assertFailure "handle-relative scan did not finish after the swap latch was released"
+          Just (Left exception) -> assertFailure ("handle-relative scan raised: " <> show exception)
+          Just (Right snapshot) -> pure snapshot)
+  putStrLn "p7-03-watch: native swap complete"
+  baselineIdentity <- managedIdentityOf nativeBaseline
+  case nativeAfterSwap of
+    Watch.RepositorySnapshotFailed _ _ -> pure ()
+    Watch.RepositorySnapshot _ facts -> Watch.factsManagedSourceIdentity facts @?= baselineIdentity
+  writeIORef pauseAncestor True
+  bracket
+    (async (Watch.repositorySnapshot observer bound))
+    (\worker -> do
+        _ <- tryPutMVar resumeAncestor ()
+        _ <- timeout 2000000 (cancel worker)
+        _ <- timeout 2000000 (waitCatch worker)
+        pure ()) $ \cancellationWorker -> do
+      cancellationOpened <- timeout 2000000 (takeMVar ancestorOpened)
+      assertBool "cancellation scan owns a verified ancestor handle before cancellation" (maybe False (const True) cancellationOpened)
+      cancellationStopped <- timeout 2000000 (cancel cancellationWorker)
+      assertBool "cancelling a native scan releases its owned handles within the bound" (maybe False (const True) cancellationStopped)
+      timeout 2000000 (waitCatch cancellationWorker) >>= assertBool "cancelled native scan joins within the cleanup bound" . maybe False (const True)
+  Watch.repositorySnapshot observer bound >>= \case
+    Watch.RepositorySnapshot _ _ -> pure ()
+    Watch.RepositorySnapshotFailed _ failure -> assertFailure ("native scanner did not recover after cancellation cleanup: " <> show failure)
+  authority <- either (assertFailure . show) pure (Security.mkBoundAuthority 1 "watch-runtime")
+  secret <- either (assertFailure . show) pure (Security.mkProcessSecret (BS.replicate 32 7))
+  runtime <- newApplicationRuntime bound authority secret Api.defaultApiLimits defaultApplicationServices unavailableEventsTransport
+  runtimeClient <- Watch.registerActiveClient (applicationActiveFileRegistry runtime) >>= either (assertFailure . Text.unpack) pure
+  Watch.replaceActiveFiles (applicationActiveFileRegistry runtime) runtimeClient [path] >>= either (assertFailure . Text.unpack) pure
+  supersedeEnabled <- newIORef False
+  supersedeOpened <- newEmptyMVar
+  supersedeRelease <- newEmptyMVar
+  let afterRuntimeHandle component = do
+        pause <- atomicModifyIORef' supersedeEnabled $ \enabled ->
+          let fire = enabled && component == "architecture"
+           in (enabled && not fire, fire)
+        if pause then putMVar supersedeOpened () >> takeMVar supersedeRelease else pure ()
+  runtimeObserver <- Watch.observerForRegistryWithHandleHook (applicationActiveFileRegistry runtime) bound afterRuntimeHandle
+  subscriber <- Events.registerSubscriberWithInitial (applicationEventCoordinator runtime) (Events.EventAsOfUnavailable "test") >>= either (assertFailure . Text.unpack) pure
+  initialEnvelope <- Events.readSubscriberEvent subscriber >>= \case
+    Events.SubscriberEvent envelope -> pure envelope
+    Events.SubscriberOverflow -> assertFailure "initial runtime watcher subscriber overflowed"
+  publishAttempts <- newIORef ([] :: [String])
+  runtimeWatcher <- Watch.watchRepository runtimeObserver bound $ \event -> do
+    outcome <- try @SomeException (publishWatcherEvent runtime event)
+    atomicModifyIORef' publishAttempts (\observed -> ((either show (const "published") outcome : observed), ()))
+    either throwIO pure outcome
+  (`finally` do
+      stoppedRuntimeWatcher <- timeout 3000000 (Watch.stopWatching runtimeWatcher >> Watch.awaitWatcher runtimeWatcher)
+      Events.unregisterSubscriber (applicationEventCoordinator runtime) subscriber
+      Watch.unregisterActiveClient (applicationActiveFileRegistry runtime) runtimeClient
+      stopApplicationRuntime runtime
+      case stoppedRuntimeWatcher of Nothing -> ioError (userError "runtime watcher cleanup timed out"); Just () -> pure ()) $ do
+    writeIORef supersedeEnabled True
+    BS.writeFile managedDecision "managed scan captured before interest epoch advance"
+    supersedeReached <- timeout 2000000 (takeMVar supersedeOpened)
+    assertBool "runtime scan reached the deterministic pre-publication epoch barrier" (maybe False (const True) supersedeReached)
+    Watch.replaceActiveFiles (applicationActiveFileRegistry runtime) runtimeClient [secondPath] >>= either (assertFailure . Text.unpack) pure
+    putMVar supersedeRelease ()
+    supersedeRecovered <- timeout 4000000 (Events.readSubscriberEvent subscriber)
+    case supersedeRecovered of
+      Just (Events.SubscriberEvent envelope) -> do
+        expectedOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
+        Events.eventAsOf envelope @?= Events.EventAt expectedOid
+        case Events.eventPayload envelope of
+          Events.RepositoryInvalidated invalidations -> assertBool "superseded scan is retried to the persistent managed fact" (Events.ManagedSourceChanged `elem` invalidations)
+          _ -> assertFailure "superseded scan retry emitted an observation failure"
+      Just Events.SubscriberOverflow -> assertFailure "superseded scan retry overflowed its subscriber"
+      Nothing -> assertFailure "superseded scan was not retried after the active-file epoch advanced"
+    readIORef publishAttempts >>= assertBool "the stale scan was explicitly rejected before a later retry published" . any (Text.isInfixOf "superseded" . Text.toLower . Text.pack)
+    writeIORef publishAttempts []
+    lockAcquired <- newEmptyMVar
+    releaseLock <- newEmptyMVar
+    let acquireUntilHeld remaining = do
+          if remaining <= (0 :: Int) then ioError (userError "unable to acquire the test Git lock within 100 attempts") else pure ()
+          attempt <- try @SomeException (withGitLock repository (putMVar lockAcquired () >> takeMVar releaseLock))
+          case attempt of
+            Left failure -> case fromException failure of
+              Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+              Nothing -> threadDelay 20000 >> acquireUntilHeld (remaining - 1)
+            Right () -> pure ()
+    lockOwner <- async (acquireUntilHeld 100)
+    acquired <- timeout 3000000 (race (takeMVar lockAcquired) (waitCatch lockOwner))
+    case acquired of
+      Just (Left ()) -> pure ()
+      Just (Right (Left exception)) -> assertFailure ("Git-lock owner failed before acquisition: " <> show exception)
+      Just (Right (Right ())) -> assertFailure "Git-lock owner ended before acquisition"
+      Nothing -> assertFailure "Git-lock acquisition timed out"
+    putStrLn "p7-03-watch: git lock acquired"
+    BS.writeFile managedDecision "contention change without a second filesystem hint"
+    threadDelay 700000
+    rejectedAttempts <- readIORef publishAttempts
+    assertBool
+      ("watcher did not record a real Git-lock rejection while the lock was held: " <> show (reverse rejectedAttempts))
+      (any (Text.isInfixOf "lock" . Text.toLower . Text.pack) rejectedAttempts)
+    putMVar releaseLock ()
+    lockFinished <- timeout 2000000 (waitCatch lockOwner)
+    assertBool "Git-lock owner released within the bound" (maybe False (either (const False) (const True)) lockFinished)
+    observed <- timeout 4000000 (Events.readSubscriberEvent subscriber)
+    expectedOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
+    case observed of
+      Just (Events.SubscriberEvent envelope) -> do
+        Events.eventAsOf envelope @?= Events.EventAt expectedOid
+        assertBool "retried watcher publication receives a later coherent generation" (Events.eventGeneration envelope > Events.eventGeneration initialEnvelope)
+      Just Events.SubscriberOverflow -> assertFailure "watcher retry subscriber overflowed"
+      Nothing -> do
+        attemptsObserved <- readIORef publishAttempts
+        assertFailure ("watcher event was not retried after Git-lock release; callback attempts=" <> show (reverse attemptsObserved))
+    writeIORef publishAttempts []
+    withGitLock repository (pure ())
+    threadDelay 750000
+    readIORef publishAttempts >>= (@?= [])
+    putStrLn "p7-03-watch: lock retry complete"
+  let linkedRoot = root <> "-watch-linked"
+  callProcess "git" ["-C", root, "worktree", "add", "--detach", linkedRoot, "HEAD"]
+  (`finally` callProcess "git" ["-C", root, "worktree", "remove", "--force", linkedRoot]) $ do
+    linkedRepository <- discoverRepository systemGit linkedRoot >>= either (assertFailure . show) pure
+    linkedBound <- either (assertFailure . show) pure (Api.validateRepositoryBinding (Right linkedRepository))
+    linkedRegistry <- Watch.newActiveFileRegistry
+    linkedObserver <- Watch.observerForRegistry linkedRegistry linkedBound
+    linkedBefore <- Watch.repositorySnapshot linkedObserver linkedBound
+    case linkedBefore of
+      Watch.RepositorySnapshot _ facts -> assertBool "linked-worktree snapshot retains detached HEAD and shared common metadata" (Watch.factsHead facts /= Nothing && Watch.factsHeadState facts /= Nothing)
+      Watch.RepositorySnapshotFailed _ failure -> assertFailure (show failure)
+    let linkedCommonRef = Api.repoCommonDirectory linkedBound </> "refs" </> "heads" </> "watch-linked-common"
+        linkedMetadata = Api.repoGitDirectory linkedBound </> "watch-linked-private"
+    BS.writeFile linkedCommonRef (TextEncoding.encodeUtf8 (headForFacts <> "\n"))
+    linkedCommonChanged <- Watch.repositorySnapshot linkedObserver linkedBound
+    case (linkedBefore, linkedCommonChanged) of
+      (Watch.RepositorySnapshot _ leftFacts, Watch.RepositorySnapshot _ rightFacts) ->
+        assertBool "linked worktrees observe shared common-reference changes" (Events.CommonReferencesChanged `elem` Watch.diffRepositoryFacts leftFacts rightFacts)
+      _ -> assertFailure "linked common-reference observation failed"
+    removeFile linkedCommonRef
+    linkedRestored <- Watch.repositorySnapshot linkedObserver linkedBound
+    BS.writeFile linkedMetadata "linked-private-metadata"
+    linkedPrivateChanged <- Watch.repositorySnapshot linkedObserver linkedBound
+    case (linkedRestored, linkedPrivateChanged) of
+      (Watch.RepositorySnapshot _ leftFacts, Watch.RepositorySnapshot _ rightFacts) ->
+        assertBool "linked worktrees observe their own private Git metadata" (Events.WorktreeMetadataChanged `elem` Watch.diffRepositoryFacts leftFacts rightFacts)
+      _ -> assertFailure "linked private-metadata observation failed"
+    removeFile linkedMetadata
+    sharedPeriodic <- newEmptyMVar
+    linkedWatcher <- Watch.watchRepository linkedObserver linkedBound $ \event -> do
+      _ <- tryPutMVar sharedPeriodic event
+      pure ()
+    (`finally` do
+        Watch.stopWatching linkedWatcher
+        _ <- timeout 3000000 (Watch.awaitWatcher linkedWatcher)
+        sharedExists <- doesFileExist linkedCommonRef
+        if sharedExists then removeFile linkedCommonRef else pure ()) $ do
+      BS.writeFile linkedCommonRef (TextEncoding.encodeUtf8 (headForFacts <> "\n"))
+      periodic <- timeout 3000000 (takeMVar sharedPeriodic)
+      case periodic of
+        Just (Watch.RepositoryFactsChanged _ _ invalidations) ->
+          assertBool "periodic verification detects shared metadata outside the linked worktree watch root" (Events.CommonReferencesChanged `elem` invalidations)
+        Just other -> assertFailure ("linked periodic observation returned " <> show other)
+        Nothing -> assertFailure "linked periodic common-reference change was not delivered"
+  let backendOfflineRoot = root <> "-backend-offline"
+  backendRecovered <- newEmptyMVar
+  renameDirectory root backendOfflineRoot
+  fallbackWatcher <- Watch.watchRepository observer bound $ \event -> do
+    _ <- tryPutMVar backendRecovered event
+    pure ()
+  (`finally` do
+      Watch.stopWatching fallbackWatcher
+      _ <- timeout 3000000 (Watch.awaitWatcher fallbackWatcher)
+      rootPresent <- doesDirectoryExist root
+      if rootPresent then pure () else renameDirectory backendOfflineRoot root) $ do
+    threadDelay 350000
+    renameDirectory backendOfflineRoot root
+    recovered <- timeout 3000000 (takeMVar backendRecovered)
+    assertBool "periodic verification recovers after the fsnotify backend starts while the bound root is absent" (maybe False (const True) recovered)
+  let originalRoot = root <> "-original"
+  originalHead <- gitHead root
+  renameDirectory root originalRoot
+  (`finally` do
+      replacement <- doesDirectoryExist root
+      if replacement then removeDirectoryRecursive root else pure ()
+      renameDirectory originalRoot root) $ do
+    copyFixtureTree originalRoot root
+    gitHead root >>= (@?= originalHead)
+    replaced <- Watch.repositorySnapshot observer bound
+    case replaced of
+      Watch.RepositorySnapshotFailed _ _ -> pure ()
+      Watch.RepositorySnapshot _ _ -> assertFailure "replacement repository root with the same spelling was adopted"
+  putStrLn "p7-03-watch: root replacement complete"
+
+copyFixtureTree :: FilePath -> FilePath -> IO ()
+copyFixtureTree source destination = do
+  createDirectory destination
+  entries <- listDirectory source
+  forM_ entries $ \entry -> do
+    let sourceEntry = source </> entry
+        destinationEntry = destination </> entry
+    directory <- doesDirectoryExist sourceEntry
+    if directory
+      then copyFixtureTree sourceEntry destinationEntry
+      else do
+        copyFile sourceEntry destinationEntry
+        permissions <- getPermissions destinationEntry
+        setPermissions destinationEntry permissions {writable = True}
+
+managedIdentityOf :: Watch.RepositorySnapshot -> IO (Maybe Text)
+managedIdentityOf snapshot = case snapshot of
+  Watch.RepositorySnapshot _ facts -> pure (Watch.factsManagedSourceIdentity facts)
+  Watch.RepositorySnapshotFailed _ failure -> assertFailure (show failure)
+
+testCompilationRuntime :: IO ()
+testCompilationRuntime = withSeededRepository $ \root -> do
+  starts <- newIORef (0 :: Int)
+  joined <- newEmptyMVar
+  producerEntered <- newEmptyMVar
+  releaseProducer <- newEmptyMVar
+  let compileExact repository oid = do
+        count <- atomicModifyIORef' starts (\value -> let next = value + 1 in (next, next))
+        if count == 1 then putMVar producerEntered () >> takeMVar releaseProducer else pure ()
+        Runtime.ensureExactArchive repository oid
+      services = defaultApplicationServices
+        { applicationCompileExact = compileExact,
+          applicationAfterCompilationJoin = putMVar joined ()
+        }
+      injected = dependencies {serverApplicationServices = services}
+      awaitSignal label signal worker = do
+        outcome <- timeout 5000000 (race (takeMVar signal) (waitCatch worker))
+        case outcome of
+          Just (Left ()) -> pure ()
+          Just (Right (Left exception)) -> assertFailure (label <> " request failed before its signal: " <> show exception)
+          Just (Right (Right _)) -> assertFailure (label <> " request completed before its signal")
+          Nothing -> assertFailure (label <> " signal timed out")
+  started <- withWebServer injected root (Api.WebOptions Nothing False) $ \running _ -> do
+    headBefore <- gitHead root
+    let coldArchive = root </> ".adrai" </> "cache" </> Text.unpack headBefore <> ".sqlite"
+    coldPresent <- doesFileExist coldArchive
+    assertBool "single-flight exercise begins without an exact archive" (not coldPresent)
+    first <- async (getJson running "/api/v1/doctor")
+    awaitSignal "first compilation join" joined first
+    awaitSignal "producer entry" producerEntered first
+    second <- async (getJson running "/api/v1/search?q=seed")
+    awaitSignal "second compilation join" joined second
+    putMVar releaseProducer ()
+    doctor <- wait first
+    search <- wait second
+    valueAt ["data"] doctor >>= \value -> assertBool "doctor returned a typed projection" (value /= Aeson.Null)
+    valueAt ["data"] search >>= \value -> assertBool "search returned its distinct projection" (value /= Aeson.Null)
+    readIORef starts >>= (@?= 1)
+    doesFileExist coldArchive >>= assertBool "the elected producer created the exact archive consumed by both routes"
+    callProcess "git" ["-C", root, "commit", "--allow-empty", "-m", "second exact revision"]
+    _ <- getJson running "/api/v1/doctor"
+    readIORef starts >>= (@?= 2)
+  either (assertFailure . Text.unpack) pure started
+  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  revision <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
+  detachedCoordinator <- Compilation.newCompilationCoordinator
+  detachedEntered <- newEmptyMVar
+  detachedRelease <- newEmptyMVar
+  let detachedProducer = putMVar detachedEntered () >> takeMVar detachedRelease >> pure (Right (Compilation.CompiledArtifact revision "detached.sqlite"))
+  survivor <- async (Compilation.acquireExactCompilation detachedCoordinator repository revision detachedProducer)
+  awaitSignal "detached producer entry" detachedEntered survivor
+  detachedJoined <- newEmptyMVar
+  abandoned <- async (Compilation.acquireExactCompilationObserved detachedCoordinator repository revision (putMVar detachedJoined ()) detachedProducer)
+  awaitSignal "canceled waiter join" detachedJoined abandoned
+  abandonedStop <- timeout 2000000 (cancel abandoned)
+  assertBool "a canceled waiter detaches within the bound" (maybe False (const True) abandonedStop)
+  putMVar detachedRelease ()
+  wait survivor >>= (@?= Right (Compilation.CompiledArtifact revision "detached.sqlite"))
+  Compilation.stopCompilationCoordinator detachedCoordinator
+  stoppingCoordinator <- Compilation.newCompilationCoordinator
+  stoppingEntered <- newEmptyMVar
+  neverFinish <- newEmptyMVar
+  let stoppingProducer = putMVar stoppingEntered () >> takeMVar neverFinish >> pure (Left "unreachable")
+  stoppingWaiter <- async (Compilation.acquireExactCompilation stoppingCoordinator repository revision stoppingProducer)
+  awaitSignal "stopping producer entry" stoppingEntered stoppingWaiter
+  stopped <- timeout 2000000 (Compilation.stopCompilationCoordinator stoppingCoordinator)
+  assertBool "stopping the coordinator cancels its active producer" (maybe False (const True) stopped)
+  waiterStopped <- timeout 2000000 (waitCatch stoppingWaiter)
+  assertBool "the canceled producer releases its waiter" (maybe False (const True) waiterStopped)
+  namespaceCoordinator <- Compilation.newCompilationCoordinator
+  namespaceStarted <- newEmptyMVar
+  namespaceRelease <- newEmptyMVar
+  namespaceCount <- newIORef (0 :: Int)
+  let otherBinding = repository {repositoryCommandDirectory = repositoryCommandDirectory repository <> "-other-binding"}
+      namespaceProducer database = do
+        atomicModifyIORef' namespaceCount (\value -> (value + 1, ()))
+        putMVar namespaceStarted ()
+        takeMVar namespaceRelease
+        pure (Right (Compilation.CompiledArtifact revision database))
+  namespaceFirst <- async (Compilation.acquireExactCompilation namespaceCoordinator repository revision (namespaceProducer "first.sqlite"))
+  namespaceSecond <- async (Compilation.acquireExactCompilation namespaceCoordinator otherBinding revision (namespaceProducer "second.sqlite"))
+  awaitSignal "first repository namespace producer" namespaceStarted namespaceFirst
+  awaitSignal "second repository namespace producer" namespaceStarted namespaceSecond
+  readIORef namespaceCount >>= (@?= 2)
+  putMVar namespaceRelease ()
+  putMVar namespaceRelease ()
+  wait namespaceFirst >>= (@?= Right (Compilation.CompiledArtifact revision "first.sqlite"))
+  wait namespaceSecond >>= (@?= Right (Compilation.CompiledArtifact revision "second.sqlite"))
+  Compilation.stopCompilationCoordinator namespaceCoordinator
+  withSeededRepository $ \overlapRoot -> do
+    overlapStarts <- newIORef (0 :: Int)
+    overlapJoined <- newEmptyMVar
+    overlapEntered <- newEmptyMVar
+    overlapRelease <- newEmptyMVar
+    let overlapServices = defaultApplicationServices
+          { applicationCompileExact = \repositoryToCompile oid -> do
+              count <- atomicModifyIORef' overlapStarts (\value -> let next = value + 1 in (next, next))
+              if count == 1 then putMVar overlapEntered () >> takeMVar overlapRelease else pure ()
+              Runtime.ensureExactArchive repositoryToCompile oid,
+            applicationAfterCompilationJoin = putMVar overlapJoined ()
+          }
+        overlapDependencies = dependencies {serverApplicationServices = overlapServices}
+    overlapStarted <- withWebServer overlapDependencies overlapRoot (Api.WebOptions Nothing False) $ \running _ -> do
+      basis <- repositoryBasis running
+      mutation <- async (postJson running "/api/v1/adrs" (createBody basis))
+      awaitSignal "post-mutation compilation join" overlapJoined mutation
+      awaitSignal "post-mutation producer entry" overlapEntered mutation
+      query <- async (getJson running "/api/v1/doctor")
+      awaitSignal "concurrent query compilation join" overlapJoined query
+      putMVar overlapRelease ()
+      committed <- wait mutation
+      assertCommitted committed
+      doctor <- wait query
+      valueAt ["data"] doctor >>= \value -> assertBool "query joining post-mutation compilation receives its own projection" (value /= Aeson.Null)
+      readIORef overlapStarts >>= (@?= 1)
+    either (assertFailure . Text.unpack) pure overlapStarted
+  withSeededRepository $ \stoppingRoot -> do
+    stoppingCompileEntered <- newEmptyMVar
+    stoppingCompileCleaned <- newEmptyMVar
+    stoppingCompileNever <- newEmptyMVar
+    stoppingClient <- newIORef Nothing
+    let partialCandidate = stoppingRoot </> ".adrai" </> "cache" </> "p7-03-cancelled-candidate.sqlite"
+        stoppingServices = defaultApplicationServices
+          { applicationCompileExact = \_ _ ->
+              (`finally` do
+                  exists <- doesFileExist partialCandidate
+                  if exists then removeFile partialCandidate else pure ()
+                  putMVar stoppingCompileCleaned ()) $ do
+                createDirectoryIfMissing True (stoppingRoot </> ".adrai" </> "cache")
+                bracket (SQLite.open partialCandidate) SQLite.close $ \connection -> do
+                  SQLite.execute_ connection "CREATE TABLE owned_resource(value INTEGER)"
+                  putMVar stoppingCompileEntered ()
+                  _ <- takeMVar stoppingCompileNever
+                  pure (Left "unreachable")
+          }
+        stoppingDependencies = dependencies {serverApplicationServices = stoppingServices}
+    stoppedServer <- timeout 8000000 $ withWebServer stoppingDependencies stoppingRoot (Api.WebOptions Nothing False) $ \running _ -> do
+      clientRequest <- async (getJson running "/api/v1/doctor")
+      writeIORef stoppingClient (Just clientRequest)
+      awaitSignal "server-owned compilation producer" stoppingCompileEntered clientRequest
+    case stoppedServer of
+      Nothing -> assertFailure "server stop timed out while an owned compiler was active"
+      Just (Left problem) -> assertFailure ("server stop failed: " <> Text.unpack problem)
+      Just (Right ()) -> pure ()
+    timeout 2000000 (takeMVar stoppingCompileCleaned) >>= assertBool "server stop waits for SQLite and candidate cleanup" . maybe False (const True)
+    doesFileExist partialCandidate >>= assertBool "server stop removes the partial compilation candidate" . not
+    readIORef stoppingClient >>= \case
+      Nothing -> assertFailure "server-stop client was not recorded"
+      Just clientRequest -> timeout 2000000 (waitCatch clientRequest) >>= assertBool "server stop releases the active compilation request" . maybe False (const True)
+  withSeededRepository $ \failureRoot -> do
+    failures <- newIORef (0 :: Int)
+    let failureServices = defaultApplicationServices
+          { applicationCompileExact = \repositoryToCompile oid -> do
+              attempt <- atomicModifyIORef' failures (\value -> let next = value + 1 in (next, next))
+              if attempt == 1 then ioError (userError "injected exact producer failure") else Runtime.ensureExactArchive repositoryToCompile oid
+          }
+        failureDependencies = dependencies {serverApplicationServices = failureServices}
+    failedStarted <- withWebServer failureDependencies failureRoot (Api.WebOptions Nothing False) $ \running _ -> do
+      basis <- repositoryBasis running
+      committed <- postJson running "/api/v1/adrs" (createBody basis)
+      assertCommitted committed
+      valueAt ["data", "indexed"] committed >>= (@?= Aeson.Bool False)
+      warning <- valueAt ["data", "index_error"] committed
+      assertBool "post-commit producer failure is reported without losing the commit" (warning /= Aeson.Null)
+      _ <- getJson running "/api/v1/doctor"
+      readIORef failures >>= (@?= 2)
+    either (assertFailure . Text.unpack) pure failedStarted
+
 withSeededServer :: (FilePath -> RunningServer -> IO value) -> IO value
 withSeededServer action = withSeededRepository $ \root -> do
   started <- withWebServer dependencies root (Api.WebOptions Nothing False) (\running _ -> action root running)
@@ -597,6 +1424,80 @@ testShutdownRelease = do
   close probe
   assertBool "released port can be rebound" (maybe False (const True) outcome)
 
+fragmentedOversizeRejected :: Security.BoundAuthority -> Text -> IO ()
+fragmentedOversizeRejected authority token = do
+  port <- either assertFailure pure (authorityPort (Security.authorityHost authority))
+  outcome <- runOwnedSocket 5000000 port $ \client -> do
+    let host = Security.authorityHost authority
+        handshake =
+          "GET /api/v1/events HTTP/1.1\r\nHost: " <> host
+            <> "\r\nOrigin: " <> Security.authorityOrigin authority
+            <> "\r\nAuthorization: Bearer " <> token
+            <> "\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+    sendAll client (TextEncoding.encodeUtf8 handshake)
+    response <- recv client 4096
+    assertBool "fragmented websocket test established a real upgrade" ("HTTP/1.1 101" `BS.isPrefixOf` response)
+    sendAll client (maskedFrame False 1 (BS.replicate 3000 97) <> maskedFrame True 0 (BS.replicate 2000 98))
+    terminated <- trySynchronous (recv client 4096)
+    let closed = case terminated of
+          Left _ -> True
+          Right bytes -> BS.null bytes || (BS.head bytes .&. 0x0f) == 8
+    assertBool "fragmented message exceeding 4096 bytes receives EOF, reset, or a close frame" closed
+  _ <- ownedResult "fragmented websocket exchange" outcome
+  pure ()
+
+withRawPendingPeers :: Int -> Security.BoundAuthority -> Text -> ([Socket] -> IO value) -> IO value
+withRawPendingPeers count authority token action = go count []
+  where
+    go remaining opened
+      | remaining <= 0 = action (reverse opened)
+      | otherwise = bracket (openRawPendingPeer authority token) closeOwnedSocket $ \client ->
+          go (remaining - 1) (client : opened)
+
+openRawPendingPeer :: Security.BoundAuthority -> Text -> IO Socket
+openRawPendingPeer authority token = bracketOnError (socket AF_INET Stream defaultProtocol) closeOwnedSocket $ \client -> do
+  admitRawPendingPeer client authority token
+  pure client
+
+admitRawPendingPeer :: Socket -> Security.BoundAuthority -> Text -> IO ()
+admitRawPendingPeer client authority token = do
+  port <- either assertFailure pure (authorityPort (Security.authorityHost authority))
+  connect client (SockAddrInet (fromIntegral port) (tupleToHostAddress (127, 0, 0, 1)))
+  let handshake =
+        "GET /api/v1/events HTTP/1.1\r\nHost: " <> Security.authorityHost authority
+          <> "\r\nOrigin: " <> Security.authorityOrigin authority
+          <> "\r\nAuthorization: Bearer " <> token
+          <> "\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+  sendAll client (TextEncoding.encodeUtf8 handshake)
+  response <- recv client 4096
+  assertBool "raw pending peer receives a real WebSocket upgrade" ("HTTP/1.1 101" `BS.isPrefixOf` response)
+
+receiveUntilEof :: Socket -> IO Bool
+receiveUntilEof client = do
+  bytes <- recv client 4096
+  if BS.null bytes then pure True else receiveUntilEof client
+
+openRawSlowSubscriber :: Security.BoundAuthority -> Text -> IO Socket
+openRawSlowSubscriber authority token = bracketOnError (socket AF_INET Stream defaultProtocol) closeOwnedSocket $ \client -> do
+  setSocketOption client RecvBuffer 512
+  admitRawPendingPeer client authority token
+  let authenticate = LBS.toStrict (Aeson.encode (Aeson.object ["type" Aeson..= ("authenticate" :: Text), "credential" Aeson..= token]))
+  sendAll client (maskedFrame True 1 authenticate)
+  initial <- recv client 4096
+  assertBool "slow raw subscriber receives its initial versioned resync before it stops reading" ("repository-invalidated" `BS.isInfixOf` initial)
+  pure client
+
+maskedFrame :: Bool -> Word8 -> BS.ByteString -> BS.ByteString
+maskedFrame finished opcode payload =
+  let first = (if finished then 0x80 else 0) + opcode
+      lengthValue = BS.length payload
+      mask = BS.pack [1, 2, 3, 4]
+      header
+        | lengthValue < 126 = BS.pack [first, 0x80 + fromIntegral lengthValue]
+        | otherwise = BS.pack [first, 0x80 + 126, fromIntegral (lengthValue `div` 256), fromIntegral (lengthValue `mod` 256)]
+      masked = BS.pack (zipWith xor (BS.unpack payload) (cycle (BS.unpack mask)))
+   in header <> mask <> masked
+
 bearerRequest :: RunningServer -> Text -> [(Text, Text)] -> IO BS.ByteString
 bearerRequest running requestLine extra =
   let host = Security.authorityHost (runningAuthority running)
@@ -610,18 +1511,99 @@ bootstrapToken = Text.drop (Text.length "token=") . snd . Text.breakOn "token=" 
 request :: Text -> Text -> IO BS.ByteString
 request host bytes = requestRaw host (TextEncoding.encodeUtf8 bytes)
 
+closeOwnedSocket :: Socket -> IO ()
+closeOwnedSocket client = do
+  _ <- trySynchronous (shutdown client ShutdownBoth)
+  _ <- trySynchronous (close client)
+  pure ()
+
+runOwnedSocket :: Int -> Int -> (Socket -> IO value) -> IO (Maybe (Either SomeException value))
+runOwnedSocket deadlineMicros port action = bracket (socket AF_INET Stream defaultProtocol) closeOwnedSocket $ \client -> do
+  let address = SockAddrInet (fromIntegral port :: PortNumber) (tupleToHostAddress (127, 0, 0, 1))
+      cleanup worker = do
+        closeOwnedSocket client
+        joined <- timeout 2000000 (waitCatch worker)
+        case joined of
+          Nothing -> assertFailure "owned socket worker survived shutdown and the bounded join"
+          Just _ -> pure ()
+  bracket (async (trySynchronous (connect client address >> action client))) cleanup $ \worker -> do
+    observed <- timeout deadlineMicros (waitCatch worker)
+    case observed of
+      Just (Right result) -> pure (Just result)
+      Just (Left failure) -> throwIO failure
+      Nothing -> pure Nothing
+
+runOwnedWebSocketClient :: Int -> Int -> WS.Headers -> WS.ClientApp value -> IO (Maybe (Either SomeException value))
+runOwnedWebSocketClient deadlineMicros port headers clientApp =
+  runOwnedSocket deadlineMicros port $ \client ->
+    WS.runClientWithSocket client ("127.0.0.1:" <> show port) "/api/v1/events" WS.defaultConnectionOptions headers clientApp
+
 requestRaw :: Text -> BS.ByteString -> IO BS.ByteString
 requestRaw host bytes = do
   port <- either assertFailure pure (authorityPort host)
-  bracketOnError (socket AF_INET Stream defaultProtocol) close $ \client -> do
-    connect client (SockAddrInet (fromIntegral port :: PortNumber) (tupleToHostAddress (127, 0, 0, 1)))
+  outcome <- runOwnedSocket 3000000 port $ \client -> do
     sendAll client bytes
-    response <- timeout 3000000 (receiveAll client [])
-    close client
-    maybe (assertFailure "HTTP response timed out") pure response
+    receiveAll client []
+  ownedResult "HTTP response" outcome
   where
-    receiveAll client chunks = recv client 4096 >>= \chunk ->
-      if BS.null chunk then pure (BS.concat (reverse chunks)) else receiveAll client (chunk : chunks)
+    receiveAll client chunks = do
+      let accumulated = BS.concat (reverse chunks)
+      if httpResponseComplete accumulated then pure accumulated else do
+        received <- try @SomeException (recv client 4096)
+        case received of
+          Left exception -> if BS.null accumulated then throwIO exception else assertFailure ("HTTP response ended before its declared body: " <> show exception)
+          Right chunk -> if BS.null chunk then pure accumulated else receiveAll client (chunk : chunks)
+
+httpResponseComplete :: BS.ByteString -> Bool
+httpResponseComplete response =
+  let (headers, suffix) = BS.breakSubstring "\r\n\r\n" response
+      body = BS.drop 4 suffix
+      lengths =
+        [ count
+        | line <- BS8.lines headers,
+          "Content-Length:" `BS.isPrefixOf` line,
+          Just (count, _) <- [BS8.readInt (BS8.dropWhile (== ' ') (BS.drop (BS.length "Content-Length:") line))]
+        ]
+   in not (BS.null suffix) && case lengths of
+        [count] -> BS.length body >= count
+        _ | "Transfer-Encoding: chunked" `BS.isInfixOf` headers -> "\r\n0\r\n\r\n" `BS.isSuffixOf` body || body == "0\r\n\r\n"
+        _ -> False
+
+trySynchronous :: IO value -> IO (Either SomeException value)
+trySynchronous action = try action >>= \case
+  Left failure -> case fromException failure of
+    Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+    Nothing -> pure (Left failure)
+  Right value -> pure (Right value)
+
+expectedClose :: BS.ByteString -> Maybe (Either SomeException value) -> Bool
+expectedClose expected = \case
+  Just (Left failure) -> case fromException failure of
+    Just (WS.CloseRequest _ reason) -> expected `BS.isInfixOf` LBS.toStrict reason
+    _ -> False
+  _ -> False
+
+expectedHandshakeStatus :: Int -> Maybe (Either SomeException value) -> Bool
+expectedHandshakeStatus expected = \case
+  Just (Left failure) -> case fromException failure of
+    Just (WS.RequestRejected _ response) -> WS.responseCode response == expected
+    Just (WS.MalformedResponse response _) -> WS.responseCode response == expected
+    _ -> False
+  _ -> False
+
+requestPrefix :: Text -> Text -> IO BS.ByteString
+requestPrefix host bytes = do
+  port <- either assertFailure pure (authorityPort host)
+  outcome <- runOwnedSocket 3000000 port $ \client -> do
+    sendAll client (TextEncoding.encodeUtf8 bytes)
+    recv client 8192
+  ownedResult "HTTP response prefix" outcome
+
+ownedResult :: String -> Maybe (Either SomeException value) -> IO value
+ownedResult label = \case
+  Nothing -> assertFailure (label <> " timed out")
+  Just (Left failure) -> assertFailure (label <> " failed: " <> show failure)
+  Just (Right value) -> pure value
 
 responseStatus :: BS.ByteString -> IO Int
 responseStatus response = case words (takeWhile (/= '\r') (BS8.unpack response)) of

@@ -142,9 +142,9 @@ multiset from the verified partitions, retained components, and expanded repeat
 counts and requires exact equality with the configured queue before dispatch.
 Quoted command lines are checked against the Windows 32,767-character limit.
 
-The current source ledger declares 875 unique ordinary tests, 9 cache-selection
-tests, 28 stress tests, and 6 benchmark-registration tests: 918 unique
-registrations. The explicit competing-target repeat makes 919 executions. The
+The current source ledger declares 881 unique ordinary tests, 9 cache-selection
+tests, 28 stress tests, and 6 benchmark-registration tests: 924 unique
+registrations. The explicit competing-target repeat makes 925 executions. The
 runner does not hardcode these totals. A fresh matching build must list every
 actual registration and prove exact equality before dispatch.
 

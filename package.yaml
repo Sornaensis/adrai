@@ -84,6 +84,7 @@ library:
     - Adrai.SearchVectorCorpus
     - Adrai.Service
     - Adrai.Service.Mutation
+    - Adrai.Service.Compilation
     - Adrai.Service.PostCommitIndex
     - Adrai.Service.Query
     - Adrai.Service.Transaction

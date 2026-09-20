@@ -9,7 +9,13 @@ module Adrai.Web.Application
   ( ApplicationRuntime,
     ApplicationServices (..),
     newApplicationRuntime,
+    stopApplicationRuntime,
+    applicationEventCoordinator,
+    applicationActiveFileRegistry,
+    subscribeApplicationEvents,
+    publishWatcherEvent,
     defaultApplicationServices,
+    webSocketUpgradeAdmitted,
     webApplication,
   )
 where
@@ -35,6 +41,7 @@ import Adrai.Repository
 import Adrai.Provenance.Git.Lock (GitLockError (..), withGitLock)
 import qualified Adrai.Service.Mutation as Mutation
 import qualified Adrai.Service.PostCommitIndex as PostCommit
+import qualified Adrai.Service.Compilation as Compilation
 import qualified Adrai.Service.Query as Query
 import qualified Adrai.Service.Runtime as Runtime
 import Adrai.Service.Transaction
@@ -46,6 +53,8 @@ import qualified Adrai.Types as Types
 import qualified Adrai.Web.Api as Api
 import Adrai.Web.Assets (applicationCss, applicationJavaScript, indexHtml)
 import qualified Adrai.Web.Security as Security
+import qualified Adrai.Web.Events as Events
+import qualified Adrai.Web.Watch as Watch
 import Adrai.Web.Socket (EventsTransport (..))
 import Control.Exception
   ( SomeAsyncException,
@@ -60,14 +69,12 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LazyByteString
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Maybe (mapMaybe)
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextEncodingError
-import Data.Word (Word64)
 import qualified Network.HTTP.Types as Http
 import qualified Network.HTTP.Types.Header as Header
 import Network.Wai
@@ -84,7 +91,9 @@ import Network.Wai
   )
 
 data ApplicationServices = ApplicationServices
-  { dispatchApplicationRequest :: Api.Generation -> IO Api.Generation -> IO () -> (GitOid -> IO Api.Generation) -> Api.Repo -> Api.ApiRequest -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation)),
+  { dispatchApplicationRequest :: Compilation.CompilationCoordinator -> (Repository -> GitOid -> IO (Either Text FilePath)) -> IO () -> Api.Generation -> IO Api.Generation -> IO () -> (GitOid -> IO Api.Generation) -> Api.Repo -> Api.ApiRequest -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation)),
+    applicationCompileExact :: Repository -> GitOid -> IO (Either Text FilePath),
+    applicationAfterCompilationJoin :: IO (),
     applicationAfterQueryResolution :: IO (),
     applicationBeforeCommitPublication :: GitOid -> IO ()
   }
@@ -94,18 +103,43 @@ data ApplicationRuntime = ApplicationRuntime
     applicationAuthority :: Security.BoundAuthority,
     applicationSecret :: Security.ProcessSecret,
     applicationLimits :: Api.ApiLimits,
-    applicationGeneration :: IORef Word64,
+    applicationCoordinator :: Events.EventCoordinator,
+    applicationCompilation :: Compilation.CompilationCoordinator,
+    applicationActiveFiles :: Watch.ActiveFileRegistry,
     applicationServices :: ApplicationServices,
     applicationEvents :: EventsTransport
   }
 
 newApplicationRuntime :: Api.Repo -> Security.BoundAuthority -> Security.ProcessSecret -> Api.ApiLimits -> ApplicationServices -> EventsTransport -> IO ApplicationRuntime
 newApplicationRuntime repo authority secret limits services events = do
-  generation <- newIORef 0
-  pure (ApplicationRuntime repo authority secret limits generation services events)
+  coordinator <- Events.newEventCoordinator
+  compilation <- Compilation.newCompilationCoordinator
+  activeFiles <- Watch.newActiveFileRegistry
+  pure (ApplicationRuntime repo authority secret limits coordinator compilation activeFiles services events)
+
+stopApplicationRuntime :: ApplicationRuntime -> IO ()
+stopApplicationRuntime = Compilation.stopCompilationCoordinator . applicationCompilation
+
+applicationEventCoordinator :: ApplicationRuntime -> Events.EventCoordinator
+applicationEventCoordinator = applicationCoordinator
+
+applicationActiveFileRegistry :: ApplicationRuntime -> Watch.ActiveFileRegistry
+applicationActiveFileRegistry = applicationActiveFiles
 
 defaultApplicationServices :: ApplicationServices
-defaultApplicationServices = ApplicationServices dispatchProduction (pure ()) (const (pure ()))
+defaultApplicationServices = ApplicationServices dispatchProduction Runtime.ensureExactArchive (pure ()) (pure ()) (const (pure ()))
+
+-- | Decide from the original WAI request whether it may enter the WebSocket
+-- adapter.  Rejected upgrade attempts stay in the ordinary application so its
+-- versioned error envelope and metadata remain authoritative.
+webSocketUpgradeAdmitted :: ApplicationRuntime -> Request -> Bool
+webSocketUpgradeAdmitted runtime request =
+  requestMethod request == Http.methodGet
+    && pathInfo request == ["api", "v1", "events"]
+    && encodedQueryBytes request <= Api.maximumQueryBytes (applicationLimits runtime)
+    && case Security.admitRequest (applicationAuthority runtime) (applicationSecret runtime) (rawSecurityRequest runtime request) of
+      Right _ -> True
+      Left _ -> False
 
 webApplication :: ApplicationRuntime -> Application
 webApplication runtime request respond
@@ -156,8 +190,11 @@ handleApi runtime request respond = do
                         Left problem -> respond (errorResponse metadata problem)
                         Right decoded -> do
                           let services = applicationServices runtime
-                              publish oid = applicationBeforeCommitPublication services oid >> nextGeneration runtime
-                          dispatched <- trySynchronous (dispatchApplicationRequest services generation (nextGeneration runtime) (applicationAfterQueryResolution services) publish (applicationRepo runtime) decoded)
+                              publish oid = do
+                                applicationBeforeCommitPublication services oid
+                                envelope <- Events.publishInvalidation (applicationCoordinator runtime) (Events.EventAt oid) [minBound .. maxBound]
+                                pure (Api.mkGeneration (Events.eventGeneration envelope))
+                          dispatched <- trySynchronous (dispatchApplicationRequest services (applicationCompilation runtime) (applicationCompileExact services) (applicationAfterCompilationJoin services) generation (nextGeneration runtime) (applicationAfterQueryResolution services) publish (applicationRepo runtime) decoded)
                           case dispatched of
                             Left exception -> respond (errorResponse metadata (Api.serviceFailure (Text.pack (displayException exception))))
                             Right (Left problem) -> respond (errorResponse metadata problem)
@@ -165,8 +202,8 @@ handleApi runtime request respond = do
                               let responseMetadata = Api.ResponseMetadata observedGeneration asOf
                                in respond (jsonResponse Http.status200 (Api.responseJson (Api.ApiResponse responseMetadata payload)) (Api.responseHeaders responseMetadata))
 
-dispatchProduction :: Api.Generation -> IO Api.Generation -> IO () -> (GitOid -> IO Api.Generation) -> Api.Repo -> Api.ApiRequest -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation))
-dispatchProduction fallbackGeneration allocateGeneration afterResolution publishGeneration bound request = case request of
+dispatchProduction :: Compilation.CompilationCoordinator -> (Repository -> GitOid -> IO (Either Text FilePath)) -> IO () -> Api.Generation -> IO Api.Generation -> IO () -> (GitOid -> IO Api.Generation) -> Api.Repo -> Api.ApiRequest -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation))
+dispatchProduction compilation compileExact afterCompilationJoin fallbackGeneration allocateGeneration afterResolution publishGeneration bound request = case request of
   Api.ApiRepositoryRequest -> do
     basis <- captureObservation repository afterResolution allocateGeneration (observeRepositoryBasis bound)
     case basis of
@@ -204,7 +241,8 @@ dispatchProduction fallbackGeneration allocateGeneration afterResolution publish
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
-        result <- Query.runSearch repository value {Query.searchServiceRevision = gitOidText oid}
+        prepared <- ensureCompiled compilation compileExact afterCompilationJoin repository oid
+        result <- case prepared of Left problem -> pure (Left (Query.SearchCompilerFailure problem)); Right _ -> Query.runSearchExact repository oid value
         pure $ case result of
           Left failure -> Left (searchApiError failure)
           Right projection -> Right (Api.ApiSearchResult projection, Api.AsOfCommit oid, generation)
@@ -214,9 +252,10 @@ dispatchProduction fallbackGeneration allocateGeneration afterResolution publish
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
-        result <- case relevantRequestRevision value of
-          AtRevision _ -> Query.runRelevantQuery repository value {relevantRequestRevision = AtRevision (gitOidText oid)}
-          WorkingRevision -> Query.runRelevantQueryAtHead repository oid value
+        prepared <- ensureCompiled compilation compileExact afterCompilationJoin repository oid
+        result <- case prepared of
+          Left problem -> pure (Left (Query.RelevantCompilerFailure problem))
+          Right _ -> Query.runRelevantQueryExact repository oid value
         pure (either (Left . relevantApiError) (\projection -> Right (Api.ApiRelevantResult projection, Api.AsOfCommit oid, generation)) result)
   Api.ApiConflictsRequest value -> do
     exact <- captureRevision repository afterResolution allocateGeneration (Api.revisionRequestRevision value)
@@ -232,34 +271,37 @@ dispatchProduction fallbackGeneration allocateGeneration afterResolution publish
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
-        result <- Runtime.runDoctorAt repository (gitOidText oid)
+        prepared <- ensureCompiled compilation compileExact afterCompilationJoin repository oid
+        result <- case prepared of
+          Left problem -> pure (Left problem)
+          Right artifact -> Runtime.runDoctorFromExactArchive repository oid (Compilation.compiledArtifactDatabase artifact)
         pure (either (Left . Api.serviceFailure) (\output -> Right (Api.ApiDoctorResult output, Api.AsOfCommit oid, generation)) result)
   Api.ApiEventsRequest -> pure (Left (Api.ApiError Api.ServiceFailure 503 "events-unavailable" "live repository events are not available in this increment"))
   Api.ApiCreateRequest basis value -> runMutation bound basis $ \expected paths -> do
     publication <- newEmptyMVar
     result <- Mutation.createAdrCommandAutoCheckedPublishing (recordPublication publication publishGeneration) expected repository paths (CliTypes.requestActor value) (CliTypes.requestTitle value) (CliTypes.requestSummary value) (CliTypes.requestBody value) (CliTypes.requestDomains value) (CliTypes.requestScopes value) (CliTypes.requestInputDigest value) (CliTypes.requestPromptDigest value) (CliTypes.requestContextDigest value)
-    completeMutation fallbackGeneration publication repository result Mutation.createCommitOid Mutation.createPublicationError (\mutation indexed warning -> Api.ApiCreateResult mutation (CliTypes.requestDomains value) indexed warning)
+    completeMutation compilation compileExact afterCompilationJoin fallbackGeneration publication repository result Mutation.createCommitOid Mutation.createPublicationError (\mutation indexed warning -> Api.ApiCreateResult mutation (CliTypes.requestDomains value) indexed warning)
   Api.ApiAmendRequest existing -> runExisting bound existing $ \expected _paths value -> do
     let inputs = Types.ProvenanceInputs (CliTypes.amendRequestInputDigest value) (CliTypes.amendRequestPromptDigest value) (CliTypes.amendRequestContextDigest value)
     publication <- newEmptyMVar
     result <- Mutation.amendCurrentAdrCommandCheckedPublishing (recordPublication publication publishGeneration) expected repository (CliTypes.amendRequestActor value) (CliTypes.amendRequestAdr value) (CliTypes.amendRequestExpectedState value) (CliTypes.amendRequestChangeSummary value) (CliTypes.amendRequestTitle value) (CliTypes.amendRequestSummary value) (CliTypes.amendRequestBody value) inputs
-    completeMutation fallbackGeneration publication repository result Mutation.amendCommitOid Mutation.amendPublicationError Api.ApiAmendResult
+    completeMutation compilation compileExact afterCompilationJoin fallbackGeneration publication repository result Mutation.amendCommitOid Mutation.amendPublicationError Api.ApiAmendResult
   Api.ApiScopeRequest existing -> runExisting bound existing $ \expected paths value -> do
     publication <- newEmptyMVar
     result <- Mutation.changeScopeCommandCheckedPublishing (recordPublication publication publishGeneration) expected repository paths (CliTypes.scopeRequestActor value) (CliTypes.scopeRequestAdr value) (CliTypes.scopeRequestExpectedState value) (CliTypes.scopeRequestReason value) (CliTypes.scopeRequestChange value) (Types.ProvenanceInputs (CliTypes.scopeRequestInputDigest value) (CliTypes.scopeRequestPromptDigest value) (CliTypes.scopeRequestContextDigest value))
-    completeMutation fallbackGeneration publication repository result Mutation.scopeChangeCommitOid Mutation.scopeChangePublicationError Api.ApiScopeResult
+    completeMutation compilation compileExact afterCompilationJoin fallbackGeneration publication repository result Mutation.scopeChangeCommitOid Mutation.scopeChangePublicationError Api.ApiScopeResult
   Api.ApiDomainRequest existing -> runExisting bound existing $ \expected paths value -> do
     publication <- newEmptyMVar
     result <- Mutation.changeDomainCommandCheckedPublishing (recordPublication publication publishGeneration) expected repository paths (CliTypes.domainRequestActor value) (CliTypes.domainRequestAdr value) (CliTypes.domainRequestExpectedState value) (CliTypes.domainRequestReason value) (CliTypes.domainRequestChange value) (Types.ProvenanceInputs (CliTypes.domainRequestInputDigest value) (CliTypes.domainRequestPromptDigest value) (CliTypes.domainRequestContextDigest value))
-    completeMutation fallbackGeneration publication repository result Mutation.domainChangeCommitOid Mutation.domainChangePublicationError Api.ApiDomainResult
+    completeMutation compilation compileExact afterCompilationJoin fallbackGeneration publication repository result Mutation.domainChangeCommitOid Mutation.domainChangePublicationError Api.ApiDomainResult
   Api.ApiObsoleteRequest existing -> runExisting bound existing $ \expected paths value -> do
     publication <- newEmptyMVar
     result <- Mutation.obsoleteCommandCheckedPublishing (recordPublication publication publishGeneration) expected repository paths (CliTypes.obsoleteRequestActor value) (Api.existingAdr existing) (CliTypes.obsoleteIntent value) (CliTypes.obsoleteRequestInputs value)
-    completeMutation fallbackGeneration publication repository result Mutation.obsoleteCommitOid Mutation.obsoletePublicationError Api.ApiObsoleteResult
+    completeMutation compilation compileExact afterCompilationJoin fallbackGeneration publication repository result Mutation.obsoleteCommitOid Mutation.obsoletePublicationError Api.ApiObsoleteResult
   Api.ApiReactivateRequest existing -> runExisting bound existing $ \expected paths value -> do
     publication <- newEmptyMVar
     result <- Mutation.reactivateCommandCheckedPublishing (recordPublication publication publishGeneration) expected repository paths (CliTypes.reactivateRequestActor value) (Api.existingAdr existing) (CliTypes.reactivateIntent value) (CliTypes.reactivateRequestInputs value)
-    completeMutation fallbackGeneration publication repository result Mutation.reactivateCommitOid Mutation.reactivatePublicationError Api.ApiReactivateResult
+    completeMutation compilation compileExact afterCompilationJoin fallbackGeneration publication repository result Mutation.reactivateCommitOid Mutation.reactivatePublicationError Api.ApiReactivateResult
   where
     repository = Api.repoRepository bound
 
@@ -288,8 +330,8 @@ recordPublication publication publish oid = do
   putMVar publication outcome
   either throwIO (const (pure ())) outcome
 
-completeMutation :: Api.Generation -> MVar (Either SomeException Api.Generation) -> Repository -> Either TransactionError mutation -> (mutation -> GitOid) -> (mutation -> Maybe Text) -> (mutation -> PostCommit.PostCommitIndexResult -> Maybe Text -> Api.ApiResult) -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation))
-completeMutation fallbackGeneration publication repository result commitOf publicationErrorOf render = case result of
+completeMutation :: Compilation.CompilationCoordinator -> (Repository -> GitOid -> IO (Either Text FilePath)) -> IO () -> Api.Generation -> MVar (Either SomeException Api.Generation) -> Repository -> Either TransactionError mutation -> (mutation -> GitOid) -> (mutation -> Maybe Text) -> (mutation -> PostCommit.PostCommitIndexResult -> Maybe Text -> Api.ApiResult) -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation))
+completeMutation compilation compileExact afterCompilationJoin fallbackGeneration publication repository result commitOf publicationErrorOf render = case result of
   Left problem -> pure (Left (transactionApiError problem))
   Right mutation -> do
     published <- tryTakeMVar publication
@@ -304,10 +346,10 @@ completeMutation fallbackGeneration publication repository result commitOf publi
         responseAsOf = case publicationWarning of
           Nothing -> Api.AsOfCommit (commitOf mutation)
           Just _ -> Api.AsOfUnavailable "commit-publication-failed"
-    database <- Runtime.prepareIndexPath repository
-    indexed <- case database of
-      Left problem -> pure (PostCommit.PostCommitIndexResult False Nothing Nothing [] (Just (PostCommit.PostCommitIndexCompileException problem)))
-      Right path -> Runtime.indexCommitted path repository (commitOf mutation)
+    compiled <- ensureCompiled compilation compileExact afterCompilationJoin repository (commitOf mutation)
+    let indexed = case compiled of
+          Left problem -> PostCommit.PostCommitIndexResult False Nothing Nothing [] (Just (PostCommit.PostCommitIndexCompileException problem))
+          Right artifact -> PostCommit.PostCommitIndexResult True (Just (Compilation.compiledArtifactDatabase artifact)) (Just (commitOf mutation)) [] Nothing
     pure (Right (render mutation indexed publicationWarning, responseAsOf, generation))
 
 transactionApiError :: TransactionError -> Api.ApiError
@@ -419,7 +461,48 @@ unavailableMetadata :: ApplicationRuntime -> Text -> IO Api.ResponseMetadata
 unavailableMetadata runtime reason = Api.ResponseMetadata <$> nextGeneration runtime <*> pure (Api.AsOfUnavailable reason)
 
 nextGeneration :: ApplicationRuntime -> IO Api.Generation
-nextGeneration runtime = Api.mkGeneration <$> atomicModifyIORef' (applicationGeneration runtime) (\value -> let next = value + 1 in (next, next))
+nextGeneration runtime = Api.mkGeneration <$> Events.nextEventGeneration (applicationCoordinator runtime)
+
+ensureCompiled :: Compilation.CompilationCoordinator -> (Repository -> GitOid -> IO (Either Text FilePath)) -> IO () -> Repository -> GitOid -> IO (Either Text Compilation.CompiledArtifact)
+ensureCompiled coordinator compileExact afterJoin repository oid = do
+  acquired <- trySynchronous $ Compilation.acquireExactCompilationObserved coordinator repository oid afterJoin $ do
+    archive <- compileExact repository oid
+    pure (Compilation.CompiledArtifact oid <$> archive)
+  pure $ case acquired of
+    Left failure -> Left (Text.pack (displayException failure))
+    Right result -> result
+
+subscribeApplicationEvents :: ApplicationRuntime -> IO (Either Text Events.EventSubscriber)
+subscribeApplicationEvents runtime = do
+  captured <- trySynchronous $ withGitLock (Api.repoRepository (applicationRepo runtime)) $ do
+    basis <- observeRepositoryBasis (applicationRepo runtime)
+    case basis of
+      Left problem -> pure (Left (Api.apiErrorMessage problem))
+      Right observed -> Events.registerSubscriberWithInitial (applicationCoordinator runtime) (Events.EventAt (Api.basisHead observed))
+  pure (either (Left . Text.pack . displayException) id captured)
+
+publishWatcherEvent :: ApplicationRuntime -> Watch.RepositoryEvent -> IO ()
+publishWatcherEvent runtime event = case event of
+  Watch.RepositoryObservationFailure epoch _ -> publishObserved epoch (Events.EventAsOfUnavailable "repository-observation-failed") [minBound .. maxBound]
+  Watch.RepositoryFactsChanged epoch (Watch.RepositorySnapshot _ facts) invalidations -> do
+    let repository = Api.repoRepository (applicationRepo runtime)
+    captured <- trySynchronous $ withGitLock repository $ do
+      actualState <- repositoryHeadState repository
+      actualHead <- exactRevision repository "HEAD"
+      case (actualState, actualHead, Watch.factsHeadState facts, Watch.factsHead facts) of
+        (Right state, Right oid, Just expectedState, Just expectedOid) | state == expectedState && oid == expectedOid -> do
+          published <- Events.publishInvalidationWhen (Watch.observationEpochMatches (applicationActiveFiles runtime) epoch) (applicationCoordinator runtime) (Events.EventAt oid) invalidations
+          maybe (ioError (userError "repository observation epoch was superseded before publication")) (const (pure ())) published
+        _ -> ioError (userError "repository observation was superseded before publication")
+    either throwIO pure captured
+  Watch.RepositoryFactsChanged _ _ _ -> pure ()
+  where
+    publishObserved epoch asOf invalidations = do
+      let repository = Api.repoRepository (applicationRepo runtime)
+      captured <- trySynchronous $ withGitLock repository $ do
+        published <- Events.publishInvalidationWhen (Watch.observationEpochMatches (applicationActiveFiles runtime) epoch) (applicationCoordinator runtime) asOf invalidations
+        maybe (ioError (userError "repository observation epoch was superseded before publication")) (const (pure ())) published
+      either throwIO pure captured
 
 rawSecurityRequest :: ApplicationRuntime -> Request -> Security.SecurityRequest
 rawSecurityRequest _runtime request =
