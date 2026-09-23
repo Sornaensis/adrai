@@ -4,10 +4,9 @@
 
 -- | Core types for the terminal explorer.
 --
--- The explorer provides an interactive REPL and scripted (non-interactive)
--- mode over the shared typed services. It delegates all query and mutation
--- work to 'Adrai.Query' and 'Adrai.Service.Mutation' rather than
--- duplicating reducer / compiler / transaction paths.
+-- The explorer provides an interactive REPL and scripted mode. Its read
+-- handlers currently emit placeholders; use the CLI or web interface for
+-- repository queries.
 --
 -- Key types:
 --
@@ -15,19 +14,6 @@
 -- * 'ExplorerCommand' — parsed REPL commands (search, show, view, filter, ...)
 -- * 'ExplorerState'   — buffered output and cursor tracking for the TUI
 --
--- Commands support:
---
--- * 'help' — list available commands
--- * 'search <query>' — FTS search
--- * 'show <id>' — show ADR detail
--- * 'view <id> [collapsed|exploded]' — view ADR
--- * 'history [id]' — operation history
--- * 'conflicts' — show conflicts
--- * 'create --title T --body B' — create ADR (uses mutation service)
--- * 'amend <id> --title T --body B' — amend ADR
--- * 'status <id> [active|obsolete]' — change status
--- * 'exit' — quit
-
 module Adrai.Explorer.Types
   ( -- * Session state
     ExplorerSession (..),
@@ -111,11 +97,11 @@ data SearchMode
 
 -- | Parsed REPL command.
 --
--- Each constructor corresponds to a user-facing command. The parser
--- handles argument extraction so the REPL handler can focus on
--- dispatching to the appropriate service.
+-- Status is available at the terminal. Create and amend constructors remain
+-- available to the internal dispatcher, but terminal input for them is rejected.
 data ExplorerCommand
   = HelpCommand
+  | InvalidCommand Text
   | SearchCommand Text
   | ShowCommand AdrId
   | ViewCommand AdrId ViewMode
@@ -138,148 +124,44 @@ data ExplorerCommand
 
 -- | Parse a raw REPL line into an 'ExplorerCommand'.
 --
--- The parser uses a simple prefix-matching scheme:
---
--- * Commands starting with @:@ are treated as configuration (:@view@,
---   @:@mode@, @:@obsolete@, @:@at@, @:@file@, @:@actor@).
--- * Mutations use @:@ prefixes (:@create@, @:@amend@, @:@status@).
--- * Standalone @history@, @conflicts@, @help@, @exit@ are parsed directly.
--- * Everything else is treated as a search query.
+-- Command-shaped malformed input receives guidance. Other free text remains
+-- a search query for compatibility with the original REPL.
 parseCommand :: Text -> ExplorerCommand
-parseCommand input
-  | input == "exit" || input == "quit" || input == ":q" || input == ":quit" = ExitCommand
-  | input == "help" || input == ":help" = HelpCommand
-  | input == "history" || input == ":history" = HistoryCommand Nothing
-  | input == "conflicts" || input == ":conflicts" = ConflictsCommand
-  | T.take 7 input == "search " = SearchCommand (T.drop 7 input)
-  | input == ":search" = SearchCommand ""
-  | T.take 5 input == "show " =
-      case T.stripPrefix "show " input of
-        Nothing -> SearchCommand input
-        Just rawId ->
-          case mkAdrId (T.strip rawId) of
-            Right adr -> ShowCommand adr
-            Left _    -> SearchCommand input
-  | input == ":show" = SearchCommand ""
-  | T.take 5 input == "view " = handleView input
-  | input == ":view" = HelpCommand
-  | T.take 6 input == "amend " = handleAmend input
-  | input == ":amend" = SearchCommand ""
-  | T.take 7 input == "status " = handleStatus input
-  | input == ":status" = SearchCommand ""
-  | T.take 7 input == "create " = CreateCommand (T.drop 7 input) "" []
-  | input == ":create" = CreateCommand "" "" []
-  | T.take 6 input == "filter" || T.take 6 input == "filter " = SearchCommand ""
-  | T.take 4 input == "hist" || T.take 8 input == "history " = handleHistory input
-  | T.take 3 input == ":vi" = handleView input
-  | T.take 4 input == ":mod" = SearchCommand ""
-  | T.take 8 input == ":obsolete" = SearchCommand ""
-  | T.take 3 input == ":at" = SearchCommand ""
-  | T.take 5 input == ":file" = SearchCommand ""
-  | T.take 6 input == ":actor" = SearchCommand ""
-  | otherwise = SearchCommand input
+parseCommand rawInput =
+  case T.words input of
+    ["exit"] -> ExitCommand
+    ["quit"] -> ExitCommand
+    [":q"] -> ExitCommand
+    [":quit"] -> ExitCommand
+    ["help"] -> HelpCommand
+    [":help"] -> HelpCommand
+    ["conflicts"] -> ConflictsCommand
+    [":conflicts"] -> ConflictsCommand
+    ["history"] -> HistoryCommand Nothing
+    [":history"] -> HistoryCommand Nothing
+    ["history", ident] -> historyId ident
+    [":history", ident] -> historyId ident
+    "search" : rest | not (null rest) -> SearchCommand (T.unwords rest)
+    ":search" : rest | not (null rest) -> SearchCommand (T.unwords rest)
+    ["show", ident] -> withAdr ident ShowCommand
+    [":show", ident] -> withAdr ident ShowCommand
+    ["view", ident] -> withAdr ident (`ViewCommand` CollapsedView)
+    [":view", ident] -> withAdr ident (`ViewCommand` CollapsedView)
+    ["view", ident, mode] -> viewId ident mode
+    [":view", ident, mode] -> viewId ident mode
+    ["status", ident, status] | T.toLower status `elem` ["active", "obsolete"] -> withAdr ident (`StatusCommand` status)
+    [":status", ident, status] | T.toLower status `elem` ["active", "obsolete"] -> withAdr ident (`StatusCommand` status)
+    command : _ | T.dropWhile (== ':') command `elem` ["create", "amend"] ->
+      InvalidCommand "Terminal explorer create/amend input is unavailable; no Git commit was made. Type :help. At the shell use adrai create --help, adrai amend --help, or adrai web."
+    command : _ | command `elem` reservedCommands || T.isPrefixOf ":" command -> InvalidCommand ("Invalid explorer command: " <> input <> ". Type :help for syntax; use adrai COMMAND --help for CLI options.")
+    _ -> SearchCommand input
   where
-    handleView :: Text -> ExplorerCommand
-    handleView t =
-      case T.stripPrefix "view " t of
-        Nothing ->
-          case T.stripPrefix ":view " t of
-            Nothing -> HelpCommand
-            Just rest ->
-              case T.words rest of
-                [idStr, modeStr] ->
-                  case parseViewMode modeStr of
-                    Just vm ->
-                      case mkAdrId (T.strip idStr) of
-                        Right adr -> ViewCommand adr vm
-                        Left _    -> SearchCommand t
-                    Nothing -> HelpCommand
-                [idStr] ->
-                  case mkAdrId (T.strip idStr) of
-                    Right adr -> ViewCommand adr CollapsedView
-                    Left _    -> SearchCommand t
-                _ -> HelpCommand
-        Just rest ->
-          case T.words rest of
-            [idStr, modeStr] ->
-              case parseViewMode modeStr of
-                Just vm ->
-                  case mkAdrId (T.strip idStr) of
-                    Right adr -> ViewCommand adr vm
-                    Left _    -> SearchCommand rest
-                Nothing -> SearchCommand rest
-            [idStr] ->
-              case mkAdrId (T.strip idStr) of
-                Right adr -> ViewCommand adr CollapsedView
-                Left _    -> SearchCommand rest
-            _ -> HelpCommand
-
-    handleHistory :: Text -> ExplorerCommand
-    handleHistory t =
-      case T.stripPrefix "history " t of
-        Nothing ->
-          case T.stripPrefix ":history " t of
-            Nothing -> HistoryCommand Nothing
-            Just rest ->
-              case T.strip rest of
-                "" -> HistoryCommand Nothing
-                idStr ->
-                  case mkAdrId (T.strip idStr) of
-                    Right adr -> HistoryCommand (Just adr)
-                    Left _    -> HistoryCommand Nothing
-        Just rest ->
-          case T.strip rest of
-            "" -> HistoryCommand Nothing
-            idStr ->
-              case mkAdrId (T.strip idStr) of
-                Right adr -> HistoryCommand (Just adr)
-                Left _    -> HistoryCommand Nothing
-
-    handleAmend :: Text -> ExplorerCommand
-    handleAmend t =
-      case T.stripPrefix "amend " t of
-        Nothing ->
-          case T.stripPrefix ":amend " t of
-            Nothing -> SearchCommand t
-            Just rest ->
-              let parts = T.words rest
-              in case parts of
-                    [adrStr, title, body] ->
-                      case mkAdrId (T.strip adrStr) of
-                        Right adr -> AmendCommand adr title body
-                        Left _    -> SearchCommand t
-                    _ -> SearchCommand t
-        Just rest ->
-          let parts = T.words rest
-          in case parts of
-                [adrStr, title, body] ->
-                  case mkAdrId (T.strip adrStr) of
-                    Right adr -> AmendCommand adr title body
-                    Left _    -> SearchCommand t
-                _ -> SearchCommand t
-
-    handleStatus :: Text -> ExplorerCommand
-    handleStatus t =
-      case T.stripPrefix "status " t of
-        Nothing ->
-          case T.stripPrefix ":status " t of
-            Nothing -> SearchCommand t
-            Just rest ->
-              let parts = T.words rest
-              in case parts of
-                    [adrStr, newStatus] ->
-                      case mkAdrId (T.strip adrStr) of
-                        Right adr -> StatusCommand adr newStatus
-                        Left _    -> SearchCommand t
-                    _ -> SearchCommand t
-        Just rest ->
-          let parts = T.words rest
-          in case parts of
-                [adrStr, newStatus] ->
-                  case mkAdrId (T.strip adrStr) of
-                    Right adr -> StatusCommand adr newStatus
-                    Left _    -> SearchCommand t
-                _ -> SearchCommand t
+    input = T.strip rawInput
+    reservedCommands = ["exit", "quit", "help", "conflicts", "history", "search", "show", "view", "amend", "status", "create", "filter"]
+    withAdr ident make = either (const invalidId) make (mkAdrId ident)
+    invalidId = InvalidCommand ("Invalid ADR ID or command syntax. Type :help; use adrai COMMAND --help for CLI options.")
+    historyId ident = withAdr ident (HistoryCommand . Just)
+    viewId ident mode = maybe invalidId (\viewMode -> withAdr ident (`ViewCommand` viewMode)) (parseViewMode mode)
 
     parseViewMode :: Text -> Maybe ViewMode
     parseViewMode v =

@@ -13,17 +13,14 @@
 -- Both modes share the same command dispatcher, differing only in how
 -- input and output are delivered.
 --
--- The explorer delegates all query and mutation work to shared services
--- ('Adrai.Query', 'Adrai.Service.Mutation', 'Adrai.Graph') rather than
--- duplicating reducer / compiler / transaction paths.
+-- Mutation handlers use shared services. Terminal status input is accepted;
+-- create and amend input is rejected by the parser. Read handlers emit
+-- placeholders and point users to the CLI or web interface for real results.
 --
 -- === Exit gate
 --
--- After a mutation command (create, amend, status) the explorer shows
--- a summary and returns 'True' from the handler to signal the REPL
--- loop should exit. These mutations
--- are one-shot commands that produce output and terminate.
--- For scripted mode, mutations always exit after completion.
+-- If an internal caller dispatches a mutation command, the handler returns
+-- 'True' only after success so the REPL can exit. Errors keep the loop open.
 
 module Adrai.Explorer.Interactive
   ( interactiveSession,
@@ -102,7 +99,7 @@ interactiveSession repoPath actor = do
       hSetEncoding stdin utf8
       hSetEncoding stdout utf8
       hSetBuffering stdout LineBuffering
-      TIO.putStrLn "ADRAI Terminal Explorer. Type :help for commands."
+      TIO.putStrLn "ADRAI Terminal Explorer. Type :help for syntax and limitations; use adrai web or CLI read commands for real results."
       replLoop repository session state
       pure (Right ())
 
@@ -224,6 +221,9 @@ handleCommand ::
   IO (ExplorerSession, ExplorerState, Bool)
 handleCommand repository cmd session state =
   case cmd of
+    InvalidCommand message ->
+      pure (session, state { stateOutput = [message] }, False)
+
     -- Core commands (no exit gate)
     SearchCommand query ->
       (\(s, st) -> (s, st, False)) <$> handleSearch session state query
@@ -283,7 +283,7 @@ handleSearch ::
   ExplorerSession -> ExplorerState -> Text -> IO (ExplorerSession, ExplorerState)
 handleSearch session _state query =
   pure (session, ExplorerState
-    { stateOutput       = ["search: " <> query]
+    { stateOutput       = ["Search preview unavailable in terminal explorer. Query: " <> query <> ". Use adrai search QUERY or adrai web."]
     , stateCursorPosition = 0
     , stateLastResults  = []
     })
@@ -292,7 +292,7 @@ handleShow ::
   ExplorerSession -> ExplorerState -> AdrId -> IO (ExplorerSession, ExplorerState)
 handleShow session _state adr =
   pure (session, ExplorerState
-    { stateOutput       = ["show: " <> adrIdText adr]
+    { stateOutput       = ["ADR detail unavailable in terminal explorer. ID: " <> adrIdText adr <> ". Use adrai show ADR_ID or adrai web."]
     , stateCursorPosition = 0
     , stateLastResults  = []
     })
@@ -301,7 +301,7 @@ handleView ::
   ExplorerSession -> ExplorerState -> AdrId -> ViewMode -> IO (ExplorerSession, ExplorerState)
 handleView session _state adr mode =
   pure (session, ExplorerState
-    { stateOutput       = ["view " <> adrIdText adr <> " (" <> viewModeText mode <> ")"]
+    { stateOutput       = ["ADR view unavailable in terminal explorer. ID: " <> adrIdText adr <> " (" <> viewModeText mode <> "). Use adrai show ADR_ID --view " <> viewModeText mode <> "."]
     , stateCursorPosition = 0
     , stateLastResults  = []
     })
@@ -310,7 +310,7 @@ handleHistory ::
   ExplorerSession -> ExplorerState -> Maybe AdrId -> IO (ExplorerSession, ExplorerState)
 handleHistory session _state maybeAdr =
   pure (session, ExplorerState
-    { stateOutput       = ["history" <> maybe "" (\adr -> " for " <> adrIdText adr) maybeAdr]
+    { stateOutput       = ["History unavailable in terminal explorer" <> maybe "" (\adr -> " for " <> adrIdText adr) maybeAdr <> ". Use adrai history [ADR_ID] or adrai web."]
     , stateCursorPosition = 0
     , stateLastResults  = []
     })
@@ -319,7 +319,7 @@ handleConflicts ::
   ExplorerSession -> ExplorerState -> IO (ExplorerSession, ExplorerState)
 handleConflicts session _state =
   pure (session, ExplorerState
-    { stateOutput       = ["conflicts"]
+    { stateOutput       = ["Conflict list unavailable in terminal explorer. Use adrai web for conflict inspection."]
     , stateCursorPosition = 0
     , stateLastResults  = []
     })
@@ -374,7 +374,7 @@ handleCreateMutation ::
   IO (ExplorerSession, ExplorerState, Bool)
 handleCreateMutation _repository session state title body domains = do
   result <- runMutation session (CreateCommand title body domains)
-  pure (session, renderMutationResult state result, True)
+  pure (session, renderMutationResult state result, mutationSucceeded result)
 
 -- | Handle an amend mutation: run the mutation via the mutation service,
 -- show the result, and signal exit.
@@ -388,7 +388,7 @@ handleAmendMutation ::
   IO (ExplorerSession, ExplorerState, Bool)
 handleAmendMutation _repository session state adr title body = do
   result <- runMutation session (AmendCommand adr title body)
-  pure (session, renderMutationResult state result, True)
+  pure (session, renderMutationResult state result, mutationSucceeded result)
 
 -- | Handle a status mutation (obsolete/reactivate): run the mutation
 -- via the mutation service, show the result, and signal exit.
@@ -401,7 +401,11 @@ handleStatusMutation ::
   IO (ExplorerSession, ExplorerState, Bool)
 handleStatusMutation _repository session state adr newStatus = do
   result <- runMutation session (StatusCommand adr newStatus)
-  pure (session, renderMutationResult state result, True)
+  pure (session, renderMutationResult state result, mutationSucceeded result)
+
+mutationSucceeded :: MutationResult -> Bool
+mutationSucceeded MutationError{} = False
+mutationSucceeded _ = True
 
 -- ---------------------------------------------------------------------------
 -- Result rendering for mutations

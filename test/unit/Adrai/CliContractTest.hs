@@ -86,6 +86,8 @@ import Adrai.CliRunner
     renderFailureOutcome,
     renderInitOutcome,
   )
+import qualified Adrai.Explorer.Types as Explorer
+import Adrai.Explorer.Render (renderHelp)
 import Adrai.Git (GitOid (..))
 import Adrai.Integration.CLI (parseCompileResult, prependExtraPathParts, spawnAdraiWith)
 import Adrai.Domain (canonicalDomains, mkDomain, parseDomainRefinement)
@@ -1563,10 +1565,56 @@ mutationCliContractTests =
               domainRequestInputDigest domainRequest @?= Just (requireRight (parseDigest direct))
               domainRequestPromptDigest domainRequest @?= Just (requireRight (parseDigest direct))
               domainRequestContextDigest domainRequest @?= Just (requireRight (parseDigest direct))
-    , testCase "parser failures map to exit 2" $
+    , testCase "parser failures map to exit 2" $ do
         case parseArguments ["create-adr"] of
           Left rendered -> renderedExitCode rendered @?= ExitFailure 2
           Right _ -> assertFailure "create-adr unexpectedly parsed"
+        case parseArguments [] of
+          Left rendered -> do
+            renderedExitCode rendered @?= ExitFailure 2
+            assertBool "no-args help route" ("adrai --help" `T.isInfixOf` renderedStderr rendered)
+          Right _ -> assertFailure "empty invocation unexpectedly parsed"
+        case parseArguments ["--help"] of
+          Left rendered -> do
+            renderedExitCode rendered @?= ExitSuccess
+            for_ ["init", "create", "show", "history", "search", "relevant", "compare", "doctor", "compile", "amend", "scope", "domain", "obsolete", "reactivate", "web", "explore"] $ \name ->
+              assertBool ("missing command " <> name) (T.pack name `T.isInfixOf` renderedStdout rendered)
+          Right _ -> assertFailure "top-level help unexpectedly parsed as command"
+        case parseArguments ["create", "--help"] of
+          Left rendered -> do
+            renderedExitCode rendered @?= ExitSuccess
+            assertBool "create example" ("--actor human:alice" `T.isInfixOf` renderedStdout rendered)
+          Right _ -> assertFailure "create help unexpectedly parsed as command"
+        let output = T.unlines renderHelp
+        assertBool "read limitation" ("placeholders" `T.isInfixOf` output)
+        for_ ["adrai show ADR_ID", "adrai search QUERY", "adrai history ADR_ID", "adrai create --help", "adrai amend --help"] $ \command ->
+          assertBool ("missing executable command: " <> T.unpack command) (command `T.isInfixOf` output)
+        assertBool "accepted view syntax" ("view ADR_ID [collapsed|exploded]" `T.isInfixOf` output)
+        assertBool "status syntax" ("status ADR_ID active|obsolete" `T.isInfixOf` output)
+        assertBool "editing limitation" ("Terminal create and amend input is unavailable" `T.isInfixOf` output)
+        let malformed = ["show", "show bad-id", "view bad-id exploded", "history bad-id", "create --title X --body Y", "amend", ":view collapsed", ":mode fts", "filter domain", "status bad-id retired"]
+        for_ malformed $ \input ->
+          case Explorer.parseCommand input of
+            Explorer.InvalidCommand hint -> assertBool (T.unpack input) (":help" `T.isInfixOf` hint)
+            other -> assertFailure (T.unpack input <> " parsed as " <> show other)
+        Explorer.parseCommand ":help" @?= Explorer.HelpCommand
+        Explorer.parseCommand "database choices" @?= Explorer.SearchCommand "database choices"
+        Explorer.parseCommand "search database choices" @?= Explorer.SearchCommand "database choices"
+        case Explorer.parseCommand "show A0123456789ABCDEFGHJKMNPQRS" of
+          Explorer.ShowCommand _ -> pure ()
+          other -> assertFailure ("show parsed as " <> show other)
+        for_ ["create Example", "amend A0123456789ABCDEFGHJKMNPQRS Title Body"] $ \input ->
+          case Explorer.parseCommand input of
+            Explorer.InvalidCommand hint -> do
+              assertBool "no false commit claim" ("no Git commit" `T.isInfixOf` hint)
+              assertBool "working edit route" ("adrai web" `T.isInfixOf` hint)
+            other -> assertFailure (T.unpack input <> " parsed as " <> show other)
+        for_ ["status A0123456789ABCDEFGHJKMNPQRS obsolete", ":status A0123456789ABCDEFGHJKMNPQRS active"] $ \input ->
+          case Explorer.parseCommand input of
+            Explorer.StatusCommand adr status -> do
+              adr @?= requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
+              assertBool "accepted status" (status `elem` ["active", "obsolete"])
+            other -> assertFailure (T.unpack input <> " parsed as " <> show other)
     , testCase "structured create rejects unknown and wrong scalar/list fields" $ do
         assertBool "unknown field accepted" (isLeft (parseStructuredCreate "{\"body\":\"x\",\"unknown\":true}"))
         assertBool "wrong domains type accepted" (isLeft (parseStructuredCreate "{\"body\":\"x\",\"domains\":\"platform\"}"))

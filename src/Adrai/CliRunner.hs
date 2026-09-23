@@ -438,24 +438,39 @@ type CliParser = Parser CliInvocation
 -- | Top-level CLI parser combining all subcommands.
 parser :: CliParser
 parser =
-  CliInvocation <$> globalConfigParser <*> subparser
-    ( Opt.command "compile" (info (CmdCompile <$> compileParser) (progDesc "compile the repository"))
-     <> Opt.command "doctor" (info (CmdDoctor <$> doctorParser) (progDesc "diagnose the database"))
-     <> Opt.command "show" (info (CmdShow <$> showParser) (progDesc "show a single ADR"))
-     <> Opt.command "history" (info (CmdHistory <$> historyParser) (progDesc "show operation history"))
-     <> Opt.command "search" (info (CmdSearch <$> searchParser) (progDesc "search ADRs"))
-     <> Opt.command "relevant" (info (CmdRelevant <$> relevantParser) (progDesc "find relevant ADRs"))
-     <> Opt.command "compare" (info (CmdCompare <$> compareParser) (progDesc "compare revisions"))
-     <> Opt.command "init" (info (CmdInit <$> initParser) (progDesc "initialize an ADRAI repository"))
-      <> Opt.command "create" (info (CmdCreate <$> createParser) (progDesc "create an ADR"))
-       <> Opt.command "amend" (info (CmdAmend <$> amendParser) (progDesc "amend an ADR"))
-       <> Opt.command "obsolete" (info (CmdObsolete <$> obsoleteParser) (progDesc "mark an ADR obsolete"))
-       <> Opt.command "reactivate" (info (CmdReactivate <$> reactivateParser) (progDesc "reactivate an ADR"))
-       <> Opt.command "scope" (info (CmdScope <$> scopeParser) (progDesc "change an ADR scope"))
-       <> Opt.command "domain" (info (CmdDomain <$> domainParser) (progDesc "change an ADR domain"))
-       <> Opt.command "web" (info (CmdWeb <$> webParser) (progDesc "serve the repository web API"))
-       <> Opt.command "explore" (info (pure CmdExplore) (progDesc "open the terminal explorer"))
+  CliInvocation <$> globalConfigParser <*>
+    ( subparser
+        ( Opt.commandGroup "Get started (these commands create Git commits):"
+     <> Opt.command "init" (info (Opt.helper <*> (CmdInit <$> initParser)) (progDesc "initialize ADRAI in an existing Git repository" <> Opt.footer "Example: adrai init"))
+     <> Opt.command "create" (info (Opt.helper <*> (CmdCreate <$> createParser)) (progDesc "create an ADR (requires content and an actor)" <> Opt.footer "Example: adrai create --title 'Use PostgreSQL' --summary 'Store application data' --body 'PostgreSQL provides transactions.' --actor human:alice"))
+        )
+   <|> subparser
+        ( Opt.commandGroup "Read and inspect (no Git commits):"
+     <> Opt.command "show" (commandInfo (CmdShow <$> showParser) "show one ADR; example: adrai show ADR_ID")
+     <> Opt.command "history" (commandInfo (CmdHistory <$> historyParser) "show operation history; example: adrai history ADR_ID")
+     <> Opt.command "search" (commandInfo (CmdSearch <$> searchParser) "search ADRs; example: adrai search database")
+     <> Opt.command "relevant" (commandInfo (CmdRelevant <$> relevantParser) "rank ADRs for a file; example: adrai relevant src/Main.hs --worktree")
+     <> Opt.command "compare" (commandInfo (CmdCompare <$> compareParser) "compare revisions; example: adrai compare HEAD~1 HEAD")
+     <> Opt.command "doctor" (commandInfo (CmdDoctor <$> doctorParser) "diagnose repository and index; example: adrai doctor")
+     <> Opt.command "compile" (commandInfo (CmdCompile <$> compileParser) "build or reuse the derived index; example: adrai compile")
+        )
+   <|> subparser
+        ( Opt.commandGroup "Change decisions (these commands create Git commits):"
+     <> Opt.command "amend" (commandInfo (CmdAmend <$> amendParser) "amend an ADR; provide ADR, changed content, and --actor")
+     <> Opt.command "scope" (commandInfo (CmdScope <$> scopeParser) "change file scope; provide ADR, --add/--remove/--set, --reason, --actor")
+     <> Opt.command "domain" (commandInfo (CmdDomain <$> domainParser) "change domains; provide ADR, change option, --reason, --actor")
+     <> Opt.command "obsolete" (commandInfo (CmdObsolete <$> obsoleteParser) "mark ADR obsolete; provide ADR, --reason, --actor")
+     <> Opt.command "reactivate" (commandInfo (CmdReactivate <$> reactivateParser) "reactivate ADR; provide ADR, --reason, --actor")
+        )
+   <|> subparser
+        ( Opt.commandGroup "Interfaces:"
+     <> Opt.command "web" (commandInfo (CmdWeb <$> webParser) "open the browser explorer (run in its worktree; no --repo)")
+     <> Opt.command "explore" (commandInfo (pure CmdExplore) "open the terminal explorer (read commands currently show placeholders)")
+        )
     )
+
+commandInfo :: Parser a -> String -> Opt.ParserInfo a
+commandInfo commandParser description = info (Opt.helper <*> commandParser) (progDesc description)
 
 webParser :: Parser WebApi.WebOptions
 webParser =
@@ -713,11 +728,12 @@ run = do
       Opt.Failure failure -> do
         let (message, parserExit) = Opt.renderFailure failure "adrai"
             exitCode = if parserExit == ExitSuccess then ExitSuccess else ExitFailure 2
-        writeUtf8 stderr (Text.pack message)
+            guidance = if null arguments then "\nRun adrai --help to see commands and first steps.\n" else ""
+        writeUtf8 (if exitCode == ExitSuccess then stdout else stderr) (Text.pack (message <> guidance))
         exitWith exitCode
       Opt.CompletionInvoked completion -> Opt.execCompletion completion "adrai" >>= putStr
   where
-    parserInfo = info parser (progDesc "ADRAI - Architecture Decision Record tool")
+    parserInfo = cliParserInfo
 
 parseArguments :: [String] -> Either CliRendered CliInvocation
 parseArguments arguments =
@@ -726,11 +742,22 @@ parseArguments arguments =
     else case Opt.execParserPure Opt.defaultPrefs parserInfo arguments of
       Opt.Success invocation -> Right invocation
       Opt.Failure failure ->
-        let (message, _) = Opt.renderFailure failure "adrai"
-         in Left (CliRendered "" (Text.pack message) (ExitFailure 2))
+        let (message, parserExit) = Opt.renderFailure failure "adrai"
+            guidance = if null arguments then "\nRun adrai --help to see commands and first steps.\n" else ""
+         in if parserExit == ExitSuccess
+              then Left (CliRendered (Text.pack message) "" ExitSuccess)
+              else Left (CliRendered "" (Text.pack (message <> guidance)) (ExitFailure 2))
       Opt.CompletionInvoked _ -> Left (CliRendered "" "" ExitSuccess)
   where
-    parserInfo = info parser (progDesc "ADRAI - Architecture Decision Record tool")
+    parserInfo = cliParserInfo
+
+cliParserInfo :: Opt.ParserInfo CliInvocation
+cliParserInfo =
+  info (Opt.helper <*> parser)
+    ( progDesc "Architecture Decision Records in a Git repository"
+   <> Opt.header "Start in an existing Git repository: adrai init"
+   <> Opt.footer "Next: adrai create --title 'Use PostgreSQL' --summary 'Store application data' --body 'PostgreSQL provides transactions.' --actor human:alice. Then: adrai show ADR_ID or adrai search database. Place --repo PATH before the command (except web); see adrai COMMAND --help."
+    )
 
 explicitRepoWithWeb :: [String] -> Bool
 explicitRepoWithWeb = scan False

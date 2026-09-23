@@ -1,6 +1,6 @@
 # Usage
 
-ADRAI operates on a Git repository. Pass `--repo PATH` before the command to target a repository other than the current directory.
+ADRAI operates on an existing Git repository. Run `adrai --help` to see all 16 commands grouped by purpose. Pass `--repo PATH` before the command to target a repository other than the current directory (for example, `adrai --repo ../project show ADR_ID`). `web` must run in its worktree and rejects an explicit `--repo`.
 
 ## Quick start
 
@@ -10,7 +10,7 @@ Initialize ADRAI in an existing Git repository:
 adrai init
 ```
 
-This creates and commits `.adrai.toml`, `.gitattributes`, and `.gitignore`. The default managed roots are `architecture/adrai/decisions` and `architecture/adrai/connections`.
+This creates and commits `.adrai.toml`, `.gitattributes`, and `.gitignore`. The default managed roots are `architecture/adrai/decisions` and `architecture/adrai/connections`. Initialize only once per repository.
 
 Create an ADR:
 
@@ -36,7 +36,7 @@ adrai relevant src/Storage.hs --worktree
 adrai doctor
 ```
 
-Use the identifier printed by `create` in place of `ADR_ID`.
+Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `amend`, `scope`, `domain`, `obsolete`, and `reactivate` create Git commits. Read and diagnostic commands do not create Git commits; `compile` may build a disposable derived index.
 
 ## Commands
 
@@ -55,12 +55,14 @@ Use the identifier printed by `create` in place of `ADR_ID`.
 | `compare` | Compare two immutable revisions. |
 | `compile` | Build or reuse the repository's derived SQLite index. |
 | `doctor` | Report source, graph, provenance, and cache diagnostics. |
-| `explore` | Open the interactive terminal explorer. |
+| `explore` | Open the terminal explorer. Its read commands currently print placeholders; use the CLI or `web` for real results. |
 | `web` | Start the authenticated loopback repository explorer, HTTP API, and event WebSocket. |
 
 Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands also accept `--json` for stable machine-readable output. Run `adrai COMMAND --help` for the complete option list.
 
 Mutation commands require an actor in `kind:identifier` form and create Git commits. Pass `--actor` or set `ADRAI_ACTOR`; valid kinds are `human`, `llm`, and `service`. Options such as `--expect STATE_TOKEN` provide optimistic concurrency checks when a caller is acting on previously read state.
+
+In the terminal explorer, `:help` lists accepted input syntax and a first step. `help`, `exit`, `quit`, and `:q` also work. `search QUERY` (or free text), `show ADR_ID`, `view ADR_ID [collapsed|exploded]`, `history [ADR_ID]`, and `conflicts` parse, but their output is currently a placeholder, not repository data. Use `adrai search`, `adrai show`, `adrai history`, or `adrai web` for live inspection. `status ADR_ID active|obsolete` (also `:status`) commits a status change and exits on success. Terminal `create` and `amend` input is unavailable and makes no Git commit; use the corresponding CLI commands or web forms for those edits. Malformed command-shaped input reports guidance instead of becoming a search.
 
 Run `adrai web --no-open` from a worktree to print a one-time authenticated
 loopback URL without opening a browser. Use `--port PORT` to request a specific
