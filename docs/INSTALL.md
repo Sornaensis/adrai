@@ -27,8 +27,23 @@ adrai --help
 
 If Stack's binary directory is not on `PATH`, use `stack path --local-bin` to locate the installed executable.
 
-See [Usage](USAGE.md) for the repository setup flow.
+The source-built executable embeds the checked-in `web/static/index.html`,
+`web/static/app.css`, optimized Elm/bridge bundle `web/dist/app.js`, and its
+`web/dist/provenance.json` receipt. The build checks the receipt against the
+web sources and bundle. Node and Elm are needed only to rebuild or verify web
+assets, not to run the installed executable; see [Development](DEVELOPMENT.md).
 
-The executable embeds `web/static/index.html`, `web/static/app.css`, and the
-checked-in `web/dist/app.js`. No Node or Elm toolchain is needed to run the
-current API-only web service.
+From the target Git worktree, start the browser explorer, HTTP API, and event
+WebSocket:
+
+```console
+adrai web --no-open
+```
+
+The service binds to `127.0.0.1` and this worktree; `web` rejects an explicit
+global `--repo`. Open the one-time URL printed by the process. Its credential
+stays in page memory and is removed from the browser URL before assets load.
+Reloading that cleaned URL allows read-only snapshots while the session cookie
+is valid. Reopen the process bootstrap URL for mutations and live updates.
+See [Usage](USAGE.md) for repository setup and browser operation, and the
+[Web interface contract](WEB.md) for API and session details.
