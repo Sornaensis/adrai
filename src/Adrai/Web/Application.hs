@@ -21,6 +21,7 @@ module Adrai.Web.Application
 where
 
 import qualified Adrai.CliTypes as CliTypes
+import Adrai.Compiler.CacheSelection (ExactArchiveBusy (..))
 import Adrai.Git
   ( GitError (..),
     GitHeadState (..),
@@ -62,14 +63,18 @@ import Control.Exception
     catch,
     displayException,
     fromException,
+    mask,
+    onException,
     throwIO,
     try,
   )
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, tryTakeMVar)
+import Control.Concurrent.STM (atomically)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LazyByteString
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Maybe (mapMaybe)
 import Data.String (fromString)
 import Data.Text (Text)
@@ -78,6 +83,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextEncodingError
 import qualified Network.HTTP.Types as Http
 import qualified Network.HTTP.Types.Header as Header
+import System.Timeout (timeout)
 import Network.Wai
   ( Application,
     Request,
@@ -204,7 +210,9 @@ handleApi runtime request respond = do
                           case dispatched of
                             Left exception -> case fromException exception of
                               Just Events.GenerationExhausted -> respond (generationExhaustedResponse metadata)
-                              Nothing -> respond (errorResponse metadata (Api.serviceFailure (Text.pack (displayException exception))))
+                              Nothing -> case fromException exception of
+                                Just ExactArchiveBusy -> respond (errorResponse metadata (Api.ApiError Api.ServiceFailure 503 "repository-busy" "exact archive is temporarily busy"))
+                                Nothing -> respond (errorResponse metadata (Api.serviceFailure (Text.pack (displayException exception))))
                             Right (Left problem) -> respond (errorResponse metadata problem)
                             Right (Right (payload, asOf, observedGeneration)) ->
                               let responseMetadata = Api.ResponseMetadata observedGeneration asOf
@@ -354,7 +362,12 @@ completeMutation compilation compileExact afterCompilationJoin fallbackGeneratio
         responseAsOf = case publicationWarning of
           Nothing -> Api.AsOfCommit (commitOf mutation)
           Just _ -> Api.AsOfUnavailable "commit-publication-failed"
-    compiled <- ensureCompiled compilation compileExact afterCompilationJoin repository (commitOf mutation)
+    compilationOutcome <- trySynchronous (ensureCompiled compilation compileExact afterCompilationJoin repository (commitOf mutation))
+    compiled <- case compilationOutcome of
+      Left exception -> case fromException exception of
+        Just ExactArchiveBusy -> pure (Left "exact archive temporarily busy after durable commit")
+        Nothing -> throwIO exception
+      Right compiledResult -> pure compiledResult
     let indexed = case compiled of
           Left problem -> PostCommit.PostCommitIndexResult False Nothing Nothing [] (Just (PostCommit.PostCommitIndexCompileException problem))
           Right artifact -> PostCommit.PostCommitIndexResult True (Just (Compilation.compiledArtifactDatabase artifact)) (Just (commitOf mutation)) [] Nothing
@@ -478,26 +491,79 @@ ensureCompiled coordinator compileExact afterJoin repository oid = do
   acquired <- trySynchronous $ Compilation.acquireExactCompilationObserved coordinator repository oid afterJoin $ do
     archive <- compileExact repository oid
     pure (Compilation.CompiledArtifact oid <$> archive)
-  pure $ case acquired of
-    Left failure -> Left (Text.pack (displayException failure))
-    Right result -> result
+  case acquired of
+    Left failure -> case fromException failure of
+      Just ExactArchiveBusy -> throwIO ExactArchiveBusy
+      Nothing -> pure (Left (Text.pack (displayException failure)))
+    Right result -> pure result
 
-subscribeApplicationEvents :: ApplicationRuntime -> IO (Either Text Events.EventSubscriber)
-subscribeApplicationEvents runtime = do
-  terminal <- Events.isGenerationExhausted (applicationCoordinator runtime)
-  if terminal then pure (Left "generation-exhausted") else do
-    captured <- trySynchronous $ withGitLock (Api.repoRepository (applicationRepo runtime)) $ do
-      basis <- observeRepositoryBasis (applicationRepo runtime)
-      case basis of
-        Left problem -> pure (Left (Api.apiErrorMessage problem))
-        Right observed -> Events.registerSubscriberWithInitial (applicationCoordinator runtime) (Events.EventAt (Api.basisHead observed))
-    case captured of
-      Right (Right subscriber) -> pure (Right subscriber)
-      Right (Left problem) -> terminalOr (Left problem)
-      Left failure -> terminalOr (Left (Text.pack (displayException failure)))
+subscribeApplicationEvents :: ApplicationRuntime -> (Api.Repo -> IO Watch.RepositorySnapshot) -> IO (Either Text Events.EventSubscriber)
+subscribeApplicationEvents runtime takeSnapshot = attempt (2 :: Int)
   where
+    coordinator = applicationCoordinator runtime
+    bound = applicationRepo runtime
+    registry = applicationActiveFiles runtime
+    attempt remaining = do
+      terminal <- Events.isGenerationExhausted coordinator
+      if terminal then pure (Left "generation-exhausted") else do
+        before <- Events.readEventGeneration coordinator
+        -- The observer's bounded filesystem scan must never hold the Git lock.
+        sampled <- timeout 2000000 (takeSnapshot bound)
+        case sampled of
+          Nothing -> retry remaining
+          Just snapshot -> do
+            provisional <- newIORef Nothing
+            let discardProvisional = do
+                  owned <- readIORef provisional
+                  maybe (pure ()) (Events.unregisterSubscriber coordinator) owned
+            captured <- trySynchronous $ (withGitLock (Api.repoRepository bound) $ do
+              current <- Events.readEventGeneration coordinator
+              epochMatches <- atomically (Watch.observationEpochMatches registry (snapshotEpoch snapshot))
+              if current == maxBound then pure (Left "generation-exhausted")
+              else if current /= before || not epochMatches then pure (Right Nothing)
+              else do
+                asOf <- initialAsOf snapshot
+                case asOf of
+                  Nothing -> pure (Right Nothing)
+                  Just initial -> mask $ \_ -> do
+                    registered <- Events.registerSubscriberWithInitial coordinator initial
+                    case registered of
+                      Left problem -> pure (Left problem)
+                      Right subscriber -> do
+                        writeIORef provisional (Just subscriber)
+                        after <- Events.readEventGeneration coordinator
+                        epochStillMatches <- atomically (Watch.observationEpochMatches registry (snapshotEpoch snapshot))
+                        let coherent = after == current + 1 && epochStillMatches
+                        if coherent
+                          then pure (Right (Just subscriber))
+                          else do
+                            Events.unregisterSubscriber coordinator subscriber
+                            writeIORef provisional Nothing
+                            pure (Right Nothing)) `onException` discardProvisional
+            case captured of
+              Right (Right (Just subscriber)) -> pure (Right subscriber)
+              Right (Right Nothing) -> retry remaining
+              Right (Left problem) -> terminalOr (Left problem)
+              Left _ -> retry remaining
+    retry remaining
+      | remaining > 1 = attempt (remaining - 1)
+      | otherwise = terminalOr (Left "repository snapshot changed during subscription")
+    snapshotEpoch (Watch.RepositorySnapshot epoch _) = epoch
+    snapshotEpoch (Watch.RepositorySnapshotFailed epoch _) = epoch
+    initialAsOf (Watch.RepositorySnapshotFailed _ _) = pure (Just (Events.EventAsOfUnavailable "repository-observation-failed"))
+    initialAsOf (Watch.RepositorySnapshot _ facts) = do
+      basis <- observeRepositoryBasis bound
+      pure $ case basis of
+        Right observed
+          | Watch.factsHead facts == Just (Api.basisHead observed)
+              && Watch.factsHeadState facts == Just (basisHeadState observed) ->
+              Just (Events.EventAt (Api.basisHead observed))
+        _ -> Nothing
+    basisHeadState observed = case Api.basisHeadRef observed of
+      Api.AttachedHead ref -> GitHeadAttached ref
+      Api.DetachedHead -> GitHeadDetached
     terminalOr fallback = do
-      terminal <- Events.isGenerationExhausted (applicationCoordinator runtime)
+      terminal <- Events.isGenerationExhausted coordinator
       pure (if terminal then Left "generation-exhausted" else fallback)
 
 publishWatcherEvent :: ApplicationRuntime -> Watch.RepositoryEvent -> IO ()

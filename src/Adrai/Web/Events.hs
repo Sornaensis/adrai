@@ -22,6 +22,7 @@ module Adrai.Web.Events
     setEventGenerationForTest,
     GenerationExhausted (..),
     isGenerationExhausted,
+    readEventGeneration,
     nextEventGeneration,
     publishInvalidation,
     publishInvalidationWhen,
@@ -268,6 +269,12 @@ isGenerationExhausted (EventCoordinator state terminal) = atomically $ do
   if exhausted || generation == maxBound
     then writeTVar terminal True >> pure True
     else pure False
+
+-- | Read the coordinator clock without advancing it or changing terminal state.
+readEventGeneration :: EventCoordinator -> IO Word64
+readEventGeneration (EventCoordinator state _) = atomically $ do
+  CoordinatorState generation _ _ <- readTVar state
+  pure generation
 
 -- | A narrow boundary seam for tests; it can only move a live clock forward.
 setEventGenerationForTest :: EventCoordinator -> Word64 -> IO ()

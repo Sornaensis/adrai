@@ -519,11 +519,11 @@ function _Debug_crash_UNUSED(identifier, fact1, fact2, fact3, fact4)
 
 function _Debug_regionToString(region)
 {
-	if (region.b$.aR === region.ch.aR)
+	if (region.b2.aT === region.ck.aT)
 	{
-		return 'on line ' + region.b$.aR;
+		return 'on line ' + region.b2.aT;
 	}
-	return 'on lines ' + region.b$.aR + ' through ' + region.ch.aR;
+	return 'on lines ' + region.b2.aT + ' through ' + region.ck.aT;
 }
 
 
@@ -1861,9 +1861,9 @@ var _Platform_worker = F4(function(impl, flagDecoder, debugMetadata, args)
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.dO,
-		impl.eu,
-		impl.em,
+		impl.dQ,
+		impl.ew,
+		impl.eo,
 		function() { return function() {} }
 	);
 });
@@ -2727,9 +2727,9 @@ var _VirtualDom_mapEventTuple = F2(function(func, tuple)
 var _VirtualDom_mapEventRecord = F2(function(func, record)
 {
 	return {
-		cx: func(record.cx),
-		b2: record.b2,
-		bN: record.bN
+		cA: func(record.cA),
+		b5: record.b5,
+		bP: record.bP
 	}
 });
 
@@ -2997,11 +2997,11 @@ function _VirtualDom_makeCallback(eventNode, initialHandler)
 		// 3 = Custom
 
 		var value = result.a;
-		var message = !tag ? value : tag < 3 ? value.a : value.cx;
-		var stopPropagation = tag == 1 ? value.b : tag == 3 && value.b2;
+		var message = !tag ? value : tag < 3 ? value.a : value.cA;
+		var stopPropagation = tag == 1 ? value.b : tag == 3 && value.b5;
 		var currentEventNode = (
 			stopPropagation && event.stopPropagation(),
-			(tag == 2 ? value.b : tag == 3 && value.bN) && event.preventDefault(),
+			(tag == 2 ? value.b : tag == 3 && value.bP) && event.preventDefault(),
 			eventNode
 		);
 		var tagger;
@@ -3951,11 +3951,11 @@ var _Browser_element = _Debugger_element || F4(function(impl, flagDecoder, debug
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.dO,
-		impl.eu,
-		impl.em,
+		impl.dQ,
+		impl.ew,
+		impl.eo,
 		function(sendToApp, initialModel) {
-			var view = impl.c_;
+			var view = impl.c0;
 			/**/
 			var domNode = args['node'];
 			//*/
@@ -3987,12 +3987,12 @@ var _Browser_document = _Debugger_document || F4(function(impl, flagDecoder, deb
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.dO,
-		impl.eu,
-		impl.em,
+		impl.dQ,
+		impl.ew,
+		impl.eo,
 		function(sendToApp, initialModel) {
-			var divertHrefToApp = impl.bY && impl.bY(sendToApp)
-			var view = impl.c_;
+			var divertHrefToApp = impl.b$ && impl.b$(sendToApp)
+			var view = impl.c0;
 			var title = _VirtualDom_doc.title;
 			var bodyNode = _VirtualDom_doc.body;
 			var currNode = _VirtualDom_virtualize(bodyNode);
@@ -4000,7 +4000,7 @@ var _Browser_document = _Debugger_document || F4(function(impl, flagDecoder, deb
 			{
 				_VirtualDom_divertHrefToApp = divertHrefToApp;
 				var doc = view(model);
-				var nextNode = _VirtualDom_node('body')(_List_Nil)(doc.ak);
+				var nextNode = _VirtualDom_node('body')(_List_Nil)(doc.am);
 				var patches = _VirtualDom_diff(currNode, nextNode);
 				bodyNode = _VirtualDom_applyPatches(bodyNode, currNode, patches, sendToApp);
 				currNode = nextNode;
@@ -4061,12 +4061,12 @@ function _Browser_makeAnimator(model, draw)
 
 function _Browser_application(impl)
 {
-	var onUrlChange = impl.d8;
-	var onUrlRequest = impl.d9;
+	var onUrlChange = impl.ea;
+	var onUrlRequest = impl.eb;
 	var key = function() { key.a(onUrlChange(_Browser_getUrl())); };
 
 	return _Browser_document({
-		bY: function(sendToApp)
+		b$: function(sendToApp)
 		{
 			key.a = sendToApp;
 			_Browser_window.addEventListener('popstate', key);
@@ -4082,9 +4082,9 @@ function _Browser_application(impl)
 					var next = $elm$url$Url$fromString(href).a;
 					sendToApp(onUrlRequest(
 						(next
-							&& curr.cK === next.cK
-							&& curr.cp === next.cp
-							&& curr.cH.a === next.cH.a
+							&& curr.cN === next.cN
+							&& curr.cs === next.cs
+							&& curr.cK.a === next.cK.a
 						)
 							? $elm$browser$Browser$Internal(next)
 							: $elm$browser$Browser$External(href)
@@ -4092,13 +4092,13 @@ function _Browser_application(impl)
 				}
 			});
 		},
-		dO: function(flags)
+		dQ: function(flags)
 		{
-			return A3(impl.dO, flags, _Browser_getUrl(), key);
+			return A3(impl.dQ, flags, _Browser_getUrl(), key);
 		},
-		c_: impl.c_,
-		eu: impl.eu,
-		em: impl.em
+		c0: impl.c0,
+		ew: impl.ew,
+		eo: impl.eo
 	});
 }
 
@@ -4164,17 +4164,17 @@ var _Browser_decodeEvent = F2(function(decoder, event)
 function _Browser_visibilityInfo()
 {
 	return (typeof _VirtualDom_doc.hidden !== 'undefined')
-		? { dL: 'hidden', dk: 'visibilitychange' }
+		? { dN: 'hidden', dm: 'visibilitychange' }
 		:
 	(typeof _VirtualDom_doc.mozHidden !== 'undefined')
-		? { dL: 'mozHidden', dk: 'mozvisibilitychange' }
+		? { dN: 'mozHidden', dm: 'mozvisibilitychange' }
 		:
 	(typeof _VirtualDom_doc.msHidden !== 'undefined')
-		? { dL: 'msHidden', dk: 'msvisibilitychange' }
+		? { dN: 'msHidden', dm: 'msvisibilitychange' }
 		:
 	(typeof _VirtualDom_doc.webkitHidden !== 'undefined')
-		? { dL: 'webkitHidden', dk: 'webkitvisibilitychange' }
-		: { dL: 'hidden', dk: 'visibilitychange' };
+		? { dN: 'webkitHidden', dm: 'webkitvisibilitychange' }
+		: { dN: 'hidden', dm: 'visibilitychange' };
 }
 
 
@@ -4255,12 +4255,12 @@ var _Browser_call = F2(function(functionName, id)
 function _Browser_getViewport()
 {
 	return {
-		cR: _Browser_getScene(),
-		c$: {
-			c2: _Browser_window.pageXOffset,
-			c3: _Browser_window.pageYOffset,
-			c1: _Browser_doc.documentElement.clientWidth,
-			co: _Browser_doc.documentElement.clientHeight
+		cT: _Browser_getScene(),
+		c1: {
+			c4: _Browser_window.pageXOffset,
+			c5: _Browser_window.pageYOffset,
+			c3: _Browser_doc.documentElement.clientWidth,
+			cr: _Browser_doc.documentElement.clientHeight
 		}
 	};
 }
@@ -4270,8 +4270,8 @@ function _Browser_getScene()
 	var body = _Browser_doc.body;
 	var elem = _Browser_doc.documentElement;
 	return {
-		c1: Math.max(body.scrollWidth, body.offsetWidth, elem.scrollWidth, elem.offsetWidth, elem.clientWidth),
-		co: Math.max(body.scrollHeight, body.offsetHeight, elem.scrollHeight, elem.offsetHeight, elem.clientHeight)
+		c3: Math.max(body.scrollWidth, body.offsetWidth, elem.scrollWidth, elem.offsetWidth, elem.clientWidth),
+		cr: Math.max(body.scrollHeight, body.offsetHeight, elem.scrollHeight, elem.offsetHeight, elem.clientHeight)
 	};
 }
 
@@ -4294,15 +4294,15 @@ function _Browser_getViewportOf(id)
 	return _Browser_withNode(id, function(node)
 	{
 		return {
-			cR: {
-				c1: node.scrollWidth,
-				co: node.scrollHeight
+			cT: {
+				c3: node.scrollWidth,
+				cr: node.scrollHeight
 			},
-			c$: {
-				c2: node.scrollLeft,
-				c3: node.scrollTop,
-				c1: node.clientWidth,
-				co: node.clientHeight
+			c1: {
+				c4: node.scrollLeft,
+				c5: node.scrollTop,
+				c3: node.clientWidth,
+				cr: node.clientHeight
 			}
 		};
 	});
@@ -4332,18 +4332,18 @@ function _Browser_getElement(id)
 		var x = _Browser_window.pageXOffset;
 		var y = _Browser_window.pageYOffset;
 		return {
-			cR: _Browser_getScene(),
-			c$: {
-				c2: x,
-				c3: y,
-				c1: _Browser_doc.documentElement.clientWidth,
-				co: _Browser_doc.documentElement.clientHeight
+			cT: _Browser_getScene(),
+			c1: {
+				c4: x,
+				c5: y,
+				c3: _Browser_doc.documentElement.clientWidth,
+				cr: _Browser_doc.documentElement.clientHeight
 			},
-			du: {
-				c2: x + rect.left,
-				c3: y + rect.top,
-				c1: rect.width,
-				co: rect.height
+			dw: {
+				c4: x + rect.left,
+				c5: y + rect.top,
+				c3: rect.width,
+				cr: rect.height
 			}
 		};
 	});
@@ -4904,7 +4904,7 @@ var $elm$url$Url$Http = 0;
 var $elm$url$Url$Https = 1;
 var $elm$url$Url$Url = F6(
 	function (protocol, host, port_, path, query, fragment) {
-		return {cj: fragment, cp: host, bg: path, cH: port_, cK: protocol, b: query};
+		return {cm: fragment, cs: host, bi: path, cK: port_, cN: protocol, c: query};
 	});
 var $elm$core$String$contains = _String_contains;
 var $elm$core$String$length = _String_length;
@@ -5192,9 +5192,9 @@ var $elm$core$Platform$Cmd$batch = _Platform_batch;
 var $elm$core$Dict$RBEmpty_elm_builtin = {$: -2};
 var $elm$core$Dict$empty = $elm$core$Dict$RBEmpty_elm_builtin;
 var $author$project$View$Forms$Create = 0;
-var $author$project$View$Forms$initial = {au: 0, Z: '', _: 'human', aa: '', aM: '', db: '', ai: $elm$core$Maybe$Nothing, dc: '', ak: '', av: '', bt: '', dr: false, L: '', bB: '', bH: 'delta', aT: $elm$core$Maybe$Nothing, bO: '', cL: '', bT: '', aW: '', bW: '', ee: false, cP: false, aX: $elm$core$Maybe$Nothing, bj: _List_Nil, N: '', b_: false, aY: '', P: '', eq: '', F: ''};
+var $author$project$View$Forms$initial = {aw: 0, aa: '', ab: 'human', ac: '', aO: '', dd: '', ak: $elm$core$Maybe$Nothing, de: '', am: '', ax: '', bv: '', dt: false, L: '', bD: '', bJ: 'delta', aV: $elm$core$Maybe$Nothing, bQ: '', cO: '', bV: '', aY: '', bY: '', eg: false, bZ: false, aZ: $elm$core$Maybe$Nothing, bl: _List_Nil, O: '', b1: false, a_: '', Q: '', es: '', F: ''};
 var $author$project$Route$Browse = 0;
-var $author$project$Main$initialQuery = {a1: '', J: '', a6: 'HEAD~1', a7: 'HEAD', bw: '', dD: '', bb: false, cw: 100, bH: 'hybrid', bf: 'newest', bh: 'collapsed', aE: 'HEAD', bZ: false, aF: '', b4: '', aI: '', c_: 0, ev: false};
+var $author$project$Main$initialQuery = {a3: '', J: '', a8: 'HEAD~1', a9: 'HEAD', by: '', dF: '', bd: false, cz: 100, bJ: 'hybrid', bh: 'newest', bj: 'collapsed', aG: 'HEAD', b0: false, aH: '', b7: '', aK: '', c0: 0, ex: false};
 var $elm$core$Dict$Black = 1;
 var $elm$core$Dict$RBNode_elm_builtin = F5(
 	function (a, b, c, d, e) {
@@ -5371,18 +5371,18 @@ var $author$project$Main$issue = F5(
 		if (model.k) {
 			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 		} else {
-			var pending = {ax: path, z: model.z, A: model.A, bc: kind};
-			var identifier = 'ui-' + $elm$core$String$fromInt(model.aB);
+			var pending = {az: path, z: model.z, A: model.A, be: kind};
+			var identifier = 'ui-' + $elm$core$String$fromInt(model.aD);
 			var next = _Utils_update(
 				model,
 				{
-					aQ: A3(
+					aS: A3(
 						$elm$core$Dict$insert,
 						$author$project$Main$requestKey(kind),
 						identifier,
-						model.aQ),
-					aB: model.aB + 1,
-					U: A3($elm$core$Dict$insert, identifier, pending, model.U)
+						model.aS),
+					aD: model.aD + 1,
+					W: A3($elm$core$Dict$insert, identifier, pending, model.W)
 				});
 			return _Utils_Tuple2(
 				next,
@@ -5421,23 +5421,23 @@ var $author$project$Route$path = F2(
 				fields)));
 	});
 var $author$project$Route$queryPath = function (query) {
-	var revision = ($elm$core$String$trim(query.aE) === '') ? 'HEAD' : query.aE;
+	var revision = ($elm$core$String$trim(query.aG) === '') ? 'HEAD' : query.aG;
 	var resultLimit = $elm$core$String$fromInt(
-		A3($elm$core$Basics$clamp, 1, 1000, query.cw));
+		A3($elm$core$Basics$clamp, 1, 1000, query.cz));
 	var filter = _Utils_ap(
-		A2($author$project$Route$optional, 'domain', query.bw),
+		A2($author$project$Route$optional, 'domain', query.by),
 		_Utils_ap(
-			A2($author$project$Route$optional, 'file', query.dD),
+			A2($author$project$Route$optional, 'file', query.dF),
 			_Utils_ap(
-				A2($author$project$Route$optional, 'actor', query.a1),
+				A2($author$project$Route$optional, 'actor', query.a3),
 				_Utils_ap(
-					A2($author$project$Route$optional, 'since', query.aF),
-					A2($author$project$Route$optional, 'until', query.aI)))));
+					A2($author$project$Route$optional, 'since', query.aH),
+					A2($author$project$Route$optional, 'until', query.aK)))));
 	var at = _List_fromArray(
 		[
 			_Utils_Tuple2('at', revision)
 		]);
-	var _v0 = query.c_;
+	var _v0 = query.c0;
 	switch (_v0) {
 		case 0:
 			return A2(
@@ -5447,15 +5447,15 @@ var $author$project$Route$queryPath = function (query) {
 					_List_fromArray(
 						[
 							_Utils_Tuple2('q', ''),
-							_Utils_Tuple2('mode', query.bH),
-							_Utils_Tuple2('view', query.bh),
+							_Utils_Tuple2('mode', query.bJ),
+							_Utils_Tuple2('view', query.bj),
 							_Utils_Tuple2('limit', resultLimit),
 							_Utils_Tuple2(
 							'include_obsolete',
-							$author$project$Route$bool(query.bb)),
+							$author$project$Route$bool(query.bd)),
 							_Utils_Tuple2(
 							'shallow',
-							$author$project$Route$bool(query.bZ))
+							$author$project$Route$bool(query.b0))
 						]),
 					_Utils_ap(at, filter)));
 		case 1:
@@ -5465,16 +5465,16 @@ var $author$project$Route$queryPath = function (query) {
 				_Utils_ap(
 					_List_fromArray(
 						[
-							_Utils_Tuple2('q', query.b4),
-							_Utils_Tuple2('mode', query.bH),
-							_Utils_Tuple2('view', query.bh),
+							_Utils_Tuple2('q', query.b7),
+							_Utils_Tuple2('mode', query.bJ),
+							_Utils_Tuple2('view', query.bj),
 							_Utils_Tuple2('limit', resultLimit),
 							_Utils_Tuple2(
 							'include_obsolete',
-							$author$project$Route$bool(query.bb)),
+							$author$project$Route$bool(query.bd)),
 							_Utils_Tuple2(
 							'shallow',
-							$author$project$Route$bool(query.bZ))
+							$author$project$Route$bool(query.b0))
 						]),
 					_Utils_ap(at, filter)));
 		case 2:
@@ -5484,19 +5484,19 @@ var $author$project$Route$queryPath = function (query) {
 				_Utils_ap(
 					_List_fromArray(
 						[
-							_Utils_Tuple2('file', query.dD),
+							_Utils_Tuple2('file', query.dF),
 							_Utils_Tuple2(
 							'limit',
 							$elm$core$String$fromInt(
-								A3($elm$core$Basics$clamp, 1, 100, query.cw))),
+								A3($elm$core$Basics$clamp, 1, 100, query.cz))),
 							_Utils_Tuple2(
 							'include_obsolete',
-							$author$project$Route$bool(query.bb)),
+							$author$project$Route$bool(query.bd)),
 							_Utils_Tuple2(
 							'worktree',
-							$author$project$Route$bool(query.ev))
+							$author$project$Route$bool(query.ex))
 						]),
-					query.ev ? _List_Nil : at));
+					query.ex ? _List_Nil : at));
 		case 3:
 			return A2(
 				$author$project$Route$path,
@@ -5505,25 +5505,25 @@ var $author$project$Route$queryPath = function (query) {
 					_List_fromArray(
 						[
 							_Utils_Tuple2('limit', resultLimit),
-							_Utils_Tuple2('order', query.bf)
+							_Utils_Tuple2('order', query.bh)
 						]),
 					_Utils_ap(
 						at,
 						_Utils_ap(
 							A2($author$project$Route$optional, 'adr', query.J),
 							_Utils_ap(
-								A2($author$project$Route$optional, 'actor', query.a1),
+								A2($author$project$Route$optional, 'actor', query.a3),
 								_Utils_ap(
-									A2($author$project$Route$optional, 'since', query.aF),
-									A2($author$project$Route$optional, 'until', query.aI)))))));
+									A2($author$project$Route$optional, 'since', query.aH),
+									A2($author$project$Route$optional, 'until', query.aK)))))));
 		case 4:
 			return A2(
 				$author$project$Route$path,
 				'/api/v1/compare',
 				_List_fromArray(
 					[
-						_Utils_Tuple2('from', query.a6),
-						_Utils_Tuple2('to', query.a7),
+						_Utils_Tuple2('from', query.a8),
+						_Utils_Tuple2('to', query.a9),
 						_Utils_Tuple2('include_unchanged', 'false')
 					]));
 		case 5:
@@ -5535,39 +5535,41 @@ var $author$project$Route$queryPath = function (query) {
 var $author$project$Route$repository = '/api/v1/repository';
 var $author$project$Main$init = function (flags) {
 	var base = {
-		s: $elm$core$Dict$empty,
-		Q: false,
-		aw: $elm$core$Maybe$Nothing,
-		al: $elm$core$Maybe$Nothing,
-		a8: $elm$core$Maybe$Nothing,
-		c: $author$project$View$Forms$initial,
+		R: false,
+		t: $elm$core$Dict$empty,
+		S: false,
+		ay: $elm$core$Maybe$Nothing,
+		an: $elm$core$Maybe$Nothing,
+		ba: $elm$core$Maybe$Nothing,
+		b: $author$project$View$Forms$initial,
 		z: 0,
 		A: 0,
-		f: $elm$core$Maybe$Nothing,
+		g: $elm$core$Maybe$Nothing,
 		I: false,
 		m: flags.m,
-		aA: $elm$core$Maybe$Nothing,
-		r: $elm$core$Maybe$Nothing,
-		u: $elm$core$Dict$empty,
-		aQ: $elm$core$Dict$empty,
-		X: $elm$core$Maybe$Nothing,
-		aB: 1,
-		d: '',
-		j: 0,
-		U: $elm$core$Dict$empty,
-		b: $author$project$Main$initialQuery,
-		aU: $elm$core$Maybe$Nothing,
-		ae: 0,
-		aV: $elm$core$Maybe$Nothing,
+		aC: $elm$core$Maybe$Nothing,
+		s: $elm$core$Maybe$Nothing,
+		v: $elm$core$Dict$empty,
+		aS: $elm$core$Dict$empty,
+		Z: $elm$core$Maybe$Nothing,
+		aD: 1,
 		M: $elm$core$Maybe$Nothing,
-		x: false,
-		af: $elm$core$Maybe$Nothing,
+		e: '',
+		j: 0,
+		W: $elm$core$Dict$empty,
+		c: $author$project$Main$initialQuery,
+		aW: $elm$core$Maybe$Nothing,
+		ag: 0,
+		aX: $elm$core$Maybe$Nothing,
+		N: $elm$core$Maybe$Nothing,
+		q: false,
+		ah: $elm$core$Maybe$Nothing,
 		D: $elm$core$Maybe$Nothing,
-		V: $elm$core$Maybe$Nothing,
-		O: flags.m ? 'connecting' : 'unavailable',
+		X: $elm$core$Maybe$Nothing,
+		P: flags.m ? 'connecting' : 'unavailable',
 		k: false,
-		e: true,
-		bq: '0'
+		d: true,
+		bs: '0'
 	};
 	var _v0 = A5($author$project$Main$issue, 0, 'GET', $author$project$Route$repository, $elm$core$Maybe$Nothing, base);
 	var withRepository = _v0.a;
@@ -5603,29 +5605,29 @@ var $author$project$View$Forms$candidateLabels = function (inspection) {
 		A2(
 			$elm$core$List$map,
 			function (candidate) {
-				return candidate.ba + (' · ' + (candidate.F + (' · ' + candidate.P)));
+				return candidate.bc + (' · ' + (candidate.F + (' · ' + candidate.Q)));
 			},
-			inspection.a2.cM),
+			inspection.a4.cP),
 		_Utils_ap(
 			A2(
 				$elm$core$List$map,
 				function (candidate) {
-					return candidate.ba + (' · ' + candidate.P);
+					return candidate.bc + (' · ' + candidate.Q);
 				},
-				inspection.a2.N),
+				inspection.a4.O),
 			A2(
 				$elm$core$List$map,
 				function (candidate) {
-					return candidate.ba + (' · ' + candidate.P);
+					return candidate.bc + (' · ' + candidate.Q);
 				},
-				inspection.a2.L)));
+				inspection.a4.L)));
 };
 var $author$project$View$Forms$heads = function (inspection) {
 	return _Utils_ap(
-		inspection.bS,
+		inspection.bU,
 		_Utils_ap(
-			inspection.bX,
-			_Utils_ap(inspection.bx, inspection.b1)));
+			inspection.b_,
+			_Utils_ap(inspection.bz, inspection.b4)));
 };
 var $elm$core$Maybe$map = F2(
 	function (f, maybe) {
@@ -5640,17 +5642,17 @@ var $elm$core$Maybe$map = F2(
 var $author$project$View$Forms$baseline = F2(
 	function (repository, inspection) {
 		return {
-			dc: repository.aY,
-			ak: A2(
+			de: repository.a_,
+			am: A2(
 				$elm$core$Maybe$withDefault,
 				'',
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.ak;
+						return $.am;
 					},
 					inspection)),
-			a2: A2(
+			a4: A2(
 				$elm$core$Maybe$withDefault,
 				_List_Nil,
 				A2($elm$core$Maybe$map, $author$project$View$Forms$candidateLabels, inspection)),
@@ -5663,37 +5665,37 @@ var $author$project$View$Forms$baseline = F2(
 						return $.L;
 					},
 					inspection)),
-			dI: repository.dI,
-			dJ: repository.dJ,
-			dK: A2(
+			dK: repository.dK,
+			dL: repository.dL,
+			dM: A2(
 				$elm$core$Maybe$withDefault,
 				_List_Nil,
 				A2($elm$core$Maybe$map, $author$project$View$Forms$heads, inspection)),
-			N: A2(
+			O: A2(
 				$elm$core$Maybe$withDefault,
 				_List_Nil,
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.N;
+						return $.O;
 					},
 					inspection)),
-			aY: A2(
+			a_: A2(
 				$elm$core$Maybe$withDefault,
 				'',
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.aY;
+						return $.a_;
 					},
 					inspection)),
-			P: A2(
+			Q: A2(
 				$elm$core$Maybe$withDefault,
 				'',
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.P;
+						return $.Q;
 					},
 					inspection)),
 			F: A2(
@@ -5710,22 +5712,22 @@ var $author$project$View$Forms$baseline = F2(
 var $elm$core$Basics$neq = _Utils_notEqual;
 var $author$project$View$Forms$adopt = F3(
 	function (repository, inspection, draft) {
-		return (!_Utils_eq(draft.eq, inspection.J)) ? $elm$core$Result$Err('Inspect the draft\u0027s target ADR before adopting tokens.') : ((!_Utils_eq(inspection.ah, repository.dI)) ? $elm$core$Result$Err('Inspect the exact current repository HEAD before adopting tokens.') : $elm$core$Result$Ok(
+		return (!_Utils_eq(draft.es, inspection.J)) ? $elm$core$Result$Err('Inspect the draft\u0027s target ADR before adopting tokens.') : ((!_Utils_eq(inspection.aj, repository.dK)) ? $elm$core$Result$Err('Inspect the exact current repository HEAD before adopting tokens.') : $elm$core$Result$Ok(
 			_Utils_update(
 				draft,
 				{
-					db: repository.dI,
-					ai: repository.dJ,
-					dc: repository.aY,
-					cP: true,
-					aX: $elm$core$Maybe$Just(
+					dd: repository.dK,
+					ak: repository.dL,
+					de: repository.a_,
+					bZ: true,
+					aZ: $elm$core$Maybe$Just(
 						A2(
 							$author$project$View$Forms$baseline,
 							repository,
 							$elm$core$Maybe$Just(inspection))),
-					bj: $author$project$View$Forms$heads(inspection),
-					b_: false,
-					aY: inspection.aY
+					bl: $author$project$View$Forms$heads(inspection),
+					b1: false,
+					a_: inspection.a_
 				})));
 	});
 var $author$project$View$Forms$adoptCreate = F2(
@@ -5733,13 +5735,13 @@ var $author$project$View$Forms$adoptCreate = F2(
 		return _Utils_update(
 			draft,
 			{
-				db: repository.dI,
-				ai: repository.dJ,
-				dc: repository.aY,
-				cP: true,
-				aX: $elm$core$Maybe$Just(
+				dd: repository.dK,
+				ak: repository.dL,
+				de: repository.a_,
+				bZ: true,
+				aZ: $elm$core$Maybe$Just(
 					A2($author$project$View$Forms$baseline, repository, $elm$core$Maybe$Nothing)),
-				b_: false
+				b1: false
 			});
 	});
 var $author$project$View$Forms$begin = F4(
@@ -5753,13 +5755,13 @@ var $author$project$View$Forms$begin = F4(
 				return _Utils_update(
 					$author$project$View$Forms$initial,
 					{
-						ak: item.ak,
+						am: item.am,
 						L: A2($elm$core$String$join, '\u000A', item.L),
-						bj: $author$project$View$Forms$heads(item),
-						N: A2($elm$core$String$join, '\u000A', item.N),
-						aY: item.aY,
-						P: item.P,
-						eq: item.J,
+						bl: $author$project$View$Forms$heads(item),
+						O: A2($elm$core$String$join, '\u000A', item.O),
+						a_: item.a_,
+						Q: item.Q,
+						es: item.J,
 						F: item.F
 					});
 			}
@@ -5767,42 +5769,49 @@ var $author$project$View$Forms$begin = F4(
 		return _Utils_update(
 			selected,
 			{
-				au: action,
-				Z: previous.Z,
-				_: previous._,
+				aw: action,
 				aa: previous.aa,
-				db: repository.dI,
-				ai: repository.dJ,
-				dc: repository.aY,
-				aT: $elm$core$Maybe$Just(
+				ab: previous.ab,
+				ac: previous.ac,
+				dd: repository.dK,
+				ak: repository.dL,
+				de: repository.a_,
+				aV: $elm$core$Maybe$Just(
 					A2(
 						$author$project$View$Forms$baseline,
 						repository,
 						(!action) ? $elm$core$Maybe$Nothing : inspection)),
-				cP: _Utils_eq(
+				bZ: _Utils_eq(
 					A2(
 						$elm$core$Maybe$map,
 						function ($) {
-							return $.ah;
+							return $.aj;
 						},
 						inspection),
-					$elm$core$Maybe$Just(repository.dI)) && (_Utils_eq(
+					$elm$core$Maybe$Just(repository.dK)) && (_Utils_eq(
 					A2(
 						$elm$core$Maybe$map,
 						function ($) {
-							return $.c_;
+							return $.c0;
 						},
 						inspection),
-					$elm$core$Maybe$Just('collapsed')) && (!(!action))),
-				aX: $elm$core$Maybe$Nothing,
-				b_: (!_Utils_eq(inspection, $elm$core$Maybe$Nothing)) && ((!_Utils_eq(
+					$elm$core$Maybe$Just('collapsed')) && (_Utils_eq(
 					A2(
 						$elm$core$Maybe$map,
 						function ($) {
-							return $.ah;
+							return $.aF;
 						},
 						inspection),
-					$elm$core$Maybe$Just(repository.dI))) && (!(!action)))
+					$elm$core$Maybe$Just(false)) && (!(!action)))),
+				aZ: $elm$core$Maybe$Nothing,
+				b1: (!_Utils_eq(inspection, $elm$core$Maybe$Nothing)) && ((!_Utils_eq(
+					A2(
+						$elm$core$Maybe$map,
+						function ($) {
+							return $.aj;
+						},
+						inspection),
+					$elm$core$Maybe$Just(repository.dK))) && (!(!action)))
 			});
 	});
 var $author$project$View$Forms$change = F3(
@@ -5816,19 +5825,19 @@ var $author$project$View$Forms$change = F3(
 				case 1:
 					return _Utils_update(
 						draft,
-						{P: content});
+						{Q: content});
 				case 2:
 					return _Utils_update(
 						draft,
-						{ak: content});
+						{am: content});
 				case 3:
 					return _Utils_update(
 						draft,
-						{av: content});
+						{ax: content});
 				case 4:
 					return _Utils_update(
 						draft,
-						{cL: content});
+						{cO: content});
 				case 5:
 					return _Utils_update(
 						draft,
@@ -5836,91 +5845,91 @@ var $author$project$View$Forms$change = F3(
 				case 6:
 					return _Utils_update(
 						draft,
-						{N: content});
+						{O: content});
 				case 7:
 					return _Utils_update(
 						draft,
-						{aM: content});
+						{aO: content});
 				case 8:
 					return _Utils_update(
 						draft,
-						{aW: content});
+						{aY: content});
 				case 9:
 					return _Utils_update(
 						draft,
-						{bT: content});
+						{bV: content});
 				case 10:
 					return _Utils_update(
 						draft,
-						{bW: content});
+						{bY: content});
 				case 11:
 					return _Utils_update(
 						draft,
-						{_: content});
+						{ab: content});
 				case 12:
 					return _Utils_update(
 						draft,
-						{Z: content});
+						{aa: content});
 				case 13:
 					return _Utils_update(
 						draft,
-						{aa: content});
+						{ac: content});
 				case 14:
 					return _Utils_update(
 						draft,
-						{bB: content});
+						{bD: content});
 				case 15:
 					return _Utils_update(
 						draft,
-						{bO: content});
+						{bQ: content});
 				case 16:
 					return _Utils_update(
 						draft,
-						{bt: content});
+						{bv: content});
 				default:
 					return _Utils_update(
 						draft,
-						{bH: content});
+						{bJ: content});
 			}
 		}();
 		return _Utils_update(
 			modified,
-			{dr: true});
+			{dt: true});
 	});
 var $elm$core$Basics$not = _Basics_not;
 var $author$project$Main$inspectionReady = function (model) {
-	return (!model.k) && (model.x && (model.Q && (model.I && (_Utils_eq(
+	return (!model.k) && (model.q && (model.S && (model.I && (_Utils_eq(
 		A2(
 			$elm$core$Maybe$map,
 			function ($) {
-				return $.c_;
+				return $.c0;
 			},
-			model.r),
+			model.s),
 		$elm$core$Maybe$Just('collapsed')) && (_Utils_eq(
-		model.V,
+		model.X,
 		A2(
 			$elm$core$Maybe$map,
 			function ($) {
-				return $.dI;
+				return $.dK;
 			},
-			model.M)) && _Utils_eq(
+			model.N)) && _Utils_eq(
 		model.D,
 		A2(
 			$elm$core$Maybe$map,
 			function ($) {
 				return $.J;
 			},
-			model.r)))))));
+			model.s)))))));
 };
 var $author$project$Main$isHistorical = function (model) {
-	return (model.b.aE !== 'HEAD') || ((!_Utils_eq(model.D, $elm$core$Maybe$Nothing)) && (!_Utils_eq(
-		model.V,
+	return (model.c.aG !== 'HEAD') || ((!_Utils_eq(model.D, $elm$core$Maybe$Nothing)) && (!_Utils_eq(
+		model.X,
 		A2(
 			$elm$core$Maybe$map,
 			function ($) {
-				return $.dI;
+				return $.dK;
 			},
-			model.M))));
+			model.N))));
 };
 var $author$project$Route$Relevant = 2;
 var $elm$json$Json$Encode$list = F2(
@@ -5944,26 +5953,26 @@ var $author$project$Main$signedDecimal = function (raw) {
 		digits);
 };
 var $author$project$Main$validateQuery = function (query) {
-	return ((query.cw < 1) || (_Utils_cmp(
-		query.cw,
-		(query.c_ === 2) ? 100 : 1000) > 0)) ? $elm$core$Maybe$Just('Window limit must be between 1 and 1000 (100 for relevance).') : (((query.c_ === 2) && ($elm$core$String$trim(query.dD) === '')) ? $elm$core$Maybe$Just('Choose a repository-relative file for relevance.') : (((query.c_ === 2) && (query.ev && (query.aE !== 'HEAD'))) ? $elm$core$Maybe$Just('Worktree relevance cannot use an explicit revision.') : (((query.c_ === 4) && (($elm$core$String$trim(query.a6) === '') || ($elm$core$String$trim(query.a7) === ''))) ? $elm$core$Maybe$Just('Choose both comparison revisions.') : (((!($elm$core$String$isEmpty(query.aF) || $author$project$Main$signedDecimal(query.aF))) || (!($elm$core$String$isEmpty(query.aI) || $author$project$Main$signedDecimal(query.aI)))) ? $elm$core$Maybe$Just('Time filters must be signed Unix milliseconds.') : $elm$core$Maybe$Nothing))));
+	return ((query.cz < 1) || (_Utils_cmp(
+		query.cz,
+		(query.c0 === 2) ? 100 : 1000) > 0)) ? $elm$core$Maybe$Just('Window limit must be between 1 and 1000 (100 for relevance).') : (((query.c0 === 2) && ($elm$core$String$trim(query.dF) === '')) ? $elm$core$Maybe$Just('Choose a repository-relative file for relevance.') : (((query.c0 === 2) && (query.ex && (query.aG !== 'HEAD'))) ? $elm$core$Maybe$Just('Worktree relevance cannot use an explicit revision.') : (((query.c0 === 4) && (($elm$core$String$trim(query.a8) === '') || ($elm$core$String$trim(query.a9) === ''))) ? $elm$core$Maybe$Just('Choose both comparison revisions.') : (((!($elm$core$String$isEmpty(query.aH) || $author$project$Main$signedDecimal(query.aH))) || (!($elm$core$String$isEmpty(query.aK) || $author$project$Main$signedDecimal(query.aK)))) ? $elm$core$Maybe$Just('Time filters must be signed Unix milliseconds.') : $elm$core$Maybe$Nothing))));
 };
 var $author$project$Main$loadActive = function (model) {
-	var _v0 = $author$project$Main$validateQuery(model.b);
+	var _v0 = $author$project$Main$validateQuery(model.c);
 	if (!_v0.$) {
 		var problem = _v0.a;
 		return _Utils_Tuple2(
 			_Utils_update(
 				model,
 				{
-					f: $elm$core$Maybe$Just(problem),
-					e: true
+					g: $elm$core$Maybe$Just(problem),
+					d: true
 				}),
 			$elm$core$Platform$Cmd$none);
 	} else {
-		var path = $author$project$Route$queryPath(model.b);
-		var interest = ((model.b.c_ === 2) && model.b.ev) ? _List_fromArray(
-			[model.b.dD]) : _List_Nil;
+		var path = $author$project$Route$queryPath(model.c);
+		var interest = ((model.c.c0 === 2) && model.c.ex) ? _List_fromArray(
+			[model.c.dF]) : _List_Nil;
 		var _v1 = A5(
 			$author$project$Main$issue,
 			1,
@@ -5972,7 +5981,7 @@ var $author$project$Main$loadActive = function (model) {
 			$elm$core$Maybe$Nothing,
 			_Utils_update(
 				model,
-				{f: $elm$core$Maybe$Nothing, j: 0, e: true}));
+				{g: $elm$core$Maybe$Nothing, j: 0, d: true}));
 		var next = _v1.a;
 		var command = _v1.b;
 		return _Utils_Tuple2(
@@ -6011,7 +6020,7 @@ var $author$project$Route$pageCount = function (items) {
 		((($elm$core$List$length(items) + $author$project$Route$pageSize) - 1) / $author$project$Route$pageSize) | 0);
 };
 var $author$project$Main$maxPage = function (model) {
-	var _v0 = model.b.c_;
+	var _v0 = model.c.c0;
 	switch (_v0) {
 		case 0:
 			return A2(
@@ -6022,7 +6031,7 @@ var $author$project$Main$maxPage = function (model) {
 					A2(
 						$elm$core$Basics$composeR,
 						function ($) {
-							return $.cO;
+							return $.cR;
 						},
 						A2(
 							$elm$core$Basics$composeR,
@@ -6030,7 +6039,7 @@ var $author$project$Main$maxPage = function (model) {
 							function (n) {
 								return n - 1;
 							})),
-					model.af));
+					model.ah));
 		case 1:
 			return A2(
 				$elm$core$Maybe$withDefault,
@@ -6040,7 +6049,7 @@ var $author$project$Main$maxPage = function (model) {
 					A2(
 						$elm$core$Basics$composeR,
 						function ($) {
-							return $.cO;
+							return $.cR;
 						},
 						A2(
 							$elm$core$Basics$composeR,
@@ -6048,7 +6057,7 @@ var $author$project$Main$maxPage = function (model) {
 							function (n) {
 								return n - 1;
 							})),
-					model.af));
+					model.ah));
 		case 3:
 			return A2(
 				$elm$core$Maybe$withDefault,
@@ -6058,7 +6067,7 @@ var $author$project$Main$maxPage = function (model) {
 					A2(
 						$elm$core$Basics$composeR,
 						function ($) {
-							return $.be;
+							return $.bg;
 						},
 						A2(
 							$elm$core$Basics$composeR,
@@ -6066,7 +6075,7 @@ var $author$project$Main$maxPage = function (model) {
 							function (n) {
 								return n - 1;
 							})),
-					model.aA));
+					model.aC));
 		default:
 			return 0;
 	}
@@ -6117,7 +6126,7 @@ var $author$project$Route$showPath = F3(
 	});
 var $author$project$Main$selectedPath = F2(
 	function (viewMode, model) {
-		var _v0 = _Utils_Tuple2(model.D, model.V);
+		var _v0 = _Utils_Tuple2(model.D, model.X);
 		if ((!_v0.a.$) && (!_v0.b.$)) {
 			var adr = _v0.a.a;
 			var revision = _v0.b.a;
@@ -6131,20 +6140,20 @@ var $author$project$Main$readPendingCurrent = F3(
 		return (!model.k) && (_Utils_eq(
 			A2(
 				$elm$core$Dict$get,
-				$author$project$Main$requestKey(pending.bc),
-				model.aQ),
-			$elm$core$Maybe$Just(requestId)) && (_Utils_eq(pending.A, model.A) && (((pending.bc !== 1) || _Utils_eq(
-			pending.ax,
-			$author$project$Route$queryPath(model.b))) && (((pending.bc !== 2) || _Utils_eq(
-			pending.ax,
-			A2($author$project$Main$selectedPath, 'collapsed', model))) && ((pending.bc !== 3) || _Utils_eq(
-			pending.ax,
+				$author$project$Main$requestKey(pending.be),
+				model.aS),
+			$elm$core$Maybe$Just(requestId)) && (_Utils_eq(pending.A, model.A) && (((pending.be !== 1) || _Utils_eq(
+			pending.az,
+			$author$project$Route$queryPath(model.c))) && (((pending.be !== 2) || _Utils_eq(
+			pending.az,
+			A2($author$project$Main$selectedPath, 'collapsed', model))) && ((pending.be !== 3) || _Utils_eq(
+			pending.az,
 			A2($author$project$Main$selectedPath, 'exploded', model)))))));
 	});
 var $elm$json$Json$Decode$decodeValue = _Json_run;
 var $author$project$Api$Event = F4(
 	function (generation, asOf, kind, facts) {
-		return {ah: asOf, dB: facts, ck: generation, bc: kind};
+		return {aj: asOf, dD: facts, cn: generation, be: kind};
 	});
 var $author$project$Api$AtCommit = function (a) {
 	return {$: 0, a: a};
@@ -6333,23 +6342,25 @@ var $author$project$Api$compareGeneration = F2(
 			return answer;
 		}
 	});
+var $author$project$Main$fullResyncFacts = _List_fromArray(
+	['repository-identity', 'head', 'index', 'sequencer', 'configuration', 'managed-source', 'common-refs', 'packed-refs', 'reflogs', 'worktree-metadata', 'relevant-worktree-file']);
 var $author$project$View$Forms$markStale = function (draft) {
 	return _Utils_update(
 		draft,
-		{cP: false, b_: draft.dr || draft.b_});
+		{bZ: false, b1: draft.dt || draft.b1});
 };
 var $author$project$Main$refreshActive = function (model) {
 	var stale = _Utils_update(
 		model,
 		{
-			s: $elm$core$Dict$empty,
-			Q: false,
-			c: $author$project$View$Forms$markStale(model.c),
+			t: $elm$core$Dict$empty,
+			S: false,
+			b: $author$project$View$Forms$markStale(model.b),
 			A: model.A + 1,
 			I: false,
-			u: $elm$core$Dict$empty,
-			x: false,
-			e: true
+			v: $elm$core$Dict$empty,
+			q: false,
+			d: true
 		});
 	var _v0 = A5($author$project$Main$issue, 0, 'GET', $author$project$Route$repository, $elm$core$Maybe$Nothing, stale);
 	var withRepository = _v0.a;
@@ -6368,34 +6379,56 @@ var $author$project$Main$refresh = function (model) {
 };
 var $author$project$Main$eventReceived = F2(
 	function (event, model) {
-		if (model.k || (A2($author$project$Api$compareGeneration, event.ck, model.bq) !== 2)) {
-			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+		if (model.k || (A2($author$project$Api$compareGeneration, event.cn, model.bs) !== 2)) {
+			return _Utils_Tuple2(
+				_Utils_update(
+					model,
+					{R: false}),
+				$elm$core$Platform$Cmd$none);
 		} else {
+			var recovered = function () {
+				var _v1 = event.aj;
+				if (!_v1.$) {
+					return (event.be === 'repository-invalidated') && (_Utils_eq(
+						event.dD,
+						_List_fromArray(
+							['repository-identity'])) || (model.R && _Utils_eq(event.dD, $author$project$Main$fullResyncFacts)));
+				} else {
+					return false;
+				}
+			}();
 			var changed = _Utils_update(
 				model,
 				{
-					c: $author$project$View$Forms$markStale(model.c),
+					R: false,
+					b: $author$project$View$Forms$markStale(model.b),
 					A: model.A + 1,
-					ae: (event.bc === 'repository-invalidated') ? 0 : model.ae,
-					e: true,
-					bq: event.ck
+					M: recovered ? $elm$core$Maybe$Nothing : model.M,
+					ag: (event.be === 'repository-invalidated') ? 0 : model.ag,
+					d: true,
+					bs: event.cn
 				});
-			if (event.bc === 'observation-failed') {
+			if (event.be === 'observation-failed') {
 				return $author$project$Main$refresh(
 					_Utils_update(
 						changed,
 						{
-							f: $elm$core$Maybe$Just('Repository observation failed; refreshing.')
+							M: $elm$core$Maybe$Just('repository-observation-failed')
 						}));
 			} else {
-				var _v0 = event.ah;
+				var _v0 = event.aj;
 				if (_v0.$ === 2) {
 					var reason = _v0.a;
-					return $author$project$Main$refresh(
+					return (reason === 'repository-observation-failed') ? $author$project$Main$refresh(
 						_Utils_update(
 							changed,
 							{
-								f: $elm$core$Maybe$Just('Live observation unavailable: ' + reason)
+								M: $elm$core$Maybe$Just(reason)
+							})) : $author$project$Main$refresh(
+						_Utils_update(
+							changed,
+							{
+								g: $elm$core$Maybe$Just('Live observation unavailable: ' + reason)
 							}));
 				} else {
 					return $author$project$Main$refresh(changed);
@@ -6416,12 +6449,12 @@ var $author$project$Main$RetryRead = F2(
 	});
 var $author$project$Api$Failure = F5(
 	function (metadata, category, status, code, message) {
-		return {dj: category, bs: code, cx: message, cy: metadata, ar: status};
+		return {dl: category, bu: code, cA: message, cB: metadata, at: status};
 	});
 var $elm$json$Json$Decode$map5 = _Json_map5;
 var $author$project$Api$Metadata = F2(
 	function (generation, asOf) {
-		return {ah: asOf, ck: generation};
+		return {aj: asOf, cn: generation};
 	});
 var $author$project$Api$metadata = A3(
 	$elm$json$Json$Decode$map2,
@@ -6502,7 +6535,7 @@ var $author$project$Api$mutation = A2(
 				function (indexError, warning) {
 					return _Utils_update(
 						base,
-						{bA: indexError, bP: warning});
+						{bC: indexError, bR: warning});
 				}),
 			A3(
 				$author$project$Api$optional,
@@ -6519,7 +6552,7 @@ var $author$project$Api$mutation = A2(
 		$elm$json$Json$Decode$map5,
 		F5(
 			function (committed, operationId, commit, adr, indexed) {
-				return {J: adr, a5: commit, cc: committed, bA: $elm$core$Maybe$Nothing, cq: indexed, aC: operationId, bP: $elm$core$Maybe$Nothing};
+				return {J: adr, a7: commit, cf: committed, bC: $elm$core$Maybe$Nothing, ct: indexed, aE: operationId, bR: $elm$core$Maybe$Nothing};
 			}),
 		A2($elm$json$Json$Decode$field, 'committed', $elm$json$Json$Decode$bool),
 		A2($elm$json$Json$Decode$field, 'operation', $elm$json$Json$Decode$string),
@@ -6528,7 +6561,7 @@ var $author$project$Api$mutation = A2(
 		A2($elm$json$Json$Decode$field, 'indexed', $elm$json$Json$Decode$bool)));
 var $author$project$Api$Envelope = F2(
 	function (metadata, data) {
-		return {dn: data, cy: metadata};
+		return {dp: data, cB: metadata};
 	});
 var $author$project$Api$response = function (dataDecoder) {
 	return A2(
@@ -6544,26 +6577,28 @@ var $author$project$Api$response = function (dataDecoder) {
 };
 var $author$project$Main$terminalMessage = 'Event generation exhausted. Restart the web server, then reopen its new bootstrap URL.';
 var $author$project$Main$terminalExhaustion = function (model) {
-	var statusText = A2($elm$core$String$contains, $author$project$Main$terminalMessage, model.d) ? model.d : ($elm$core$String$isEmpty(model.d) ? $author$project$Main$terminalMessage : (model.d + (' ' + $author$project$Main$terminalMessage)));
-	var draft = model.c;
+	var statusText = A2($elm$core$String$contains, $author$project$Main$terminalMessage, model.e) ? model.e : ($elm$core$String$isEmpty(model.e) ? $author$project$Main$terminalMessage : (model.e + (' ' + $author$project$Main$terminalMessage)));
+	var draft = model.b;
 	return _Utils_Tuple2(
 		_Utils_update(
 			model,
 			{
-				s: $elm$core$Dict$empty,
-				Q: false,
-				c: _Utils_update(
+				R: false,
+				t: $elm$core$Dict$empty,
+				S: false,
+				b: _Utils_update(
 					draft,
-					{cP: false, b_: true}),
+					{bZ: false, b1: true}),
 				A: model.A + 1,
-				f: $elm$core$Maybe$Just($author$project$Main$terminalMessage),
+				g: $elm$core$Maybe$Just($author$project$Main$terminalMessage),
 				I: false,
-				u: $elm$core$Dict$empty,
-				d: statusText,
-				x: false,
-				O: 'unavailable',
+				v: $elm$core$Dict$empty,
+				M: $elm$core$Maybe$Nothing,
+				e: statusText,
+				q: false,
+				P: 'unavailable',
 				k: true,
-				e: true
+				d: true
 			}),
 		$author$project$Main$toJs(
 			$elm$json$Json$Encode$object(
@@ -6579,9 +6614,9 @@ var $author$project$Main$mutationResponse = F5(
 		var cleared = _Utils_update(
 			model,
 			{
-				X: _Utils_eq(
-					model.X,
-					$elm$core$Maybe$Just(requestId)) ? $elm$core$Maybe$Nothing : model.X
+				Z: _Utils_eq(
+					model.Z,
+					$elm$core$Maybe$Just(requestId)) ? $elm$core$Maybe$Nothing : model.Z
 			});
 		var _v0 = A2(
 			$elm$json$Json$Decode$decodeValue,
@@ -6589,8 +6624,8 @@ var $author$project$Main$mutationResponse = F5(
 			body);
 		if (!_v0.$) {
 			var envelope = _v0.a;
-			if ((status < 400) && envelope.dn.cc) {
-				var outcome = envelope.dn;
+			if ((status < 400) && envelope.dp.cf) {
+				var outcome = envelope.dp;
 				var warning = A2(
 					$elm$core$String$join,
 					'',
@@ -6604,23 +6639,23 @@ var $author$project$Main$mutationResponse = F5(
 								function (value) {
 									return ' Publication warning: ' + value;
 								},
-								outcome.bP),
-								outcome.cq ? $elm$core$Maybe$Nothing : $elm$core$Maybe$Just(
-								' Index warning: ' + A2($elm$core$Maybe$withDefault, 'index unavailable', outcome.bA))
+								outcome.bR),
+								outcome.ct ? $elm$core$Maybe$Nothing : $elm$core$Maybe$Just(
+								' Index warning: ' + A2($elm$core$Maybe$withDefault, 'index unavailable', outcome.bC))
 							])));
-				var statusText = 'Committed ' + (outcome.aC + (' at ' + (outcome.a5 + ('.' + warning))));
-				var currentDraft = model.c;
+				var statusText = 'Committed ' + (outcome.aE + (' at ' + (outcome.a7 + ('.' + warning))));
+				var currentDraft = model.b;
 				var safe = _Utils_update(
 					cleared,
 					{
-						c: _Utils_eq(pending.z, model.z) ? _Utils_update(
+						b: _Utils_eq(pending.z, model.z) ? _Utils_update(
 							currentDraft,
-							{cP: false, b_: true}) : model.c,
-						d: statusText,
-						e: true
+							{bZ: false, b1: true}) : model.b,
+						e: statusText,
+						d: true
 					});
 				return (model.k || _Utils_eq(
-					outcome.bP,
+					outcome.bR,
 					$elm$core$Maybe$Just('generation-exhausted'))) ? $author$project$Main$terminalExhaustion(safe) : $author$project$Main$refresh(safe);
 			} else {
 				if (status >= 400) {
@@ -6628,8 +6663,8 @@ var $author$project$Main$mutationResponse = F5(
 						_Utils_update(
 							cleared,
 							{
-								c: $author$project$View$Forms$markStale(model.c),
-								d: 'The response is inconsistent. Inspect operation history before another submission.'
+								b: $author$project$View$Forms$markStale(model.b),
+								e: 'The response is inconsistent. Inspect operation history before another submission.'
 							}),
 						$elm$core$Platform$Cmd$none);
 				} else {
@@ -6637,8 +6672,8 @@ var $author$project$Main$mutationResponse = F5(
 						_Utils_update(
 							cleared,
 							{
-								c: $author$project$View$Forms$markStale(model.c),
-								d: 'Server did not confirm a commit. Inspect current repository state.'
+								b: $author$project$View$Forms$markStale(model.b),
+								e: 'Server did not confirm a commit. Inspect current repository state.'
 							}),
 						$elm$core$Platform$Cmd$none);
 				}
@@ -6647,24 +6682,24 @@ var $author$project$Main$mutationResponse = F5(
 			var _v1 = A2($elm$json$Json$Decode$decodeValue, $author$project$Api$failure, body);
 			if (!_v1.$) {
 				var failure = _v1.a;
-				return (!_Utils_eq(failure.ar, status)) ? _Utils_Tuple2(
+				return (!_Utils_eq(failure.at, status)) ? _Utils_Tuple2(
 					_Utils_update(
 						cleared,
 						{
-							c: $author$project$View$Forms$markStale(model.c),
-							d: 'The response is inconsistent. Inspect operation history before another submission.'
+							b: $author$project$View$Forms$markStale(model.b),
+							e: 'The response is inconsistent. Inspect operation history before another submission.'
 						}),
-					$elm$core$Platform$Cmd$none) : (((status === 503) && (failure.bs === 'generation-exhausted')) ? $author$project$Main$terminalExhaustion(
+					$elm$core$Platform$Cmd$none) : (((status === 503) && (failure.bu === 'generation-exhausted')) ? $author$project$Main$terminalExhaustion(
 					_Utils_update(
 						cleared,
-						{d: 'Operation rejected (generation-exhausted): ' + failure.cx})) : ((status === 401) ? _Utils_Tuple2(
+						{e: 'Operation rejected (generation-exhausted): ' + failure.cA})) : ((status === 401) ? _Utils_Tuple2(
 					_Utils_update(
 						cleared,
 						{
-							c: $author$project$View$Forms$markStale(model.c),
+							b: $author$project$View$Forms$markStale(model.b),
 							m: false,
-							d: 'Session unavailable. Reopen the process bootstrap URL.',
-							O: 'unavailable'
+							e: 'Session unavailable. Reopen the process bootstrap URL.',
+							P: 'unavailable'
 						}),
 					$author$project$Main$toJs(
 						$elm$json$Json$Encode$object(
@@ -6677,8 +6712,8 @@ var $author$project$Main$mutationResponse = F5(
 					_Utils_update(
 						cleared,
 						{
-							c: (status === 409) ? $author$project$View$Forms$markStale(model.c) : model.c,
-							d: 'Operation rejected (' + (failure.bs + ('): ' + (failure.cx + ((status === 409) ? ' Refresh, inspect, and adopt tokens.' : ''))))
+							b: (status === 409) ? $author$project$View$Forms$markStale(model.b) : model.b,
+							e: 'Operation rejected (' + (failure.bu + ('): ' + (failure.cA + ((status === 409) ? ' Refresh, inspect, and adopt tokens.' : ''))))
 						}),
 					$elm$core$Platform$Cmd$none)));
 			} else {
@@ -6686,8 +6721,8 @@ var $author$project$Main$mutationResponse = F5(
 					_Utils_update(
 						cleared,
 						{
-							c: $author$project$View$Forms$markStale(model.c),
-							d: 'The result is uncertain. Inspect repository and operation history before another submission.'
+							b: $author$project$View$Forms$markStale(model.b),
+							e: 'The result is uncertain. Inspect repository and operation history before another submission.'
 						}),
 					$elm$core$Platform$Cmd$none);
 			}
@@ -6700,22 +6735,22 @@ var $author$project$Main$readIssue = F3(
 				return _Utils_update(
 					model,
 					{
-						u: A3($elm$core$Dict$insert, 'collapsed', message, model.u),
-						e: true
+						v: A3($elm$core$Dict$insert, 'collapsed', message, model.v),
+						d: true
 					});
 			case 3:
 				return _Utils_update(
 					model,
 					{
-						u: A3($elm$core$Dict$insert, 'exploded', message, model.u),
-						e: true
+						v: A3($elm$core$Dict$insert, 'exploded', message, model.v),
+						d: true
 					});
 			default:
 				return _Utils_update(
 					model,
 					{
-						f: $elm$core$Maybe$Just(message),
-						e: true
+						g: $elm$core$Maybe$Just(message),
+						d: true
 					});
 		}
 	});
@@ -6727,7 +6762,7 @@ var $author$project$Main$accept = F4(
 			body);
 		if (!_v0.$) {
 			var envelope = _v0.a;
-			var _v1 = envelope.cy.ah;
+			var _v1 = envelope.cB.aj;
 			switch (_v1.$) {
 				case 2:
 					var reason = _v1.a;
@@ -6735,8 +6770,8 @@ var $author$project$Main$accept = F4(
 						_Utils_update(
 							model,
 							{
-								f: $elm$core$Maybe$Just('Snapshot unavailable: ' + reason),
-								e: true
+								g: $elm$core$Maybe$Just('Snapshot unavailable: ' + reason),
+								d: true
 							}),
 						$elm$core$Platform$Cmd$none);
 				case 0:
@@ -6744,12 +6779,12 @@ var $author$project$Main$accept = F4(
 					return _Utils_Tuple2(
 						A2(
 							set,
-							envelope.dn,
+							envelope.dp,
 							_Utils_update(
 								model,
 								{
-									f: $elm$core$Maybe$Nothing,
-									aU: $elm$core$Maybe$Just(oid)
+									g: $elm$core$Maybe$Nothing,
+									aW: $elm$core$Maybe$Just(oid)
 								})),
 						$elm$core$Platform$Cmd$none);
 				default:
@@ -6757,12 +6792,12 @@ var $author$project$Main$accept = F4(
 					return _Utils_Tuple2(
 						A2(
 							set,
-							envelope.dn,
+							envelope.dp,
 							_Utils_update(
 								model,
 								{
-									f: $elm$core$Maybe$Nothing,
-									aU: $elm$core$Maybe$Just(toOid)
+									g: $elm$core$Maybe$Nothing,
+									aW: $elm$core$Maybe$Just(toOid)
 								})),
 						$elm$core$Platform$Cmd$none);
 			}
@@ -6771,23 +6806,23 @@ var $author$project$Main$accept = F4(
 				_Utils_update(
 					model,
 					{
-						f: $elm$core$Maybe$Just('Response has an unsupported shape.'),
-						e: true
+						g: $elm$core$Maybe$Just('Response has an unsupported shape.'),
+						d: true
 					}),
 				$elm$core$Platform$Cmd$none);
 		}
 	});
 var $author$project$Api$CompareWindow = F3(
 	function (from, to, entries) {
-		return {dv: entries, dH: from, er: to};
+		return {dx: entries, dJ: from, et: to};
 	});
 var $author$project$Api$CompareEntry = F6(
 	function (adr, title, kind, before, after, changes) {
-		return {J: adr, b5: after, b9: before, a3: changes, bc: kind, F: title};
+		return {J: adr, b8: after, cc: before, a5: changes, be: kind, F: title};
 	});
 var $author$project$Api$CompareChange = F4(
 	function (field, before, after, diff) {
-		return {b5: after, b9: before, dq: diff, dC: field};
+		return {b8: after, cc: before, ds: diff, dE: field};
 	});
 var $author$project$Api$readableValue = $elm$json$Json$Decode$oneOf(
 	_List_fromArray(
@@ -6819,7 +6854,7 @@ var $author$project$Api$compareChange = A5(
 		$elm$core$Maybe$Nothing));
 var $author$project$Api$CompareSnapshot = F6(
 	function (title, summary, body, status, domains, scopes) {
-		return {ak: body, L: domains, N: scopes, ar: status, P: summary, F: title};
+		return {am: body, L: domains, O: scopes, at: status, Q: summary, F: title};
 	});
 var $elm$json$Json$Decode$map6 = _Json_map6;
 var $author$project$Api$compareSnapshot = A7(
@@ -6865,15 +6900,15 @@ var $author$project$Api$comparison = A4(
 		'entries',
 		$elm$json$Json$Decode$list($author$project$Api$compareEntry)));
 var $author$project$Api$ConflictWindow = function (conflicts) {
-	return {al: conflicts};
+	return {an: conflicts};
 };
 var $author$project$Api$ConflictEntry = F4(
 	function (adr, code, summaries, candidates) {
-		return {J: adr, a2: candidates, bs: code, en: summaries};
+		return {J: adr, a4: candidates, bu: code, ep: summaries};
 	});
 var $author$project$Api$ConflictCandidate = F3(
 	function (axis, heads, summary) {
-		return {c8: axis, dK: heads, P: summary};
+		return {da: axis, dM: heads, Q: summary};
 	});
 var $author$project$Api$conflictCandidate = A4(
 	$elm$json$Json$Decode$map3,
@@ -6905,11 +6940,11 @@ var $author$project$Api$conflicts = A2(
 		'conflicts',
 		$elm$json$Json$Decode$list($author$project$Api$conflictEntry)));
 var $author$project$Api$Doctor = function (issues) {
-	return {dP: issues};
+	return {dR: issues};
 };
 var $author$project$Api$Issue = F4(
 	function (severity, code, message, path) {
-		return {bs: code, cx: message, bg: path, ek: severity};
+		return {bu: code, cA: message, bi: path, em: severity};
 	});
 var $author$project$Api$issue = A5(
 	$elm$json$Json$Decode$map4,
@@ -6935,7 +6970,7 @@ var $author$project$Api$doctor = A3(
 		$elm$json$Json$Decode$list($author$project$Api$issue)));
 var $author$project$Api$HistoryWindow = F4(
 	function (asOf, limit, truncated, operations) {
-		return {ah: asOf, cw: limit, be: operations, es: truncated};
+		return {aj: asOf, cz: limit, bg: operations, eu: truncated};
 	});
 var $elm$json$Json$Decode$map8 = _Json_map8;
 var $author$project$Api$historyItem = A2(
@@ -6946,7 +6981,7 @@ var $author$project$Api$historyItem = A2(
 			function (changes) {
 				return _Utils_update(
 					base,
-					{a3: changes});
+					{a5: changes});
 			},
 			A2(
 				$elm$json$Json$Decode$field,
@@ -6957,7 +6992,7 @@ var $author$project$Api$historyItem = A2(
 		$elm$json$Json$Decode$map8,
 		F8(
 			function (adr, title, label, actor, claimedAt, operationId, reason, commit) {
-				return {a1: actor, J: adr, a3: _List_Nil, a4: claimedAt, a5: commit, cu: label, aC: operationId, cL: reason, F: title};
+				return {a3: actor, J: adr, a5: _List_Nil, a6: claimedAt, a7: commit, cx: label, aE: operationId, cO: reason, F: title};
 			}),
 		A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
 		A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string),
@@ -6987,7 +7022,7 @@ var $author$project$Api$history = A5(
 		$elm$json$Json$Decode$list($author$project$Api$historyItem)));
 var $author$project$Api$CandidateRecord = F5(
 	function (id, title, summary, body, path) {
-		return {ak: body, ba: id, bg: path, P: summary, F: title};
+		return {am: body, bc: id, bi: path, Q: summary, F: title};
 	});
 var $author$project$Api$candidateDomain = A4(
 	$elm$json$Json$Decode$map3,
@@ -7093,8 +7128,8 @@ var $author$project$Api$provenance = A2(
 							return _Utils_update(
 								extended,
 								{
-									bC: _Utils_ap(topIntroductions, whenIntroductions),
-									bK: _Utils_ap(topOriginals, whenOriginals)
+									bE: _Utils_ap(topIntroductions, whenIntroductions),
+									bM: _Utils_ap(topOriginals, whenOriginals)
 								});
 						}),
 					A3(
@@ -7126,7 +7161,7 @@ var $author$project$Api$provenance = A2(
 					function (input, prompt, context, placements, landings) {
 						return _Utils_update(
 							base,
-							{bt: context, bB: input, bD: landings, bM: placements, bO: prompt});
+							{bv: context, bD: input, bF: landings, bO: placements, bQ: prompt});
 					}),
 				A3(
 					$author$project$Api$optional,
@@ -7158,7 +7193,7 @@ var $author$project$Api$provenance = A2(
 		$elm$json$Json$Decode$map5,
 		F5(
 			function (actor, model, claimedAt, basis, operationId) {
-				return {a1: actor, b8: basis, a4: claimedAt, bt: $elm$core$Maybe$Nothing, bB: $elm$core$Maybe$Nothing, bC: _List_Nil, bD: _List_Nil, cz: model, aC: operationId, bK: _List_Nil, bM: _List_Nil, bO: $elm$core$Maybe$Nothing};
+				return {a3: actor, cb: basis, a6: claimedAt, bv: $elm$core$Maybe$Nothing, bD: $elm$core$Maybe$Nothing, bE: _List_Nil, bF: _List_Nil, cC: model, aE: operationId, bM: _List_Nil, bO: _List_Nil, bQ: $elm$core$Maybe$Nothing};
 			}),
 		A2($elm$json$Json$Decode$field, 'actor', $elm$json$Json$Decode$string),
 		A3(
@@ -7278,7 +7313,7 @@ var $author$project$Api$collapsedRequired = A2(
 			$elm$json$Json$Decode$list($elm$json$Json$Decode$string))));
 var $author$project$Api$Operation = F3(
 	function (id, items, provenance) {
-		return {ba: id, dR: items, bi: provenance};
+		return {bc: id, dT: items, bk: provenance};
 	});
 var $author$project$Api$parentDiff = A3(
 	$elm$json$Json$Decode$map2,
@@ -7300,7 +7335,7 @@ var $author$project$Api$operationItem = A2(
 						function (relation, rawSemantic, parents, diffs) {
 							return _Utils_update(
 								extended,
-								{bv: diffs, bL: parents, bR: rawSemantic, bU: relation});
+								{bx: diffs, bN: parents, bT: rawSemantic, bW: relation});
 						}),
 					A3(
 						$author$project$Api$optional,
@@ -7332,7 +7367,7 @@ var $author$project$Api$operationItem = A2(
 							function (scopes, state, replacement, added, removed, refinements) {
 								return _Utils_update(
 									extended,
-									{br: added, bT: refinements, bV: removed, bW: replacement, N: scopes, b0: state});
+									{bt: added, bV: refinements, bX: removed, bY: replacement, O: scopes, b3: state});
 							}),
 						A3(
 							$author$project$Api$optionalAt,
@@ -7377,7 +7412,7 @@ var $author$project$Api$operationItem = A2(
 						function (title, summary, body, rationale, domains) {
 							return _Utils_update(
 								base,
-								{ak: body, L: domains, bQ: rationale, P: summary, F: title});
+								{am: body, L: domains, bS: rationale, Q: summary, F: title});
 						}),
 					A3(
 						$author$project$Api$optional,
@@ -7409,7 +7444,7 @@ var $author$project$Api$operationItem = A2(
 		$elm$json$Json$Decode$map4,
 		F4(
 			function (id, kind, eventName, path) {
-				return {br: _List_Nil, ak: $elm$core$Maybe$Nothing, bv: _List_Nil, L: _List_Nil, ci: eventName, ba: id, bc: kind, bL: _List_Nil, bg: path, bQ: $elm$core$Maybe$Nothing, bR: $elm$core$Maybe$Nothing, bT: _List_Nil, bU: $elm$core$Maybe$Nothing, bV: _List_Nil, bW: $elm$core$Maybe$Nothing, N: _List_Nil, b0: $elm$core$Maybe$Nothing, P: $elm$core$Maybe$Nothing, F: $elm$core$Maybe$Nothing};
+				return {bt: _List_Nil, am: $elm$core$Maybe$Nothing, bx: _List_Nil, L: _List_Nil, cl: eventName, bc: id, be: kind, bN: _List_Nil, bi: path, bS: $elm$core$Maybe$Nothing, bT: $elm$core$Maybe$Nothing, bV: _List_Nil, bW: $elm$core$Maybe$Nothing, bX: _List_Nil, bY: $elm$core$Maybe$Nothing, O: _List_Nil, b3: $elm$core$Maybe$Nothing, Q: $elm$core$Maybe$Nothing, F: $elm$core$Maybe$Nothing};
 			}),
 		A2($elm$json$Json$Decode$field, 'item', $elm$json$Json$Decode$string),
 		A2($elm$json$Json$Decode$field, 'type', $elm$json$Json$Decode$string),
@@ -7442,7 +7477,7 @@ var $author$project$Api$explodedRequired = A5(
 	A2($elm$json$Json$Decode$field, 'resolved', $elm$json$Json$Decode$bool));
 var $author$project$Api$CandidateSet = F3(
 	function (records, scopes, domains) {
-		return {L: domains, cM: records, N: scopes};
+		return {L: domains, cP: records, O: scopes};
 	});
 var $author$project$Api$candidateSet = A4(
 	$elm$json$Json$Decode$map3,
@@ -7496,7 +7531,7 @@ var $author$project$Api$inspectionFields = A2(
 						function (paths, operations, originDetails, required) {
 							return _Utils_update(
 								extended,
-								{be: operations, bi: originDetails, aD: required, aH: paths});
+								{bg: operations, bk: originDetails, aF: required, aJ: paths});
 						}),
 					A3(
 						$author$project$Api$optional,
@@ -7517,7 +7552,7 @@ var $author$project$Api$inspectionFields = A2(
 					function (domains, scopes, recordHeads, scopeHeads, domainHeads, statusHeads, candidates, conflictSummaries) {
 						return _Utils_update(
 							base,
-							{a2: candidates, al: conflictSummaries, bx: domainHeads, L: domains, bS: recordHeads, bX: scopeHeads, N: scopes, b1: statusHeads});
+							{a4: candidates, an: conflictSummaries, bz: domainHeads, L: domains, bU: recordHeads, b_: scopeHeads, O: scopes, b4: statusHeads});
 					}),
 				A3(
 					$author$project$Api$optional,
@@ -7562,25 +7597,25 @@ var $author$project$Api$inspectionFields = A2(
 			function (adr, revision, view, title, summary, body, status, token) {
 				return {
 					J: adr,
-					ah: revision,
-					ak: body,
-					a2: {L: _List_Nil, cM: _List_Nil, N: _List_Nil},
-					al: _List_Nil,
-					bx: _List_Nil,
+					aj: revision,
+					am: body,
+					a4: {L: _List_Nil, cP: _List_Nil, O: _List_Nil},
+					an: _List_Nil,
+					bz: _List_Nil,
 					L: _List_Nil,
-					be: _List_Nil,
-					bi: _List_Nil,
-					bS: _List_Nil,
-					aD: false,
-					bX: _List_Nil,
-					N: _List_Nil,
-					aH: _List_Nil,
-					aY: token,
-					ar: status,
-					b1: _List_Nil,
-					P: summary,
+					bg: _List_Nil,
+					bk: _List_Nil,
+					bU: _List_Nil,
+					aF: false,
+					b_: _List_Nil,
+					O: _List_Nil,
+					aJ: _List_Nil,
+					a_: token,
+					at: status,
+					b4: _List_Nil,
+					Q: summary,
 					F: title,
-					c_: view
+					c0: view
 				};
 			}),
 		A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
@@ -7639,7 +7674,7 @@ var $author$project$Api$inspection = A2(
 		A2($elm$json$Json$Decode$field, 'view', $elm$json$Json$Decode$string)));
 var $author$project$Api$SearchWindow = F3(
 	function (asOf, limit, results) {
-		return {ah: asOf, cw: limit, cO: results};
+		return {aj: asOf, cz: limit, cR: results};
 	});
 var $elm$json$Json$Decode$float = _Json_decodeFloat;
 var $author$project$Api$searchHit = A2(
@@ -7651,7 +7686,7 @@ var $author$project$Api$searchHit = A2(
 				function (matched, fields, terms, paths, conflictSummaries, required) {
 					return _Utils_update(
 						base,
-						{al: conflictSummaries, bE: fields, bF: terms, bG: matched, aD: required, aH: paths});
+						{an: conflictSummaries, bG: fields, bH: terms, bI: matched, aF: required, aJ: paths});
 				}),
 			A3(
 				$author$project$Api$optional,
@@ -7687,7 +7722,7 @@ var $author$project$Api$searchHit = A2(
 		$elm$json$Json$Decode$map8,
 		F8(
 			function (adr, title, summary, status, domains, scopes, stateToken, score) {
-				return {J: adr, al: _List_Nil, L: domains, bE: _List_Nil, bF: _List_Nil, bG: $elm$core$Maybe$Nothing, aD: false, N: scopes, bn: score, aH: _List_Nil, aY: stateToken, ar: status, P: summary, F: title};
+				return {J: adr, an: _List_Nil, L: domains, bG: _List_Nil, bH: _List_Nil, bI: $elm$core$Maybe$Nothing, aF: false, O: scopes, bp: score, aJ: _List_Nil, a_: stateToken, at: status, Q: summary, F: title};
 			}),
 		A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
 		A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string),
@@ -7727,23 +7762,23 @@ var $author$project$Main$readSearch = F2(
 						state,
 						{
 							j: 0,
-							af: $elm$core$Maybe$Just(window),
-							e: false
+							ah: $elm$core$Maybe$Just(window),
+							d: false
 						});
 				}),
 			model);
 	});
 var $author$project$Api$RelevantWindow = F4(
 	function (asOf, file, source, results) {
-		return {ah: asOf, dD: file, cO: results, el: source};
+		return {aj: asOf, dF: file, cR: results, en: source};
 	});
 var $author$project$Api$RelevantHit = F8(
 	function (adr, title, summary, status, scopeMatch, confidence, score, evidence) {
-		return {J: adr, dm: confidence, dx: evidence, ei: scopeMatch, bn: score, ar: status, P: summary, F: title};
+		return {J: adr, $7: confidence, dz: evidence, ek: scopeMatch, bp: score, at: status, Q: summary, F: title};
 	});
 var $author$project$Api$Evidence = F4(
 	function (fileExcerpt, adrExcerpt, section, score) {
-		return {c6: adrExcerpt, dE: fileExcerpt, bn: score, ej: section};
+		return {c8: adrExcerpt, dG: fileExcerpt, bp: score, el: section};
 	});
 var $author$project$Api$evidence = A5(
 	$elm$json$Json$Decode$map4,
@@ -7786,7 +7821,7 @@ var $author$project$Api$relevant = A5(
 		$elm$json$Json$Decode$list($author$project$Api$relevantHit)));
 var $author$project$Api$Repository = F4(
 	function (worktree, head, headRef, stateToken) {
-		return {dI: head, dJ: headRef, aY: stateToken, ev: worktree};
+		return {dK: head, dL: headRef, a_: stateToken, ex: worktree};
 	});
 var $author$project$Api$repository = A5(
 	$elm$json$Json$Decode$map4,
@@ -7804,13 +7839,13 @@ var $author$project$Api$repository = A5(
 		$elm$json$Json$Decode$string));
 var $author$project$View$Forms$seedBasis = F2(
 	function (repository, draft) {
-		return (draft.dc === '') ? _Utils_update(
+		return (draft.de === '') ? _Utils_update(
 			draft,
 			{
-				db: repository.dI,
-				ai: repository.dJ,
-				dc: repository.aY,
-				aT: $elm$core$Maybe$Just(
+				dd: repository.dK,
+				ak: repository.dL,
+				de: repository.a_,
+				aV: $elm$core$Maybe$Just(
 					A2($author$project$View$Forms$baseline, repository, $elm$core$Maybe$Nothing))
 			}) : draft;
 	});
@@ -8187,12 +8222,12 @@ var $author$project$Main$selectAdrAt = F3(
 		var selected = _Utils_update(
 			model,
 			{
-				s: $author$project$Main$clearInspectionRetries(model.s),
-				Q: false,
+				t: $author$project$Main$clearInspectionRetries(model.t),
+				S: false,
 				I: false,
-				u: $elm$core$Dict$empty,
+				v: $elm$core$Dict$empty,
 				D: $elm$core$Maybe$Just(adr),
-				V: $elm$core$Maybe$Just(revision)
+				X: $elm$core$Maybe$Just(revision)
 			});
 		var _v0 = A5(
 			$author$project$Main$issue,
@@ -8228,7 +8263,7 @@ var $author$project$Main$readResponse = F3(
 					body);
 				if (!_v1.$) {
 					var envelope = _v1.a;
-					var _v2 = envelope.cy.ah;
+					var _v2 = envelope.cB.aj;
 					switch (_v2.$) {
 						case 2:
 							var reason = _v2.a;
@@ -8236,35 +8271,35 @@ var $author$project$Main$readResponse = F3(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Repository observation unavailable: ' + reason),
-										e: true
+										g: $elm$core$Maybe$Just('Repository observation unavailable: ' + reason),
+										d: true
 									}),
 								$elm$core$Platform$Cmd$none);
 						case 0:
 							var oid = _v2.a;
-							var repository = envelope.dn;
+							var repository = envelope.dp;
 							var updated = _Utils_update(
 								model,
 								{
-									c: A2($author$project$View$Forms$seedBasis, repository, model.c),
-									f: $elm$core$Maybe$Nothing,
-									M: $elm$core$Maybe$Just(repository),
-									x: true
+									b: A2($author$project$View$Forms$seedBasis, repository, model.b),
+									g: $elm$core$Maybe$Nothing,
+									N: $elm$core$Maybe$Just(repository),
+									q: true
 								});
-							if (!_Utils_eq(oid, repository.dI)) {
+							if (!_Utils_eq(oid, repository.dK)) {
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
 										{
-											f: $elm$core$Maybe$Just('Repository response basis disagrees with its metadata.'),
-											e: true
+											g: $elm$core$Maybe$Just('Repository response basis disagrees with its metadata.'),
+											d: true
 										}),
 									$elm$core$Platform$Cmd$none);
 							} else {
-								var _v3 = _Utils_Tuple2(model.D, model.b.aE);
+								var _v3 = _Utils_Tuple2(model.D, model.c.aG);
 								if ((!_v3.a.$) && (_v3.b === 'HEAD')) {
 									var adr = _v3.a.a;
-									return A3($author$project$Main$selectAdrAt, adr, repository.dI, updated);
+									return A3($author$project$Main$selectAdrAt, adr, repository.dK, updated);
 								} else {
 									return _Utils_Tuple2(updated, $elm$core$Platform$Cmd$none);
 								}
@@ -8274,8 +8309,8 @@ var $author$project$Main$readResponse = F3(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Repository response has an invalid comparison basis.'),
-										e: true
+										g: $elm$core$Maybe$Just('Repository response has an invalid comparison basis.'),
+										d: true
 									}),
 								$elm$core$Platform$Cmd$none);
 					}
@@ -8284,13 +8319,13 @@ var $author$project$Main$readResponse = F3(
 						_Utils_update(
 							model,
 							{
-								f: $elm$core$Maybe$Just('Repository response has an unsupported shape.'),
-								e: true
+								g: $elm$core$Maybe$Just('Repository response has an unsupported shape.'),
+								d: true
 							}),
 						$elm$core$Platform$Cmd$none);
 				}
 			case 1:
-				var _v4 = model.b.c_;
+				var _v4 = model.c.c0;
 				switch (_v4) {
 					case 0:
 						return A2($author$project$Main$readSearch, body, model);
@@ -8307,8 +8342,8 @@ var $author$project$Main$readResponse = F3(
 										state,
 										{
 											j: 0,
-											aV: $elm$core$Maybe$Just(window),
-											e: false
+											aX: $elm$core$Maybe$Just(window),
+											d: false
 										});
 								}),
 							model);
@@ -8322,9 +8357,9 @@ var $author$project$Main$readResponse = F3(
 									return _Utils_update(
 										state,
 										{
-											aA: $elm$core$Maybe$Just(window),
+											aC: $elm$core$Maybe$Just(window),
 											j: 0,
-											e: false
+											d: false
 										});
 								}),
 							model);
@@ -8338,9 +8373,9 @@ var $author$project$Main$readResponse = F3(
 									return _Utils_update(
 										state,
 										{
-											aw: $elm$core$Maybe$Just(window),
+											ay: $elm$core$Maybe$Just(window),
 											j: 0,
-											e: false
+											d: false
 										});
 								}),
 							model);
@@ -8354,9 +8389,9 @@ var $author$project$Main$readResponse = F3(
 									return _Utils_update(
 										state,
 										{
-											al: $elm$core$Maybe$Just(window),
+											an: $elm$core$Maybe$Just(window),
 											j: 0,
-											e: false
+											d: false
 										});
 								}),
 							model);
@@ -8370,9 +8405,9 @@ var $author$project$Main$readResponse = F3(
 									return _Utils_update(
 										state,
 										{
-											a8: $elm$core$Maybe$Just(window),
+											ba: $elm$core$Maybe$Just(window),
 											j: 0,
-											e: false
+											d: false
 										});
 								}),
 							model);
@@ -8384,7 +8419,7 @@ var $author$project$Main$readResponse = F3(
 					body);
 				if (!_v5.$) {
 					var envelope = _v5.a;
-					var _v6 = envelope.cy.ah;
+					var _v6 = envelope.cB.aj;
 					switch (_v6.$) {
 						case 2:
 							var reason = _v6.a;
@@ -8392,42 +8427,42 @@ var $author$project$Main$readResponse = F3(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Inspection unavailable: ' + reason),
-										e: true
+										g: $elm$core$Maybe$Just('Inspection unavailable: ' + reason),
+										d: true
 									}),
 								$elm$core$Platform$Cmd$none);
 						case 0:
 							var oid = _v6.a;
-							var previous = model.r;
-							var inspection = envelope.dn;
+							var previous = model.s;
+							var inspection = envelope.dp;
 							var merged = function () {
 								if (!previous.$) {
 									var prior = previous.a;
-									return (_Utils_eq(prior.J, inspection.J) && _Utils_eq(prior.ah, inspection.ah)) ? _Utils_update(
+									return (_Utils_eq(prior.J, inspection.J) && _Utils_eq(prior.aj, inspection.aj)) ? _Utils_update(
 										inspection,
-										{be: prior.be}) : inspection;
+										{bg: prior.bg}) : inspection;
 								} else {
 									return inspection;
 								}
 							}();
-							return ((inspection.c_ !== 'collapsed') || ((!_Utils_eq(oid, inspection.ah)) || ((!_Utils_eq(
-								model.V,
+							return ((inspection.c0 !== 'collapsed') || ((!_Utils_eq(oid, inspection.aj)) || ((!_Utils_eq(
+								model.X,
 								$elm$core$Maybe$Just(oid))) || (!_Utils_eq(
 								model.D,
 								$elm$core$Maybe$Just(inspection.J)))))) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Inspection basis disagrees with the selected ADR and revision.'),
-										e: true
+										g: $elm$core$Maybe$Just('Inspection basis disagrees with the selected ADR and revision.'),
+										d: true
 									}),
 								$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										Q: true,
-										f: $elm$core$Maybe$Nothing,
-										r: $elm$core$Maybe$Just(merged)
+										S: true,
+										g: $elm$core$Maybe$Nothing,
+										s: $elm$core$Maybe$Just(merged)
 									}),
 								$elm$core$Platform$Cmd$none);
 						default:
@@ -8435,8 +8470,8 @@ var $author$project$Main$readResponse = F3(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Inspection has an invalid comparison basis.'),
-										e: true
+										g: $elm$core$Maybe$Just('Inspection has an invalid comparison basis.'),
+										d: true
 									}),
 								$elm$core$Platform$Cmd$none);
 					}
@@ -8445,8 +8480,8 @@ var $author$project$Main$readResponse = F3(
 						_Utils_update(
 							model,
 							{
-								f: $elm$core$Maybe$Just('Inspection response has an unsupported shape.'),
-								e: true
+								g: $elm$core$Maybe$Just('Inspection response has an unsupported shape.'),
+								d: true
 							}),
 						$elm$core$Platform$Cmd$none);
 				}
@@ -8457,7 +8492,7 @@ var $author$project$Main$readResponse = F3(
 					body);
 				if (!_v8.$) {
 					var envelope = _v8.a;
-					var _v9 = envelope.cy.ah;
+					var _v9 = envelope.cB.aj;
 					switch (_v9.$) {
 						case 2:
 							var reason = _v9.a;
@@ -8465,15 +8500,15 @@ var $author$project$Main$readResponse = F3(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Operation history unavailable: ' + reason),
-										e: true
+										g: $elm$core$Maybe$Just('Operation history unavailable: ' + reason),
+										d: true
 									}),
 								$elm$core$Platform$Cmd$none);
 						case 0:
 							var oid = _v9.a;
-							var exploded = envelope.dn;
-							if ((exploded.c_ !== 'exploded') || ((!_Utils_eq(oid, exploded.ah)) || ((!_Utils_eq(
-								model.V,
+							var exploded = envelope.dp;
+							if ((exploded.c0 !== 'exploded') || ((!_Utils_eq(oid, exploded.aj)) || ((!_Utils_eq(
+								model.X,
 								$elm$core$Maybe$Just(oid))) || (!_Utils_eq(
 								model.D,
 								$elm$core$Maybe$Just(exploded.J)))))) {
@@ -8481,30 +8516,30 @@ var $author$project$Main$readResponse = F3(
 									_Utils_update(
 										model,
 										{
-											f: $elm$core$Maybe$Just('Operation history basis disagrees with the selected ADR and revision.'),
-											e: true
+											g: $elm$core$Maybe$Just('Operation history basis disagrees with the selected ADR and revision.'),
+											d: true
 										}),
 									$elm$core$Platform$Cmd$none);
 							} else {
-								var _v10 = model.r;
+								var _v10 = model.s;
 								if (!_v10.$) {
 									var collapsed = _v10.a;
-									return (_Utils_eq(collapsed.J, exploded.J) && _Utils_eq(collapsed.ah, exploded.ah)) ? _Utils_Tuple2(
+									return (_Utils_eq(collapsed.J, exploded.J) && _Utils_eq(collapsed.aj, exploded.aj)) ? _Utils_Tuple2(
 										_Utils_update(
 											model,
 											{
 												I: true,
-												r: $elm$core$Maybe$Just(
+												s: $elm$core$Maybe$Just(
 													_Utils_update(
 														collapsed,
-														{be: exploded.be}))
+														{bg: exploded.bg}))
 											}),
 										$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
 										_Utils_update(
 											model,
 											{
 												I: true,
-												r: $elm$core$Maybe$Just(exploded)
+												s: $elm$core$Maybe$Just(exploded)
 											}),
 										$elm$core$Platform$Cmd$none);
 								} else {
@@ -8513,7 +8548,7 @@ var $author$project$Main$readResponse = F3(
 											model,
 											{
 												I: true,
-												r: $elm$core$Maybe$Just(exploded)
+												s: $elm$core$Maybe$Just(exploded)
 											}),
 										$elm$core$Platform$Cmd$none);
 								}
@@ -8523,8 +8558,8 @@ var $author$project$Main$readResponse = F3(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Operation history has an invalid comparison basis.'),
-										e: true
+										g: $elm$core$Maybe$Just('Operation history has an invalid comparison basis.'),
+										d: true
 									}),
 								$elm$core$Platform$Cmd$none);
 					}
@@ -8533,8 +8568,8 @@ var $author$project$Main$readResponse = F3(
 						_Utils_update(
 							model,
 							{
-								f: $elm$core$Maybe$Just('Operation history has an unsupported shape.'),
-								e: true
+								g: $elm$core$Maybe$Just('Operation history has an unsupported shape.'),
+								d: true
 							}),
 						$elm$core$Platform$Cmd$none);
 				}
@@ -8576,9 +8611,9 @@ var $author$project$Main$retryableBusy = function (body) {
 	var _v0 = A2($elm$json$Json$Decode$decodeValue, $author$project$Api$failure, body);
 	if (!_v0.$) {
 		var problem = _v0.a;
-		return (problem.ar === 503) && A2(
+		return (problem.at === 503) && A2(
 			$elm$core$List$member,
-			problem.bs,
+			problem.bu,
 			_List_fromArray(
 				['repository-busy', 'repository-lock-unavailable']));
 	} else {
@@ -8590,14 +8625,14 @@ var $author$project$Main$terminalFailure = function (body) {
 	var _v0 = A2($elm$json$Json$Decode$decodeValue, $author$project$Api$failure, body);
 	if (!_v0.$) {
 		var failure = _v0.a;
-		return (failure.ar === 503) && (failure.bs === 'generation-exhausted');
+		return (failure.at === 503) && (failure.bu === 'generation-exhausted');
 	} else {
 		return false;
 	}
 };
 var $author$project$Main$receiveResponse = F4(
 	function (requestId, status, body, model) {
-		var _v0 = A2($elm$core$Dict$get, requestId, model.U);
+		var _v0 = A2($elm$core$Dict$get, requestId, model.W);
 		if (_v0.$ === 1) {
 			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 		} else {
@@ -8605,10 +8640,10 @@ var $author$project$Main$receiveResponse = F4(
 			var without = _Utils_update(
 				model,
 				{
-					U: A2($elm$core$Dict$remove, requestId, model.U)
+					W: A2($elm$core$Dict$remove, requestId, model.W)
 				});
 			var current = A3($author$project$Main$readPendingCurrent, requestId, pending, model);
-			if (pending.bc === 4) {
+			if (pending.be === 4) {
 				return A5($author$project$Main$mutationResponse, requestId, pending, status, body, without);
 			} else {
 				if ((status === 503) && $author$project$Main$terminalFailure(body)) {
@@ -8618,20 +8653,20 @@ var $author$project$Main$receiveResponse = F4(
 						return _Utils_Tuple2(without, $elm$core$Platform$Cmd$none);
 					} else {
 						if ((status === 503) && $author$project$Main$retryableBusy(body)) {
-							var key = $author$project$Main$requestKey(pending.bc);
+							var key = $author$project$Main$requestKey(pending.be);
 							var attempts = A2(
 								$elm$core$Maybe$withDefault,
 								0,
-								A2($elm$core$Dict$get, key, model.s));
+								A2($elm$core$Dict$get, key, model.t));
 							return (attempts < 2) ? _Utils_Tuple2(
 								A3(
 									$author$project$Main$readIssue,
-									pending.bc,
+									pending.be,
 									'Repository is busy; retrying this read.',
 									_Utils_update(
 										without,
 										{
-											s: A3($elm$core$Dict$insert, key, attempts + 1, model.s)
+											t: A3($elm$core$Dict$insert, key, attempts + 1, model.t)
 										})),
 								A2(
 									$elm$core$Task$perform,
@@ -8641,8 +8676,8 @@ var $author$project$Main$receiveResponse = F4(
 									$elm$core$Process$sleep(400))) : _Utils_Tuple2(
 								A3(
 									$author$project$Main$readIssue,
-									pending.bc,
-									((pending.bc === 2) || (pending.bc === 3)) ? 'Repository remains busy. Retry this inspection when it settles.' : 'Repository remains busy. Refresh when it settles.',
+									pending.be,
+									((pending.be === 2) || (pending.be === 3)) ? 'Repository remains busy. Retry this inspection when it settles.' : 'Repository remains busy. Refresh when it settles.',
 									without),
 								$elm$core$Platform$Cmd$none);
 						} else {
@@ -8650,16 +8685,16 @@ var $author$project$Main$receiveResponse = F4(
 								var _v2 = A2($elm$json$Json$Decode$decodeValue, $author$project$Api$failure, body);
 								if (!_v2.$) {
 									var failure = _v2.a;
-									return (!_Utils_eq(failure.ar, status)) ? _Utils_Tuple2(
-										A3($author$project$Main$readIssue, pending.bc, 'The server returned an inconsistent error status.', without),
-										$elm$core$Platform$Cmd$none) : ((failure.ar === 401) ? _Utils_Tuple2(
+									return (!_Utils_eq(failure.at, status)) ? _Utils_Tuple2(
+										A3($author$project$Main$readIssue, pending.be, 'The server returned an inconsistent error status.', without),
+										$elm$core$Platform$Cmd$none) : ((failure.at === 401) ? _Utils_Tuple2(
 										_Utils_update(
 											without,
 											{
-												f: $elm$core$Maybe$Just('Session unavailable. Reopen the process bootstrap URL.'),
+												g: $elm$core$Maybe$Just('Session unavailable. Reopen the process bootstrap URL.'),
 												m: false,
-												O: 'unavailable',
-												e: true
+												P: 'unavailable',
+												d: true
 											}),
 										$author$project$Main$toJs(
 											$elm$json$Json$Encode$object(
@@ -8669,30 +8704,40 @@ var $author$project$Main$receiveResponse = F4(
 														'type',
 														$elm$json$Json$Encode$string('disconnect'))
 													])))) : _Utils_Tuple2(
-										A3($author$project$Main$readIssue, pending.bc, failure.bs + (': ' + failure.cx), without),
+										A3($author$project$Main$readIssue, pending.be, failure.bu + (': ' + failure.cA), without),
 										$elm$core$Platform$Cmd$none));
 								} else {
 									return _Utils_Tuple2(
-										A3($author$project$Main$readIssue, pending.bc, 'The server returned an unreadable error.', without),
+										A3($author$project$Main$readIssue, pending.be, 'The server returned an unreadable error.', without),
 										$elm$core$Platform$Cmd$none);
 								}
 							} else {
-								return A3(
+								var _v3 = A3(
 									$author$project$Main$readResponse,
-									pending.bc,
+									pending.be,
 									body,
 									_Utils_update(
 										without,
 										{
-											s: A2(
+											t: A2(
 												$elm$core$Dict$remove,
-												$author$project$Main$requestKey(pending.bc),
-												without.s),
-											u: A2(
+												$author$project$Main$requestKey(pending.be),
+												without.t),
+											v: A2(
 												$elm$core$Dict$remove,
-												$author$project$Main$requestKey(pending.bc),
-												without.u)
+												$author$project$Main$requestKey(pending.be),
+												without.v)
 										}));
+								var received = _v3.a;
+								var command = _v3.b;
+								return _Utils_Tuple2(
+									_Utils_update(
+										received,
+										{
+											q: received.q && _Utils_eq(received.M, $elm$core$Maybe$Nothing),
+											d: received.d || (!_Utils_eq(received.M, $elm$core$Maybe$Nothing))
+										}),
+									command);
 							}
 						}
 					}
@@ -8702,7 +8747,7 @@ var $author$project$Main$receiveResponse = F4(
 	});
 var $author$project$Main$requestFailed = F3(
 	function (requestId, message, model) {
-		var _v0 = A2($elm$core$Dict$get, requestId, model.U);
+		var _v0 = A2($elm$core$Dict$get, requestId, model.W);
 		if (_v0.$ === 1) {
 			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 		} else {
@@ -8710,18 +8755,18 @@ var $author$project$Main$requestFailed = F3(
 			var without = _Utils_update(
 				model,
 				{
-					U: A2($elm$core$Dict$remove, requestId, model.U)
+					W: A2($elm$core$Dict$remove, requestId, model.W)
 				});
-			return (pending.bc === 4) ? _Utils_Tuple2(
+			return (pending.be === 4) ? _Utils_Tuple2(
 				_Utils_update(
 					without,
 					{
-						c: $author$project$View$Forms$markStale(model.c),
-						X: $elm$core$Maybe$Nothing,
-						d: 'Mutation outcome is uncertain. Inspect current history before retrying.'
+						b: $author$project$View$Forms$markStale(model.b),
+						Z: $elm$core$Maybe$Nothing,
+						e: 'Mutation outcome is uncertain. Inspect current history before retrying.'
 					}),
 				$elm$core$Platform$Cmd$none) : ((!A3($author$project$Main$readPendingCurrent, requestId, pending, model)) ? _Utils_Tuple2(without, $elm$core$Platform$Cmd$none) : _Utils_Tuple2(
-				A3($author$project$Main$readIssue, pending.bc, message, without),
+				A3($author$project$Main$readIssue, pending.be, message, without),
 				$elm$core$Platform$Cmd$none));
 		}
 	});
@@ -8736,8 +8781,8 @@ var $author$project$Main$socketChanged = F2(
 		if (model.k) {
 			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 		} else {
-			if ((state === 'closed') && (model.m && (model.ae < 4))) {
-				var attempts = model.ae + 1;
+			if ((state === 'closed') && (model.m && (model.ag < 4))) {
+				var attempts = model.ag + 1;
 				var pause = A2(
 					$elm$core$Basics$min,
 					8000,
@@ -8746,13 +8791,14 @@ var $author$project$Main$socketChanged = F2(
 					_Utils_update(
 						model,
 						{
-							Q: false,
-							c: $author$project$View$Forms$markStale(model.c),
+							R: false,
+							S: false,
+							b: $author$project$View$Forms$markStale(model.b),
 							I: false,
-							ae: attempts,
-							x: false,
-							O: 'closed',
-							e: true
+							ag: attempts,
+							q: false,
+							P: 'closed',
+							d: true
 						}),
 					A2(
 						$elm$core$Task$perform,
@@ -8765,13 +8811,13 @@ var $author$project$Main$socketChanged = F2(
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{Q: false, I: false, x: false, O: 'unavailable', e: true}),
+							{R: false, S: false, I: false, q: false, P: 'unavailable', d: true}),
 						$elm$core$Platform$Cmd$none);
 				} else {
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{O: state}),
+							{R: state === 'open', P: state}),
 						$elm$core$Platform$Cmd$none);
 				}
 			}
@@ -8811,7 +8857,7 @@ var $author$project$Main$receive = F2(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Malformed transport response.')
+										g: $elm$core$Maybe$Just('Malformed transport response.')
 									}),
 								$elm$core$Platform$Cmd$none);
 						}
@@ -8834,7 +8880,7 @@ var $author$project$Main$receive = F2(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Malformed transport failure.')
+										g: $elm$core$Maybe$Just('Malformed transport failure.')
 									}),
 								$elm$core$Platform$Cmd$none);
 						}
@@ -8867,7 +8913,8 @@ var $author$project$Main$receive = F2(
 								_Utils_update(
 									model,
 									{
-										f: $elm$core$Maybe$Just('Event decoding failed; refreshing snapshots.')
+										R: false,
+										g: $elm$core$Maybe$Just('Event decoding failed; refreshing snapshots.')
 									}));
 						}
 					default:
@@ -8890,18 +8937,18 @@ var $author$project$Main$retryInspection = F3(
 			_Utils_update(
 				model,
 				{
-					s: A2(
+					t: A2(
 						$elm$core$Dict$remove,
 						$author$project$Main$requestKey(kind),
-						model.s),
-					u: A2(
+						model.t),
+					v: A2(
 						$elm$core$Dict$remove,
 						$author$project$Main$requestKey(kind),
-						model.u)
+						model.v)
 				}));
 	});
 var $author$project$Main$currentViewRevision = function (model) {
-	var _v0 = model.b.c_;
+	var _v0 = model.c.c0;
 	switch (_v0) {
 		case 0:
 			return A2(
@@ -8910,9 +8957,9 @@ var $author$project$Main$currentViewRevision = function (model) {
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.ah;
+						return $.aj;
 					},
-					model.af));
+					model.ah));
 		case 1:
 			return A2(
 				$elm$core$Maybe$withDefault,
@@ -8920,9 +8967,9 @@ var $author$project$Main$currentViewRevision = function (model) {
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.ah;
+						return $.aj;
 					},
-					model.af));
+					model.ah));
 		case 2:
 			return A2(
 				$elm$core$Maybe$withDefault,
@@ -8930,9 +8977,9 @@ var $author$project$Main$currentViewRevision = function (model) {
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.ah;
+						return $.aj;
 					},
-					model.aV));
+					model.aX));
 		case 3:
 			return A2(
 				$elm$core$Maybe$withDefault,
@@ -8940,9 +8987,9 @@ var $author$project$Main$currentViewRevision = function (model) {
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.ah;
+						return $.aj;
 					},
-					model.aA));
+					model.aC));
 		case 4:
 			return A2(
 				$elm$core$Maybe$withDefault,
@@ -8950,11 +8997,11 @@ var $author$project$Main$currentViewRevision = function (model) {
 				A2(
 					$elm$core$Maybe$map,
 					function ($) {
-						return $.er;
+						return $.et;
 					},
-					model.aw));
+					model.ay));
 		default:
-			return A2($elm$core$Maybe$withDefault, 'HEAD', model.aU);
+			return A2($elm$core$Maybe$withDefault, 'HEAD', model.aW);
 	}
 };
 var $author$project$Main$selectAdr = F2(
@@ -8963,14 +9010,14 @@ var $author$project$Main$selectAdr = F2(
 		var selected = _Utils_update(
 			model,
 			{
-				s: $author$project$Main$clearInspectionRetries(model.s),
-				Q: false,
-				f: $elm$core$Maybe$Nothing,
+				t: $author$project$Main$clearInspectionRetries(model.t),
+				S: false,
+				g: $elm$core$Maybe$Nothing,
 				I: false,
-				r: $elm$core$Maybe$Nothing,
-				u: $elm$core$Dict$empty,
+				s: $elm$core$Maybe$Nothing,
+				v: $elm$core$Dict$empty,
 				D: $elm$core$Maybe$Just(adr),
-				V: $elm$core$Maybe$Just(revision)
+				X: $elm$core$Maybe$Just(revision)
 			});
 		var _v0 = A5(
 			$author$project$Main$issue,
@@ -9036,16 +9083,16 @@ var $author$project$View$Forms$common = function (draft) {
 							$elm$json$Json$Encode$string('repository')),
 							_Utils_Tuple2(
 							'token',
-							$elm$json$Json$Encode$string(draft.dc)),
+							$elm$json$Json$Encode$string(draft.de)),
 							_Utils_Tuple2(
 							'head',
-							$elm$json$Json$Encode$string(draft.db)),
+							$elm$json$Json$Encode$string(draft.dd)),
 							_Utils_Tuple2(
 							'head_ref',
 							A2(
 								$elm$core$Maybe$withDefault,
 								$elm$json$Json$Encode$null,
-								A2($elm$core$Maybe$map, $elm$json$Json$Encode$string, draft.ai)))
+								A2($elm$core$Maybe$map, $elm$json$Json$Encode$string, draft.ak)))
 						]))),
 				_Utils_Tuple2(
 				'actor',
@@ -9055,30 +9102,30 @@ var $author$project$View$Forms$common = function (draft) {
 							[
 								_Utils_Tuple2(
 								'kind',
-								$elm$json$Json$Encode$string(draft._)),
+								$elm$json$Json$Encode$string(draft.ab)),
 								_Utils_Tuple2(
 								'id',
-								$elm$json$Json$Encode$string(draft.Z))
+								$elm$json$Json$Encode$string(draft.aa))
 							]),
-						($elm$core$String$trim(draft.aa) === '') ? _List_Nil : _List_fromArray(
+						($elm$core$String$trim(draft.ac) === '') ? _List_Nil : _List_fromArray(
 							[
 								_Utils_Tuple2(
 								'model',
-								$elm$json$Json$Encode$string(draft.aa))
+								$elm$json$Json$Encode$string(draft.ac))
 							]))))
 			]),
 		_Utils_ap(
-			(!draft.au) ? _List_Nil : _List_fromArray(
+			(!draft.aw) ? _List_Nil : _List_fromArray(
 				[
 					_Utils_Tuple2(
 					'state_token',
-					$elm$json$Json$Encode$string(draft.aY))
+					$elm$json$Json$Encode$string(draft.a_))
 				]),
 			_Utils_ap(
-				A2($author$project$View$Forms$optionalDigest, 'input_digest', draft.bB),
+				A2($author$project$View$Forms$optionalDigest, 'input_digest', draft.bD),
 				_Utils_ap(
-					A2($author$project$View$Forms$optionalDigest, 'prompt_digest', draft.bO),
-					A2($author$project$View$Forms$optionalDigest, 'context_digest', draft.bt)))));
+					A2($author$project$View$Forms$optionalDigest, 'prompt_digest', draft.bQ),
+					A2($author$project$View$Forms$optionalDigest, 'context_digest', draft.bv)))));
 };
 var $elm$json$Json$Encode$bool = _Json_wrap;
 var $author$project$View$Forms$canonicalBody = function (content) {
@@ -9120,7 +9167,7 @@ var $elm$core$List$isEmpty = function (xs) {
 };
 var $author$project$View$Forms$variant = F3(
 	function (draft, reviewedField, reviewedValues) {
-		var _v0 = draft.bH;
+		var _v0 = draft.bJ;
 		switch (_v0) {
 			case 'delta':
 				return $elm$core$Result$Ok(
@@ -9128,16 +9175,16 @@ var $author$project$View$Forms$variant = F3(
 						[
 							_Utils_Tuple2(
 							'reason',
-							$elm$json$Json$Encode$string(draft.cL)),
+							$elm$json$Json$Encode$string(draft.cO)),
 							_Utils_Tuple2(
 							'mode',
 							$elm$json$Json$Encode$string('delta')),
 							_Utils_Tuple2(
 							'add',
-							$author$project$View$Forms$strings(draft.aM)),
+							$author$project$View$Forms$strings(draft.aO)),
 							_Utils_Tuple2(
 							'remove',
-							$author$project$View$Forms$strings(draft.aW))
+							$author$project$View$Forms$strings(draft.aY))
 						]));
 			case 'reviewed':
 				return $elm$core$Result$Ok(
@@ -9145,7 +9192,7 @@ var $author$project$View$Forms$variant = F3(
 						[
 							_Utils_Tuple2(
 							'reason',
-							$elm$json$Json$Encode$string(draft.cL)),
+							$elm$json$Json$Encode$string(draft.cO)),
 							_Utils_Tuple2(
 							'mode',
 							$elm$json$Json$Encode$string('reviewed')),
@@ -9154,26 +9201,26 @@ var $author$project$View$Forms$variant = F3(
 							$author$project$View$Forms$strings(reviewedValues))
 						]));
 			case 'refine':
-				return ((draft.au !== 3) || $elm$core$List$isEmpty(
-					$author$project$View$Forms$lines(draft.bT))) ? $elm$core$Result$Err('Domain refinements must contain at least one entry.') : $elm$core$Result$Ok(
+				return ((draft.aw !== 3) || $elm$core$List$isEmpty(
+					$author$project$View$Forms$lines(draft.bV))) ? $elm$core$Result$Err('Domain refinements must contain at least one entry.') : $elm$core$Result$Ok(
 					_List_fromArray(
 						[
 							_Utils_Tuple2(
 							'reason',
-							$elm$json$Json$Encode$string(draft.cL)),
+							$elm$json$Json$Encode$string(draft.cO)),
 							_Utils_Tuple2(
 							'mode',
 							$elm$json$Json$Encode$string('refine')),
 							_Utils_Tuple2(
 							'refinements',
-							$author$project$View$Forms$strings(draft.bT))
+							$author$project$View$Forms$strings(draft.bV))
 						]));
 			default:
 				return $elm$core$Result$Err('Choose a supported change mode.');
 		}
 	});
 var $author$project$View$Forms$fields = function (draft) {
-	var _v0 = draft.au;
+	var _v0 = draft.aw;
 	switch (_v0) {
 		case 0:
 			return ($elm$core$String$trim(draft.F) === '') ? $elm$core$Result$Err('Title is required.') : $elm$core$Result$Ok(
@@ -9184,90 +9231,90 @@ var $author$project$View$Forms$fields = function (draft) {
 						$elm$json$Json$Encode$string(draft.F)),
 						_Utils_Tuple2(
 						'summary',
-						$elm$json$Json$Encode$string(draft.P)),
+						$elm$json$Json$Encode$string(draft.Q)),
 						_Utils_Tuple2(
 						'body',
 						$elm$json$Json$Encode$string(
-							$author$project$View$Forms$canonicalBody(draft.ak))),
+							$author$project$View$Forms$canonicalBody(draft.am))),
 						_Utils_Tuple2(
 						'domains',
 						$author$project$View$Forms$strings(draft.L)),
 						_Utils_Tuple2(
 						'scopes',
-						$author$project$View$Forms$strings(draft.N))
+						$author$project$View$Forms$strings(draft.O))
 					]));
 		case 1:
-			return ($elm$core$String$trim(draft.av) === '') ? $elm$core$Result$Err('Change summary is required.') : $elm$core$Result$Ok(
+			return ($elm$core$String$trim(draft.ax) === '') ? $elm$core$Result$Err('Change summary is required.') : $elm$core$Result$Ok(
 				_List_fromArray(
 					[
 						_Utils_Tuple2(
 						'change_summary',
-						$elm$json$Json$Encode$string(draft.av)),
+						$elm$json$Json$Encode$string(draft.ax)),
 						_Utils_Tuple2(
 						'title',
 						$elm$json$Json$Encode$string(draft.F)),
 						_Utils_Tuple2(
 						'summary',
-						$elm$json$Json$Encode$string(draft.P)),
+						$elm$json$Json$Encode$string(draft.Q)),
 						_Utils_Tuple2(
 						'body',
 						$elm$json$Json$Encode$string(
-							$author$project$View$Forms$canonicalBody(draft.ak)))
+							$author$project$View$Forms$canonicalBody(draft.am)))
 					]));
 		case 2:
-			return ($elm$core$String$trim(draft.cL) === '') ? $elm$core$Result$Err('Scope reason is required.') : A3($author$project$View$Forms$variant, draft, 'patterns', draft.N);
+			return ($elm$core$String$trim(draft.cO) === '') ? $elm$core$Result$Err('Scope reason is required.') : A3($author$project$View$Forms$variant, draft, 'patterns', draft.O);
 		case 3:
-			return ($elm$core$String$trim(draft.cL) === '') ? $elm$core$Result$Err('Domain reason is required.') : A3($author$project$View$Forms$variant, draft, 'domains', draft.L);
+			return ($elm$core$String$trim(draft.cO) === '') ? $elm$core$Result$Err('Domain reason is required.') : A3($author$project$View$Forms$variant, draft, 'domains', draft.L);
 		case 4:
-			return ($elm$core$String$trim(draft.cL) === '') ? $elm$core$Result$Err('Obsolete reason is required.') : $elm$core$Result$Ok(
+			return ($elm$core$String$trim(draft.cO) === '') ? $elm$core$Result$Err('Obsolete reason is required.') : $elm$core$Result$Ok(
 				_Utils_ap(
 					_List_fromArray(
 						[
 							_Utils_Tuple2(
 							'reason',
-							$elm$json$Json$Encode$string(draft.cL)),
+							$elm$json$Json$Encode$string(draft.cO)),
 							_Utils_Tuple2(
 							'resolve',
-							$elm$json$Json$Encode$bool(draft.ee))
+							$elm$json$Json$Encode$bool(draft.eg))
 						]),
-					($elm$core$String$trim(draft.bW) === '') ? _List_Nil : _List_fromArray(
+					($elm$core$String$trim(draft.bY) === '') ? _List_Nil : _List_fromArray(
 						[
 							_Utils_Tuple2(
 							'replacement',
 							$elm$json$Json$Encode$string(
-								$elm$core$String$trim(draft.bW)))
+								$elm$core$String$trim(draft.bY)))
 						])));
 		default:
-			return ($elm$core$String$trim(draft.cL) === '') ? $elm$core$Result$Err('Reactivate reason is required.') : $elm$core$Result$Ok(
+			return ($elm$core$String$trim(draft.cO) === '') ? $elm$core$Result$Err('Reactivate reason is required.') : $elm$core$Result$Ok(
 				_List_fromArray(
 					[
 						_Utils_Tuple2(
 						'reason',
-						$elm$json$Json$Encode$string(draft.cL)),
+						$elm$json$Json$Encode$string(draft.cO)),
 						_Utils_Tuple2(
 						'resolve',
-						$elm$json$Json$Encode$bool(draft.ee))
+						$elm$json$Json$Encode$bool(draft.eg))
 					]));
 	}
 };
 var $author$project$View$Forms$build = function (draft) {
-	if ((draft.dc === '') || (draft.db === '')) {
+	if ((draft.de === '') || (draft.dd === '')) {
 		return $elm$core$Result$Err('Refresh the repository before submitting.');
 	} else {
-		if (draft.b_ || ((!draft.cP) && (!(!draft.au)))) {
+		if (draft.b1 || ((!draft.bZ) && (!(!draft.aw)))) {
 			return $elm$core$Result$Err('Review current heads and adopt fresh tokens before submitting.');
 		} else {
-			if (draft.Z === '') {
+			if (draft.aa === '') {
 				return $elm$core$Result$Err('Actor ID is required.');
 			} else {
 				if (!A2(
 					$elm$core$List$member,
-					draft._,
+					draft.ab,
 					_List_fromArray(
 						['human', 'llm', 'service']))) {
 					return $elm$core$Result$Err('Actor kind must be human, llm, or service.');
 				} else {
-					if ((!(!draft.au)) && ((draft.eq === '') || (draft.aY === ''))) {
+					if ((!(!draft.aw)) && ((draft.es === '') || (draft.a_ === ''))) {
 						return $elm$core$Result$Err('Select and inspect an ADR before submitting.');
 					} else {
 						var _v0 = $author$project$View$Forms$fields(draft);
@@ -9294,61 +9341,61 @@ var $author$project$Route$mutationPath = F2(
 	});
 var $author$project$Main$submit = function (model) {
 	var historical = $author$project$Main$isHistorical(model);
-	var draft = model.c;
+	var draft = model.b;
 	if (model.k) {
 		return _Utils_Tuple2(
 			_Utils_update(
 				model,
-				{d: $author$project$Main$terminalMessage}),
+				{e: $author$project$Main$terminalMessage}),
 			$elm$core$Platform$Cmd$none);
 	} else {
 		if (!model.m) {
 			return _Utils_Tuple2(
 				_Utils_update(
 					model,
-					{d: 'Reopen the process bootstrap URL to make changes.'}),
+					{e: 'Reopen the process bootstrap URL to make changes.'}),
 				$elm$core$Platform$Cmd$none);
 		} else {
-			if ((!model.x) || ((!(!draft.au)) && (!$author$project$Main$inspectionReady(model)))) {
+			if ((!model.q) || ((!(!draft.aw)) && (!$author$project$Main$inspectionReady(model)))) {
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{d: 'Wait for fresh repository and both inspection views before submitting.'}),
+						{e: 'Wait for fresh repository and both inspection views before submitting.'}),
 					$elm$core$Platform$Cmd$none);
 			} else {
-				if (!_Utils_eq(model.X, $elm$core$Maybe$Nothing)) {
+				if (!_Utils_eq(model.Z, $elm$core$Maybe$Nothing)) {
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{d: 'Wait for the current operation result.'}),
+							{e: 'Wait for the current operation result.'}),
 						$elm$core$Platform$Cmd$none);
 				} else {
 					if (historical) {
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{d: 'Historical inspection is read-only. Return to current HEAD and review it.'}),
+								{e: 'Historical inspection is read-only. Return to current HEAD and review it.'}),
 							$elm$core$Platform$Cmd$none);
 					} else {
 						if ((!_Utils_eq(
 							A2(
 								$elm$core$Maybe$map,
 								function ($) {
-									return $.dI;
+									return $.dK;
 								},
-								model.M),
-							$elm$core$Maybe$Just(draft.db))) || (!_Utils_eq(
+								model.N),
+							$elm$core$Maybe$Just(draft.dd))) || (!_Utils_eq(
 							A2(
 								$elm$core$Maybe$map,
 								function ($) {
-									return $.aY;
+									return $.a_;
 								},
-								model.M),
-							$elm$core$Maybe$Just(draft.dc)))) {
+								model.N),
+							$elm$core$Maybe$Just(draft.de)))) {
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{d: 'Repository changed. Refresh, inspect, then adopt tokens.'}),
+									{e: 'Repository changed. Refresh, inspect, then adopt tokens.'}),
 								$elm$core$Platform$Cmd$none);
 						} else {
 							var _v0 = $author$project$View$Forms$build(draft);
@@ -9357,15 +9404,15 @@ var $author$project$Main$submit = function (model) {
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{d: problem}),
+										{e: problem}),
 									$elm$core$Platform$Cmd$none);
 							} else {
 								var body = _v0.a;
 								var path = A2(
 									$author$project$Route$mutationPath,
-									$author$project$View$Forms$actionName(draft.au),
-									draft.eq);
-								var identifier = 'ui-' + $elm$core$String$fromInt(model.aB);
+									$author$project$View$Forms$actionName(draft.aw),
+									draft.es);
+								var identifier = 'ui-' + $elm$core$String$fromInt(model.aD);
 								var _v1 = A5(
 									$author$project$Main$issue,
 									4,
@@ -9379,8 +9426,8 @@ var $author$project$Main$submit = function (model) {
 									_Utils_update(
 										next,
 										{
-											X: $elm$core$Maybe$Just(identifier),
-											d: 'Submitting checked operation…'
+											Z: $elm$core$Maybe$Just(identifier),
+											e: 'Submitting checked operation…'
 										}),
 									command);
 							}
@@ -9399,61 +9446,61 @@ var $author$project$Main$update = F2(
 				return A2($author$project$Main$receive, value, model);
 			case 1:
 				var selected = message.a;
-				var current = model.b;
+				var current = model.c;
 				var query = _Utils_update(
 					current,
-					{c_: selected});
+					{c0: selected});
 				return $author$project$Main$load(
 					_Utils_update(
 						model,
-						{f: $elm$core$Maybe$Nothing, j: 0, b: query, e: true}));
+						{g: $elm$core$Maybe$Nothing, j: 0, c: query, d: true}));
 			case 2:
 				var key = message.a;
 				var content = message.b;
-				var current = model.b;
+				var current = model.c;
 				var query = function () {
 					switch (key) {
 						case 'revision':
 							return _Utils_update(
 								current,
-								{aE: content});
+								{aG: content});
 						case 'text':
 							return _Utils_update(
 								current,
-								{b4: content});
+								{b7: content});
 						case 'mode':
 							return _Utils_update(
 								current,
-								{bH: content});
+								{bJ: content});
 						case 'projection':
 							return _Utils_update(
 								current,
-								{bh: content});
+								{bj: content});
 						case 'domain':
 							return _Utils_update(
 								current,
-								{bw: content});
+								{by: content});
 						case 'file':
 							return _Utils_update(
 								current,
-								{dD: content});
+								{dF: content});
 						case 'actor':
 							return _Utils_update(
 								current,
-								{a1: content});
+								{a3: content});
 						case 'since':
 							return _Utils_update(
 								current,
-								{aF: content});
+								{aH: content});
 						case 'until':
 							return _Utils_update(
 								current,
-								{aI: content});
+								{aK: content});
 						case 'limit':
 							return _Utils_update(
 								current,
 								{
-									cw: A2(
+									cz: A2(
 										$elm$core$Maybe$withDefault,
 										0,
 										$elm$core$String$toInt(content))
@@ -9461,7 +9508,7 @@ var $author$project$Main$update = F2(
 						case 'order':
 							return _Utils_update(
 								current,
-								{bf: content});
+								{bh: content});
 						case 'adr':
 							return _Utils_update(
 								current,
@@ -9469,11 +9516,11 @@ var $author$project$Main$update = F2(
 						case 'compareFrom':
 							return _Utils_update(
 								current,
-								{a6: content});
+								{a8: content});
 						case 'compareTo':
 							return _Utils_update(
 								current,
-								{a7: content});
+								{a9: content});
 						default:
 							return current;
 					}
@@ -9481,26 +9528,26 @@ var $author$project$Main$update = F2(
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{j: 0, b: query, e: true}),
+						{j: 0, c: query, d: true}),
 					$elm$core$Platform$Cmd$none);
 			case 3:
 				var key = message.a;
 				var checked = message.b;
-				var current = model.b;
+				var current = model.c;
 				var query = function () {
 					switch (key) {
 						case 'includeObsolete':
 							return _Utils_update(
 								current,
-								{bb: checked});
+								{bd: checked});
 						case 'shallow':
 							return _Utils_update(
 								current,
-								{bZ: checked});
+								{b0: checked});
 						case 'worktree':
 							return _Utils_update(
 								current,
-								{ev: checked});
+								{ex: checked});
 						default:
 							return current;
 					}
@@ -9508,7 +9555,7 @@ var $author$project$Main$update = F2(
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{j: 0, b: query, e: true}),
+						{j: 0, c: query, d: true}),
 					$elm$core$Platform$Cmd$none);
 			case 4:
 				return $author$project$Main$load(model);
@@ -9525,7 +9572,7 @@ var $author$project$Main$update = F2(
 					_Utils_update(
 						model,
 						{
-							r: $elm$core$Maybe$Nothing,
+							s: $elm$core$Maybe$Nothing,
 							D: $elm$core$Maybe$Just(adr)
 						}));
 			case 7:
@@ -9549,36 +9596,36 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{d: $author$project$Main$terminalMessage}),
+							{e: $author$project$Main$terminalMessage}),
 						$elm$core$Platform$Cmd$none);
 				} else {
 					if ($author$project$Main$isHistorical(model)) {
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{d: 'Historical inspection is read-only. Return to current HEAD first.'}),
+								{e: 'Historical inspection is read-only. Return to current HEAD first.'}),
 							$elm$core$Platform$Cmd$none);
 					} else {
-						var _v3 = model.M;
+						var _v3 = model.N;
 						if (_v3.$ === 1) {
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{d: 'Refresh the repository before editing.'}),
+									{e: 'Refresh the repository before editing.'}),
 								$elm$core$Platform$Cmd$none);
 						} else {
 							var repository = _v3.a;
-							return ((!model.x) || ((!(!action)) && (!$author$project$Main$inspectionReady(model)))) ? _Utils_Tuple2(
+							return ((!model.q) || ((!(!action)) && (!$author$project$Main$inspectionReady(model)))) ? _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{d: 'Wait for fresh repository and both inspection views before editing.'}),
+									{e: 'Wait for fresh repository and both inspection views before editing.'}),
 								$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
 								_Utils_update(
 									model,
 									{
-										c: A4($author$project$View$Forms$begin, action, repository, model.r, model.c),
+										b: A4($author$project$View$Forms$begin, action, repository, model.s, model.b),
 										z: model.z + 1,
-										d: 'Review original values against current heads before submitting.'
+										e: 'Review original values against current heads before submitting.'
 									}),
 								$elm$core$Platform$Cmd$none);
 						}
@@ -9591,20 +9638,20 @@ var $author$project$Main$update = F2(
 					_Utils_update(
 						model,
 						{
-							c: A3($author$project$View$Forms$change, field, content, model.c),
+							b: A3($author$project$View$Forms$change, field, content, model.b),
 							z: model.z + 1
 						}),
 					$elm$core$Platform$Cmd$none);
 			case 11:
 				var checked = message.a;
-				var current = model.c;
+				var current = model.b;
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
 						{
-							c: _Utils_update(
+							b: _Utils_update(
 								current,
-								{dr: true, ee: checked}),
+								{dt: true, eg: checked}),
 							z: model.z + 1
 						}),
 					$elm$core$Platform$Cmd$none);
@@ -9613,74 +9660,74 @@ var $author$project$Main$update = F2(
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
-							{d: $author$project$Main$terminalMessage}),
+							{e: $author$project$Main$terminalMessage}),
 						$elm$core$Platform$Cmd$none);
 				} else {
 					if ($author$project$Main$isHistorical(model)) {
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{d: 'Historical inspection is read-only. Return to current HEAD first.'}),
+								{e: 'Historical inspection is read-only. Return to current HEAD first.'}),
 							$elm$core$Platform$Cmd$none);
 					} else {
-						var _v4 = model.M;
+						var _v4 = model.N;
 						if (_v4.$ === 1) {
 							return _Utils_Tuple2(
 								_Utils_update(
 									model,
-									{d: 'Refresh the repository first.'}),
+									{e: 'Refresh the repository first.'}),
 								$elm$core$Platform$Cmd$none);
 						} else {
 							var repository = _v4.a;
-							if (!model.x) {
+							if (!model.q) {
 								return _Utils_Tuple2(
 									_Utils_update(
 										model,
-										{d: 'Wait for a fresh repository read before adopting tokens.'}),
+										{e: 'Wait for a fresh repository read before adopting tokens.'}),
 									$elm$core$Platform$Cmd$none);
 							} else {
-								if (!model.c.au) {
+								if (!model.b.aw) {
 									return _Utils_Tuple2(
 										_Utils_update(
 											model,
 											{
-												c: A2($author$project$View$Forms$adoptCreate, repository, model.c),
-												d: 'Current repository basis adopted.'
+												b: A2($author$project$View$Forms$adoptCreate, repository, model.b),
+												e: 'Current repository basis adopted.'
 											}),
 										$elm$core$Platform$Cmd$none);
 								} else {
 									if ($author$project$Main$inspectionReady(model)) {
-										var _v5 = model.r;
+										var _v5 = model.s;
 										if (!_v5.$) {
 											var inspection = _v5.a;
-											var _v6 = A3($author$project$View$Forms$adopt, repository, inspection, model.c);
+											var _v6 = A3($author$project$View$Forms$adopt, repository, inspection, model.b);
 											if (!_v6.$) {
 												var draft = _v6.a;
 												return _Utils_Tuple2(
 													_Utils_update(
 														model,
-														{c: draft, d: 'Current heads reviewed; fresh tokens adopted.'}),
+														{b: draft, e: 'Current heads reviewed; fresh tokens adopted.'}),
 													$elm$core$Platform$Cmd$none);
 											} else {
 												var problem = _v6.a;
 												return _Utils_Tuple2(
 													_Utils_update(
 														model,
-														{d: problem}),
+														{e: problem}),
 													$elm$core$Platform$Cmd$none);
 											}
 										} else {
 											return _Utils_Tuple2(
 												_Utils_update(
 													model,
-													{d: 'Inspect the target ADR before adopting tokens.'}),
+													{e: 'Inspect the target ADR before adopting tokens.'}),
 												$elm$core$Platform$Cmd$none);
 										}
 									} else {
 										return _Utils_Tuple2(
 											_Utils_update(
 												model,
-												{d: 'Wait for fresh collapsed and exploded inspection at current HEAD.'}),
+												{e: 'Wait for fresh collapsed and exploded inspection at current HEAD.'}),
 											$elm$core$Platform$Cmd$none);
 									}
 								}
@@ -9691,14 +9738,14 @@ var $author$project$Main$update = F2(
 			case 13:
 				return $author$project$Main$submit(model);
 			case 14:
-				return (model.k || ((!model.m) || (model.ae > 4))) ? _Utils_Tuple2(
+				return (model.k || ((!model.m) || (model.ag > 4))) ? _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{O: 'unavailable'}),
+						{P: 'unavailable'}),
 					$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{O: 'connecting'}),
+						{P: 'connecting'}),
 					$author$project$Main$toJs(
 						$elm$json$Json$Encode$object(
 							_List_fromArray(
@@ -9710,10 +9757,10 @@ var $author$project$Main$update = F2(
 			case 15:
 				var requestId = message.a;
 				var pending = message.b;
-				return A3($author$project$Main$readPendingCurrent, requestId, pending, model) ? A5($author$project$Main$issue, pending.bc, 'GET', pending.ax, $elm$core$Maybe$Nothing, model) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+				return A3($author$project$Main$readPendingCurrent, requestId, pending, model) ? A5($author$project$Main$issue, pending.be, 'GET', pending.az, $elm$core$Maybe$Nothing, model) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			default:
 				var kind = message.a;
-				var _v7 = _Utils_Tuple3(kind, model.D, model.V);
+				var _v7 = _Utils_Tuple3(kind, model.D, model.X);
 				_v7$2:
 				while (true) {
 					if ((!_v7.b.$) && (!_v7.c.$)) {
@@ -9905,21 +9952,21 @@ var $author$project$View$Forms$reviewView = F2(
 					_List_fromArray(
 						[
 							$elm$html$Html$text(
-							'HEAD ' + (review.dI + (' · ' + A2($elm$core$Maybe$withDefault, 'detached', review.dJ))))
+							'HEAD ' + (review.dK + (' · ' + A2($elm$core$Maybe$withDefault, 'detached', review.dL))))
 						])),
 					A2(
 					$elm$html$Html$p,
 					_List_Nil,
 					_List_fromArray(
 						[
-							$elm$html$Html$text('Repository basis token: ' + review.dc)
+							$elm$html$Html$text('Repository basis token: ' + review.de)
 						])),
 					A2(
 					$elm$html$Html$p,
 					_List_Nil,
 					_List_fromArray(
 						[
-							$elm$html$Html$text('ADR state token: ' + review.aY)
+							$elm$html$Html$text('ADR state token: ' + review.a_)
 						])),
 					A2(
 					$elm$html$Html$p,
@@ -9933,14 +9980,14 @@ var $author$project$View$Forms$reviewView = F2(
 					_List_Nil,
 					_List_fromArray(
 						[
-							$elm$html$Html$text('Summary: ' + review.P)
+							$elm$html$Html$text('Summary: ' + review.Q)
 						])),
 					A2(
 					$elm$html$Html$pre,
 					_List_Nil,
 					_List_fromArray(
 						[
-							$elm$html$Html$text(review.ak)
+							$elm$html$Html$text(review.am)
 						])),
 					A2(
 					$elm$html$Html$p,
@@ -9956,7 +10003,7 @@ var $author$project$View$Forms$reviewView = F2(
 					_List_fromArray(
 						[
 							$elm$html$Html$text(
-							'Scopes: ' + A2($elm$core$String$join, ', ', review.N))
+							'Scopes: ' + A2($elm$core$String$join, ', ', review.O))
 						])),
 					A2(
 					$elm$html$Html$p,
@@ -9964,7 +10011,7 @@ var $author$project$View$Forms$reviewView = F2(
 					_List_fromArray(
 						[
 							$elm$html$Html$text(
-							'Heads: ' + A2($elm$core$String$join, ', ', review.dK))
+							'Heads: ' + A2($elm$core$String$join, ', ', review.dM))
 						])),
 					A2(
 					$elm$html$Html$ul,
@@ -9980,7 +10027,7 @@ var $author$project$View$Forms$reviewView = F2(
 										$elm$html$Html$text(candidate)
 									]));
 						},
-						review.a2))
+						review.a4))
 				]));
 	});
 var $elm$html$Html$select = _VirtualDom_node('select');
@@ -10013,7 +10060,7 @@ var $author$project$View$Forms$view = function (controls) {
 								$elm$html$Html$Attributes$id(name),
 								$elm$html$Html$Attributes$value(content),
 								$elm$html$Html$Events$onInput(
-								controls.d4(field))
+								controls.d6(field))
 							]),
 						_List_Nil)
 					]));
@@ -10042,12 +10089,12 @@ var $author$project$View$Forms$view = function (controls) {
 								$elm$html$Html$Attributes$id(name),
 								$elm$html$Html$Attributes$value(content),
 								$elm$html$Html$Events$onInput(
-								controls.d4(field))
+								controls.d6(field))
 							]),
 						_List_Nil)
 					]));
 		});
-	var draft = controls.c;
+	var draft = controls.b;
 	return A2(
 		$elm$html$Html$div,
 		_List_Nil,
@@ -10075,10 +10122,10 @@ var $author$project$View$Forms$view = function (controls) {
 				_List_fromArray(
 					[
 						$elm$html$Html$Attributes$id('action'),
-						$elm$html$Html$Attributes$disabled(!controls.dg),
+						$elm$html$Html$Attributes$disabled(!controls.di),
 						$elm$html$Html$Events$onInput(
 						function (value) {
-							return controls.d5(
+							return controls.d7(
 								$author$project$View$Forms$actionFrom(value));
 						})
 					]),
@@ -10092,8 +10139,8 @@ var $author$project$View$Forms$view = function (controls) {
 									$elm$html$Html$Attributes$value(
 									$author$project$View$Forms$actionName(action)),
 									$elm$html$Html$Attributes$selected(
-									_Utils_eq(draft.au, action)),
-									$elm$html$Html$Attributes$disabled((!(!action)) && (!controls.dh))
+									_Utils_eq(draft.aw, action)),
+									$elm$html$Html$Attributes$disabled((!(!action)) && (!controls.dj))
 								]),
 							_List_fromArray(
 								[
@@ -10109,49 +10156,49 @@ var $author$project$View$Forms$view = function (controls) {
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						'Target: ' + ((draft.eq === '') ? 'new ADR' : draft.eq))
+						'Target: ' + ((draft.es === '') ? 'new ADR' : draft.es))
 					])),
 				A2(
 				$elm$html$Html$p,
 				_List_Nil,
 				_List_fromArray(
 					[
-						$elm$html$Html$text('Original HEAD: ' + draft.db)
+						$elm$html$Html$text('Original HEAD: ' + draft.dd)
 					])),
-				draft.b_ ? A2(
+				draft.b1 ? A2(
 				$elm$html$Html$p,
 				_List_Nil,
 				_List_fromArray(
 					[
 						$elm$html$Html$text('Draft is stale. Refresh the repository, inspect current heads and candidates, then adopt the new tokens.')
 					])) : $elm$html$Html$text(''),
-				((!draft.au) || (draft.au === 1)) ? A2(
+				((!draft.aw) || (draft.aw === 1)) ? A2(
 				$elm$html$Html$div,
 				_List_Nil,
 				_Utils_ap(
 					_List_fromArray(
 						[
 							A3(named, 0, 'Title', draft.F),
-							A3(multiline, 1, 'Summary', draft.P),
-							A3(multiline, 2, 'Body', draft.ak)
+							A3(multiline, 1, 'Summary', draft.Q),
+							A3(multiline, 2, 'Body', draft.am)
 						]),
-					(draft.au === 1) ? _List_fromArray(
+					(draft.aw === 1) ? _List_fromArray(
 						[
-							A3(named, 3, 'Change summary', draft.av)
+							A3(named, 3, 'Change summary', draft.ax)
 						]) : _List_fromArray(
 						[
 							A3(multiline, 5, 'Domains, one per line', draft.L),
-							A3(multiline, 6, 'Scopes, one per line', draft.N)
+							A3(multiline, 6, 'Scopes, one per line', draft.O)
 						]))) : A2(
 				$elm$html$Html$div,
 				_List_Nil,
 				_Utils_ap(
 					_List_fromArray(
 						[
-							A3(named, 4, 'Reason', draft.cL)
+							A3(named, 4, 'Reason', draft.cO)
 						]),
 					_Utils_ap(
-						((draft.au === 2) || (draft.au === 3)) ? _Utils_ap(
+						((draft.aw === 2) || (draft.aw === 3)) ? _Utils_ap(
 							_List_fromArray(
 								[
 									A2(
@@ -10170,7 +10217,7 @@ var $author$project$View$Forms$view = function (controls) {
 										[
 											$elm$html$Html$Attributes$id('change-mode'),
 											$elm$html$Html$Events$onInput(
-											controls.d4(17))
+											controls.d6(17))
 										]),
 									A2(
 										$elm$core$List$map,
@@ -10181,39 +10228,39 @@ var $author$project$View$Forms$view = function (controls) {
 													[
 														$elm$html$Html$Attributes$value(mode),
 														$elm$html$Html$Attributes$selected(
-														_Utils_eq(draft.bH, mode))
+														_Utils_eq(draft.bJ, mode))
 													]),
 												_List_fromArray(
 													[
 														$elm$html$Html$text(mode)
 													]));
 										},
-										(draft.au === 3) ? _List_fromArray(
+										(draft.aw === 3) ? _List_fromArray(
 											['delta', 'reviewed', 'refine']) : _List_fromArray(
 											['delta', 'reviewed'])))
 								]),
 							function () {
-								var _v0 = draft.bH;
+								var _v0 = draft.bJ;
 								switch (_v0) {
 									case 'delta':
 										return _List_fromArray(
 											[
-												A3(multiline, 7, 'Add, one per line', draft.aM),
-												A3(multiline, 8, 'Remove, one per line', draft.aW)
+												A3(multiline, 7, 'Add, one per line', draft.aO),
+												A3(multiline, 8, 'Remove, one per line', draft.aY)
 											]);
 									case 'refine':
 										return _List_fromArray(
 											[
-												A3(multiline, 9, 'Refinements, one per line', draft.bT)
+												A3(multiline, 9, 'Refinements, one per line', draft.bV)
 											]);
 									default:
 										return _List_fromArray(
 											[
 												A3(
 												multiline,
-												(draft.au === 2) ? 6 : 5,
+												(draft.aw === 2) ? 6 : 5,
 												'Reviewed set, one per line',
-												(draft.au === 2) ? draft.N : draft.L)
+												(draft.aw === 2) ? draft.O : draft.L)
 											]);
 								}
 							}()) : _List_fromArray(
@@ -10234,14 +10281,14 @@ var $author$project$View$Forms$view = function (controls) {
 									[
 										$elm$html$Html$Attributes$id('resolve'),
 										$elm$html$Html$Attributes$type_('checkbox'),
-										$elm$html$Html$Attributes$checked(draft.ee),
-										$elm$html$Html$Events$onCheck(controls.d6)
+										$elm$html$Html$Attributes$checked(draft.eg),
+										$elm$html$Html$Events$onCheck(controls.d8)
 									]),
 								_List_Nil)
 							]),
-						(draft.au === 4) ? _List_fromArray(
+						(draft.aw === 4) ? _List_fromArray(
 							[
-								A3(named, 10, 'Replacement ADR (optional)', draft.bW)
+								A3(named, 10, 'Replacement ADR (optional)', draft.bY)
 							]) : _List_Nil))),
 				A2(
 				$elm$html$Html$fieldset,
@@ -10271,7 +10318,7 @@ var $author$project$View$Forms$view = function (controls) {
 							[
 								$elm$html$Html$Attributes$id('actor-kind'),
 								$elm$html$Html$Events$onInput(
-								controls.d4(11))
+								controls.d6(11))
 							]),
 						A2(
 							$elm$core$List$map,
@@ -10282,7 +10329,7 @@ var $author$project$View$Forms$view = function (controls) {
 										[
 											$elm$html$Html$Attributes$value(kind),
 											$elm$html$Html$Attributes$selected(
-											_Utils_eq(draft._, kind))
+											_Utils_eq(draft.ab, kind))
 										]),
 									_List_fromArray(
 										[
@@ -10291,11 +10338,11 @@ var $author$project$View$Forms$view = function (controls) {
 							},
 							_List_fromArray(
 								['human', 'llm', 'service']))),
-						A3(named, 12, 'Actor ID', draft.Z),
-						A3(named, 13, 'Model (optional)', draft.aa),
-						A3(named, 14, 'Input digest (optional)', draft.bB),
-						A3(named, 15, 'Prompt digest (optional)', draft.bO),
-						A3(named, 16, 'Context digest (optional)', draft.bt)
+						A3(named, 12, 'Actor ID', draft.aa),
+						A3(named, 13, 'Model (optional)', draft.ac),
+						A3(named, 14, 'Input digest (optional)', draft.bD),
+						A3(named, 15, 'Prompt digest (optional)', draft.bQ),
+						A3(named, 16, 'Context digest (optional)', draft.bv)
 					])),
 				A2(
 				$elm$html$Html$h3,
@@ -10305,7 +10352,7 @@ var $author$project$View$Forms$view = function (controls) {
 						$elm$html$Html$text('Review original and current state')
 					])),
 				function () {
-				var _v1 = draft.aT;
+				var _v1 = draft.aV;
 				if (!_v1.$) {
 					var original = _v1.a;
 					return A2($author$project$View$Forms$reviewView, 'Original reviewed state', original);
@@ -10320,13 +10367,13 @@ var $author$project$View$Forms$view = function (controls) {
 				}
 			}(),
 				function () {
-				var _v2 = controls.dG;
+				var _v2 = controls.dI;
 				if (!_v2.$) {
 					var repository = _v2.a;
 					return A2(
 						$author$project$View$Forms$reviewView,
 						'Current freshly inspected state',
-						A2($author$project$View$Forms$baseline, repository, controls.dF));
+						A2($author$project$View$Forms$baseline, repository, controls.dH));
 				} else {
 					return A2(
 						$elm$html$Html$p,
@@ -10342,41 +10389,41 @@ var $author$project$View$Forms$view = function (controls) {
 				_List_fromArray(
 					[
 						$elm$html$Html$Attributes$type_('button'),
-						$elm$html$Html$Attributes$disabled(!controls.df),
-						$elm$html$Html$Events$onClick(controls.d3)
+						$elm$html$Html$Attributes$disabled(!controls.dh),
+						$elm$html$Html$Events$onClick(controls.d5)
 					]),
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						(!draft.au) ? 'Review repository and adopt current basis' : 'Review heads and adopt current tokens')
+						(!draft.aw) ? 'Review repository and adopt current basis' : 'Review heads and adopt current tokens')
 					])),
 				A2(
 				$elm$html$Html$button,
 				_List_fromArray(
 					[
 						$elm$html$Html$Attributes$type_('button'),
-						$elm$html$Html$Attributes$disabled(!controls.di),
-						$elm$html$Html$Events$onClick(controls.d7)
+						$elm$html$Html$Attributes$disabled(!controls.dk),
+						$elm$html$Html$Events$onClick(controls.d9)
 					]),
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						'Submit ' + $author$project$View$Forms$actionName(draft.au))
+						'Submit ' + $author$project$View$Forms$actionName(draft.aw))
 					])),
 				A2(
 				$elm$html$Html$p,
 				_List_Nil,
 				_List_fromArray(
 					[
-						$elm$html$Html$text(controls.ar)
+						$elm$html$Html$text(controls.at)
 					]))
 			]));
 };
 var $author$project$Main$actionsPane = function (model) {
 	var historical = $author$project$Main$isHistorical(model);
-	var canSubmit = model.m && ((!model.k) && (model.x && (_Utils_eq(model.X, $elm$core$Maybe$Nothing) && ((!historical) && ((!model.c.b_) && ((!model.c.au) || $author$project$Main$inspectionReady(model)))))));
-	var canChooseAction = (!model.k) && ((!historical) && model.x);
-	var canAdopt = model.m && ((!model.k) && ((!historical) && (model.x && ((!model.c.au) || $author$project$Main$inspectionReady(model)))));
+	var canSubmit = model.m && ((!model.k) && (model.q && (_Utils_eq(model.Z, $elm$core$Maybe$Nothing) && ((!historical) && ((!model.b.b1) && ((!model.b.aw) || (model.b.bZ && $author$project$Main$inspectionReady(model))))))));
+	var canChooseAction = (!model.k) && ((!historical) && model.q);
+	var canAdopt = model.m && ((!model.k) && ((!historical) && (model.q && ((!model.b.aw) || $author$project$Main$inspectionReady(model)))));
 	return A2(
 		$elm$html$Html$div,
 		_List_Nil,
@@ -10404,19 +10451,19 @@ var $author$project$Main$actionsPane = function (model) {
 					])) : $elm$html$Html$text(''),
 				$author$project$View$Forms$view(
 				{
-					df: canAdopt,
-					dg: canChooseAction,
-					dh: canChooseAction && $author$project$Main$inspectionReady(model),
-					di: canSubmit,
-					c: model.c,
-					dF: $author$project$Main$inspectionReady(model) ? model.r : $elm$core$Maybe$Nothing,
-					dG: (model.x && ((!model.c.au) || $author$project$Main$inspectionReady(model))) ? model.M : $elm$core$Maybe$Nothing,
-					d3: $author$project$Main$AdoptTokens,
-					d4: $author$project$Main$EditDraft,
-					d5: $author$project$Main$StartAction,
-					d6: $author$project$Main$ResolveDraft,
-					d7: $author$project$Main$Submit,
-					ar: model.d
+					dh: canAdopt,
+					di: canChooseAction,
+					dj: canChooseAction && $author$project$Main$inspectionReady(model),
+					dk: canSubmit,
+					b: model.b,
+					dH: $author$project$Main$inspectionReady(model) ? model.s : $elm$core$Maybe$Nothing,
+					dI: (model.q && ((!model.b.aw) || $author$project$Main$inspectionReady(model))) ? model.N : $elm$core$Maybe$Nothing,
+					d5: $author$project$Main$AdoptTokens,
+					d6: $author$project$Main$EditDraft,
+					d7: $author$project$Main$StartAction,
+					d8: $author$project$Main$ResolveDraft,
+					d9: $author$project$Main$Submit,
+					at: model.e
 				})
 			]));
 };
@@ -10658,7 +10705,7 @@ var $author$project$Main$pager = function (model) {
 };
 var $elm$html$Html$strong = _VirtualDom_node('strong');
 var $author$project$Main$searchResults = function (model) {
-	var _v0 = model.af;
+	var _v0 = model.ah;
 	if (_v0.$ === 1) {
 		return A2(
 			$elm$html$Html$p,
@@ -10683,12 +10730,12 @@ var $author$project$Main$searchResults = function (model) {
 					_List_fromArray(
 						[
 							$elm$html$Html$text(
-							'At ' + (window.ah + (' · ' + ($elm$core$String$fromInt(
-								$elm$core$List$length(window.cO)) + ' results in a bounded window'))))
+							'At ' + (window.aj + (' · ' + ($elm$core$String$fromInt(
+								$elm$core$List$length(window.cR)) + ' results in a bounded window'))))
 						])),
 					(_Utils_cmp(
-					$elm$core$List$length(window.cO),
-					window.cw) > -1) ? A2(
+					$elm$core$List$length(window.cR),
+					window.cz) > -1) ? A2(
 					$elm$html$Html$p,
 					_List_fromArray(
 						[
@@ -10737,7 +10784,7 @@ var $author$project$Main$searchResults = function (model) {
 										_List_Nil,
 										_List_fromArray(
 											[
-												$elm$html$Html$text(hit.P)
+												$elm$html$Html$text(hit.Q)
 											])),
 										A2(
 										$elm$html$Html$p,
@@ -10748,20 +10795,20 @@ var $author$project$Main$searchResults = function (model) {
 										_List_fromArray(
 											[
 												$elm$html$Html$text(
-												hit.ar + (' · ' + (A2($elm$core$String$join, ', ', hit.L) + (' · score ' + A2(
+												hit.at + (' · ' + (A2($elm$core$String$join, ', ', hit.L) + (' · score ' + A2(
 													$elm$core$Maybe$withDefault,
 													'n/a',
-													A2($elm$core$Maybe$map, $elm$core$String$fromFloat, hit.bn))))))
+													A2($elm$core$Maybe$map, $elm$core$String$fromFloat, hit.bp))))))
 											])),
-										$elm$core$List$isEmpty(hit.bE) ? $elm$html$Html$text('') : A2(
+										$elm$core$List$isEmpty(hit.bG) ? $elm$html$Html$text('') : A2(
 										$elm$html$Html$p,
 										_List_Nil,
 										_List_fromArray(
 											[
 												$elm$html$Html$text(
-												'Matched ' + (A2($elm$core$String$join, ', ', hit.bE) + (' for ' + A2($elm$core$String$join, ', ', hit.bF))))
+												'Matched ' + (A2($elm$core$String$join, ', ', hit.bG) + (' for ' + A2($elm$core$String$join, ', ', hit.bH))))
 											])),
-										hit.aD ? A2(
+										hit.aF ? A2(
 										$elm$html$Html$p,
 										_List_fromArray(
 											[
@@ -10770,11 +10817,11 @@ var $author$project$Main$searchResults = function (model) {
 										_List_fromArray(
 											[
 												$elm$html$Html$text(
-												'Conflict: ' + A2($elm$core$String$join, '; ', hit.al))
+												'Conflict: ' + A2($elm$core$String$join, '; ', hit.an))
 											])) : $elm$html$Html$text('')
 									]));
 						},
-						A2($author$project$Route$pageSlice, model.j, window.cO)))
+						A2($author$project$Route$pageSlice, model.j, window.cR)))
 				]));
 	}
 };
@@ -10820,14 +10867,14 @@ var $author$project$Main$snapshotView = F2(
 									[
 										$elm$html$Html$text(value.F)
 									])),
-								$elm$html$Html$text(' · ' + value.ar)
+								$elm$html$Html$text(' · ' + value.at)
 							])),
 						A2(
 						$elm$html$Html$p,
 						_List_Nil,
 						_List_fromArray(
 							[
-								$elm$html$Html$text(value.P)
+								$elm$html$Html$text(value.Q)
 							])),
 						A2(
 						$elm$html$Html$pre,
@@ -10837,7 +10884,7 @@ var $author$project$Main$snapshotView = F2(
 							]),
 						_List_fromArray(
 							[
-								$elm$html$Html$text(value.ak)
+								$elm$html$Html$text(value.am)
 							])),
 						A2(
 						$elm$html$Html$p,
@@ -10853,20 +10900,20 @@ var $author$project$Main$snapshotView = F2(
 						_List_fromArray(
 							[
 								$elm$html$Html$text(
-								'Scopes: ' + A2($elm$core$String$join, ', ', value.N))
+								'Scopes: ' + A2($elm$core$String$join, ', ', value.O))
 							]))
 					]));
 		}
 	});
 var $author$project$Main$results = function (model) {
-	var _v0 = model.b.c_;
+	var _v0 = model.c.c0;
 	switch (_v0) {
 		case 0:
 			return $author$project$Main$searchResults(model);
 		case 1:
 			return $author$project$Main$searchResults(model);
 		case 2:
-			var _v1 = model.aV;
+			var _v1 = model.aX;
 			if (_v1.$ === 1) {
 				return A2(
 					$elm$html$Html$p,
@@ -10890,7 +10937,7 @@ var $author$project$Main$results = function (model) {
 								]),
 							_List_fromArray(
 								[
-									$elm$html$Html$text('Source: ' + (window.dD + (' · ' + window.el)))
+									$elm$html$Html$text('Source: ' + (window.dF + (' · ' + window.en)))
 								])),
 							A2(
 							$elm$html$Html$ul,
@@ -10930,7 +10977,7 @@ var $author$project$Main$results = function (model) {
 												_List_Nil,
 												_List_fromArray(
 													[
-														$elm$html$Html$text(hit.P)
+														$elm$html$Html$text(hit.Q)
 													])),
 												A2(
 												$elm$html$Html$p,
@@ -10941,7 +10988,7 @@ var $author$project$Main$results = function (model) {
 												_List_fromArray(
 													[
 														$elm$html$Html$text(
-														'Declared applicability: ' + (hit.ei + (' · Semantic evidence: ' + (hit.dm + (' · Score ' + $elm$core$String$fromFloat(hit.bn))))))
+														'Declared applicability: ' + (hit.ek + (' · Semantic evidence: ' + (hit.$7 + (' · Score ' + $elm$core$String$fromFloat(hit.bp))))))
 													])),
 												A2(
 												$elm$html$Html$ul,
@@ -10954,17 +11001,17 @@ var $author$project$Main$results = function (model) {
 															_List_Nil,
 															_List_fromArray(
 																[
-																	$elm$html$Html$text(e.ej + (': ' + (e.dE + (' ↔ ' + e.c6))))
+																	$elm$html$Html$text(e.el + (': ' + (e.dG + (' ↔ ' + e.c8))))
 																]));
 													},
-													hit.dx))
+													hit.dz))
 											]));
 								},
-								window.cO))
+								window.cR))
 						]));
 			}
 		case 3:
-			var _v2 = model.aA;
+			var _v2 = model.aC;
 			if (_v2.$ === 1) {
 				return A2(
 					$elm$html$Html$p,
@@ -10980,7 +11027,7 @@ var $author$project$Main$results = function (model) {
 					_List_Nil,
 					_List_fromArray(
 						[
-							window.es ? A2(
+							window.eu ? A2(
 							$elm$html$Html$p,
 							_List_fromArray(
 								[
@@ -11015,7 +11062,7 @@ var $author$project$Main$results = function (model) {
 													]),
 												_List_fromArray(
 													[
-														$elm$html$Html$text(item.F + (' · ' + item.cu))
+														$elm$html$Html$text(item.F + (' · ' + item.cx))
 													])),
 												A2(
 												$elm$html$Html$p,
@@ -11025,7 +11072,7 @@ var $author$project$Main$results = function (model) {
 													]),
 												_List_fromArray(
 													[
-														$elm$html$Html$text(item.a1 + (' · ' + (item.a4 + (' · ' + item.aC))))
+														$elm$html$Html$text(item.a3 + (' · ' + (item.a6 + (' · ' + item.aE))))
 													])),
 												A2(
 												$elm$html$Html$p,
@@ -11033,15 +11080,15 @@ var $author$project$Main$results = function (model) {
 												_List_fromArray(
 													[
 														$elm$html$Html$text(
-														A2($elm$core$String$join, ', ', item.a3))
+														A2($elm$core$String$join, ', ', item.a5))
 													]))
 											]));
 								},
-								A2($author$project$Route$pageSlice, model.j, window.be)))
+								A2($author$project$Route$pageSlice, model.j, window.bg)))
 						]));
 			}
 		case 4:
-			var _v3 = model.aw;
+			var _v3 = model.ay;
 			if (_v3.$ === 1) {
 				return A2(
 					$elm$html$Html$p,
@@ -11065,7 +11112,7 @@ var $author$project$Main$results = function (model) {
 								]),
 							_List_fromArray(
 								[
-									$elm$html$Html$text(window.dH + (' → ' + window.er))
+									$elm$html$Html$text(window.dJ + (' → ' + window.et))
 								])),
 							A2(
 							$elm$html$Html$ul,
@@ -11090,14 +11137,14 @@ var $author$project$Main$results = function (model) {
 														A2(
 															$author$project$Main$SelectCompareAdr,
 															entry.J,
-															_Utils_eq(entry.b5, $elm$core$Maybe$Nothing) ? window.dH : window.er))
+															_Utils_eq(entry.b8, $elm$core$Maybe$Nothing) ? window.dJ : window.et))
 													]),
 												_List_fromArray(
 													[
-														$elm$html$Html$text(entry.F + (' · ' + entry.bc))
+														$elm$html$Html$text(entry.F + (' · ' + entry.be))
 													])),
-												A2($author$project$Main$snapshotView, 'Before', entry.b9),
-												A2($author$project$Main$snapshotView, 'After', entry.b5),
+												A2($author$project$Main$snapshotView, 'Before', entry.cc),
+												A2($author$project$Main$snapshotView, 'After', entry.b8),
 												A2(
 												$elm$html$Html$div,
 												_List_Nil,
@@ -11117,24 +11164,24 @@ var $author$project$Main$results = function (model) {
 																	_List_Nil,
 																	_List_fromArray(
 																		[
-																			$elm$html$Html$text(change.dC)
+																			$elm$html$Html$text(change.dE)
 																		])),
 																	A2(
 																	$elm$html$Html$p,
 																	_List_Nil,
 																	_List_fromArray(
 																		[
-																			$elm$html$Html$text('Before: ' + change.b9)
+																			$elm$html$Html$text('Before: ' + change.cc)
 																		])),
 																	A2(
 																	$elm$html$Html$p,
 																	_List_Nil,
 																	_List_fromArray(
 																		[
-																			$elm$html$Html$text('After: ' + change.b5)
+																			$elm$html$Html$text('After: ' + change.b8)
 																		])),
 																	function () {
-																	var _v4 = change.dq;
+																	var _v4 = change.ds;
 																	if (!_v4.$) {
 																		var difference = _v4.a;
 																		return A2(
@@ -11153,14 +11200,14 @@ var $author$project$Main$results = function (model) {
 																}()
 																]));
 													},
-													entry.a3))
+													entry.a5))
 											]));
 								},
-								window.dv))
+								window.dx))
 						]));
 			}
 		case 5:
-			var _v5 = model.al;
+			var _v5 = model.an;
 			if (_v5.$ === 1) {
 				return A2(
 					$elm$html$Html$p,
@@ -11171,7 +11218,7 @@ var $author$project$Main$results = function (model) {
 						]));
 			} else {
 				var window = _v5.a;
-				return $elm$core$List$isEmpty(window.al) ? A2(
+				return $elm$core$List$isEmpty(window.an) ? A2(
 					$elm$html$Html$p,
 					_List_Nil,
 					_List_fromArray(
@@ -11209,7 +11256,7 @@ var $author$project$Main$results = function (model) {
 										_List_fromArray(
 											[
 												$elm$html$Html$text(
-												A2($elm$core$String$join, '; ', entry.en))
+												A2($elm$core$String$join, '; ', entry.ep))
 											])),
 										A2(
 										$elm$html$Html$ul,
@@ -11223,16 +11270,16 @@ var $author$project$Main$results = function (model) {
 													_List_fromArray(
 														[
 															$elm$html$Html$text(
-															candidate.c8 + (': ' + (candidate.P + (' [' + (A2($elm$core$String$join, ', ', candidate.dK) + ']')))))
+															candidate.da + (': ' + (candidate.Q + (' [' + (A2($elm$core$String$join, ', ', candidate.dM) + ']')))))
 														]));
 											},
-											entry.a2))
+											entry.a4))
 									]));
 						},
-						window.al));
+						window.an));
 			}
 		default:
-			var _v6 = model.a8;
+			var _v6 = model.ba;
 			if (_v6.$ === 1) {
 				return A2(
 					$elm$html$Html$p,
@@ -11243,7 +11290,7 @@ var $author$project$Main$results = function (model) {
 						]));
 			} else {
 				var doctor = _v6.a;
-				return $elm$core$List$isEmpty(doctor.dP) ? A2(
+				return $elm$core$List$isEmpty(doctor.dR) ? A2(
 					$elm$html$Html$p,
 					_List_Nil,
 					_List_fromArray(
@@ -11261,10 +11308,10 @@ var $author$project$Main$results = function (model) {
 								_List_fromArray(
 									[
 										$elm$html$Html$text(
-										diagnostic.ek + (' · ' + (diagnostic.bs + (': ' + (diagnostic.cx + (' ' + A2($elm$core$Maybe$withDefault, '', diagnostic.bg)))))))
+										diagnostic.em + (' · ' + (diagnostic.bu + (': ' + (diagnostic.cA + (' ' + A2($elm$core$Maybe$withDefault, '', diagnostic.bi)))))))
 									]));
 						},
-						doctor.dP));
+						doctor.dR));
 			}
 	}
 };
@@ -11275,7 +11322,7 @@ var $author$project$Main$searchControls = F4(
 			_List_Nil,
 			_List_fromArray(
 				[
-					withText ? A3(field, 'text', 'Search terms', model.b.b4) : A2(
+					withText ? A3(field, 'text', 'Search terms', model.c.b7) : A2(
 					$elm$html$Html$p,
 					_List_Nil,
 					_List_fromArray(
@@ -11309,7 +11356,7 @@ var $author$project$Main$searchControls = F4(
 									[
 										$elm$html$Html$Attributes$value(mode),
 										$elm$html$Html$Attributes$selected(
-										_Utils_eq(model.b.bH, mode))
+										_Utils_eq(model.c.bJ, mode))
 									]),
 								_List_fromArray(
 									[
@@ -11343,7 +11390,7 @@ var $author$project$Main$searchControls = F4(
 							_List_fromArray(
 								[
 									$elm$html$Html$Attributes$value('collapsed'),
-									$elm$html$Html$Attributes$selected(model.b.bh === 'collapsed')
+									$elm$html$Html$Attributes$selected(model.c.bj === 'collapsed')
 								]),
 							_List_fromArray(
 								[
@@ -11354,25 +11401,25 @@ var $author$project$Main$searchControls = F4(
 							_List_fromArray(
 								[
 									$elm$html$Html$Attributes$value('exploded'),
-									$elm$html$Html$Attributes$selected(model.b.bh === 'exploded')
+									$elm$html$Html$Attributes$selected(model.c.bj === 'exploded')
 								]),
 							_List_fromArray(
 								[
 									$elm$html$Html$text('Exploded')
 								]))
 						])),
-					A3(field, 'domain', 'Domain filter', model.b.bw),
-					A3(field, 'file', 'File scope filter', model.b.dD),
-					A3(field, 'actor', 'Actor (kind:identifier)', model.b.a1),
-					A3(field, 'since', 'Since (Unix milliseconds)', model.b.aF),
-					A3(field, 'until', 'Until (Unix milliseconds)', model.b.aI),
-					A3(check, 'includeObsolete', 'Include obsolete', model.b.bb),
-					A3(check, 'shallow', 'Shallow history', model.b.bZ),
+					A3(field, 'domain', 'Domain filter', model.c.by),
+					A3(field, 'file', 'File scope filter', model.c.dF),
+					A3(field, 'actor', 'Actor (kind:identifier)', model.c.a3),
+					A3(field, 'since', 'Since (Unix milliseconds)', model.c.aH),
+					A3(field, 'until', 'Until (Unix milliseconds)', model.c.aK),
+					A3(check, 'includeObsolete', 'Include obsolete', model.c.bd),
+					A3(check, 'shallow', 'Shallow history', model.c.b0),
 					A3(
 					field,
 					'limit',
 					'Window size (1–1000)',
-					$elm$core$String$fromInt(model.b.cw))
+					$elm$core$String$fromInt(model.c.cz))
 				]));
 	});
 var $author$project$Main$contextPane = function (model) {
@@ -11460,12 +11507,12 @@ var $author$project$Main$contextPane = function (model) {
 					]),
 				_List_fromArray(
 					[
-						$elm$html$Html$text('Live connection: ' + model.O)
+						$elm$html$Html$text('Live connection: ' + model.P)
 					])),
 				function () {
-				var _v0 = model.f;
+				var _v0 = model.M;
 				if (!_v0.$) {
-					var problem = _v0.a;
+					var reason = _v0.a;
 					return A2(
 						$elm$html$Html$p,
 						_List_fromArray(
@@ -11474,13 +11521,28 @@ var $author$project$Main$contextPane = function (model) {
 							]),
 						_List_fromArray(
 							[
-								$elm$html$Html$text(problem)
+								$elm$html$Html$text('Live observation unavailable: ' + reason)
 							]));
 				} else {
-					return $elm$html$Html$text('');
+					var _v1 = model.g;
+					if (!_v1.$) {
+						var problem = _v1.a;
+						return A2(
+							$elm$html$Html$p,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$class('error')
+								]),
+							_List_fromArray(
+								[
+									$elm$html$Html$text(problem)
+								]));
+					} else {
+						return $elm$html$Html$text('');
+					}
 				}
 			}(),
-				model.e ? A2(
+				(model.d || (!_Utils_eq(model.M, $elm$core$Maybe$Nothing))) ? A2(
 				$elm$html$Html$p,
 				_List_fromArray(
 					[
@@ -11498,16 +11560,16 @@ var $author$project$Main$contextPane = function (model) {
 					]),
 				A2(
 					$elm$core$List$map,
-					function (_v1) {
-						var name = _v1.a;
-						var kind = _v1.b;
+					function (_v2) {
+						var name = _v2.a;
+						var kind = _v2.b;
 						return A2(
 							$elm$html$Html$button,
 							_List_fromArray(
 								[
 									$elm$html$Html$Attributes$type_('button'),
 									$elm$html$Html$Attributes$class(
-									_Utils_eq(model.b.c_, kind) ? 'selected' : ''),
+									_Utils_eq(model.c.c0, kind) ? 'selected' : ''),
 									$elm$html$Html$Events$onClick(
 									$author$project$Main$ChooseView(kind))
 								]),
@@ -11526,10 +11588,10 @@ var $author$project$Main$contextPane = function (model) {
 							_Utils_Tuple2('Conflicts', 5),
 							_Utils_Tuple2('Doctor', 6)
 						]))),
-				A3(field, 'revision', 'Revision (HEAD or exact commit)', model.b.aE),
+				A3(field, 'revision', 'Revision (HEAD or exact commit)', model.c.aG),
 				function () {
-				var _v2 = model.b.c_;
-				switch (_v2) {
+				var _v3 = model.c.c0;
+				switch (_v3) {
 					case 0:
 						return A4($author$project$Main$searchControls, model, field, check, false);
 					case 1:
@@ -11540,14 +11602,14 @@ var $author$project$Main$contextPane = function (model) {
 							_List_Nil,
 							_List_fromArray(
 								[
-									A3(field, 'file', 'Repository-relative source file', model.b.dD),
-									A3(check, 'worktree', 'Use worktree source', model.b.ev),
-									A3(check, 'includeObsolete', 'Include obsolete', model.b.bb),
+									A3(field, 'file', 'Repository-relative source file', model.c.dF),
+									A3(check, 'worktree', 'Use worktree source', model.c.ex),
+									A3(check, 'includeObsolete', 'Include obsolete', model.c.bd),
 									A3(
 									field,
 									'limit',
 									'Result limit (1–100)',
-									$elm$core$String$fromInt(model.b.cw))
+									$elm$core$String$fromInt(model.c.cz))
 								]));
 					case 3:
 						return A2(
@@ -11555,15 +11617,15 @@ var $author$project$Main$contextPane = function (model) {
 							_List_Nil,
 							_List_fromArray(
 								[
-									A3(field, 'adr', 'ADR filter', model.b.J),
-									A3(field, 'actor', 'Actor (kind:identifier)', model.b.a1),
-									A3(field, 'since', 'Since (Unix milliseconds)', model.b.aF),
-									A3(field, 'until', 'Until (Unix milliseconds)', model.b.aI),
+									A3(field, 'adr', 'ADR filter', model.c.J),
+									A3(field, 'actor', 'Actor (kind:identifier)', model.c.a3),
+									A3(field, 'since', 'Since (Unix milliseconds)', model.c.aH),
+									A3(field, 'until', 'Until (Unix milliseconds)', model.c.aK),
 									A3(
 									field,
 									'limit',
 									'Window size (1–1000)',
-									$elm$core$String$fromInt(model.b.cw)),
+									$elm$core$String$fromInt(model.c.cz)),
 									A2(
 									$elm$html$Html$label,
 									_List_fromArray(
@@ -11589,7 +11651,7 @@ var $author$project$Main$contextPane = function (model) {
 											_List_fromArray(
 												[
 													$elm$html$Html$Attributes$value('newest'),
-													$elm$html$Html$Attributes$selected(model.b.bf === 'newest')
+													$elm$html$Html$Attributes$selected(model.c.bh === 'newest')
 												]),
 											_List_fromArray(
 												[
@@ -11600,7 +11662,7 @@ var $author$project$Main$contextPane = function (model) {
 											_List_fromArray(
 												[
 													$elm$html$Html$Attributes$value('oldest'),
-													$elm$html$Html$Attributes$selected(model.b.bf === 'oldest')
+													$elm$html$Html$Attributes$selected(model.c.bh === 'oldest')
 												]),
 											_List_fromArray(
 												[
@@ -11614,8 +11676,8 @@ var $author$project$Main$contextPane = function (model) {
 							_List_Nil,
 							_List_fromArray(
 								[
-									A3(field, 'compareFrom', 'From revision', model.b.a6),
-									A3(field, 'compareTo', 'To revision', model.b.a7)
+									A3(field, 'compareFrom', 'From revision', model.c.a8),
+									A3(field, 'compareTo', 'To revision', model.c.a9)
 								]));
 					default:
 						return $elm$html$Html$text('');
@@ -11674,7 +11736,7 @@ var $author$project$Main$inspectionIssuesView = function (model) {
 				var _v1 = A2(
 					$elm$core$Dict$get,
 					$author$project$Main$requestKey(kind),
-					model.u);
+					model.v);
 				if (!_v1.$) {
 					var problem = _v1.a;
 					return $elm$core$Maybe$Just(
@@ -11751,20 +11813,20 @@ var $author$project$Main$candidateBodies = F2(
 					A2(
 						$elm$core$List$filter,
 						function (item) {
-							return _Utils_eq(item.ba, candidate.ba);
+							return _Utils_eq(item.bc, candidate.bc);
 						},
 						A2(
 							$elm$core$List$concatMap,
 							function ($) {
-								return $.dR;
+								return $.dT;
 							},
-							inspection.be)));
+							inspection.bg)));
 				if (!_v0.$) {
 					var item = _v0.a;
 					return _Utils_update(
 						candidate,
 						{
-							ak: A2($elm$core$Maybe$withDefault, '', item.ak)
+							am: A2($elm$core$Maybe$withDefault, '', item.am)
 						});
 				} else {
 					return candidate;
@@ -11823,9 +11885,9 @@ var $author$project$Main$candidateView = F3(
 										_List_Nil,
 										_List_fromArray(
 											[
-												$elm$html$Html$text(candidate.P)
+												$elm$html$Html$text(candidate.Q)
 											])),
-										(candidate.ak === '') ? $elm$html$Html$text('') : A2(
+										(candidate.am === '') ? $elm$html$Html$text('') : A2(
 										$elm$html$Html$pre,
 										_List_fromArray(
 											[
@@ -11833,7 +11895,7 @@ var $author$project$Main$candidateView = F3(
 											]),
 										_List_fromArray(
 											[
-												$elm$html$Html$text(candidate.ak)
+												$elm$html$Html$text(candidate.am)
 											])),
 										A2(
 										$elm$html$Html$p,
@@ -11843,7 +11905,7 @@ var $author$project$Main$candidateView = F3(
 											]),
 										_List_fromArray(
 											[
-												$elm$html$Html$text(candidate.ba + (' · ' + candidate.bg))
+												$elm$html$Html$text(candidate.bc + (' · ' + candidate.bi))
 											]))
 									]));
 						},
@@ -11851,7 +11913,7 @@ var $author$project$Main$candidateView = F3(
 				]));
 	});
 var $author$project$Main$compareDetail = function (model) {
-	var _v0 = _Utils_Tuple3(model.b.c_, model.aw, model.D);
+	var _v0 = _Utils_Tuple3(model.c.c0, model.ay, model.D);
 	if (((_v0.a === 4) && (!_v0.b.$)) && (!_v0.c.$)) {
 		var _v1 = _v0.a;
 		var window = _v0.b.a;
@@ -11862,7 +11924,7 @@ var $author$project$Main$compareDetail = function (model) {
 				function (entry) {
 					return _Utils_eq(entry.J, adr);
 				},
-				window.dv));
+				window.dx));
 		if (!_v2.$) {
 			var entry = _v2.a;
 			return A2(
@@ -11875,10 +11937,10 @@ var $author$project$Main$compareDetail = function (model) {
 						_List_Nil,
 						_List_fromArray(
 							[
-								$elm$html$Html$text('Comparison: ' + (entry.bc + (' · ' + entry.J)))
+								$elm$html$Html$text('Comparison: ' + (entry.be + (' · ' + entry.J)))
 							])),
-						A2($author$project$Main$snapshotView, 'Before', entry.b9),
-						A2($author$project$Main$snapshotView, 'After', entry.b5)
+						A2($author$project$Main$snapshotView, 'Before', entry.cc),
+						A2($author$project$Main$snapshotView, 'After', entry.b8)
 					]));
 		} else {
 			return $elm$html$Html$text('');
@@ -11902,7 +11964,7 @@ var $author$project$Main$provenanceView = function (provenance) {
 				_List_Nil,
 				_List_fromArray(
 					[
-						$elm$html$Html$text('Actor: ' + (provenance.a1 + (' · Claimed: ' + provenance.a4)))
+						$elm$html$Html$text('Actor: ' + (provenance.a3 + (' · Claimed: ' + provenance.a6)))
 					])),
 				A2(
 				$elm$html$Html$p,
@@ -11913,7 +11975,7 @@ var $author$project$Main$provenanceView = function (provenance) {
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						'Model: ' + (A2($elm$core$Maybe$withDefault, 'none', provenance.cz) + (' · Basis: ' + (provenance.b8 + (' · Operation: ' + provenance.aC)))))
+						'Model: ' + (A2($elm$core$Maybe$withDefault, 'none', provenance.cC) + (' · Basis: ' + (provenance.cb + (' · Operation: ' + provenance.aE)))))
 					])),
 				A2(
 				$elm$html$Html$p,
@@ -11924,7 +11986,7 @@ var $author$project$Main$provenanceView = function (provenance) {
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						'Input digest: ' + A2($elm$core$Maybe$withDefault, 'none', provenance.bB))
+						'Input digest: ' + A2($elm$core$Maybe$withDefault, 'none', provenance.bD))
 					])),
 				A2(
 				$elm$html$Html$p,
@@ -11935,7 +11997,7 @@ var $author$project$Main$provenanceView = function (provenance) {
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						'Prompt digest: ' + A2($elm$core$Maybe$withDefault, 'none', provenance.bO))
+						'Prompt digest: ' + A2($elm$core$Maybe$withDefault, 'none', provenance.bQ))
 					])),
 				A2(
 				$elm$html$Html$p,
@@ -11946,7 +12008,7 @@ var $author$project$Main$provenanceView = function (provenance) {
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						'Context digest: ' + A2($elm$core$Maybe$withDefault, 'none', provenance.bt))
+						'Context digest: ' + A2($elm$core$Maybe$withDefault, 'none', provenance.bv))
 					])),
 				A2(
 				$elm$html$Html$p,
@@ -11954,7 +12016,7 @@ var $author$project$Main$provenanceView = function (provenance) {
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						'Introductions: ' + A2($elm$core$String$join, ', ', provenance.bC))
+						'Introductions: ' + A2($elm$core$String$join, ', ', provenance.bE))
 					])),
 				A2(
 				$elm$html$Html$p,
@@ -11962,7 +12024,7 @@ var $author$project$Main$provenanceView = function (provenance) {
 				_List_fromArray(
 					[
 						$elm$html$Html$text(
-						'Original operation commits: ' + A2($elm$core$String$join, ', ', provenance.bK))
+						'Original operation commits: ' + A2($elm$core$String$join, ', ', provenance.bM))
 					])),
 				A2(
 				$elm$html$Html$ul,
@@ -11978,7 +12040,7 @@ var $author$project$Main$provenanceView = function (provenance) {
 									$elm$html$Html$text(placement)
 								]));
 					},
-					provenance.bM)),
+					provenance.bO)),
 				A2(
 				$elm$html$Html$ul,
 				_List_Nil,
@@ -11993,7 +12055,7 @@ var $author$project$Main$provenanceView = function (provenance) {
 									$elm$html$Html$text(landing)
 								]));
 					},
-					provenance.bD))
+					provenance.bF))
 			]));
 };
 var $elm$html$Html$summary = _VirtualDom_node('summary');
@@ -12011,10 +12073,10 @@ var $author$project$Main$operationView = function (operation) {
 				_List_Nil,
 				_List_fromArray(
 					[
-						$elm$html$Html$text('Operation ' + operation.ba)
+						$elm$html$Html$text('Operation ' + operation.bc)
 					])),
 				function () {
-				var _v0 = operation.bi;
+				var _v0 = operation.bk;
 				if (_v0.$ === 1) {
 					return $elm$html$Html$text('');
 				} else {
@@ -12038,7 +12100,7 @@ var $author$project$Main$operationView = function (operation) {
 									_List_Nil,
 									_List_fromArray(
 										[
-											$elm$html$Html$text(item.bc + (' · ' + item.ci))
+											$elm$html$Html$text(item.be + (' · ' + item.cl))
 										])),
 									A2(
 									$elm$html$Html$p,
@@ -12046,7 +12108,7 @@ var $author$project$Main$operationView = function (operation) {
 									_List_fromArray(
 										[
 											$elm$html$Html$text(
-											A2($elm$core$Maybe$withDefault, '', item.F) + (' ' + A2($elm$core$Maybe$withDefault, '', item.P)))
+											A2($elm$core$Maybe$withDefault, '', item.F) + (' ' + A2($elm$core$Maybe$withDefault, '', item.Q)))
 										])),
 									A2(
 									$elm$html$Html$pre,
@@ -12057,7 +12119,7 @@ var $author$project$Main$operationView = function (operation) {
 									_List_fromArray(
 										[
 											$elm$html$Html$text(
-											A2($elm$core$Maybe$withDefault, '', item.ak))
+											A2($elm$core$Maybe$withDefault, '', item.am))
 										])),
 									A2(
 									$elm$html$Html$p,
@@ -12065,7 +12127,7 @@ var $author$project$Main$operationView = function (operation) {
 									_List_fromArray(
 										[
 											$elm$html$Html$text(
-											'Rationale: ' + A2($elm$core$Maybe$withDefault, 'none', item.bQ))
+											'Rationale: ' + A2($elm$core$Maybe$withDefault, 'none', item.bS))
 										])),
 									A2(
 									$elm$html$Html$p,
@@ -12073,7 +12135,7 @@ var $author$project$Main$operationView = function (operation) {
 									_List_fromArray(
 										[
 											$elm$html$Html$text(
-											'Relation: ' + A2($elm$core$Maybe$withDefault, 'none', item.bU))
+											'Relation: ' + A2($elm$core$Maybe$withDefault, 'none', item.bW))
 										])),
 									A2(
 									$elm$html$Html$p,
@@ -12081,7 +12143,7 @@ var $author$project$Main$operationView = function (operation) {
 									_List_fromArray(
 										[
 											$elm$html$Html$text(
-											'Parents: ' + A2($elm$core$String$join, ', ', item.bL))
+											'Parents: ' + A2($elm$core$String$join, ', ', item.bN))
 										])),
 									A2(
 									$elm$html$Html$div,
@@ -12100,9 +12162,9 @@ var $author$project$Main$operationView = function (operation) {
 														$elm$html$Html$text(difference)
 													]));
 										},
-										item.bv)),
+										item.bx)),
 									function () {
-									var _v1 = item.bR;
+									var _v1 = item.bT;
 									if (!_v1.$) {
 										var raw = _v1.a;
 										return A2(
@@ -12141,7 +12203,7 @@ var $author$project$Main$operationView = function (operation) {
 									_List_fromArray(
 										[
 											$elm$html$Html$text(
-											'Scopes: ' + (A2($elm$core$String$join, ', ', item.N) + (' · Domains: ' + A2($elm$core$String$join, ', ', item.L))))
+											'Scopes: ' + (A2($elm$core$String$join, ', ', item.O) + (' · Domains: ' + A2($elm$core$String$join, ', ', item.L))))
 										])),
 									A2(
 									$elm$html$Html$p,
@@ -12149,7 +12211,7 @@ var $author$project$Main$operationView = function (operation) {
 									_List_fromArray(
 										[
 											$elm$html$Html$text(
-											'Status: ' + (A2($elm$core$Maybe$withDefault, '', item.b0) + (' · Replacement: ' + A2($elm$core$Maybe$withDefault, '', item.bW))))
+											'Status: ' + (A2($elm$core$Maybe$withDefault, '', item.b3) + (' · Replacement: ' + A2($elm$core$Maybe$withDefault, '', item.bY))))
 										])),
 									A2(
 									$elm$html$Html$p,
@@ -12157,7 +12219,7 @@ var $author$project$Main$operationView = function (operation) {
 									_List_fromArray(
 										[
 											$elm$html$Html$text(
-											'Added: ' + (A2($elm$core$String$join, ', ', item.br) + (' · Removed: ' + (A2($elm$core$String$join, ', ', item.bV) + (' · Refinements: ' + A2($elm$core$String$join, ', ', item.bT))))))
+											'Added: ' + (A2($elm$core$String$join, ', ', item.bt) + (' · Removed: ' + (A2($elm$core$String$join, ', ', item.bX) + (' · Refinements: ' + A2($elm$core$String$join, ', ', item.bV))))))
 										])),
 									A2(
 									$elm$html$Html$p,
@@ -12167,35 +12229,35 @@ var $author$project$Main$operationView = function (operation) {
 										]),
 									_List_fromArray(
 										[
-											$elm$html$Html$text(item.ba + (' · ' + item.bg))
+											$elm$html$Html$text(item.bc + (' · ' + item.bi))
 										]))
 								]));
 					},
-					operation.dR))
+					operation.dT))
 			]));
 };
 var $author$project$Main$statusCandidates = function (inspection) {
 	return A2(
 		$elm$core$List$filterMap,
 		function (item) {
-			return A2($elm$core$List$member, item.ba, inspection.b1) ? $elm$core$Maybe$Just(
+			return A2($elm$core$List$member, item.bc, inspection.b4) ? $elm$core$Maybe$Just(
 				{
-					ak: A2($elm$core$Maybe$withDefault, '', item.bQ),
-					ba: item.ba,
-					bg: item.bg,
-					P: A2($elm$core$Maybe$withDefault, item.ci, item.b0),
+					am: A2($elm$core$Maybe$withDefault, '', item.bS),
+					bc: item.bc,
+					bi: item.bi,
+					Q: A2($elm$core$Maybe$withDefault, item.cl, item.b3),
 					F: 'Status candidate'
 				}) : $elm$core$Maybe$Nothing;
 		},
 		A2(
 			$elm$core$List$concatMap,
 			function ($) {
-				return $.dR;
+				return $.dT;
 			},
-			inspection.be));
+			inspection.bg));
 };
 var $author$project$Main$inspectorPane = function (model) {
-	var _v0 = model.r;
+	var _v0 = model.s;
 	if (_v0.$ === 1) {
 		return A2(
 			$elm$html$Html$div,
@@ -12235,14 +12297,14 @@ var $author$project$Main$inspectorPane = function (model) {
 						]),
 					_List_fromArray(
 						[
-							$elm$html$Html$text(inspection.J + (' · ' + (inspection.ar + (' · ' + inspection.ah))))
+							$elm$html$Html$text(inspection.J + (' · ' + (inspection.at + (' · ' + inspection.aj))))
 						])),
 					A2(
 					$elm$html$Html$p,
 					_List_Nil,
 					_List_fromArray(
 						[
-							$elm$html$Html$text(inspection.P)
+							$elm$html$Html$text(inspection.Q)
 						])),
 					A2(
 					$elm$html$Html$h4,
@@ -12259,7 +12321,7 @@ var $author$project$Main$inspectorPane = function (model) {
 						]),
 					_List_fromArray(
 						[
-							$elm$html$Html$text(inspection.ak)
+							$elm$html$Html$text(inspection.am)
 						])),
 					A2(
 					$elm$html$Html$p,
@@ -12275,9 +12337,9 @@ var $author$project$Main$inspectorPane = function (model) {
 					_List_fromArray(
 						[
 							$elm$html$Html$text(
-							'Scopes: ' + A2($elm$core$String$join, ', ', inspection.N))
+							'Scopes: ' + A2($elm$core$String$join, ', ', inspection.O))
 						])),
-					inspection.aD ? A2(
+					inspection.aF ? A2(
 					$elm$html$Html$p,
 					_List_fromArray(
 						[
@@ -12286,19 +12348,19 @@ var $author$project$Main$inspectorPane = function (model) {
 					_List_fromArray(
 						[
 							$elm$html$Html$text(
-							'Review required: ' + A2($elm$core$String$join, '; ', inspection.al))
+							'Review required: ' + A2($elm$core$String$join, '; ', inspection.an))
 						])) : $elm$html$Html$text(''),
 					A3(
 					$author$project$Main$candidateView,
 					'Decision',
-					inspection.bS,
-					A2($author$project$Main$candidateBodies, inspection, inspection.a2.cM)),
-					A3($author$project$Main$candidateView, 'Scope', inspection.bX, inspection.a2.N),
-					A3($author$project$Main$candidateView, 'Domain', inspection.bx, inspection.a2.L),
+					inspection.bU,
+					A2($author$project$Main$candidateBodies, inspection, inspection.a4.cP)),
+					A3($author$project$Main$candidateView, 'Scope', inspection.b_, inspection.a4.O),
+					A3($author$project$Main$candidateView, 'Domain', inspection.bz, inspection.a4.L),
 					A3(
 					$author$project$Main$candidateView,
 					'Status',
-					inspection.b1,
+					inspection.b4,
 					$author$project$Main$statusCandidates(inspection)),
 					A2(
 					$elm$html$Html$h4,
@@ -12321,7 +12383,7 @@ var $author$project$Main$inspectorPane = function (model) {
 										$elm$html$Html$text(path)
 									]));
 						},
-						inspection.aH)),
+						inspection.aJ)),
 					A2(
 					$elm$html$Html$h4,
 					_List_Nil,
@@ -12332,7 +12394,7 @@ var $author$project$Main$inspectorPane = function (model) {
 					A2(
 					$elm$html$Html$div,
 					_List_Nil,
-					A2($elm$core$List$map, $author$project$Main$provenanceView, inspection.bi)),
+					A2($elm$core$List$map, $author$project$Main$provenanceView, inspection.bk)),
 					A2(
 					$elm$html$Html$h4,
 					_List_Nil,
@@ -12340,7 +12402,7 @@ var $author$project$Main$inspectorPane = function (model) {
 						[
 							$elm$html$Html$text('Operations and provenance')
 						])),
-					$elm$core$List$isEmpty(inspection.be) ? A2(
+					$elm$core$List$isEmpty(inspection.bg) ? A2(
 					$elm$html$Html$p,
 					_List_Nil,
 					_List_fromArray(
@@ -12350,16 +12412,16 @@ var $author$project$Main$inspectorPane = function (model) {
 					A2(
 					$elm$html$Html$div,
 					_List_Nil,
-					A2($elm$core$List$map, $author$project$Main$operationView, inspection.be))
+					A2($elm$core$List$map, $author$project$Main$operationView, inspection.bg))
 				]));
 	}
 };
 var $elm$html$Html$main_ = _VirtualDom_node('main');
 var $author$project$Main$repositoryLabel = function (model) {
-	var _v0 = model.M;
+	var _v0 = model.N;
 	if (!_v0.$) {
 		var repository = _v0.a;
-		return 'HEAD ' + (repository.dI + (' · ' + A2($elm$core$Maybe$withDefault, 'detached', repository.dJ)));
+		return 'HEAD ' + (repository.dK + (' · ' + A2($elm$core$Maybe$withDefault, 'detached', repository.dL)));
 	} else {
 		return 'Repository loading';
 	}
@@ -12463,12 +12525,12 @@ var $author$project$Main$view = function (model) {
 };
 var $author$project$Main$main = $elm$browser$Browser$element(
 	{
-		dO: $author$project$Main$init,
-		em: function (_v0) {
+		dQ: $author$project$Main$init,
+		eo: function (_v0) {
 			return $author$project$Main$fromJs($author$project$Main$FromJs);
 		},
-		eu: $author$project$Main$update,
-		c_: $author$project$Main$view
+		ew: $author$project$Main$update,
+		c0: $author$project$Main$view
 	});
 _Platform_export({'Main':{'init':$author$project$Main$main(
 	A2(

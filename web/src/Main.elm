@@ -49,6 +49,7 @@ type alias Model =
     , epoch : Int
     , watermark : String
     , socketState : String
+    , awaitingInitialEvent : Bool
     , terminalExhausted : Bool
     , reconnects : Int
     , busyRetries : Dict String Int
@@ -66,6 +67,7 @@ type alias Model =
     , page : Int
     , viewStale : Bool
     , error : Maybe String
+    , observationUnavailable : Maybe String
     , draft : Forms.Draft
     , draftSerial : Int
     , mutationPending : Maybe String
@@ -142,6 +144,7 @@ init flags =
             , epoch = 0
             , watermark = "0"
             , socketState = if flags.hasCredential then "connecting" else "unavailable"
+            , awaitingInitialEvent = False
             , terminalExhausted = False
             , reconnects = 0
             , busyRetries = Dict.empty
@@ -159,6 +162,7 @@ init flags =
             , page = 0
             , viewStale = True
             , error = Nothing
+            , observationUnavailable = Nothing
             , draft = Forms.initial
             , draftSerial = 0
             , mutationPending = Nothing
@@ -613,7 +617,7 @@ receive raw model =
         Ok "event" ->
             case D.decodeValue (D.field "body" Api.event) raw of
                 Ok event -> eventReceived event model
-                Err _ -> refresh { model | error = Just "Event decoding failed; refreshing snapshots." }
+                Err _ -> refresh { model | awaitingInitialEvent = False, error = Just "Event decoding failed; refreshing snapshots." }
 
         _ ->
             ( model, Cmd.none )
@@ -680,11 +684,20 @@ receiveResponse requestId status body model =
                         ( readIssue pending.kind "The server returned an unreadable error." without, Cmd.none )
 
             else
-                readResponse pending.kind body
-                    { without
-                        | busyRetries = Dict.remove (requestKey pending.kind) without.busyRetries
-                        , inspectionIssues = Dict.remove (requestKey pending.kind) without.inspectionIssues
-                    }
+                let
+                    ( received, command ) =
+                        readResponse pending.kind body
+                            { without
+                                | busyRetries = Dict.remove (requestKey pending.kind) without.busyRetries
+                                , inspectionIssues = Dict.remove (requestKey pending.kind) without.inspectionIssues
+                            }
+                in
+                ( { received
+                    | viewStale = received.viewStale || received.observationUnavailable /= Nothing
+                    , repositoryReady = received.repositoryReady && received.observationUnavailable == Nothing
+                  }
+                , command
+                )
 
 
 readPendingCurrent : String -> Pending -> Model -> Bool
@@ -754,6 +767,7 @@ terminalExhaustion model =
     ( { model
         | terminalExhausted = True
         , socketState = "unavailable"
+        , awaitingInitialEvent = False
         , repositoryReady = False
         , collapsedReady = False
         , explodedReady = False
@@ -762,6 +776,7 @@ terminalExhaustion model =
         , inspectionIssues = Dict.empty
         , viewStale = True
         , error = Just terminalMessage
+        , observationUnavailable = Nothing
         , operationStatus = statusText
         , draft = { draft | stale = True, reviewed = False }
       }
@@ -1044,35 +1059,63 @@ socketChanged state model =
             attempts = model.reconnects + 1
             pause = toFloat (min 8000 (500 * (2 ^ attempts)))
         in
-        ( { model | socketState = "closed", reconnects = attempts, viewStale = True, draft = Forms.markStale model.draft, repositoryReady = False, collapsedReady = False, explodedReady = False }
+        ( { model | socketState = "closed", awaitingInitialEvent = False, reconnects = attempts, viewStale = True, draft = Forms.markStale model.draft, repositoryReady = False, collapsedReady = False, explodedReady = False }
         , Task.perform (\_ -> Reconnect) (Process.sleep pause)
         )
     else if state == "closed" && model.hasCredential then
-        ( { model | socketState = "unavailable", viewStale = True, repositoryReady = False, collapsedReady = False, explodedReady = False }, Cmd.none )
+        ( { model | socketState = "unavailable", awaitingInitialEvent = False, viewStale = True, repositoryReady = False, collapsedReady = False, explodedReady = False }, Cmd.none )
     else
-        ( { model | socketState = state }, Cmd.none )
+        ( { model | socketState = state, awaitingInitialEvent = state == "open" }, Cmd.none )
 
 
 eventReceived : Api.Event -> Model -> ( Model, Cmd Msg )
 eventReceived event model =
     if model.terminalExhausted || Api.compareGeneration event.generation model.watermark /= GT then
-        ( model, Cmd.none )
+        ( { model | awaitingInitialEvent = False }, Cmd.none )
 
     else
         let
+            recovered =
+                case event.asOf of
+                    Api.AtCommit _ ->
+                        event.kind == "repository-invalidated"
+                            && (event.facts == [ "repository-identity" ]
+                                    || (model.awaitingInitialEvent && event.facts == fullResyncFacts)
+                               )
+
+                    _ ->
+                        False
+
             changed =
-                { model | watermark = event.generation, epoch = model.epoch + 1, viewStale = True, draft = Forms.markStale model.draft, reconnects = if event.kind == "repository-invalidated" then 0 else model.reconnects }
+                { model
+                    | watermark = event.generation
+                    , epoch = model.epoch + 1
+                    , viewStale = True
+                    , draft = Forms.markStale model.draft
+                    , reconnects = if event.kind == "repository-invalidated" then 0 else model.reconnects
+                    , observationUnavailable = if recovered then Nothing else model.observationUnavailable
+                    , awaitingInitialEvent = False
+                }
         in
         if event.kind == "observation-failed" then
-            refresh { changed | error = Just "Repository observation failed; refreshing." }
+            refresh { changed | observationUnavailable = Just "repository-observation-failed" }
 
         else
             case event.asOf of
                 Api.Unavailable reason ->
-                    refresh { changed | error = Just ("Live observation unavailable: " ++ reason) }
+                    if reason == "repository-observation-failed" then
+                        refresh { changed | observationUnavailable = Just reason }
+
+                    else
+                        refresh { changed | error = Just ("Live observation unavailable: " ++ reason) }
 
                 _ ->
                     refresh changed
+
+
+fullResyncFacts : List String
+fullResyncFacts =
+    [ "repository-identity", "head", "index", "sequencer", "configuration", "managed-source", "common-refs", "packed-refs", "reflogs", "worktree-metadata", "relevant-worktree-file" ]
 
 
 maxPage : Model -> Int
@@ -1122,10 +1165,13 @@ contextPane model =
             p [ class "notice" ] [ text "Read-only session. Reopen the process bootstrap URL to restore live updates and checked mutations." ]
           else
             p [ class "meta" ] [ text ("Live connection: " ++ model.socketState) ]
-        , case model.error of
-            Just problem -> p [ class "error" ] [ text problem ]
-            Nothing -> text ""
-        , if model.viewStale then p [ class "notice" ] [ text "Snapshot is loading or stale." ] else text ""
+        , case model.observationUnavailable of
+            Just reason -> p [ class "error" ] [ text ("Live observation unavailable: " ++ reason) ]
+            Nothing ->
+                case model.error of
+                    Just problem -> p [ class "error" ] [ text problem ]
+                    Nothing -> text ""
+        , if model.viewStale || model.observationUnavailable /= Nothing then p [ class "notice" ] [ text "Snapshot is loading or stale." ] else text ""
         , div [ class "nav" ]
             (List.map (\( name, kind ) -> button [ type_ "button", class (if model.query.view == kind then "selected" else ""), onClick (ChooseView kind) ] [ text name ])
                 [ ( "Browse", Route.Browse ), ( "Search", Route.Search ), ( "Relevant", Route.Relevant ), ( "History", Route.History ), ( "Compare", Route.Compare ), ( "Conflicts", Route.Conflicts ), ( "Doctor", Route.Doctor ) ]
@@ -1483,7 +1529,7 @@ actionsPane model =
             model.hasCredential && not model.terminalExhausted && not historical && model.repositoryReady && (model.draft.action == Forms.Create || inspectionReady model)
 
         canSubmit =
-            model.hasCredential && not model.terminalExhausted && model.repositoryReady && model.mutationPending == Nothing && not historical && not model.draft.stale && (model.draft.action == Forms.Create || inspectionReady model)
+            model.hasCredential && not model.terminalExhausted && model.repositoryReady && model.mutationPending == Nothing && not historical && not model.draft.stale && (model.draft.action == Forms.Create || model.draft.reviewed && inspectionReady model)
 
         canChooseAction =
             not model.terminalExhausted && not historical && model.repositoryReady

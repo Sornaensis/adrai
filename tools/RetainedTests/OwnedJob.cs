@@ -515,6 +515,8 @@ namespace Adrai.RetainedTests
 
         private static IntPtr OpenOutput(string path)
         {
+            if (path == "NUL")
+                return OpenOutputNull();
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path)));
             var security = InheritableSecurityAttributes();
             IntPtr handle = NativeMethods.CreateFile(
@@ -527,6 +529,22 @@ namespace Adrai.RetainedTests
                 IntPtr.Zero);
             if (handle == NativeMethods.InvalidHandleValue)
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to open output file " + path + ".");
+            return handle;
+        }
+
+        private static IntPtr OpenOutputNull()
+        {
+            var security = InheritableSecurityAttributes();
+            IntPtr handle = NativeMethods.CreateFile(
+                "NUL",
+                NativeMethods.GenericWrite,
+                NativeMethods.FileShareRead | NativeMethods.FileShareWrite,
+                ref security,
+                NativeMethods.OpenExisting,
+                NativeMethods.FileAttributeNormal,
+                IntPtr.Zero);
+            if (handle == NativeMethods.InvalidHandleValue)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to open NUL for child output.");
             return handle;
         }
 

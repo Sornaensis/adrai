@@ -14,6 +14,8 @@ module Adrai.Compiler.CacheSelection
     validateCachePublicationConnection,
     validateExactCacheTarget,
     validateExactCacheTargetConnection,
+    ExactArchiveBusy (..),
+    withExactArchiveTransaction,
     ValidatedCacheRows,
     withValidatedExactCacheTargetConnection,
     validatedRepositoryConfigRows,

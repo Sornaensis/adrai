@@ -1,0 +1,25 @@
+{
+  "schema": "adrai/browser-scenarios/v1",
+  "browser": [
+    { "id": "B01", "spec": "p705-read.spec.ts", "seed": "main", "timeout_ms": 45000, "name": "bootstrap, reload and new tab keep secrets out and snapshots readable" },
+    { "id": "B02", "spec": "p705-read.spec.ts", "seed": "linked", "timeout_ms": 45000, "name": "linked authority and historical selection retain exact read-only context" },
+    { "id": "B03", "spec": "p705-read.spec.ts", "seed": "paging", "timeout_ms": 90000, "name": "bounded browse pages and live search modes preserve one exact window" },
+    { "id": "B04", "spec": "p705-read.spec.ts", "seed": "linked", "timeout_ms": 90000, "name": "committed and worktree relevance replace live file interests" },
+    { "id": "B05", "spec": "p705-read.spec.ts", "seed": "conflicts", "timeout_ms": 90000, "name": "primary inspection, conflict candidates and read navigation stay accessible" },
+    { "id": "B06", "spec": "p705-mutations.spec.ts", "seed": "main", "timeout_ms": 45000, "name": "checked create commits exactly what the reviewed UI submitted" },
+    { "id": "B07", "spec": "p705-mutations.spec.ts", "seed": "main", "timeout_ms": 45000, "name": "checked amend replaces reviewed decision content" },
+    { "id": "B08", "spec": "p705-mutations.spec.ts", "seed": "main", "timeout_ms": 45000, "name": "checked scope delta updates the reviewed applicability" },
+    { "id": "B09", "spec": "p705-mutations.spec.ts", "seed": "main", "timeout_ms": 45000, "name": "checked domain delta updates reviewed domains" },
+    { "id": "B10", "spec": "p705-mutations.spec.ts", "seed": "main", "timeout_ms": 45000, "name": "checked obsolete changes the reviewed status" },
+    { "id": "B11", "spec": "p705-mutations.spec.ts", "seed": "main", "timeout_ms": 45000, "name": "checked reactivate changes the reviewed obsolete status" },
+    { "id": "B12", "spec": "p705-mutations.spec.ts", "seed": "conflicts", "timeout_ms": 90000, "name": "simultaneous conflict candidates require explicit axis reconciliation" },
+    { "id": "B13", "spec": "p705-live.spec.ts", "seed": "main", "timeout_ms": 90000, "name": "dirty draft survives real external ADR change and explicit review" },
+    { "id": "B14", "spec": "p705-live.spec.ts", "seed": "main", "timeout_ms": 90000, "name": "real delayed reads and committed responses preserve current context and newer draft" },
+    { "id": "B15", "spec": "p705-live.spec.ts", "seed": "main", "timeout_ms": 90000, "name": "real socket reconnect, interests, busy reads and observation failure recover" }
+  ],
+  "api": {
+    "A01": "ADRAI.P7-02.web server runtime.real loopback admission protects unknown routes; ADRAI.P7-03.authenticated bounded websocket runtime",
+    "A02": "ADRAI.P7-03.fact watcher verifies and retries bounded changes; ADRAI.P7-03.exact revision compilation is one physical flight; ADRAI.P7-03.web exact compilation.outstanding HTTP compilation retains its revision across CLI publication"
+  },
+  "assets": { "G01": "optimized build, fresh provenance verification, copied-input stale drift rejection" }
+}

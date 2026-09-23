@@ -56,7 +56,7 @@ import Adrai.Retrieval
 import Adrai.Sqlite (SearchStorageComponent (..), allFtsTargets, coldSchemaDdl, ftsTargetDdl, ftsTargetTable, searchOrdinarySchemaDdl)
 import Adrai.Types (Digest (..), adrIdText, digestBytes, mkAdrId, mkRecordId, mkStateToken, recordIdText)
 import Control.Applicative ((<|>))
-import Control.Exception (AsyncException, SomeAsyncException, SomeException, bracket, evaluate, fromException, mask, mask_, throwIO, toException, try)
+import Control.Exception (AsyncException, Exception, SomeAsyncException, SomeException, bracket, evaluate, fromException, mask, mask_, throwIO, toException, try)
 import Control.Monad (forM_, unless)
 import Data.Aeson (Value, eitherDecodeStrict', encode)
 import qualified Data.Aeson.Key as AesonKey
@@ -80,7 +80,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import qualified Data.Vector as Vector
-import Database.SQLite.Simple (Connection, FromRow (..), Only (..), Query (..), SQLData (..), close, execute, execute_, field, open, query, query_, withTransaction)
+import Database.SQLite.Simple (Connection, Error (ErrorBusy), FromRow (..), Only (..), Query (..), SQLError (..), SQLData (..), close, execute, execute_, field, open, query, query_, withImmediateTransaction, withTransaction)
 import System.Directory (copyFile, createDirectory, doesFileExist, getFileSize, getModificationTime, listDirectory, removeDirectory, removeFile)
 import System.IO (hClose, openTempFile)
 import System.IO.Error (isDoesNotExistError)
@@ -348,7 +348,7 @@ rethrowCacheAsync exception =
     Nothing ->
       case fromException exception :: Maybe SomeAsyncException of
         Just cancellation -> throwIO cancellation
-        Nothing -> pure ()
+        Nothing -> rethrowExactArchiveBusy exception
 
 -- | Reject anything other than a complete, healthy canonical cold-compiler
 -- database that is eligible for cross-revision reuse.  Cache discovery must
@@ -382,6 +382,46 @@ validateExactCacheTarget :: FilePath -> Text -> IO Bool
 validateExactCacheTarget path target =
   maybe False (const True) <$> readExactArchiveFactsWith (const (pure ())) (pure ()) path target
 
+-- An exact archive can be valid while another validator holds the FTS5 write
+-- reservation needed by its integrity checks.  Exhausted acquisition is not
+-- evidence that the archive is invalid.
+data ExactArchiveBusy = ExactArchiveBusy deriving (Eq, Show)
+
+instance Exception ExactArchiveBusy
+
+beginExactArchiveTransaction :: Connection -> IO ()
+beginExactArchiveTransaction connection = do
+  execute_ connection "PRAGMA busy_timeout=2000"
+  started <- try @SQLError (execute_ connection "BEGIN IMMEDIATE")
+  case started of
+    Left problem | sqlError problem == ErrorBusy -> throwIO ExactArchiveBusy
+    Left problem -> throwIO problem
+    Right () -> pure ()
+
+-- The query and doctor consumers keep the same validated snapshot through
+-- use.  sqlite-simple retains its exception-safe commit/rollback behavior;
+-- the flag distinguishes a failed BEGIN from a later SQL fault.
+withExactArchiveTransaction :: Connection -> IO value -> IO value
+withExactArchiveTransaction connection action = do
+  execute_ connection "PRAGMA busy_timeout=2000"
+  begun <- newIORef False
+  result <- try @SQLError $ withImmediateTransaction connection $ do
+    writeIORef begun True
+    action
+  case result of
+    Left problem -> do
+      acquired <- readIORef begun
+      if not acquired && sqlError problem == ErrorBusy
+        then throwIO ExactArchiveBusy
+        else throwIO problem
+    Right value -> pure value
+
+rethrowExactArchiveBusy :: SomeException -> IO ()
+rethrowExactArchiveBusy exception =
+  case fromException exception of
+    Just ExactArchiveBusy -> throwIO ExactArchiveBusy
+    Nothing -> pure ()
+
 -- | Read, validate, and materialize an immutable exact archive in one masked
 -- transaction.  The connection never escapes this module: by the time a
 -- caller receives a result, rollback and close have completed exactly once.
@@ -397,7 +437,7 @@ readExactArchiveFactsWith observe afterFacts path target = mask $ \_ -> do
           -- @mode=rw@ proves non-creation and this one transaction keeps all
           -- publication, schema, integrity, FK, count, fingerprint, current
           -- ref, provenance, and six-FTS checks in the same snapshot.
-          execute_ held "BEGIN"
+          beginExactArchiveTransaction held
           observe path
           withValidatedExactCacheTargetConnection target held $ \accepted -> do
               execute_ held "PRAGMA query_only=ON"
@@ -520,7 +560,7 @@ readExactArchiveAliasStatusWith observe afterFacts archive target alias = mask $
     Left exception -> rethrowCacheAsync exception >> pure Nothing
     Right connection -> do
       outcome <- runExactArchiveTransaction connection $ \held -> do
-          execute_ held "BEGIN"
+          beginExactArchiveTransaction held
           observe archive
           archiveDecision <- withValidatedExactCacheTargetConnection target held $ \acceptedRows ->
             pure (validatedMetadata acceptedRows, exactArchiveCompileFactsFromRows acceptedRows)
@@ -592,7 +632,7 @@ withExactArchiveAliasRepairWithCleanupHooks hooks observe afterFacts archive tar
     Left exception -> rethrowCacheAsync exception >> pure (Right Nothing)
     Right held -> do
       outcome <- runExactArchiveTransactionWithHooks hooks held $ \connection -> do
-          execute_ connection "BEGIN"
+          beginExactArchiveTransaction connection
           observe archive
           archiveDecision <- withValidatedExactCacheTargetConnection target connection $ \acceptedRows ->
             pure (validatedMetadata acceptedRows, exactArchiveCompileFactsFromRows acceptedRows)
@@ -659,7 +699,7 @@ readExactArchiveMetadataWith observe alias target = mask $ \_ -> do
     Left exception -> rethrowCacheAsync exception >> pure Nothing
     Right connection -> do
       outcome <- runExactArchiveTransaction connection $ \held -> do
-        execute_ held "BEGIN"
+        beginExactArchiveTransaction held
         observe alias
         metadata <- exactArchiveMetadataFromConnection target held
         case metadata of
@@ -1334,7 +1374,7 @@ observeExactCacheValidationWorkForTest path target = do
   outcome <- try @SomeException $
     bracket (openReadWriteExisting path) close $ \connection -> do
       record counters CacheValidationSourceOpen
-      withTransaction connection $
+      withExactArchiveTransaction connection $
         maybe False (const True) <$> withValidatedExactCacheTargetConnectionWithWork hooks target connection (\accepted -> pure (validatedSearchMaterialization accepted))
   case outcome of
     Left exception -> do

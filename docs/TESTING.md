@@ -144,15 +144,15 @@ multiset from the verified partitions, retained components, and expanded repeat
 counts and requires exact equality with the configured queue before dispatch.
 Quoted command lines are checked against the Windows 32,767-character limit.
 
-The P7-04 source ledger declares 886 unique ordinary tests, 9 cache-selection
-tests, 28 stress tests, and 6 benchmark-registration tests: 929 unique
-registrations. The explicit competing-target repeat makes 930 planned
+The P7-05 source ledger declares 893 unique ordinary tests, 9 cache-selection
+tests, 28 stress tests, and 6 benchmark-registration tests: 936 unique
+registrations. The explicit competing-target repeat makes 937 planned
 executions. These source counts require a fresh runner List before they are
 verified; only Complete establishes actual execution. The runner does not
 hardcode these totals. A fresh matching build must list every
 actual registration and prove exact equality before dispatch.
-P7-04 adds five ordinary leaves to the P7-03 ledger of 881 ordinary,
-924 unique, and 925 planned executions; all earlier names remain retained.
+P7-05 adds seven exact-archive and initial-resync leaves to the P7-04
+ledger of 886 ordinary, 929 unique, and 930 planned executions.
 
 The Round8 2026-09-07 snapshot baseline is historical diagnostic evidence for
 that frozen input set. It is not an elapsed-time forecast for another snapshot:
@@ -263,8 +263,31 @@ Complete then reject any input drift relative to the Haskell build manifest.
 Run `browser-tests/support/run-p704-smoke.ps1 -Probe normal` after a fresh
 canonical Build to exercise the compact P7-04 Playwright smoke. It launches a
 real `adrai web` process in an owned temporary repository, verifies checked
-mutation and stale-draft review, and records desktop and narrow browser evidence;
-the broader adversarial browser matrix remains a later gate.
+mutation and stale-draft review, and records desktop and narrow browser evidence.
+
+The separate P7-05 matrix is listed exactly in
+`browser-tests/tests/p705-scenarios.json`. Build the test-only
+`adrai-window-fixture` executable, run `verify:assets` and `test:assets`, and
+persist their G01 result with current bundle and provenance hashes before the
+browser aggregate. Supply that receipt and both fresh executable paths to
+`browser-tests/support/run-p705-matrix.ps1 -Scenario all -AssetGateReceipt PATH
+-AdraiExe PATH -WindowFixtureExe PATH`. The runner rejects missing or stale
+asset evidence. It discovers all 15 B cases before execution, uses one pinned
+Playwright 1.61.1 worker with Chromium headless shell revision 1228 and no
+retries, and keeps discovery, fixture generation, browser assertions, evidence,
+and cleanup within a 600-second budget with 60 seconds reserved for cleanup.
+Each case owns a temporary real repository and server. The runner records
+exact source, bundle, provenance, browser, and executable hashes with process,
+listener, and temporary-root cleanup results. A01/A02 are named retained
+HTTP/WebSocket leaves; G01 verifies a fresh optimized build, reproducibility,
+and copied-input drift rejection.
+
+The P7-05 exact-archive regression leaves exercise simultaneous validators
+and mixed HTTP consumers. When an exact SQLite archive is temporarily locked,
+safe reads return a typed `repository-busy` 503 and can recover at the same
+revision. A mutation that already committed retains its commit and reports an
+indexing warning if publication cannot finish; exact archive validation remains
+required before successful reads.
 
 The accepted stress redesign reduces previous large capacity fixtures to the
 retained sizes declared by the test ledger. This gate proves the retained risk

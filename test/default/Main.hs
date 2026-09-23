@@ -86,6 +86,8 @@ import qualified Adrai.VectorQualityTest
 import qualified Adrai.VectorTest
 import qualified Adrai.WebContractTest
 import qualified Adrai.WebCompilationTest
+import qualified Adrai.WebArchiveDiagnosticTest
+import qualified Adrai.WebInitialResyncTest
 import qualified Adrai.WebEventsTest
 import qualified Adrai.WebExplorerApiTest
 import qualified Adrai.WebServerTest
@@ -590,5 +592,15 @@ tests =
           "P7-04"
           [ Adrai.WebExplorerApiTest.tests,
             Adrai.WebServerTest.generationExhaustionTest
+          ]
+      , testGroup
+          "P7-05"
+          [ Adrai.WebArchiveDiagnosticTest.tests,
+            Adrai.WebArchiveDiagnosticTest.ftsLockRegression,
+            Adrai.WebArchiveDiagnosticTest.ftsBusyRecovery,
+            Adrai.WebArchiveDiagnosticTest.committedBusyIndexWarning,
+            Adrai.WebArchiveDiagnosticTest.mixedExactArchiveConsumers,
+            Adrai.WebInitialResyncTest.failedSnapshotRecovery,
+            Adrai.WebInitialResyncTest.publicationDuringSubscription
           ]
     ]

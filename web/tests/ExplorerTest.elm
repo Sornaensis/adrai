@@ -201,6 +201,91 @@ tests =
                                         Expect.fail "tokens were not adopted from exact current sources"
                                 Err problem -> Expect.fail problem
                         _ -> Expect.fail "repository and inspection fixtures must decode"
+            , test "each conflicted axis and simultaneous heads require explicit adoption" <|
+                \_ ->
+                    case ( fixture "repository" (Api.response Api.repository), fixture "rich_conflicted" (Api.response Api.inspection), fixture "rich_resolved" (Api.response Api.inspection) ) of
+                        ( Ok repository, Ok conflicted, Ok resolved ) ->
+                            let
+                                allHeads = conflicted.data
+                                isolated =
+                                    [ ( Forms.Amend, { allHeads | scopeHeads = [], domainHeads = [], statusHeads = [] } )
+                                    , ( Forms.Scope, { allHeads | recordHeads = [], domainHeads = [], statusHeads = [] } )
+                                    , ( Forms.Domain, { allHeads | recordHeads = [], scopeHeads = [], statusHeads = [] } )
+                                    , ( Forms.Obsolete, { allHeads | recordHeads = [], scopeHeads = [], domainHeads = [] } )
+                                    , ( Forms.Amend, allHeads )
+                                    ]
+                                check ( action, inspection ) =
+                                    let
+                                        base = Tuple.first (Main.init { hasCredential = True })
+                                        readyModel =
+                                            { base
+                                                | repository = Just repository.data
+                                                , repositoryReady = True
+                                                , inspection = Just inspection
+                                                , collapsedReady = True
+                                                , explodedReady = True
+                                                , selectedAdr = Just inspection.adr
+                                                , selectedRevision = Just repository.data.head
+                                            }
+                                        started = Tuple.first (Main.update (Main.StartAction action) readyModel)
+                                        startedDraft = started.draft
+                                        prepared =
+                                            { started
+                                                | draft = { startedDraft | actorId = "reviewer", changeSummary = "Reviewed decision", reason = "Reviewed change" }
+                                            }
+                                        adopted = Tuple.first (Main.update Main.AdoptTokens prepared)
+                                        invalidated = Tuple.first (Main.update (Main.FromJs (transportEvent "event_large")) adopted)
+                                    in
+                                    not started.draft.reviewed
+                                        && started.draft.reviewedHeads == inspection.recordHeads ++ inspection.scopeHeads ++ inspection.domainHeads ++ inspection.statusHeads
+                                        && isError (Forms.build prepared.draft)
+                                        && adopted.draft.reviewed
+                                        && not (isError (Forms.build adopted.draft))
+                                        && not invalidated.draft.reviewed
+                                        && isError (Forms.build invalidated.draft)
+                                ordinary = Forms.begin Forms.Amend repository.data (Just resolved.data) Forms.initial
+                            in
+                            Expect.equal True (List.all check isolated && ordinary.reviewed)
+
+                        _ -> Expect.fail "repository and rich inspections must decode"
+            , test "conflicted Submit stays disabled until candidate review and adoption" <|
+                \_ ->
+                    case ( fixture "repository" (Api.response Api.repository), fixture "rich_conflicted" (Api.response Api.inspection) ) of
+                        ( Ok repository, Ok conflicted ) ->
+                            let
+                                base = Tuple.first (Main.init { hasCredential = True })
+                                inspection = conflicted.data
+                                current =
+                                    { base
+                                        | repository = Just repository.data
+                                        , repositoryReady = True
+                                        , inspection = Just inspection
+                                        , collapsedReady = True
+                                        , explodedReady = True
+                                        , selectedAdr = Just inspection.adr
+                                        , selectedRevision = Just repository.data.head
+                                    }
+                                started = Tuple.first (Main.update (Main.StartAction Forms.Amend) current)
+                                startedDraft = started.draft
+                                prepared = { started | draft = { startedDraft | actorId = "reviewer", changeSummary = "Reviewed decision" } }
+                                adopted = Tuple.first (Main.update Main.AdoptTokens prepared)
+                                submit model = Query.fromHtml (Main.view model)
+                                disabledSubmit =
+                                    [ Selector.tag "button", Selector.text "Submit amend", Selector.attribute (Attr.disabled True) ]
+                            in
+                            Expect.all
+                                [ \_ -> Expect.equal True
+                                    (not started.draft.reviewed
+                                        && not prepared.draft.reviewed
+                                        && adopted.draft.reviewed
+                                        && not adopted.draft.stale
+                                        && adopted.operationStatus == "Current heads reviewed; fresh tokens adopted.")
+                                , \_ -> submit prepared |> Query.has disabledSubmit
+                                , \_ -> submit adopted |> Query.hasNot disabledSubmit
+                                ]
+                                ()
+
+                        _ -> Expect.fail "repository and rich conflict must decode"
             , test "editing and refreshing preserves original reviewed values and candidate heads" <|
                 \_ ->
                     case ( fixture "repository" (Api.response Api.repository), fixture "rich_resolved" (Api.response Api.inspection) ) of
@@ -437,6 +522,116 @@ tests =
                         afterOldQuery = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-2" "search_blank")) afterEvent)
                     in
                     Expect.equal Nothing afterOldQuery.search
+            , test "watcher unavailability survives successful reads until exact recovery invalidation" <|
+                \_ ->
+                    let
+                        head = "1111111111111111111111111111111111111111"
+                        unavailable = E.object [ ( "kind", E.string "unavailable" ), ( "reason", E.string "repository-observation-failed" ) ]
+                        current = E.object [ ( "kind", E.string "commit" ), ( "oid", E.string head ) ]
+                        fullFacts =
+                            [ "repository-identity", "head", "index", "sequencer", "configuration", "managed-source", "common-refs", "packed-refs", "reflogs", "worktree-metadata", "relevant-worktree-file" ]
+                        base = Tuple.first (Main.init { hasCredential = True })
+                        initialReady = base
+                            |> Main.update (Main.FromJs (transportResponse "ui-1" "repository"))
+                            |> Tuple.first
+                            |> Main.update (Main.FromJs (transportResponse "ui-2" "search_blank"))
+                            |> Tuple.first
+                        failed = Tuple.first (Main.update (Main.FromJs (transportObserved "100" unavailable fullFacts)) initialReady)
+                        failedView = Query.fromHtml (Main.view failed) |> Query.find [ Selector.id "context-pane" ]
+                        readAgain = failed
+                            |> Main.update (Main.FromJs (transportResponse "ui-3" "repository"))
+                            |> Tuple.first
+                            |> Main.update (Main.FromJs (transportResponse "ui-4" "search_blank"))
+                            |> Tuple.first
+                        readView = Query.fromHtml (Main.view readAgain) |> Query.find [ Selector.id "context-pane" ]
+                        readActions = Query.fromHtml (Main.view readAgain) |> Query.find [ Selector.id "actions-pane" ]
+                        unrelated = readAgain
+                            |> Main.update (Main.FromJs (transportObserved "101" current fullFacts))
+                            |> Tuple.first
+                            |> Main.update (Main.FromJs (transportResponse "ui-5" "repository"))
+                            |> Tuple.first
+                            |> Main.update (Main.FromJs (transportResponse "ui-6" "search_blank"))
+                            |> Tuple.first
+                        recovered = Tuple.first (Main.update (Main.FromJs (transportObserved "102" current [ "repository-identity" ])) unrelated)
+                        fresh = recovered
+                            |> Main.update (Main.FromJs (transportResponse "ui-7" "repository"))
+                            |> Tuple.first
+                            |> Main.update (Main.FromJs (transportResponse "ui-8" "search_blank"))
+                            |> Tuple.first
+                    in
+                    Expect.all
+                        [ \_ -> failedView |> Query.has [ Selector.text "Live observation unavailable: repository-observation-failed" ]
+                        , \_ -> failedView |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                        , \_ -> readView |> Query.has [ Selector.text "Live observation unavailable: repository-observation-failed" ]
+                        , \_ -> readActions |> Query.has [ Selector.tag "button", Selector.text "Submit create", Selector.attribute (Attr.disabled True) ]
+                        , \_ -> Expect.equal True
+                            (initialReady.repositoryReady
+                                && failed.observationUnavailable == Just "repository-observation-failed"
+                                && readAgain.observationUnavailable == failed.observationUnavailable
+                                && readAgain.viewStale
+                                && not readAgain.repositoryReady
+                                && unrelated.observationUnavailable == failed.observationUnavailable
+                                && unrelated.viewStale
+                                && not unrelated.repositoryReady
+                                && recovered.observationUnavailable == Nothing
+                                && recovered.viewStale
+                                && not recovered.repositoryReady
+                                && fresh.observationUnavailable == Nothing
+                                && not fresh.viewStale
+                                && fresh.repositoryReady)
+                        ]
+                        ()
+            , test "only the first healthy full resync on a new socket releases unavailable observation" <|
+                \_ ->
+                    let
+                        head = "1111111111111111111111111111111111111111"
+                        unavailable = E.object [ ( "kind", E.string "unavailable" ), ( "reason", E.string "repository-observation-failed" ) ]
+                        current = E.object [ ( "kind", E.string "commit" ), ( "oid", E.string head ) ]
+                        fullFacts =
+                            [ "repository-identity", "head", "index", "sequencer", "configuration", "managed-source", "common-refs", "packed-refs", "reflogs", "worktree-metadata", "relevant-worktree-file" ]
+                        base = Tuple.first (Main.init { hasCredential = True })
+                        readyRepository = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-1" "repository")) base)
+                        initialReady = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-2" "search_blank")) readyRepository)
+                        failed = Tuple.first (Main.update (Main.FromJs (transportObserved "100" unavailable fullFacts)) initialReady)
+                        opened = failed
+                            |> Main.update (Main.FromJs (socketState "closed"))
+                            |> Tuple.first
+                            |> Main.update (Main.FromJs (socketState "open"))
+                            |> Tuple.first
+                        unavailableInitial = Tuple.first (Main.update (Main.FromJs (transportObserved "101" unavailable fullFacts)) opened)
+                        laterFull = Tuple.first (Main.update (Main.FromJs (transportObserved "102" current fullFacts)) unavailableInitial)
+                        reopened = laterFull
+                            |> Main.update (Main.FromJs (socketState "closed"))
+                            |> Tuple.first
+                            |> Main.update (Main.FromJs (socketState "open"))
+                            |> Tuple.first
+                        healthyInitial = Tuple.first (Main.update (Main.FromJs (transportObserved "103" current fullFacts)) reopened)
+                        fresh = healthyInitial
+                            |> Main.update (Main.FromJs (transportResponse "ui-9" "repository"))
+                            |> Tuple.first
+                            |> Main.update (Main.FromJs (transportResponse "ui-10" "search_blank"))
+                            |> Tuple.first
+                        failedView = Query.fromHtml (Main.view unavailableInitial) |> Query.find [ Selector.id "context-pane" ]
+                    in
+                    Expect.all
+                        [ \_ -> failedView |> Query.has [ Selector.text "Live observation unavailable: repository-observation-failed" ]
+                        , \_ -> Expect.equal True
+                            (opened.awaitingInitialEvent
+                                && unavailableInitial.observationUnavailable == Just "repository-observation-failed"
+                                && not unavailableInitial.awaitingInitialEvent
+                                && laterFull.observationUnavailable == unavailableInitial.observationUnavailable
+                                && laterFull.viewStale
+                                && not laterFull.repositoryReady
+                                && reopened.awaitingInitialEvent
+                                && healthyInitial.observationUnavailable == Nothing
+                                && not healthyInitial.awaitingInitialEvent
+                                && healthyInitial.viewStale
+                                && not healthyInitial.repositoryReady
+                                && fresh.observationUnavailable == Nothing
+                                && not fresh.viewStale
+                                && fresh.repositoryReady)
+                        ]
+                        ()
             , test "read-only reload never enables checked submission" <|
                 \_ ->
                     let
@@ -824,6 +1019,21 @@ transportEvent key =
     case fixtureValue key of
         Just body -> E.object [ ( "type", E.string "event" ), ( "body", body ) ]
         Nothing -> E.null
+
+
+transportObserved : String -> E.Value -> List String -> E.Value
+transportObserved generation asOf facts =
+    E.object
+        [ ( "type", E.string "event" )
+        , ( "body"
+          , E.object
+                [ ( "schema", E.string "adrai/events/v1" )
+                , ( "generation", E.string generation )
+                , ( "as_of", asOf )
+                , ( "event", E.object [ ( "type", E.string "repository-invalidated" ), ( "facts", E.list E.string facts ) ] )
+                ]
+          )
+        ]
 
 
 transportFailure : String -> E.Value

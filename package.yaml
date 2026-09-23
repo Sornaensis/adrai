@@ -135,6 +135,16 @@ executables:
     dependencies: [adrai:internal]
     ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N]
 
+  # Test-only sealed-document producer for the measured real-browser paging fixture.
+  adrai-window-fixture:
+    main: WindowFixtureMain.hs
+    source-dirs: test/web-api
+    other-modules:
+      - Adrai.ConflictFixture
+      - Adrai.WindowDocuments
+    dependencies: [adrai:internal, mtl]
+    ghc-options: [-threaded, -rtsopts, -with-rtsopts=-N1, -main-is, WindowFixtureMain.main]
+
   # A Criterion-free, one-action executable for GHC attribution profiles.
   # Keep it separate from adrai-bench: profiling changes runtime behaviour and
   # must never become a Criterion timing result.
@@ -167,6 +177,7 @@ tests:
     dependencies:
       - adrai:internal
       - hedgehog
+      - mtl
       - tasty
       - tasty-hedgehog
       - tasty-hunit

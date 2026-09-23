@@ -891,7 +891,14 @@
         "ADRAI.P7-03.web exact compilation.outstanding HTTP compilation retains its revision across CLI publication",
         "ADRAI.P7-04.web explorer API.real conflicted rich and exploded projections retain the same candidate bodies",
         "ADRAI.P7-04.web explorer API.1001 valid matching decisions yield one exact 1000-result blank window",
-        "ADRAI.P7-04.maximum generation refuses new reads but retains a durable committed mutation"
+        "ADRAI.P7-04.maximum generation refuses new reads but retains a durable committed mutation",
+        "ADRAI.P7-05.concurrent first exact HTTP searches avoid service failure",
+        "ADRAI.P7-05.concurrent exact FTS validators preserve full integrity results",
+        "ADRAI.P7-05.exact archive lock exhaustion is typed busy and recovers at the same OID",
+        "ADRAI.P7-05.injected archive busy preserves durable commit and types read 503",
+        "ADRAI.P7-05.physical exact archive contention types mixed HTTP consumers and recovers without cold compile",
+        "ADRAI.P7-05.initial event reports watcher failure and a later reconnect observes recovery",
+        "ADRAI.P7-05.initial event retries when publication lands between watcher sample and registration"
       ]
     },
     {

@@ -9,6 +9,7 @@ module Adrai.Service.Runtime
     capturePostCommitIndex,
     indexCommitted,
     ensureExactArchive,
+    ensureExactArchiveWithColdPathObserver,
     runDoctorFromExactArchive,
     runDoctorAt,
   )
@@ -46,7 +47,7 @@ import Adrai.Service.PostCommitIndex
     compilePostCommitIndexWithAttributionAndRefresh,
   )
 import Adrai.Service.PostCommitIndex.Internal (clonePostCommitIndexTrustedSource)
-import Adrai.Compiler.CacheSelection (validateExactCacheTarget, withExactArchiveAliasRepair, withValidatedExactCacheTargetConnection)
+import Adrai.Compiler.CacheSelection (ExactArchiveBusy (..), validateExactCacheTarget, withExactArchiveAliasRepair, withExactArchiveTransaction, withValidatedExactCacheTargetConnection)
 import Adrai.Compiler.Attribution (inertColdCompileAttribution)
 import Adrai.Compiler.CacheSync (syncProvenanceSnapshot)
 import Control.Exception
@@ -124,7 +125,12 @@ indexCommitted database repository commit =
 -- cache publication contract.  This deliberately does not publish or borrow
 -- the mutable current alias.
 ensureExactArchive :: Repository -> GitOid -> IO (Either Text FilePath)
-ensureExactArchive repository target = do
+ensureExactArchive = ensureExactArchiveWithColdPathObserver (pure ())
+
+-- | Observe entry into the real cold compile branch for a retained runtime
+-- regression. Ordinary callers use the no-op observer above.
+ensureExactArchiveWithColdPathObserver :: IO () -> Repository -> GitOid -> IO (Either Text FilePath)
+ensureExactArchiveWithColdPathObserver coldPathEntered repository target = do
   archiveResult <- prepareCacheSnapshotPath repository target
   case archiveResult of
     Left problem -> pure (Left problem)
@@ -137,6 +143,7 @@ ensureExactArchive repository target = do
           case snapshotResult of
             Left problem -> pure (Left (Text.pack (show problem)))
             Right snapshot -> do
+              coldPathEntered
               indexed <- indexCommittedWithProvenance archive repository target snapshot
               case (postCommitIndexed indexed, postCommitDatabase indexed, postCommitIndexRevision indexed, postCommitIndexError indexed) of
                 (True, Just published, Just actual, Nothing)
@@ -156,7 +163,7 @@ runDoctorFromExactArchive repository target archive = do
     Left problem -> pure (Left (Text.pack (show problem)))
     Right isShallow -> do
       captured <- try @SomeException $ bracket (openReadWriteExisting archive) close $ \connection ->
-        withTransaction connection $ do
+        withExactArchiveTransaction connection $ do
           accepted <- withValidatedExactCacheTargetConnection (gitOidText target) connection $ \_ -> do
             execute_ connection "PRAGMA query_only=ON"
             loadDoctorOutputFromConnection archive target isShallow connection
@@ -164,7 +171,9 @@ runDoctorFromExactArchive repository target archive = do
       case captured of
         Left exception -> case fromException exception of
           Just cancellation -> throwIO (cancellation :: SomeAsyncException)
-          Nothing -> pure (Left ("unable to read exact doctor archive: " <> Text.pack (displayException exception)))
+          Nothing -> case fromException exception of
+            Just ExactArchiveBusy -> throwIO ExactArchiveBusy
+            Nothing -> pure (Left ("unable to read exact doctor archive: " <> Text.pack (displayException exception)))
         Right result -> pure result
 
 -- | Compile and read the exact requested revision using the same public

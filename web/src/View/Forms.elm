@@ -163,7 +163,7 @@ begin action repository inspection previous =
         , basisHead = repository.head
         , basisRef = repository.headRef
         , basisToken = repository.stateToken
-        , reviewed = Maybe.map .asOf inspection == Just repository.head && Maybe.map .view inspection == Just "collapsed" && action /= Create
+        , reviewed = Maybe.map .asOf inspection == Just repository.head && Maybe.map .view inspection == Just "collapsed" && Maybe.map .resolutionRequired inspection == Just False && action /= Create
         , stale = inspection /= Nothing && Maybe.map .asOf inspection /= Just repository.head && action /= Create
         , original = Just (baseline repository (if action == Create then Nothing else inspection))
         , reviewedCurrent = Nothing

@@ -30,7 +30,7 @@ import Adrai.Web.Application
 import qualified Adrai.Web.Security as Security
 import qualified Adrai.Web.Events as Events
 import Adrai.Web.Socket (EventsTransport, eventsServerApplication, newSocketRuntime, unavailableEventsTransport)
-import Adrai.Web.Watch (awaitWatcher, observerForRegistry, stopWatching, watchRepository)
+import Adrai.Web.Watch (Observer (..), awaitWatcher, observerForRegistry, stopWatching)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, race, waitCatch)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newEmptyMVar, newMVar, putMVar, readMVar, takeMVar, tryPutMVar)
@@ -257,7 +257,7 @@ withWebServer dependencies startDirectory options consume = do
                         WebSockets.connectionMessageDataSizeLimit = WebSockets.SizeLimit (fromIntegral Security.websocketAuthFrameBytes)
                       }
               observer <- observerForRegistry registry bound
-              socketRuntime <- newSocketRuntime authority secret (applicationEventCoordinator runtime) registry (subscribeApplicationEvents runtime) (serverEventSendDeadline dependencies)
+              socketRuntime <- newSocketRuntime authority secret (applicationEventCoordinator runtime) registry (subscribeApplicationEvents runtime (repositorySnapshot observer)) (serverEventSendDeadline dependencies)
               owners <- newSocketOwners
               let application request respond =
                     if webSocketUpgradeAdmitted runtime request

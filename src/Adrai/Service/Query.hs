@@ -62,6 +62,7 @@ import Adrai.Compiler
   )
 import Adrai.Compiler.CacheSelection
   ( ValidatedCacheRows,
+    ExactArchiveBusy (..),
     exactCacheArchivePath,
     validatedCoverageRows,
     validatedLandingRows,
@@ -73,6 +74,7 @@ import Adrai.Compiler.CacheSelection
     validatedRepositoryConfigRows,
     validatedSearchMaterialization,
     validatedTargetRows,
+    withExactArchiveTransaction,
     withValidatedExactCacheTargetConnection,
   )
 import qualified Adrai.Format.Document as Document
@@ -172,7 +174,7 @@ import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Database.SQLite.Simple (Connection, close, execute_, open, withTransaction)
+import Database.SQLite.Simple (Connection, close, execute_, open)
 
 -- | Inert observability seam for the query cache boundary.  Production uses
 -- 'defaultQueryExecutionHooks'; tests can prove an exact archive never enters
@@ -601,10 +603,10 @@ withExactCacheContextWithAcquisitionHooks hooks afterAcquired afterClose reposit
     Just path ->
       bracket (try @SomeException (openReadWriteExisting path)) release $ \opened ->
         case opened of
-          Left exception -> rethrowQueryAsync exception >> pure Nothing
+          Left exception -> rethrowQueryAsyncOrBusy exception >> pure Nothing
           Right archiveConnection -> do
             afterAcquired
-            withTransaction archiveConnection $ do
+            withExactArchiveTransaction archiveConnection $ do
               checked <- try $
                 withValidatedExactCacheTargetConnection oid archiveConnection $ \acceptedRows -> do
                   execute_ archiveConnection "PRAGMA query_only=ON"
@@ -612,11 +614,11 @@ withExactCacheContextWithAcquisitionHooks hooks afterAcquired afterClose reposit
                     queryArchiveLoad hooks
                     loaded <- try (loadExactQueryContext acceptedRows requestedRevision oid)
                     case loaded of
-                      Left exception -> rethrowQueryAsync exception >> queryArchiveRejected hooks (Text.pack (displayException exception)) >> pure Nothing
+                      Left exception -> rethrowQueryAsyncOrBusy exception >> queryArchiveRejected hooks (Text.pack (displayException exception)) >> pure Nothing
                       Right (Left problem) -> queryArchiveRejected hooks problem >> pure Nothing
                       Right (Right context) -> Just <$> useContext archiveConnection context
               case checked of
-                Left exception -> rethrowQueryAsync exception >> pure Nothing
+                Left exception -> rethrowQueryAsyncOrBusy exception >> pure Nothing
                 Right Nothing -> do
                   queryArchiveRejected hooks "exact archive publication contract or metadata rejected"
                   pure Nothing
@@ -629,11 +631,13 @@ withExactCacheContextWithAcquisitionHooks hooks afterAcquired afterClose reposit
         Left _ -> pure ()
         Right connection -> close connection >> afterClose
 
-rethrowQueryAsync :: SomeException -> IO ()
-rethrowQueryAsync exception =
+rethrowQueryAsyncOrBusy :: SomeException -> IO ()
+rethrowQueryAsyncOrBusy exception =
   case fromException exception of
     Just cancellation -> throwIO (cancellation :: SomeAsyncException)
-    Nothing -> pure ()
+    Nothing -> case fromException exception of
+      Just ExactArchiveBusy -> throwIO ExactArchiveBusy
+      Nothing -> pure ()
 
 data ExactQueryContext = ExactQueryContext
   { exactQuerySnapshot :: ReadSnapshot,

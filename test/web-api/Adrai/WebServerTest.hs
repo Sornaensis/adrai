@@ -37,8 +37,8 @@ import Adrai.Web.Server (RunningServer (..), ServerDependencies (..), withWebSer
 import qualified Adrai.Web.Security as Security
 import Adrai.Web.Socket (unavailableEventsTransport)
 import qualified Adrai.Web.Watch as Watch
-import Control.Concurrent (newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
-import Control.Concurrent.Async (Async, async, cancel, poll, race, wait, waitCatch)
+import Control.Concurrent (MVar, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
+import Control.Concurrent.Async (Async, async, cancel, poll, race, wait, waitCatch, withAsync)
 import Control.Exception (SomeAsyncException, SomeException, bracket, bracketOnError, finally, fromException, throwIO, try)
 import Control.Monad (forM, forM_, void)
 import qualified Data.ByteString as BS
@@ -218,6 +218,50 @@ testUnknownAdmission = withServer $ \running _ -> do
   nullOrigin <- request host ("POST /api/v1/adrs HTTP/1.1\r\nHost: " <> host <> "\r\nOrigin: null\r\nAuthorization: Bearer " <> token <> "\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
   missingOrigin <- request host ("POST /api/v1/adrs HTTP/1.1\r\nHost: " <> host <> "\r\nAuthorization: Bearer " <> token <> "\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
   assertBool "POST origin policy rejects foreign, null, and missing origins" (all ("HTTP/1.1 403" `BS.isPrefixOf`) [foreignOrigin, nullOrigin, missingOrigin])
+  let checkError label expectedStatus expectedCategory expectedCode response = do
+        responseStatus response >>= (@?= expectedStatus)
+        assertBool (label <> " does not disclose the process credential") (not (TextEncoding.encodeUtf8 token `BS.isInfixOf` response))
+        value <- decodeBody response
+        textAt ["schema"] value >>= (@?= "adrai/api/v1")
+        _ <- integerAt ["metadata", "generation"] value
+        textAt ["metadata", "as_of", "kind"] value >>= (@?= "unavailable")
+        valueAt ["error", "status"] value >>= (@?= Aeson.Number (fromIntegral expectedStatus))
+        textAt ["error", "category"] value >>= (@?= expectedCategory)
+        textAt ["error", "code"] value >>= (@?= expectedCode)
+      sendJson path body = do
+        let bytes = LBS.toStrict (Aeson.encode body)
+            headBytes = TextEncoding.encodeUtf8
+              ("POST " <> path <> " HTTP/1.1\r\nHost: " <> host <> "\r\nOrigin: " <> Security.authorityOrigin (runningAuthority running)
+                <> "\r\nAuthorization: Bearer " <> token <> "\r\nContent-Type: application/json\r\nContent-Length: "
+                <> Text.pack (show (BS.length bytes)) <> "\r\nConnection: close\r\n\r\n")
+        requestRaw host (headBytes <> bytes)
+  wrongMethod <- bearerRequest running "GET /api/v1/adrs" []
+  checkError "wrong method" 405 "malformed-input" "wrong-method" wrongMethod
+  invalidAdr <- bearerRequest running "GET /api/v1/adrs/bad" []
+  checkError "invalid ADR path" 400 "malformed-input" "invalid-field" invalidAdr
+  duplicateQuery <- bearerRequest running "GET /api/v1/search?q=a&q=b" []
+  checkError "duplicate query" 400 "malformed-input" "duplicate-query" duplicateQuery
+  unknownJson <- sendJson "/api/v1/adrs" (Aeson.object
+    [ "repository_state" Aeson..= Aeson.Null,
+      "title" Aeson..= ("rejected" :: Text),
+      "summary" Aeson..= ("rejected" :: Text),
+      "body" Aeson..= ("rejected" :: Text),
+      "actor" Aeson..= Aeson.Null,
+      "unexpected" Aeson..= True
+    ])
+  checkError "unknown JSON field" 400 "malformed-input" "unknown-json-field" unknownJson
+  cookie <- sessionCookiePair running
+  cookieOnly <- request host
+    ("POST /api/v1/adrs HTTP/1.1\r\nHost: " <> host <> "\r\nOrigin: " <> Security.authorityOrigin (runningAuthority running)
+      <> "\r\nCookie: " <> cookie <> "\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+  checkError "cookie-only mutation" 401 "authentication" "authentication-failed" cookieOnly
+  queryCredential <- bearerRequest running ("GET /api/v1/repository?token=" <> token) []
+  checkError "API query credential" 401 "authentication" "authentication-failed" queryCredential
+  invalidSocketHost <- request host
+    ("GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:1\r\nOrigin: " <> Security.authorityOrigin (runningAuthority running)
+      <> "\r\nAuthorization: Bearer " <> token
+      <> "\r\nConnection: Upgrade, close\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+  checkError "WebSocket invalid Host" 403 "origin" "origin-rejected" invalidSocketHost
 
 testEventsUnavailable :: IO ()
 testEventsUnavailable = withServer $ \running _ -> do
@@ -389,6 +433,7 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
   withSeededRepository $ \orderedRoot -> do
     committed <- newEmptyMVar
     release <- newEmptyMVar
+    responseGate <- newEmptyMVar
     let delayedDispatch compilation compileExact afterJoin fallback allocate afterResolve publisher repo requestValue = do
           outcome <- dispatchApplicationRequest defaultApplicationServices compilation compileExact afterJoin fallback allocate afterResolve publisher repo requestValue
           case (requestValue, outcome) of
@@ -397,19 +442,26 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
           pure outcome
         services = defaultApplicationServices {dispatchApplicationRequest = delayedDispatch}
         injected = dependencies {serverApplicationServices = services}
+        releaseHeld = do
+          void (tryPutMVar release ())
+          void (tryPutMVar responseGate ())
     started <- withWebServer injected orderedRoot (Api.WebOptions Nothing False) $ \ordered _ -> do
       basis <- repositoryBasis ordered
-      delayed <- async (postJson ordered "/api/v1/adrs" (createBody basis))
-      takeMVar committed
-      observed <- getJson ordered "/api/v1/repository"
-      putMVar release ()
-      mutation <- wait delayed
-      mutationGeneration <- integerAt ["metadata", "generation"] mutation
-      observedGeneration <- integerAt ["metadata", "generation"] observed
-      assertBool "a delayed mutation response retains its commit-time generation" (mutationGeneration < observedGeneration)
-      mutationOid <- textAt ["metadata", "as_of", "oid"] mutation
-      observedOid <- textAt ["data", "head"] observed
-      mutationOid @?= observedOid
+      withAsync (postJsonHeld responseGate ordered "/api/v1/adrs" (createBody basis)) $ \delayed ->
+        (do
+           held <- timeout 8000000 $ do
+             takeMVar committed
+             getJson ordered "/api/v1/repository"
+           observed <- maybe (assertFailure "controlled HTTP hold exceeded its eight-second budget") pure held
+           releaseHeld
+           mutation <- timeout 3000000 (wait delayed) >>= maybe (assertFailure "controlled HTTP response exceeded its three-second post-release budget") pure
+           mutationGeneration <- integerAt ["metadata", "generation"] mutation
+           observedGeneration <- integerAt ["metadata", "generation"] observed
+           assertBool "a delayed mutation response retains its commit-time generation" (mutationGeneration < observedGeneration)
+           mutationOid <- textAt ["metadata", "as_of", "oid"] mutation
+           observedOid <- textAt ["data", "head"] observed
+           mutationOid @?= observedOid
+        ) `finally` releaseHeld
     either (assertFailure . Text.unpack) pure started
   withSeededRepository $ \lockedRoot -> do
     reached <- newEmptyMVar
@@ -1497,8 +1549,15 @@ postJson :: RunningServer -> Text -> Aeson.Value -> IO Aeson.Value
 postJson running path body = postJsonStatus running path body >>= \(status, value) ->
   if status == 200 then pure value else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
 
+postJsonHeld :: MVar () -> RunningServer -> Text -> Aeson.Value -> IO Aeson.Value
+postJsonHeld responseGate running path body = postJsonStatusWith (requestRawHeld responseGate) running path body >>= \(status, value) ->
+  if status == 200 then pure value else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
+
 postJsonStatus :: RunningServer -> Text -> Aeson.Value -> IO (Int, Aeson.Value)
-postJsonStatus running path body = do
+postJsonStatus = postJsonStatusWith requestRaw
+
+postJsonStatusWith :: (Text -> BS.ByteString -> IO BS.ByteString) -> RunningServer -> Text -> Aeson.Value -> IO (Int, Aeson.Value)
+postJsonStatusWith rawRequest running path body = do
   let host = Security.authorityHost (runningAuthority running)
       bytes = LBS.toStrict (Aeson.encode body)
   cookie <- sessionCookiePair running
@@ -1507,7 +1566,7 @@ postJsonStatus running path body = do
         ("POST " <> path <> " HTTP/1.1\r\nHost: " <> host <> "\r\nOrigin: " <> Security.authorityOrigin (runningAuthority running)
           <> "\r\nAuthorization: Bearer " <> bootstrapToken running <> "\r\nCookie: " <> cookie <> "\r\nContent-Type: application/json\r\nContent-Length: "
           <> Text.pack (show (BS.length bytes)) <> "\r\nConnection: close\r\n\r\n")
-  response <- requestRaw host (requestHead <> bytes)
+  response <- rawRequest host (requestHead <> bytes)
   status <- responseStatus response
   value <- decodeBody response
   pure (status, value)
@@ -1704,14 +1763,24 @@ requestRaw host bytes = do
     sendAll client bytes
     receiveAll client []
   ownedResult "HTTP response" outcome
-  where
-    receiveAll client chunks = do
-      let accumulated = BS.concat (reverse chunks)
-      if httpResponseComplete accumulated then pure accumulated else do
-        received <- try @SomeException (recv client 4096)
-        case received of
-          Left exception -> if BS.null accumulated then throwIO exception else assertFailure ("HTTP response ended before its declared body: " <> show exception)
-          Right chunk -> if BS.null chunk then pure accumulated else receiveAll client (chunk : chunks)
+
+requestRawHeld :: MVar () -> Text -> BS.ByteString -> IO BS.ByteString
+requestRawHeld responseGate host bytes = do
+  port <- either assertFailure pure (authorityPort host)
+  outcome <- runOwnedSocket 12000000 port $ \client -> do
+    sendAll client bytes
+    takeMVar responseGate
+    receiveAll client []
+  ownedResult "controlled HTTP response" outcome
+
+receiveAll :: Socket -> [BS.ByteString] -> IO BS.ByteString
+receiveAll client chunks = do
+  let accumulated = BS.concat (reverse chunks)
+  if httpResponseComplete accumulated then pure accumulated else do
+    received <- try @SomeException (recv client 4096)
+    case received of
+      Left exception -> if BS.null accumulated then throwIO exception else assertFailure ("HTTP response ended before its declared body: " <> show exception)
+      Right chunk -> if BS.null chunk then pure accumulated else receiveAll client (chunk : chunks)
 
 httpResponseComplete :: BS.ByteString -> Bool
 httpResponseComplete response =
