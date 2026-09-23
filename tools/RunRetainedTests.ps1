@@ -122,14 +122,19 @@ function Get-BuildInputInventory {
         $candidate = Join-Path $Root $relative
         if (Test-Path -LiteralPath $candidate -PathType Leaf) { $paths.Add($candidate) }
     }
-    foreach ($relative in @('web/static/index.html', 'web/static/app.css', 'web/dist/app.js')) {
+    foreach ($relative in @(
+        'web/elm.json', 'web/package.json', 'web/package-lock.json',
+        'web/static/index.html', 'web/static/app.css', 'web/static/bridge.js',
+        'web/tools/build.mjs', 'web/tools/verify-assets.mjs',
+        'web/dist/app.js', 'web/dist/provenance.json'
+    )) {
         $candidate = Join-Path $Root $relative
         if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
             throw "Required embedded web input is missing: $candidate"
         }
         $paths.Add($candidate)
     }
-    foreach ($directoryName in @('src', 'app', 'bench', 'test')) {
+    foreach ($directoryName in @('src', 'app', 'bench', 'test', 'web/src', 'web/static', 'web/tools', 'web/tests', 'web/fixtures')) {
         $directory = Join-Path $Root $directoryName
         if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
             throw "Required build-input directory is missing: $directory"

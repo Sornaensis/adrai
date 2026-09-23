@@ -35,7 +35,9 @@ unrelated binaries are rejected. Build and artifact-discovery commands clear
 inherited `STACK_YAML` and pass the repository's hashed `stack.yaml` explicitly.
 Before compilation, build mode records a
 deterministic path and SHA-256 inventory of every file under `src`, `app`,
-`bench`, and `test`, the three embedded web assets, plus the Stack and package configuration. It verifies that
+`bench`, and `test`, the Elm sources and tests, static bridge/bootstrap/style,
+web build scripts/manifests, shared API fixture, generated app and provenance
+receipt, plus the Stack and package configuration. It verifies that
 inventory again after compilation. The generated manifest also records Git
 HEAD and each executable path and SHA-256 hash. List, focused, and complete
 modes recompute the full input inventory and reject a changed input, stale
@@ -142,11 +144,15 @@ multiset from the verified partitions, retained components, and expanded repeat
 counts and requires exact equality with the configured queue before dispatch.
 Quoted command lines are checked against the Windows 32,767-character limit.
 
-The current source ledger declares 881 unique ordinary tests, 9 cache-selection
-tests, 28 stress tests, and 6 benchmark-registration tests: 924 unique
-registrations. The explicit competing-target repeat makes 925 executions. The
-runner does not hardcode these totals. A fresh matching build must list every
+The P7-04 source ledger declares 886 unique ordinary tests, 9 cache-selection
+tests, 28 stress tests, and 6 benchmark-registration tests: 929 unique
+registrations. The explicit competing-target repeat makes 930 planned
+executions. These source counts require a fresh runner List before they are
+verified; only Complete establishes actual execution. The runner does not
+hardcode these totals. A fresh matching build must list every
 actual registration and prove exact equality before dispatch.
+P7-04 adds five ordinary leaves to the P7-03 ledger of 881 ordinary,
+924 unique, and 925 planned executions; all earlier names remain retained.
 
 The Round8 2026-09-07 snapshot baseline is historical diagnostic evidence for
 that frozen input set. It is not an elapsed-time forecast for another snapshot:
@@ -166,7 +172,7 @@ that frozen input set. It is not an elapsed-time forecast for another snapshot:
 | `D` | 2 | The former 3-test job was censored at 29.257487 seconds. |
 | `cache` | 9 | Unstarted. |
 | `C` | 4 | Unstarted. |
-| `Rest` | 569 | Unstarted. |
+| `Rest` | 580 | Unstarted. |
 | `stress` | 28 | Unstarted; the gate still requires actual `--run-stress`. |
 | `E` | 2 | Unstarted. |
 | `registration` | 6 | Unstarted. |
@@ -247,9 +253,18 @@ temporary directory unless `-EvidenceDirectory` supplies another path outside
 the repository. Evidence records artifact hashes, exact arguments, process IDs,
 durations, exit codes, timeout/orphan classification, and cleanup verification.
 
-Because the Haskell binary embeds `web/static/index.html`,
-`web/static/app.css`, and `web/dist/app.js`, List, Focused, and Complete reject
-any byte drift in those inputs relative to the build manifest.
+Run `npm --prefix web run verify:assets` before the canonical Haskell Build.
+It recompiles optimized Elm in an owned temporary location and compares the
+generated bundle and input receipt without publishing. The Haskell asset
+module independently validates that receipt at compile time, including the
+recursive web source set. A warm Haskell Build must reject changed or newly
+added web source, bridge, or bootstrap inputs until the bundle is rebuilt. List, Focused, and
+Complete then reject any input drift relative to the Haskell build manifest.
+Run `browser-tests/support/run-p704-smoke.ps1 -Probe normal` after a fresh
+canonical Build to exercise the compact P7-04 Playwright smoke. It launches a
+real `adrai web` process in an owned temporary repository, verifies checked
+mutation and stale-draft review, and records desktop and narrow browser evidence;
+the broader adversarial browser matrix remains a later gate.
 
 The accepted stress redesign reduces previous large capacity fixtures to the
 retained sizes declared by the test ledger. This gate proves the retained risk

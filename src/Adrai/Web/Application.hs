@@ -59,6 +59,7 @@ import Adrai.Web.Socket (EventsTransport (..))
 import Control.Exception
   ( SomeAsyncException,
     SomeException,
+    catch,
     displayException,
     fromException,
     throwIO,
@@ -142,7 +143,12 @@ webSocketUpgradeAdmitted runtime request =
       Left _ -> False
 
 webApplication :: ApplicationRuntime -> Application
-webApplication runtime request respond
+webApplication runtime request respond =
+  webApplicationWithGeneration runtime request respond `catch` \Events.GenerationExhausted ->
+    respond (generationExhaustedResponse (Api.ResponseMetadata (Api.mkGeneration maxBound) (Api.AsOfUnavailable "generation-exhausted")))
+
+webApplicationWithGeneration :: ApplicationRuntime -> Application
+webApplicationWithGeneration runtime request respond
   | encodedQueryBytes request > Api.maximumQueryBytes (applicationLimits runtime) =
       case Security.admitRequest (applicationAuthority runtime) (applicationSecret runtime) (rawSecurityRequestWithoutQuery runtime request) of
         Left problem -> respond (errorResponse preAuthenticationMetadata (securityApiError problem))
@@ -152,7 +158,7 @@ webApplication runtime request respond
       case Security.admitRequest (applicationAuthority runtime) (applicationSecret runtime) securityRequest of
         Left problem -> respond (errorResponse preAuthenticationMetadata (securityApiError problem))
         Right credential ->
-          if targetFor request == Security.BootstrapTarget
+          if null (pathInfo request)
             then do
               metadata <- unavailableMetadata runtime "static-resource"
               respond (assetResponse metadata "text/html; charset=utf-8" (bootstrapCookie credential) indexHtml)
@@ -196,7 +202,9 @@ handleApi runtime request respond = do
                                 pure (Api.mkGeneration (Events.eventGeneration envelope))
                           dispatched <- trySynchronous (dispatchApplicationRequest services (applicationCompilation runtime) (applicationCompileExact services) (applicationAfterCompilationJoin services) generation (nextGeneration runtime) (applicationAfterQueryResolution services) publish (applicationRepo runtime) decoded)
                           case dispatched of
-                            Left exception -> respond (errorResponse metadata (Api.serviceFailure (Text.pack (displayException exception))))
+                            Left exception -> case fromException exception of
+                              Just Events.GenerationExhausted -> respond (generationExhaustedResponse metadata)
+                              Nothing -> respond (errorResponse metadata (Api.serviceFailure (Text.pack (displayException exception))))
                             Right (Left problem) -> respond (errorResponse metadata problem)
                             Right (Right (payload, asOf, observedGeneration)) ->
                               let responseMetadata = Api.ResponseMetadata observedGeneration asOf
@@ -215,7 +223,7 @@ dispatchProduction compilation compileExact afterCompilationJoin fallbackGenerat
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
-        result <- Query.runShow repository value {Query.showRequestRevision = gitOidText oid}
+        result <- Query.runWebShow repository value {Query.showRequestRevision = gitOidText oid}
         pure $ case result of
           Left failure -> Left (showApiError failure)
           Right projection -> Right (Api.ApiShowResult projection, Api.AsOfCommit oid, generation)
@@ -242,7 +250,7 @@ dispatchProduction compilation compileExact afterCompilationJoin fallbackGenerat
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
         prepared <- ensureCompiled compilation compileExact afterCompilationJoin repository oid
-        result <- case prepared of Left problem -> pure (Left (Query.SearchCompilerFailure problem)); Right _ -> Query.runSearchExact repository oid value
+        result <- case prepared of Left problem -> pure (Left (Query.SearchCompilerFailure problem)); Right _ -> Query.runWebSearchExact repository oid value
         pure $ case result of
           Left failure -> Left (searchApiError failure)
           Right projection -> Right (Api.ApiSearchResult projection, Api.AsOfCommit oid, generation)
@@ -385,11 +393,13 @@ captureObservation repository afterResolution allocate observe = do
         afterResolution
         generation <- allocate
         pure (Right (value, generation))
-  pure $ case captured of
-    Right result -> result
-    Left failure -> case fromException failure :: Maybe GitLockError of
-      Just _ -> Left (Api.ApiError Api.ServiceFailure 503 "repository-busy" "repository observation is temporarily unavailable")
-      Nothing -> Left (Api.serviceFailure (Text.pack (displayException failure)))
+  case captured of
+    Right result -> pure result
+    Left failure -> case fromException failure of
+      Just Events.GenerationExhausted -> throwIO Events.GenerationExhausted
+      Nothing -> pure $ case fromException failure :: Maybe GitLockError of
+        Just _ -> Left (Api.ApiError Api.ServiceFailure 503 "repository-busy" "repository observation is temporarily unavailable")
+        Nothing -> Left (Api.serviceFailure (Text.pack (displayException failure)))
 
 revisionApiError :: GitError -> Api.ApiError
 revisionApiError problem = case problem of
@@ -474,17 +484,27 @@ ensureCompiled coordinator compileExact afterJoin repository oid = do
 
 subscribeApplicationEvents :: ApplicationRuntime -> IO (Either Text Events.EventSubscriber)
 subscribeApplicationEvents runtime = do
-  captured <- trySynchronous $ withGitLock (Api.repoRepository (applicationRepo runtime)) $ do
-    basis <- observeRepositoryBasis (applicationRepo runtime)
-    case basis of
-      Left problem -> pure (Left (Api.apiErrorMessage problem))
-      Right observed -> Events.registerSubscriberWithInitial (applicationCoordinator runtime) (Events.EventAt (Api.basisHead observed))
-  pure (either (Left . Text.pack . displayException) id captured)
+  terminal <- Events.isGenerationExhausted (applicationCoordinator runtime)
+  if terminal then pure (Left "generation-exhausted") else do
+    captured <- trySynchronous $ withGitLock (Api.repoRepository (applicationRepo runtime)) $ do
+      basis <- observeRepositoryBasis (applicationRepo runtime)
+      case basis of
+        Left problem -> pure (Left (Api.apiErrorMessage problem))
+        Right observed -> Events.registerSubscriberWithInitial (applicationCoordinator runtime) (Events.EventAt (Api.basisHead observed))
+    case captured of
+      Right (Right subscriber) -> pure (Right subscriber)
+      Right (Left problem) -> terminalOr (Left problem)
+      Left failure -> terminalOr (Left (Text.pack (displayException failure)))
+  where
+    terminalOr fallback = do
+      terminal <- Events.isGenerationExhausted (applicationCoordinator runtime)
+      pure (if terminal then Left "generation-exhausted" else fallback)
 
 publishWatcherEvent :: ApplicationRuntime -> Watch.RepositoryEvent -> IO ()
 publishWatcherEvent runtime event = case event of
   Watch.RepositoryObservationFailure epoch _ -> publishObserved epoch (Events.EventAsOfUnavailable "repository-observation-failed") [minBound .. maxBound]
   Watch.RepositoryFactsChanged epoch (Watch.RepositorySnapshot _ facts) invalidations -> do
+    throwIfTerminal
     let repository = Api.repoRepository (applicationRepo runtime)
     captured <- trySynchronous $ withGitLock repository $ do
       actualState <- repositoryHeadState repository
@@ -494,15 +514,21 @@ publishWatcherEvent runtime event = case event of
           published <- Events.publishInvalidationWhen (Watch.observationEpochMatches (applicationActiveFiles runtime) epoch) (applicationCoordinator runtime) (Events.EventAt oid) invalidations
           maybe (ioError (userError "repository observation epoch was superseded before publication")) (const (pure ())) published
         _ -> ioError (userError "repository observation was superseded before publication")
-    either throwIO pure captured
+    throwOnFailure captured
   Watch.RepositoryFactsChanged _ _ _ -> pure ()
   where
     publishObserved epoch asOf invalidations = do
+      throwIfTerminal
       let repository = Api.repoRepository (applicationRepo runtime)
       captured <- trySynchronous $ withGitLock repository $ do
         published <- Events.publishInvalidationWhen (Watch.observationEpochMatches (applicationActiveFiles runtime) epoch) (applicationCoordinator runtime) asOf invalidations
         maybe (ioError (userError "repository observation epoch was superseded before publication")) (const (pure ())) published
-      either throwIO pure captured
+      throwOnFailure captured
+    throwIfTerminal = do
+      terminal <- Events.isGenerationExhausted (applicationCoordinator runtime)
+      if terminal then throwIO Events.GenerationExhausted else pure ()
+    throwOnFailure (Right ()) = pure ()
+    throwOnFailure (Left failure) = throwIfTerminal >> throwIO failure
 
 rawSecurityRequest :: ApplicationRuntime -> Request -> Security.SecurityRequest
 rawSecurityRequest _runtime request =
@@ -534,7 +560,7 @@ httpMethod request
 
 targetFor :: Request -> Security.AdmissionTarget
 targetFor request
-  | null (pathInfo request) = Security.BootstrapTarget
+  | null (pathInfo request) = if ByteString.null (rawQueryString request) then Security.StaticTarget else Security.BootstrapTarget
   | pathInfo request == ["app.css"] || pathInfo request == ["app.js"] = Security.StaticTarget
   | pathInfo request == ["api", "v1", "events"] = Security.WebSocketUpgradeTarget
   | requestMethod request == Http.methodPost = Security.MutationTarget
@@ -607,6 +633,12 @@ jsonResponse status value metadata = responseLBS status (textHeaders metadata <>
 
 errorResponse :: Api.ResponseMetadata -> Api.ApiError -> Response
 errorResponse metadata problem = jsonResponse (Http.mkStatus (Api.apiErrorStatus problem) "") (Api.errorResponseJson (Api.ApiErrorResponse metadata problem)) (Api.responseHeaders metadata)
+
+generationExhaustedResponse :: Api.ResponseMetadata -> Response
+generationExhaustedResponse metadata =
+  errorResponse
+    (metadata {Api.responseAsOf = Api.AsOfUnavailable "generation-exhausted"})
+    (Api.ApiError Api.ServiceFailure 503 "generation-exhausted" "process generation exhausted; restart the web server")
 
 metadataHeaders :: Api.ResponseMetadata -> [(Header.HeaderName, ByteString)]
 metadataHeaders = textHeaders . Api.responseHeaders

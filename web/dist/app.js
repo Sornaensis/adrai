@@ -80,87 +80,6 @@ function A9(fun, a, b, c, d, e, f, g, h, i) {
 
 
 
-var _List_Nil = { $: 0 };
-var _List_Nil_UNUSED = { $: '[]' };
-
-function _List_Cons(hd, tl) { return { $: 1, a: hd, b: tl }; }
-function _List_Cons_UNUSED(hd, tl) { return { $: '::', a: hd, b: tl }; }
-
-
-var _List_cons = F2(_List_Cons);
-
-function _List_fromArray(arr)
-{
-	var out = _List_Nil;
-	for (var i = arr.length; i--; )
-	{
-		out = _List_Cons(arr[i], out);
-	}
-	return out;
-}
-
-function _List_toArray(xs)
-{
-	for (var out = []; xs.b; xs = xs.b) // WHILE_CONS
-	{
-		out.push(xs.a);
-	}
-	return out;
-}
-
-var _List_map2 = F3(function(f, xs, ys)
-{
-	for (var arr = []; xs.b && ys.b; xs = xs.b, ys = ys.b) // WHILE_CONSES
-	{
-		arr.push(A2(f, xs.a, ys.a));
-	}
-	return _List_fromArray(arr);
-});
-
-var _List_map3 = F4(function(f, xs, ys, zs)
-{
-	for (var arr = []; xs.b && ys.b && zs.b; xs = xs.b, ys = ys.b, zs = zs.b) // WHILE_CONSES
-	{
-		arr.push(A3(f, xs.a, ys.a, zs.a));
-	}
-	return _List_fromArray(arr);
-});
-
-var _List_map4 = F5(function(f, ws, xs, ys, zs)
-{
-	for (var arr = []; ws.b && xs.b && ys.b && zs.b; ws = ws.b, xs = xs.b, ys = ys.b, zs = zs.b) // WHILE_CONSES
-	{
-		arr.push(A4(f, ws.a, xs.a, ys.a, zs.a));
-	}
-	return _List_fromArray(arr);
-});
-
-var _List_map5 = F6(function(f, vs, ws, xs, ys, zs)
-{
-	for (var arr = []; vs.b && ws.b && xs.b && ys.b && zs.b; vs = vs.b, ws = ws.b, xs = xs.b, ys = ys.b, zs = zs.b) // WHILE_CONSES
-	{
-		arr.push(A5(f, vs.a, ws.a, xs.a, ys.a, zs.a));
-	}
-	return _List_fromArray(arr);
-});
-
-var _List_sortBy = F2(function(f, xs)
-{
-	return _List_fromArray(_List_toArray(xs).sort(function(a, b) {
-		return _Utils_cmp(f(a), f(b));
-	}));
-});
-
-var _List_sortWith = F2(function(f, xs)
-{
-	return _List_fromArray(_List_toArray(xs).sort(function(a, b) {
-		var ord = A2(f, a, b);
-		return ord === $elm$core$Basics$EQ ? 0 : ord === $elm$core$Basics$LT ? -1 : 1;
-	}));
-});
-
-
-
 var _JsArray_empty = [];
 
 function _JsArray_singleton(value)
@@ -600,11 +519,11 @@ function _Debug_crash_UNUSED(identifier, fact1, fact2, fact3, fact4)
 
 function _Debug_regionToString(region)
 {
-	if (region.e.d === region.f.d)
+	if (region.b$.aR === region.ch.aR)
 	{
-		return 'on line ' + region.e.d;
+		return 'on line ' + region.b$.aR;
 	}
-	return 'on lines ' + region.e.d + ' through ' + region.f.d;
+	return 'on lines ' + region.b$.aR + ' through ' + region.ch.aR;
 }
 
 
@@ -790,6 +709,87 @@ function _Utils_ap(xs, ys)
 	}
 	return root;
 }
+
+
+
+var _List_Nil = { $: 0 };
+var _List_Nil_UNUSED = { $: '[]' };
+
+function _List_Cons(hd, tl) { return { $: 1, a: hd, b: tl }; }
+function _List_Cons_UNUSED(hd, tl) { return { $: '::', a: hd, b: tl }; }
+
+
+var _List_cons = F2(_List_Cons);
+
+function _List_fromArray(arr)
+{
+	var out = _List_Nil;
+	for (var i = arr.length; i--; )
+	{
+		out = _List_Cons(arr[i], out);
+	}
+	return out;
+}
+
+function _List_toArray(xs)
+{
+	for (var out = []; xs.b; xs = xs.b) // WHILE_CONS
+	{
+		out.push(xs.a);
+	}
+	return out;
+}
+
+var _List_map2 = F3(function(f, xs, ys)
+{
+	for (var arr = []; xs.b && ys.b; xs = xs.b, ys = ys.b) // WHILE_CONSES
+	{
+		arr.push(A2(f, xs.a, ys.a));
+	}
+	return _List_fromArray(arr);
+});
+
+var _List_map3 = F4(function(f, xs, ys, zs)
+{
+	for (var arr = []; xs.b && ys.b && zs.b; xs = xs.b, ys = ys.b, zs = zs.b) // WHILE_CONSES
+	{
+		arr.push(A3(f, xs.a, ys.a, zs.a));
+	}
+	return _List_fromArray(arr);
+});
+
+var _List_map4 = F5(function(f, ws, xs, ys, zs)
+{
+	for (var arr = []; ws.b && xs.b && ys.b && zs.b; ws = ws.b, xs = xs.b, ys = ys.b, zs = zs.b) // WHILE_CONSES
+	{
+		arr.push(A4(f, ws.a, xs.a, ys.a, zs.a));
+	}
+	return _List_fromArray(arr);
+});
+
+var _List_map5 = F6(function(f, vs, ws, xs, ys, zs)
+{
+	for (var arr = []; vs.b && ws.b && xs.b && ys.b && zs.b; vs = vs.b, ws = ws.b, xs = xs.b, ys = ys.b, zs = zs.b) // WHILE_CONSES
+	{
+		arr.push(A5(f, vs.a, ws.a, xs.a, ys.a, zs.a));
+	}
+	return _List_fromArray(arr);
+});
+
+var _List_sortBy = F2(function(f, xs)
+{
+	return _List_fromArray(_List_toArray(xs).sort(function(a, b) {
+		return _Utils_cmp(f(a), f(b));
+	}));
+});
+
+var _List_sortWith = F2(function(f, xs)
+{
+	return _List_fromArray(_List_toArray(xs).sort(function(a, b) {
+		var ord = A2(f, a, b);
+		return ord === $elm$core$Basics$EQ ? 0 : ord === $elm$core$Basics$LT ? -1 : 1;
+	}));
+});
 
 
 
@@ -1861,9 +1861,9 @@ var _Platform_worker = F4(function(impl, flagDecoder, debugMetadata, args)
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.h,
-		impl.j,
-		impl.i,
+		impl.dO,
+		impl.eu,
+		impl.em,
 		function() { return function() {} }
 	);
 });
@@ -2360,8 +2360,2044 @@ function _Platform_mergeExportsDebug(moduleName, obj, exports)
 			: (obj[name] = exports[name]);
 	}
 }
-var $elm$core$Basics$EQ = 1;
-var $elm$core$Basics$LT = 0;
+
+
+
+
+// HELPERS
+
+
+var _VirtualDom_divertHrefToApp;
+
+var _VirtualDom_doc = typeof document !== 'undefined' ? document : {};
+
+
+function _VirtualDom_appendChild(parent, child)
+{
+	parent.appendChild(child);
+}
+
+var _VirtualDom_init = F4(function(virtualNode, flagDecoder, debugMetadata, args)
+{
+	// NOTE: this function needs _Platform_export available to work
+
+	/**/
+	var node = args['node'];
+	//*/
+	/**_UNUSED/
+	var node = args && args['node'] ? args['node'] : _Debug_crash(0);
+	//*/
+
+	node.parentNode.replaceChild(
+		_VirtualDom_render(virtualNode, function() {}),
+		node
+	);
+
+	return {};
+});
+
+
+
+// TEXT
+
+
+function _VirtualDom_text(string)
+{
+	return {
+		$: 0,
+		a: string
+	};
+}
+
+
+
+// NODE
+
+
+var _VirtualDom_nodeNS = F2(function(namespace, tag)
+{
+	return F2(function(factList, kidList)
+	{
+		for (var kids = [], descendantsCount = 0; kidList.b; kidList = kidList.b) // WHILE_CONS
+		{
+			var kid = kidList.a;
+			descendantsCount += (kid.b || 0);
+			kids.push(kid);
+		}
+		descendantsCount += kids.length;
+
+		return {
+			$: 1,
+			c: tag,
+			d: _VirtualDom_organizeFacts(factList),
+			e: kids,
+			f: namespace,
+			b: descendantsCount
+		};
+	});
+});
+
+
+var _VirtualDom_node = _VirtualDom_nodeNS(undefined);
+
+
+
+// KEYED NODE
+
+
+var _VirtualDom_keyedNodeNS = F2(function(namespace, tag)
+{
+	return F2(function(factList, kidList)
+	{
+		for (var kids = [], descendantsCount = 0; kidList.b; kidList = kidList.b) // WHILE_CONS
+		{
+			var kid = kidList.a;
+			descendantsCount += (kid.b.b || 0);
+			kids.push(kid);
+		}
+		descendantsCount += kids.length;
+
+		return {
+			$: 2,
+			c: tag,
+			d: _VirtualDom_organizeFacts(factList),
+			e: kids,
+			f: namespace,
+			b: descendantsCount
+		};
+	});
+});
+
+
+var _VirtualDom_keyedNode = _VirtualDom_keyedNodeNS(undefined);
+
+
+
+// CUSTOM
+
+
+function _VirtualDom_custom(factList, model, render, diff)
+{
+	return {
+		$: 3,
+		d: _VirtualDom_organizeFacts(factList),
+		g: model,
+		h: render,
+		i: diff
+	};
+}
+
+
+
+// MAP
+
+
+var _VirtualDom_map = F2(function(tagger, node)
+{
+	return {
+		$: 4,
+		j: tagger,
+		k: node,
+		b: 1 + (node.b || 0)
+	};
+});
+
+
+
+// LAZY
+
+
+function _VirtualDom_thunk(refs, thunk)
+{
+	return {
+		$: 5,
+		l: refs,
+		m: thunk,
+		k: undefined
+	};
+}
+
+var _VirtualDom_lazy = F2(function(func, a)
+{
+	return _VirtualDom_thunk([func, a], function() {
+		return func(a);
+	});
+});
+
+var _VirtualDom_lazy2 = F3(function(func, a, b)
+{
+	return _VirtualDom_thunk([func, a, b], function() {
+		return A2(func, a, b);
+	});
+});
+
+var _VirtualDom_lazy3 = F4(function(func, a, b, c)
+{
+	return _VirtualDom_thunk([func, a, b, c], function() {
+		return A3(func, a, b, c);
+	});
+});
+
+var _VirtualDom_lazy4 = F5(function(func, a, b, c, d)
+{
+	return _VirtualDom_thunk([func, a, b, c, d], function() {
+		return A4(func, a, b, c, d);
+	});
+});
+
+var _VirtualDom_lazy5 = F6(function(func, a, b, c, d, e)
+{
+	return _VirtualDom_thunk([func, a, b, c, d, e], function() {
+		return A5(func, a, b, c, d, e);
+	});
+});
+
+var _VirtualDom_lazy6 = F7(function(func, a, b, c, d, e, f)
+{
+	return _VirtualDom_thunk([func, a, b, c, d, e, f], function() {
+		return A6(func, a, b, c, d, e, f);
+	});
+});
+
+var _VirtualDom_lazy7 = F8(function(func, a, b, c, d, e, f, g)
+{
+	return _VirtualDom_thunk([func, a, b, c, d, e, f, g], function() {
+		return A7(func, a, b, c, d, e, f, g);
+	});
+});
+
+var _VirtualDom_lazy8 = F9(function(func, a, b, c, d, e, f, g, h)
+{
+	return _VirtualDom_thunk([func, a, b, c, d, e, f, g, h], function() {
+		return A8(func, a, b, c, d, e, f, g, h);
+	});
+});
+
+
+
+// FACTS
+
+
+var _VirtualDom_on = F2(function(key, handler)
+{
+	return {
+		$: 'a0',
+		n: key,
+		o: handler
+	};
+});
+var _VirtualDom_style = F2(function(key, value)
+{
+	return {
+		$: 'a1',
+		n: key,
+		o: value
+	};
+});
+var _VirtualDom_property = F2(function(key, value)
+{
+	return {
+		$: 'a2',
+		n: key,
+		o: value
+	};
+});
+var _VirtualDom_attribute = F2(function(key, value)
+{
+	return {
+		$: 'a3',
+		n: key,
+		o: value
+	};
+});
+var _VirtualDom_attributeNS = F3(function(namespace, key, value)
+{
+	return {
+		$: 'a4',
+		n: key,
+		o: { f: namespace, o: value }
+	};
+});
+
+
+
+// XSS ATTACK VECTOR CHECKS
+//
+// For some reason, tabs can appear in href protocols and it still works.
+// So '\tjava\tSCRIPT:alert("!!!")' and 'javascript:alert("!!!")' are the same
+// in practice. That is why _VirtualDom_RE_js and _VirtualDom_RE_js_html look
+// so freaky.
+//
+// Pulling the regular expressions out to the top level gives a slight speed
+// boost in small benchmarks (4-10%) but hoisting values to reduce allocation
+// can be unpredictable in large programs where JIT may have a harder time with
+// functions are not fully self-contained. The benefit is more that the js and
+// js_html ones are so weird that I prefer to see them near each other.
+
+
+var _VirtualDom_RE_script = /^script$/i;
+var _VirtualDom_RE_on_formAction = /^(on|formAction$)/i;
+var _VirtualDom_RE_js = /^\s*j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:/i;
+var _VirtualDom_RE_js_html = /^\s*(j\s*a\s*v\s*a\s*s\s*c\s*r\s*i\s*p\s*t\s*:|d\s*a\s*t\s*a\s*:\s*t\s*e\s*x\s*t\s*\/\s*h\s*t\s*m\s*l\s*(,|;))/i;
+
+
+function _VirtualDom_noScript(tag)
+{
+	return _VirtualDom_RE_script.test(tag) ? 'p' : tag;
+}
+
+function _VirtualDom_noOnOrFormAction(key)
+{
+	return _VirtualDom_RE_on_formAction.test(key) ? 'data-' + key : key;
+}
+
+function _VirtualDom_noInnerHtmlOrFormAction(key)
+{
+	return key == 'innerHTML' || key == 'outerHTML' || key == 'formAction' ? 'data-' + key : key;
+}
+
+function _VirtualDom_noJavaScriptUri(value)
+{
+	return _VirtualDom_RE_js.test(value)
+		? /**/''//*//**_UNUSED/'javascript:alert("This is an XSS vector. Please use ports or web components instead.")'//*/
+		: value;
+}
+
+function _VirtualDom_noJavaScriptOrHtmlUri(value)
+{
+	return _VirtualDom_RE_js_html.test(value)
+		? /**/''//*//**_UNUSED/'javascript:alert("This is an XSS vector. Please use ports or web components instead.")'//*/
+		: value;
+}
+
+function _VirtualDom_noJavaScriptOrHtmlJson(value)
+{
+	return (
+		(typeof _Json_unwrap(value) === 'string' && _VirtualDom_RE_js_html.test(_Json_unwrap(value)))
+		||
+		(Array.isArray(_Json_unwrap(value)) && _VirtualDom_RE_js_html.test(String(_Json_unwrap(value))))
+	)
+		? _Json_wrap(
+			/**/''//*//**_UNUSED/'javascript:alert("This is an XSS vector. Please use ports or web components instead.")'//*/
+		) : value;
+}
+
+
+
+// MAP FACTS
+
+
+var _VirtualDom_mapAttribute = F2(function(func, attr)
+{
+	return (attr.$ === 'a0')
+		? A2(_VirtualDom_on, attr.n, _VirtualDom_mapHandler(func, attr.o))
+		: attr;
+});
+
+function _VirtualDom_mapHandler(func, handler)
+{
+	var tag = $elm$virtual_dom$VirtualDom$toHandlerInt(handler);
+
+	// 0 = Normal
+	// 1 = MayStopPropagation
+	// 2 = MayPreventDefault
+	// 3 = Custom
+
+	return {
+		$: handler.$,
+		a:
+			!tag
+				? A2($elm$json$Json$Decode$map, func, handler.a)
+				:
+			A3($elm$json$Json$Decode$map2,
+				tag < 3
+					? _VirtualDom_mapEventTuple
+					: _VirtualDom_mapEventRecord,
+				$elm$json$Json$Decode$succeed(func),
+				handler.a
+			)
+	};
+}
+
+var _VirtualDom_mapEventTuple = F2(function(func, tuple)
+{
+	return _Utils_Tuple2(func(tuple.a), tuple.b);
+});
+
+var _VirtualDom_mapEventRecord = F2(function(func, record)
+{
+	return {
+		cx: func(record.cx),
+		b2: record.b2,
+		bN: record.bN
+	}
+});
+
+
+
+// ORGANIZE FACTS
+
+
+function _VirtualDom_organizeFacts(factList)
+{
+	for (var facts = {}; factList.b; factList = factList.b) // WHILE_CONS
+	{
+		var entry = factList.a;
+
+		var tag = entry.$;
+		var key = entry.n;
+		var value = entry.o;
+
+		if (tag === 'a2')
+		{
+			(key === 'className')
+				? _VirtualDom_addClass(facts, key, _Json_unwrap(value))
+				: facts[key] = _Json_unwrap(value);
+
+			continue;
+		}
+
+		var subFacts = facts[tag] || (facts[tag] = {});
+		(tag === 'a3' && key === 'class')
+			? _VirtualDom_addClass(subFacts, key, value)
+			: subFacts[key] = value;
+	}
+
+	return facts;
+}
+
+function _VirtualDom_addClass(object, key, newClass)
+{
+	var classes = object[key];
+	object[key] = classes ? classes + ' ' + newClass : newClass;
+}
+
+
+
+// RENDER
+
+
+function _VirtualDom_render(vNode, eventNode)
+{
+	var tag = vNode.$;
+
+	if (tag === 5)
+	{
+		return _VirtualDom_render(vNode.k || (vNode.k = vNode.m()), eventNode);
+	}
+
+	if (tag === 0)
+	{
+		return _VirtualDom_doc.createTextNode(vNode.a);
+	}
+
+	if (tag === 4)
+	{
+		var subNode = vNode.k;
+		var tagger = vNode.j;
+
+		while (subNode.$ === 4)
+		{
+			typeof tagger !== 'object'
+				? tagger = [tagger, subNode.j]
+				: tagger.push(subNode.j);
+
+			subNode = subNode.k;
+		}
+
+		var subEventRoot = { j: tagger, p: eventNode };
+		var domNode = _VirtualDom_render(subNode, subEventRoot);
+		domNode.elm_event_node_ref = subEventRoot;
+		return domNode;
+	}
+
+	if (tag === 3)
+	{
+		var domNode = vNode.h(vNode.g);
+		_VirtualDom_applyFacts(domNode, eventNode, vNode.d);
+		return domNode;
+	}
+
+	// at this point `tag` must be 1 or 2
+
+	var domNode = vNode.f
+		? _VirtualDom_doc.createElementNS(vNode.f, vNode.c)
+		: _VirtualDom_doc.createElement(vNode.c);
+
+	if (_VirtualDom_divertHrefToApp && vNode.c == 'a')
+	{
+		domNode.addEventListener('click', _VirtualDom_divertHrefToApp(domNode));
+	}
+
+	_VirtualDom_applyFacts(domNode, eventNode, vNode.d);
+
+	for (var kids = vNode.e, i = 0; i < kids.length; i++)
+	{
+		_VirtualDom_appendChild(domNode, _VirtualDom_render(tag === 1 ? kids[i] : kids[i].b, eventNode));
+	}
+
+	return domNode;
+}
+
+
+
+// APPLY FACTS
+
+
+function _VirtualDom_applyFacts(domNode, eventNode, facts)
+{
+	for (var key in facts)
+	{
+		var value = facts[key];
+
+		key === 'a1'
+			? _VirtualDom_applyStyles(domNode, value)
+			:
+		key === 'a0'
+			? _VirtualDom_applyEvents(domNode, eventNode, value)
+			:
+		key === 'a3'
+			? _VirtualDom_applyAttrs(domNode, value)
+			:
+		key === 'a4'
+			? _VirtualDom_applyAttrsNS(domNode, value)
+			:
+		((key !== 'value' && key !== 'checked') || domNode[key] !== value) && (domNode[key] = value);
+	}
+}
+
+
+
+// APPLY STYLES
+
+
+function _VirtualDom_applyStyles(domNode, styles)
+{
+	var domNodeStyle = domNode.style;
+
+	for (var key in styles)
+	{
+		domNodeStyle[key] = styles[key];
+	}
+}
+
+
+
+// APPLY ATTRS
+
+
+function _VirtualDom_applyAttrs(domNode, attrs)
+{
+	for (var key in attrs)
+	{
+		var value = attrs[key];
+		typeof value !== 'undefined'
+			? domNode.setAttribute(key, value)
+			: domNode.removeAttribute(key);
+	}
+}
+
+
+
+// APPLY NAMESPACED ATTRS
+
+
+function _VirtualDom_applyAttrsNS(domNode, nsAttrs)
+{
+	for (var key in nsAttrs)
+	{
+		var pair = nsAttrs[key];
+		var namespace = pair.f;
+		var value = pair.o;
+
+		typeof value !== 'undefined'
+			? domNode.setAttributeNS(namespace, key, value)
+			: domNode.removeAttributeNS(namespace, key);
+	}
+}
+
+
+
+// APPLY EVENTS
+
+
+function _VirtualDom_applyEvents(domNode, eventNode, events)
+{
+	var allCallbacks = domNode.elmFs || (domNode.elmFs = {});
+
+	for (var key in events)
+	{
+		var newHandler = events[key];
+		var oldCallback = allCallbacks[key];
+
+		if (!newHandler)
+		{
+			domNode.removeEventListener(key, oldCallback);
+			allCallbacks[key] = undefined;
+			continue;
+		}
+
+		if (oldCallback)
+		{
+			var oldHandler = oldCallback.q;
+			if (oldHandler.$ === newHandler.$)
+			{
+				oldCallback.q = newHandler;
+				continue;
+			}
+			domNode.removeEventListener(key, oldCallback);
+		}
+
+		oldCallback = _VirtualDom_makeCallback(eventNode, newHandler);
+		domNode.addEventListener(key, oldCallback,
+			_VirtualDom_passiveSupported
+			&& { passive: $elm$virtual_dom$VirtualDom$toHandlerInt(newHandler) < 2 }
+		);
+		allCallbacks[key] = oldCallback;
+	}
+}
+
+
+
+// PASSIVE EVENTS
+
+
+var _VirtualDom_passiveSupported;
+
+try
+{
+	window.addEventListener('t', null, Object.defineProperty({}, 'passive', {
+		get: function() { _VirtualDom_passiveSupported = true; }
+	}));
+}
+catch(e) {}
+
+
+
+// EVENT HANDLERS
+
+
+function _VirtualDom_makeCallback(eventNode, initialHandler)
+{
+	function callback(event)
+	{
+		var handler = callback.q;
+		var result = _Json_runHelp(handler.a, event);
+
+		if (!$elm$core$Result$isOk(result))
+		{
+			return;
+		}
+
+		var tag = $elm$virtual_dom$VirtualDom$toHandlerInt(handler);
+
+		// 0 = Normal
+		// 1 = MayStopPropagation
+		// 2 = MayPreventDefault
+		// 3 = Custom
+
+		var value = result.a;
+		var message = !tag ? value : tag < 3 ? value.a : value.cx;
+		var stopPropagation = tag == 1 ? value.b : tag == 3 && value.b2;
+		var currentEventNode = (
+			stopPropagation && event.stopPropagation(),
+			(tag == 2 ? value.b : tag == 3 && value.bN) && event.preventDefault(),
+			eventNode
+		);
+		var tagger;
+		var i;
+		while (tagger = currentEventNode.j)
+		{
+			if (typeof tagger == 'function')
+			{
+				message = tagger(message);
+			}
+			else
+			{
+				for (var i = tagger.length; i--; )
+				{
+					message = tagger[i](message);
+				}
+			}
+			currentEventNode = currentEventNode.p;
+		}
+		currentEventNode(message, stopPropagation); // stopPropagation implies isSync
+	}
+
+	callback.q = initialHandler;
+
+	return callback;
+}
+
+function _VirtualDom_equalEvents(x, y)
+{
+	return x.$ == y.$ && _Json_equality(x.a, y.a);
+}
+
+
+
+// DIFF
+
+
+// TODO: Should we do patches like in iOS?
+//
+// type Patch
+//   = At Int Patch
+//   | Batch (List Patch)
+//   | Change ...
+//
+// How could it not be better?
+//
+function _VirtualDom_diff(x, y)
+{
+	var patches = [];
+	_VirtualDom_diffHelp(x, y, patches, 0);
+	return patches;
+}
+
+
+function _VirtualDom_pushPatch(patches, type, index, data)
+{
+	var patch = {
+		$: type,
+		r: index,
+		s: data,
+		t: undefined,
+		u: undefined
+	};
+	patches.push(patch);
+	return patch;
+}
+
+
+function _VirtualDom_diffHelp(x, y, patches, index)
+{
+	if (x === y)
+	{
+		return;
+	}
+
+	var xType = x.$;
+	var yType = y.$;
+
+	// Bail if you run into different types of nodes. Implies that the
+	// structure has changed significantly and it's not worth a diff.
+	if (xType !== yType)
+	{
+		if (xType === 1 && yType === 2)
+		{
+			y = _VirtualDom_dekey(y);
+			yType = 1;
+		}
+		else
+		{
+			_VirtualDom_pushPatch(patches, 0, index, y);
+			return;
+		}
+	}
+
+	// Now we know that both nodes are the same $.
+	switch (yType)
+	{
+		case 5:
+			var xRefs = x.l;
+			var yRefs = y.l;
+			var i = xRefs.length;
+			var same = i === yRefs.length;
+			while (same && i--)
+			{
+				same = xRefs[i] === yRefs[i];
+			}
+			if (same)
+			{
+				y.k = x.k;
+				return;
+			}
+			y.k = y.m();
+			var subPatches = [];
+			_VirtualDom_diffHelp(x.k, y.k, subPatches, 0);
+			subPatches.length > 0 && _VirtualDom_pushPatch(patches, 1, index, subPatches);
+			return;
+
+		case 4:
+			// gather nested taggers
+			var xTaggers = x.j;
+			var yTaggers = y.j;
+			var nesting = false;
+
+			var xSubNode = x.k;
+			while (xSubNode.$ === 4)
+			{
+				nesting = true;
+
+				typeof xTaggers !== 'object'
+					? xTaggers = [xTaggers, xSubNode.j]
+					: xTaggers.push(xSubNode.j);
+
+				xSubNode = xSubNode.k;
+			}
+
+			var ySubNode = y.k;
+			while (ySubNode.$ === 4)
+			{
+				nesting = true;
+
+				typeof yTaggers !== 'object'
+					? yTaggers = [yTaggers, ySubNode.j]
+					: yTaggers.push(ySubNode.j);
+
+				ySubNode = ySubNode.k;
+			}
+
+			// Just bail if different numbers of taggers. This implies the
+			// structure of the virtual DOM has changed.
+			if (nesting && xTaggers.length !== yTaggers.length)
+			{
+				_VirtualDom_pushPatch(patches, 0, index, y);
+				return;
+			}
+
+			// check if taggers are "the same"
+			if (nesting ? !_VirtualDom_pairwiseRefEqual(xTaggers, yTaggers) : xTaggers !== yTaggers)
+			{
+				_VirtualDom_pushPatch(patches, 2, index, yTaggers);
+			}
+
+			// diff everything below the taggers
+			_VirtualDom_diffHelp(xSubNode, ySubNode, patches, index + 1);
+			return;
+
+		case 0:
+			if (x.a !== y.a)
+			{
+				_VirtualDom_pushPatch(patches, 3, index, y.a);
+			}
+			return;
+
+		case 1:
+			_VirtualDom_diffNodes(x, y, patches, index, _VirtualDom_diffKids);
+			return;
+
+		case 2:
+			_VirtualDom_diffNodes(x, y, patches, index, _VirtualDom_diffKeyedKids);
+			return;
+
+		case 3:
+			if (x.h !== y.h)
+			{
+				_VirtualDom_pushPatch(patches, 0, index, y);
+				return;
+			}
+
+			var factsDiff = _VirtualDom_diffFacts(x.d, y.d);
+			factsDiff && _VirtualDom_pushPatch(patches, 4, index, factsDiff);
+
+			var patch = y.i(x.g, y.g);
+			patch && _VirtualDom_pushPatch(patches, 5, index, patch);
+
+			return;
+	}
+}
+
+// assumes the incoming arrays are the same length
+function _VirtualDom_pairwiseRefEqual(as, bs)
+{
+	for (var i = 0; i < as.length; i++)
+	{
+		if (as[i] !== bs[i])
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function _VirtualDom_diffNodes(x, y, patches, index, diffKids)
+{
+	// Bail if obvious indicators have changed. Implies more serious
+	// structural changes such that it's not worth it to diff.
+	if (x.c !== y.c || x.f !== y.f)
+	{
+		_VirtualDom_pushPatch(patches, 0, index, y);
+		return;
+	}
+
+	var factsDiff = _VirtualDom_diffFacts(x.d, y.d);
+	factsDiff && _VirtualDom_pushPatch(patches, 4, index, factsDiff);
+
+	diffKids(x, y, patches, index);
+}
+
+
+
+// DIFF FACTS
+
+
+// TODO Instead of creating a new diff object, it's possible to just test if
+// there *is* a diff. During the actual patch, do the diff again and make the
+// modifications directly. This way, there's no new allocations. Worth it?
+function _VirtualDom_diffFacts(x, y, category)
+{
+	var diff;
+
+	// look for changes and removals
+	for (var xKey in x)
+	{
+		if (xKey === 'a1' || xKey === 'a0' || xKey === 'a3' || xKey === 'a4')
+		{
+			var subDiff = _VirtualDom_diffFacts(x[xKey], y[xKey] || {}, xKey);
+			if (subDiff)
+			{
+				diff = diff || {};
+				diff[xKey] = subDiff;
+			}
+			continue;
+		}
+
+		// remove if not in the new facts
+		if (!(xKey in y))
+		{
+			diff = diff || {};
+			diff[xKey] =
+				!category
+					? (typeof x[xKey] === 'string' ? '' : null)
+					:
+				(category === 'a1')
+					? ''
+					:
+				(category === 'a0' || category === 'a3')
+					? undefined
+					:
+				{ f: x[xKey].f, o: undefined };
+
+			continue;
+		}
+
+		var xValue = x[xKey];
+		var yValue = y[xKey];
+
+		// reference equal, so don't worry about it
+		if (xValue === yValue && xKey !== 'value' && xKey !== 'checked'
+			|| category === 'a0' && _VirtualDom_equalEvents(xValue, yValue))
+		{
+			continue;
+		}
+
+		diff = diff || {};
+		diff[xKey] = yValue;
+	}
+
+	// add new stuff
+	for (var yKey in y)
+	{
+		if (!(yKey in x))
+		{
+			diff = diff || {};
+			diff[yKey] = y[yKey];
+		}
+	}
+
+	return diff;
+}
+
+
+
+// DIFF KIDS
+
+
+function _VirtualDom_diffKids(xParent, yParent, patches, index)
+{
+	var xKids = xParent.e;
+	var yKids = yParent.e;
+
+	var xLen = xKids.length;
+	var yLen = yKids.length;
+
+	// FIGURE OUT IF THERE ARE INSERTS OR REMOVALS
+
+	if (xLen > yLen)
+	{
+		_VirtualDom_pushPatch(patches, 6, index, {
+			v: yLen,
+			i: xLen - yLen
+		});
+	}
+	else if (xLen < yLen)
+	{
+		_VirtualDom_pushPatch(patches, 7, index, {
+			v: xLen,
+			e: yKids
+		});
+	}
+
+	// PAIRWISE DIFF EVERYTHING ELSE
+
+	for (var minLen = xLen < yLen ? xLen : yLen, i = 0; i < minLen; i++)
+	{
+		var xKid = xKids[i];
+		_VirtualDom_diffHelp(xKid, yKids[i], patches, ++index);
+		index += xKid.b || 0;
+	}
+}
+
+
+
+// KEYED DIFF
+
+
+function _VirtualDom_diffKeyedKids(xParent, yParent, patches, rootIndex)
+{
+	var localPatches = [];
+
+	var changes = {}; // Dict String Entry
+	var inserts = []; // Array { index : Int, entry : Entry }
+	// type Entry = { tag : String, vnode : VNode, index : Int, data : _ }
+
+	var xKids = xParent.e;
+	var yKids = yParent.e;
+	var xLen = xKids.length;
+	var yLen = yKids.length;
+	var xIndex = 0;
+	var yIndex = 0;
+
+	var index = rootIndex;
+
+	while (xIndex < xLen && yIndex < yLen)
+	{
+		var x = xKids[xIndex];
+		var y = yKids[yIndex];
+
+		var xKey = x.a;
+		var yKey = y.a;
+		var xNode = x.b;
+		var yNode = y.b;
+
+		var newMatch = undefined;
+		var oldMatch = undefined;
+
+		// check if keys match
+
+		if (xKey === yKey)
+		{
+			index++;
+			_VirtualDom_diffHelp(xNode, yNode, localPatches, index);
+			index += xNode.b || 0;
+
+			xIndex++;
+			yIndex++;
+			continue;
+		}
+
+		// look ahead 1 to detect insertions and removals.
+
+		var xNext = xKids[xIndex + 1];
+		var yNext = yKids[yIndex + 1];
+
+		if (xNext)
+		{
+			var xNextKey = xNext.a;
+			var xNextNode = xNext.b;
+			oldMatch = yKey === xNextKey;
+		}
+
+		if (yNext)
+		{
+			var yNextKey = yNext.a;
+			var yNextNode = yNext.b;
+			newMatch = xKey === yNextKey;
+		}
+
+
+		// swap x and y
+		if (newMatch && oldMatch)
+		{
+			index++;
+			_VirtualDom_diffHelp(xNode, yNextNode, localPatches, index);
+			_VirtualDom_insertNode(changes, localPatches, xKey, yNode, yIndex, inserts);
+			index += xNode.b || 0;
+
+			index++;
+			_VirtualDom_removeNode(changes, localPatches, xKey, xNextNode, index);
+			index += xNextNode.b || 0;
+
+			xIndex += 2;
+			yIndex += 2;
+			continue;
+		}
+
+		// insert y
+		if (newMatch)
+		{
+			index++;
+			_VirtualDom_insertNode(changes, localPatches, yKey, yNode, yIndex, inserts);
+			_VirtualDom_diffHelp(xNode, yNextNode, localPatches, index);
+			index += xNode.b || 0;
+
+			xIndex += 1;
+			yIndex += 2;
+			continue;
+		}
+
+		// remove x
+		if (oldMatch)
+		{
+			index++;
+			_VirtualDom_removeNode(changes, localPatches, xKey, xNode, index);
+			index += xNode.b || 0;
+
+			index++;
+			_VirtualDom_diffHelp(xNextNode, yNode, localPatches, index);
+			index += xNextNode.b || 0;
+
+			xIndex += 2;
+			yIndex += 1;
+			continue;
+		}
+
+		// remove x, insert y
+		if (xNext && xNextKey === yNextKey)
+		{
+			index++;
+			_VirtualDom_removeNode(changes, localPatches, xKey, xNode, index);
+			_VirtualDom_insertNode(changes, localPatches, yKey, yNode, yIndex, inserts);
+			index += xNode.b || 0;
+
+			index++;
+			_VirtualDom_diffHelp(xNextNode, yNextNode, localPatches, index);
+			index += xNextNode.b || 0;
+
+			xIndex += 2;
+			yIndex += 2;
+			continue;
+		}
+
+		break;
+	}
+
+	// eat up any remaining nodes with removeNode and insertNode
+
+	while (xIndex < xLen)
+	{
+		index++;
+		var x = xKids[xIndex];
+		var xNode = x.b;
+		_VirtualDom_removeNode(changes, localPatches, x.a, xNode, index);
+		index += xNode.b || 0;
+		xIndex++;
+	}
+
+	while (yIndex < yLen)
+	{
+		var endInserts = endInserts || [];
+		var y = yKids[yIndex];
+		_VirtualDom_insertNode(changes, localPatches, y.a, y.b, undefined, endInserts);
+		yIndex++;
+	}
+
+	if (localPatches.length > 0 || inserts.length > 0 || endInserts)
+	{
+		_VirtualDom_pushPatch(patches, 8, rootIndex, {
+			w: localPatches,
+			x: inserts,
+			y: endInserts
+		});
+	}
+}
+
+
+
+// CHANGES FROM KEYED DIFF
+
+
+var _VirtualDom_POSTFIX = '_elmW6BL';
+
+
+function _VirtualDom_insertNode(changes, localPatches, key, vnode, yIndex, inserts)
+{
+	var entry = changes[key];
+
+	// never seen this key before
+	if (!entry)
+	{
+		entry = {
+			c: 0,
+			z: vnode,
+			r: yIndex,
+			s: undefined
+		};
+
+		inserts.push({ r: yIndex, A: entry });
+		changes[key] = entry;
+
+		return;
+	}
+
+	// this key was removed earlier, a match!
+	if (entry.c === 1)
+	{
+		inserts.push({ r: yIndex, A: entry });
+
+		entry.c = 2;
+		var subPatches = [];
+		_VirtualDom_diffHelp(entry.z, vnode, subPatches, entry.r);
+		entry.r = yIndex;
+		entry.s.s = {
+			w: subPatches,
+			A: entry
+		};
+
+		return;
+	}
+
+	// this key has already been inserted or moved, a duplicate!
+	_VirtualDom_insertNode(changes, localPatches, key + _VirtualDom_POSTFIX, vnode, yIndex, inserts);
+}
+
+
+function _VirtualDom_removeNode(changes, localPatches, key, vnode, index)
+{
+	var entry = changes[key];
+
+	// never seen this key before
+	if (!entry)
+	{
+		var patch = _VirtualDom_pushPatch(localPatches, 9, index, undefined);
+
+		changes[key] = {
+			c: 1,
+			z: vnode,
+			r: index,
+			s: patch
+		};
+
+		return;
+	}
+
+	// this key was inserted earlier, a match!
+	if (entry.c === 0)
+	{
+		entry.c = 2;
+		var subPatches = [];
+		_VirtualDom_diffHelp(vnode, entry.z, subPatches, index);
+
+		_VirtualDom_pushPatch(localPatches, 9, index, {
+			w: subPatches,
+			A: entry
+		});
+
+		return;
+	}
+
+	// this key has already been removed or moved, a duplicate!
+	_VirtualDom_removeNode(changes, localPatches, key + _VirtualDom_POSTFIX, vnode, index);
+}
+
+
+
+// ADD DOM NODES
+//
+// Each DOM node has an "index" assigned in order of traversal. It is important
+// to minimize our crawl over the actual DOM, so these indexes (along with the
+// descendantsCount of virtual nodes) let us skip touching entire subtrees of
+// the DOM if we know there are no patches there.
+
+
+function _VirtualDom_addDomNodes(domNode, vNode, patches, eventNode)
+{
+	_VirtualDom_addDomNodesHelp(domNode, vNode, patches, 0, 0, vNode.b, eventNode);
+}
+
+
+// assumes `patches` is non-empty and indexes increase monotonically.
+function _VirtualDom_addDomNodesHelp(domNode, vNode, patches, i, low, high, eventNode)
+{
+	var patch = patches[i];
+	var index = patch.r;
+
+	while (index === low)
+	{
+		var patchType = patch.$;
+
+		if (patchType === 1)
+		{
+			_VirtualDom_addDomNodes(domNode, vNode.k, patch.s, eventNode);
+		}
+		else if (patchType === 8)
+		{
+			patch.t = domNode;
+			patch.u = eventNode;
+
+			var subPatches = patch.s.w;
+			if (subPatches.length > 0)
+			{
+				_VirtualDom_addDomNodesHelp(domNode, vNode, subPatches, 0, low, high, eventNode);
+			}
+		}
+		else if (patchType === 9)
+		{
+			patch.t = domNode;
+			patch.u = eventNode;
+
+			var data = patch.s;
+			if (data)
+			{
+				data.A.s = domNode;
+				var subPatches = data.w;
+				if (subPatches.length > 0)
+				{
+					_VirtualDom_addDomNodesHelp(domNode, vNode, subPatches, 0, low, high, eventNode);
+				}
+			}
+		}
+		else
+		{
+			patch.t = domNode;
+			patch.u = eventNode;
+		}
+
+		i++;
+
+		if (!(patch = patches[i]) || (index = patch.r) > high)
+		{
+			return i;
+		}
+	}
+
+	var tag = vNode.$;
+
+	if (tag === 4)
+	{
+		var subNode = vNode.k;
+
+		while (subNode.$ === 4)
+		{
+			subNode = subNode.k;
+		}
+
+		return _VirtualDom_addDomNodesHelp(domNode, subNode, patches, i, low + 1, high, domNode.elm_event_node_ref);
+	}
+
+	// tag must be 1 or 2 at this point
+
+	var vKids = vNode.e;
+	var childNodes = domNode.childNodes;
+	for (var j = 0; j < vKids.length; j++)
+	{
+		low++;
+		var vKid = tag === 1 ? vKids[j] : vKids[j].b;
+		var nextLow = low + (vKid.b || 0);
+		if (low <= index && index <= nextLow)
+		{
+			i = _VirtualDom_addDomNodesHelp(childNodes[j], vKid, patches, i, low, nextLow, eventNode);
+			if (!(patch = patches[i]) || (index = patch.r) > high)
+			{
+				return i;
+			}
+		}
+		low = nextLow;
+	}
+	return i;
+}
+
+
+
+// APPLY PATCHES
+
+
+function _VirtualDom_applyPatches(rootDomNode, oldVirtualNode, patches, eventNode)
+{
+	if (patches.length === 0)
+	{
+		return rootDomNode;
+	}
+
+	_VirtualDom_addDomNodes(rootDomNode, oldVirtualNode, patches, eventNode);
+	return _VirtualDom_applyPatchesHelp(rootDomNode, patches);
+}
+
+function _VirtualDom_applyPatchesHelp(rootDomNode, patches)
+{
+	for (var i = 0; i < patches.length; i++)
+	{
+		var patch = patches[i];
+		var localDomNode = patch.t
+		var newNode = _VirtualDom_applyPatch(localDomNode, patch);
+		if (localDomNode === rootDomNode)
+		{
+			rootDomNode = newNode;
+		}
+	}
+	return rootDomNode;
+}
+
+function _VirtualDom_applyPatch(domNode, patch)
+{
+	switch (patch.$)
+	{
+		case 0:
+			return _VirtualDom_applyPatchRedraw(domNode, patch.s, patch.u);
+
+		case 4:
+			_VirtualDom_applyFacts(domNode, patch.u, patch.s);
+			return domNode;
+
+		case 3:
+			domNode.replaceData(0, domNode.length, patch.s);
+			return domNode;
+
+		case 1:
+			return _VirtualDom_applyPatchesHelp(domNode, patch.s);
+
+		case 2:
+			if (domNode.elm_event_node_ref)
+			{
+				domNode.elm_event_node_ref.j = patch.s;
+			}
+			else
+			{
+				domNode.elm_event_node_ref = { j: patch.s, p: patch.u };
+			}
+			return domNode;
+
+		case 6:
+			var data = patch.s;
+			for (var i = 0; i < data.i; i++)
+			{
+				domNode.removeChild(domNode.childNodes[data.v]);
+			}
+			return domNode;
+
+		case 7:
+			var data = patch.s;
+			var kids = data.e;
+			var i = data.v;
+			var theEnd = domNode.childNodes[i];
+			for (; i < kids.length; i++)
+			{
+				domNode.insertBefore(_VirtualDom_render(kids[i], patch.u), theEnd);
+			}
+			return domNode;
+
+		case 9:
+			var data = patch.s;
+			if (!data)
+			{
+				domNode.parentNode.removeChild(domNode);
+				return domNode;
+			}
+			var entry = data.A;
+			if (typeof entry.r !== 'undefined')
+			{
+				domNode.parentNode.removeChild(domNode);
+			}
+			entry.s = _VirtualDom_applyPatchesHelp(domNode, data.w);
+			return domNode;
+
+		case 8:
+			return _VirtualDom_applyPatchReorder(domNode, patch);
+
+		case 5:
+			return patch.s(domNode);
+
+		default:
+			_Debug_crash(10); // 'Ran into an unknown patch!'
+	}
+}
+
+
+function _VirtualDom_applyPatchRedraw(domNode, vNode, eventNode)
+{
+	var parentNode = domNode.parentNode;
+	var newNode = _VirtualDom_render(vNode, eventNode);
+
+	if (!newNode.elm_event_node_ref)
+	{
+		newNode.elm_event_node_ref = domNode.elm_event_node_ref;
+	}
+
+	if (parentNode && newNode !== domNode)
+	{
+		parentNode.replaceChild(newNode, domNode);
+	}
+	return newNode;
+}
+
+
+function _VirtualDom_applyPatchReorder(domNode, patch)
+{
+	var data = patch.s;
+
+	// remove end inserts
+	var frag = _VirtualDom_applyPatchReorderEndInsertsHelp(data.y, patch);
+
+	// removals
+	domNode = _VirtualDom_applyPatchesHelp(domNode, data.w);
+
+	// inserts
+	var inserts = data.x;
+	for (var i = 0; i < inserts.length; i++)
+	{
+		var insert = inserts[i];
+		var entry = insert.A;
+		var node = entry.c === 2
+			? entry.s
+			: _VirtualDom_render(entry.z, patch.u);
+		domNode.insertBefore(node, domNode.childNodes[insert.r]);
+	}
+
+	// add end inserts
+	if (frag)
+	{
+		_VirtualDom_appendChild(domNode, frag);
+	}
+
+	return domNode;
+}
+
+
+function _VirtualDom_applyPatchReorderEndInsertsHelp(endInserts, patch)
+{
+	if (!endInserts)
+	{
+		return;
+	}
+
+	var frag = _VirtualDom_doc.createDocumentFragment();
+	for (var i = 0; i < endInserts.length; i++)
+	{
+		var insert = endInserts[i];
+		var entry = insert.A;
+		_VirtualDom_appendChild(frag, entry.c === 2
+			? entry.s
+			: _VirtualDom_render(entry.z, patch.u)
+		);
+	}
+	return frag;
+}
+
+
+function _VirtualDom_virtualize(node)
+{
+	// TEXT NODES
+
+	if (node.nodeType === 3)
+	{
+		return _VirtualDom_text(node.textContent);
+	}
+
+
+	// WEIRD NODES
+
+	if (node.nodeType !== 1)
+	{
+		return _VirtualDom_text('');
+	}
+
+
+	// ELEMENT NODES
+
+	var attrList = _List_Nil;
+	var attrs = node.attributes;
+	for (var i = attrs.length; i--; )
+	{
+		var attr = attrs[i];
+		var name = attr.name;
+		var value = attr.value;
+		attrList = _List_Cons( A2(_VirtualDom_attribute, name, value), attrList );
+	}
+
+	var tag = node.tagName.toLowerCase();
+	var kidList = _List_Nil;
+	var kids = node.childNodes;
+
+	for (var i = kids.length; i--; )
+	{
+		kidList = _List_Cons(_VirtualDom_virtualize(kids[i]), kidList);
+	}
+	return A3(_VirtualDom_node, tag, attrList, kidList);
+}
+
+function _VirtualDom_dekey(keyedNode)
+{
+	var keyedKids = keyedNode.e;
+	var len = keyedKids.length;
+	var kids = new Array(len);
+	for (var i = 0; i < len; i++)
+	{
+		kids[i] = keyedKids[i].b;
+	}
+
+	return {
+		$: 1,
+		c: keyedNode.c,
+		d: keyedNode.d,
+		e: kids,
+		f: keyedNode.f,
+		b: keyedNode.b
+	};
+}
+
+
+
+
+// ELEMENT
+
+
+var _Debugger_element;
+
+var _Browser_element = _Debugger_element || F4(function(impl, flagDecoder, debugMetadata, args)
+{
+	return _Platform_initialize(
+		flagDecoder,
+		args,
+		impl.dO,
+		impl.eu,
+		impl.em,
+		function(sendToApp, initialModel) {
+			var view = impl.c_;
+			/**/
+			var domNode = args['node'];
+			//*/
+			/**_UNUSED/
+			var domNode = args && args['node'] ? args['node'] : _Debug_crash(0);
+			//*/
+			var currNode = _VirtualDom_virtualize(domNode);
+
+			return _Browser_makeAnimator(initialModel, function(model)
+			{
+				var nextNode = view(model);
+				var patches = _VirtualDom_diff(currNode, nextNode);
+				domNode = _VirtualDom_applyPatches(domNode, currNode, patches, sendToApp);
+				currNode = nextNode;
+			});
+		}
+	);
+});
+
+
+
+// DOCUMENT
+
+
+var _Debugger_document;
+
+var _Browser_document = _Debugger_document || F4(function(impl, flagDecoder, debugMetadata, args)
+{
+	return _Platform_initialize(
+		flagDecoder,
+		args,
+		impl.dO,
+		impl.eu,
+		impl.em,
+		function(sendToApp, initialModel) {
+			var divertHrefToApp = impl.bY && impl.bY(sendToApp)
+			var view = impl.c_;
+			var title = _VirtualDom_doc.title;
+			var bodyNode = _VirtualDom_doc.body;
+			var currNode = _VirtualDom_virtualize(bodyNode);
+			return _Browser_makeAnimator(initialModel, function(model)
+			{
+				_VirtualDom_divertHrefToApp = divertHrefToApp;
+				var doc = view(model);
+				var nextNode = _VirtualDom_node('body')(_List_Nil)(doc.ak);
+				var patches = _VirtualDom_diff(currNode, nextNode);
+				bodyNode = _VirtualDom_applyPatches(bodyNode, currNode, patches, sendToApp);
+				currNode = nextNode;
+				_VirtualDom_divertHrefToApp = 0;
+				(title !== doc.F) && (_VirtualDom_doc.title = title = doc.F);
+			});
+		}
+	);
+});
+
+
+
+// ANIMATION
+
+
+var _Browser_cancelAnimationFrame =
+	typeof cancelAnimationFrame !== 'undefined'
+		? cancelAnimationFrame
+		: function(id) { clearTimeout(id); };
+
+var _Browser_requestAnimationFrame =
+	typeof requestAnimationFrame !== 'undefined'
+		? requestAnimationFrame
+		: function(callback) { return setTimeout(callback, 1000 / 60); };
+
+
+function _Browser_makeAnimator(model, draw)
+{
+	draw(model);
+
+	var state = 0;
+
+	function updateIfNeeded()
+	{
+		state = state === 1
+			? 0
+			: ( _Browser_requestAnimationFrame(updateIfNeeded), draw(model), 1 );
+	}
+
+	return function(nextModel, isSync)
+	{
+		model = nextModel;
+
+		isSync
+			? ( draw(model),
+				state === 2 && (state = 1)
+				)
+			: ( state === 0 && _Browser_requestAnimationFrame(updateIfNeeded),
+				state = 2
+				);
+	};
+}
+
+
+
+// APPLICATION
+
+
+function _Browser_application(impl)
+{
+	var onUrlChange = impl.d8;
+	var onUrlRequest = impl.d9;
+	var key = function() { key.a(onUrlChange(_Browser_getUrl())); };
+
+	return _Browser_document({
+		bY: function(sendToApp)
+		{
+			key.a = sendToApp;
+			_Browser_window.addEventListener('popstate', key);
+			_Browser_window.navigator.userAgent.indexOf('Trident') < 0 || _Browser_window.addEventListener('hashchange', key);
+
+			return F2(function(domNode, event)
+			{
+				if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button < 1 && !domNode.target && !domNode.hasAttribute('download'))
+				{
+					event.preventDefault();
+					var href = domNode.href;
+					var curr = _Browser_getUrl();
+					var next = $elm$url$Url$fromString(href).a;
+					sendToApp(onUrlRequest(
+						(next
+							&& curr.cK === next.cK
+							&& curr.cp === next.cp
+							&& curr.cH.a === next.cH.a
+						)
+							? $elm$browser$Browser$Internal(next)
+							: $elm$browser$Browser$External(href)
+					));
+				}
+			});
+		},
+		dO: function(flags)
+		{
+			return A3(impl.dO, flags, _Browser_getUrl(), key);
+		},
+		c_: impl.c_,
+		eu: impl.eu,
+		em: impl.em
+	});
+}
+
+function _Browser_getUrl()
+{
+	return $elm$url$Url$fromString(_VirtualDom_doc.location.href).a || _Debug_crash(1);
+}
+
+var _Browser_go = F2(function(key, n)
+{
+	return A2($elm$core$Task$perform, $elm$core$Basics$never, _Scheduler_binding(function() {
+		n && history.go(n);
+		key();
+	}));
+});
+
+var _Browser_pushUrl = F2(function(key, url)
+{
+	return A2($elm$core$Task$perform, $elm$core$Basics$never, _Scheduler_binding(function() {
+		history.pushState({}, '', url);
+		key();
+	}));
+});
+
+var _Browser_replaceUrl = F2(function(key, url)
+{
+	return A2($elm$core$Task$perform, $elm$core$Basics$never, _Scheduler_binding(function() {
+		history.replaceState({}, '', url);
+		key();
+	}));
+});
+
+
+
+// GLOBAL EVENTS
+
+
+var _Browser_fakeNode = { addEventListener: function() {}, removeEventListener: function() {} };
+var _Browser_doc = typeof document !== 'undefined' ? document : _Browser_fakeNode;
+var _Browser_window = typeof window !== 'undefined' ? window : _Browser_fakeNode;
+
+var _Browser_on = F3(function(node, eventName, sendToSelf)
+{
+	return _Scheduler_spawn(_Scheduler_binding(function(callback)
+	{
+		function handler(event)	{ _Scheduler_rawSpawn(sendToSelf(event)); }
+		node.addEventListener(eventName, handler, _VirtualDom_passiveSupported && { passive: true });
+		return function() { node.removeEventListener(eventName, handler); };
+	}));
+});
+
+var _Browser_decodeEvent = F2(function(decoder, event)
+{
+	var result = _Json_runHelp(decoder, event);
+	return $elm$core$Result$isOk(result) ? $elm$core$Maybe$Just(result.a) : $elm$core$Maybe$Nothing;
+});
+
+
+
+// PAGE VISIBILITY
+
+
+function _Browser_visibilityInfo()
+{
+	return (typeof _VirtualDom_doc.hidden !== 'undefined')
+		? { dL: 'hidden', dk: 'visibilitychange' }
+		:
+	(typeof _VirtualDom_doc.mozHidden !== 'undefined')
+		? { dL: 'mozHidden', dk: 'mozvisibilitychange' }
+		:
+	(typeof _VirtualDom_doc.msHidden !== 'undefined')
+		? { dL: 'msHidden', dk: 'msvisibilitychange' }
+		:
+	(typeof _VirtualDom_doc.webkitHidden !== 'undefined')
+		? { dL: 'webkitHidden', dk: 'webkitvisibilitychange' }
+		: { dL: 'hidden', dk: 'visibilitychange' };
+}
+
+
+
+// ANIMATION FRAMES
+
+
+function _Browser_rAF()
+{
+	return _Scheduler_binding(function(callback)
+	{
+		var id = _Browser_requestAnimationFrame(function() {
+			callback(_Scheduler_succeed(Date.now()));
+		});
+
+		return function() {
+			_Browser_cancelAnimationFrame(id);
+		};
+	});
+}
+
+
+function _Browser_now()
+{
+	return _Scheduler_binding(function(callback)
+	{
+		callback(_Scheduler_succeed(Date.now()));
+	});
+}
+
+
+
+// DOM STUFF
+
+
+function _Browser_withNode(id, doStuff)
+{
+	return _Scheduler_binding(function(callback)
+	{
+		_Browser_requestAnimationFrame(function() {
+			var node = document.getElementById(id);
+			callback(node
+				? _Scheduler_succeed(doStuff(node))
+				: _Scheduler_fail($elm$browser$Browser$Dom$NotFound(id))
+			);
+		});
+	});
+}
+
+
+function _Browser_withWindow(doStuff)
+{
+	return _Scheduler_binding(function(callback)
+	{
+		_Browser_requestAnimationFrame(function() {
+			callback(_Scheduler_succeed(doStuff()));
+		});
+	});
+}
+
+
+// FOCUS and BLUR
+
+
+var _Browser_call = F2(function(functionName, id)
+{
+	return _Browser_withNode(id, function(node) {
+		node[functionName]();
+		return _Utils_Tuple0;
+	});
+});
+
+
+
+// WINDOW VIEWPORT
+
+
+function _Browser_getViewport()
+{
+	return {
+		cR: _Browser_getScene(),
+		c$: {
+			c2: _Browser_window.pageXOffset,
+			c3: _Browser_window.pageYOffset,
+			c1: _Browser_doc.documentElement.clientWidth,
+			co: _Browser_doc.documentElement.clientHeight
+		}
+	};
+}
+
+function _Browser_getScene()
+{
+	var body = _Browser_doc.body;
+	var elem = _Browser_doc.documentElement;
+	return {
+		c1: Math.max(body.scrollWidth, body.offsetWidth, elem.scrollWidth, elem.offsetWidth, elem.clientWidth),
+		co: Math.max(body.scrollHeight, body.offsetHeight, elem.scrollHeight, elem.offsetHeight, elem.clientHeight)
+	};
+}
+
+var _Browser_setViewport = F2(function(x, y)
+{
+	return _Browser_withWindow(function()
+	{
+		_Browser_window.scroll(x, y);
+		return _Utils_Tuple0;
+	});
+});
+
+
+
+// ELEMENT VIEWPORT
+
+
+function _Browser_getViewportOf(id)
+{
+	return _Browser_withNode(id, function(node)
+	{
+		return {
+			cR: {
+				c1: node.scrollWidth,
+				co: node.scrollHeight
+			},
+			c$: {
+				c2: node.scrollLeft,
+				c3: node.scrollTop,
+				c1: node.clientWidth,
+				co: node.clientHeight
+			}
+		};
+	});
+}
+
+
+var _Browser_setViewportOf = F3(function(id, x, y)
+{
+	return _Browser_withNode(id, function(node)
+	{
+		node.scrollLeft = x;
+		node.scrollTop = y;
+		return _Utils_Tuple0;
+	});
+});
+
+
+
+// ELEMENT
+
+
+function _Browser_getElement(id)
+{
+	return _Browser_withNode(id, function(node)
+	{
+		var rect = node.getBoundingClientRect();
+		var x = _Browser_window.pageXOffset;
+		var y = _Browser_window.pageYOffset;
+		return {
+			cR: _Browser_getScene(),
+			c$: {
+				c2: x,
+				c3: y,
+				c1: _Browser_doc.documentElement.clientWidth,
+				co: _Browser_doc.documentElement.clientHeight
+			},
+			du: {
+				c2: x + rect.left,
+				c3: y + rect.top,
+				c1: rect.width,
+				co: rect.height
+			}
+		};
+	});
+}
+
+
+
+// LOAD and RELOAD
+
+
+function _Browser_reload(skipCache)
+{
+	return A2($elm$core$Task$perform, $elm$core$Basics$never, _Scheduler_binding(function(callback)
+	{
+		_VirtualDom_doc.location.reload(skipCache);
+	}));
+}
+
+function _Browser_load(url)
+{
+	return A2($elm$core$Task$perform, $elm$core$Basics$never, _Scheduler_binding(function(callback)
+	{
+		try
+		{
+			_Browser_window.location = url;
+		}
+		catch(err)
+		{
+			// Only Firefox can throw a NS_ERROR_MALFORMED_URI exception here.
+			// Other browsers reload the page, so let's be consistent about that.
+			_VirtualDom_doc.location.reload(false);
+		}
+	}));
+}
+
+
+function _Url_percentEncode(string)
+{
+	return encodeURIComponent(string);
+}
+
+function _Url_percentDecode(string)
+{
+	try
+	{
+		return $elm$core$Maybe$Just(decodeURIComponent(string));
+	}
+	catch (e)
+	{
+		return $elm$core$Maybe$Nothing;
+	}
+}var $author$project$Main$FromJs = function (a) {
+	return {$: 0, a: a};
+};
 var $elm$core$List$cons = _List_cons;
 var $elm$core$Elm$JsArray$foldr = _JsArray_foldr;
 var $elm$core$Array$foldr = F3(
@@ -2439,10 +4475,9 @@ var $elm$core$Set$toList = function (_v0) {
 	var dict = _v0;
 	return $elm$core$Dict$keys(dict);
 };
+var $elm$core$Basics$EQ = 1;
 var $elm$core$Basics$GT = 2;
-var $author$project$Types$initialModel = function (scaffoldModules) {
-	return {g: scaffoldModules};
-};
+var $elm$core$Basics$LT = 0;
 var $elm$core$Result$Err = function (a) {
 	return {$: 1, a: a};
 };
@@ -2769,25 +4804,25 @@ var $elm$core$Array$treeFromBuilder = F2(
 	});
 var $elm$core$Array$builderToArray = F2(
 	function (reverseNodeList, builder) {
-		if (!builder.a) {
+		if (!builder.l) {
 			return A4(
 				$elm$core$Array$Array_elm_builtin,
-				$elm$core$Elm$JsArray$length(builder.b),
+				$elm$core$Elm$JsArray$length(builder.o),
 				$elm$core$Array$shiftStep,
 				$elm$core$Elm$JsArray$empty,
-				builder.b);
+				builder.o);
 		} else {
-			var treeLen = builder.a * $elm$core$Array$branchFactor;
+			var treeLen = builder.l * $elm$core$Array$branchFactor;
 			var depth = $elm$core$Basics$floor(
 				A2($elm$core$Basics$logBase, $elm$core$Array$branchFactor, treeLen - 1));
-			var correctNodeList = reverseNodeList ? $elm$core$List$reverse(builder.c) : builder.c;
-			var tree = A2($elm$core$Array$treeFromBuilder, correctNodeList, builder.a);
+			var correctNodeList = reverseNodeList ? $elm$core$List$reverse(builder.p) : builder.p;
+			var tree = A2($elm$core$Array$treeFromBuilder, correctNodeList, builder.l);
 			return A4(
 				$elm$core$Array$Array_elm_builtin,
-				$elm$core$Elm$JsArray$length(builder.b) + treeLen,
+				$elm$core$Elm$JsArray$length(builder.o) + treeLen,
 				A2($elm$core$Basics$max, 5, depth * $elm$core$Array$shiftStep),
 				tree,
-				builder.b);
+				builder.o);
 		}
 	});
 var $elm$core$Basics$idiv = _Basics_idiv;
@@ -2800,7 +4835,7 @@ var $elm$core$Array$initializeHelp = F5(
 				return A2(
 					$elm$core$Array$builderToArray,
 					false,
-					{c: nodeList, a: (len / $elm$core$Array$branchFactor) | 0, b: tail});
+					{p: nodeList, l: (len / $elm$core$Array$branchFactor) | 0, o: tail});
 			} else {
 				var leaf = $elm$core$Array$Leaf(
 					A3($elm$core$Elm$JsArray$initialize, $elm$core$Array$branchFactor, fromIndex, fn));
@@ -2838,36 +4873,7758 @@ var $elm$core$Result$isOk = function (result) {
 		return false;
 	}
 };
-var $elm$core$Platform$Cmd$batch = _Platform_batch;
-var $elm$core$Platform$Cmd$none = $elm$core$Platform$Cmd$batch(_List_Nil);
-var $author$project$Api$scaffoldName = 'Api';
-var $author$project$Route$scaffoldName = 'Route';
-var $author$project$Socket$scaffoldName = 'Socket';
-var $author$project$View$Compare$scaffoldName = 'View.Compare';
-var $author$project$View$Conflict$scaffoldName = 'View.Conflict';
-var $author$project$View$Decision$scaffoldName = 'View.Decision';
-var $author$project$View$Forms$scaffoldName = 'View.Forms';
-var $author$project$View$History$scaffoldName = 'View.History';
-var $author$project$View$Relevant$scaffoldName = 'View.Relevant';
-var $author$project$View$Search$scaffoldName = 'View.Search';
-var $author$project$Main$scaffoldModules = _List_fromArray(
-	[$author$project$Api$scaffoldName, $author$project$Route$scaffoldName, $author$project$Socket$scaffoldName, $author$project$View$Search$scaffoldName, $author$project$View$Relevant$scaffoldName, $author$project$View$Decision$scaffoldName, $author$project$View$History$scaffoldName, $author$project$View$Compare$scaffoldName, $author$project$View$Conflict$scaffoldName, $author$project$View$Forms$scaffoldName]);
-var $author$project$Main$init = function (_v0) {
-	return _Utils_Tuple2(
-		$author$project$Types$initialModel($author$project$Main$scaffoldModules),
-		$elm$core$Platform$Cmd$none);
+var $elm$json$Json$Decode$andThen = _Json_andThen;
+var $elm$json$Json$Decode$bool = _Json_decodeBool;
+var $elm$json$Json$Decode$map = _Json_map1;
+var $elm$json$Json$Decode$map2 = _Json_map2;
+var $elm$json$Json$Decode$succeed = _Json_succeed;
+var $elm$virtual_dom$VirtualDom$toHandlerInt = function (handler) {
+	switch (handler.$) {
+		case 0:
+			return 0;
+		case 1:
+			return 1;
+		case 2:
+			return 2;
+		default:
+			return 3;
+	}
 };
-var $elm$core$Platform$Sub$batch = _Platform_batch;
-var $elm$core$Platform$Sub$none = $elm$core$Platform$Sub$batch(_List_Nil);
-var $author$project$Main$subscriptions = function (_v0) {
-	return $elm$core$Platform$Sub$none;
+var $elm$browser$Browser$External = function (a) {
+	return {$: 1, a: a};
+};
+var $elm$browser$Browser$Internal = function (a) {
+	return {$: 0, a: a};
+};
+var $elm$core$Basics$identity = function (x) {
+	return x;
+};
+var $elm$browser$Browser$Dom$NotFound = $elm$core$Basics$identity;
+var $elm$url$Url$Http = 0;
+var $elm$url$Url$Https = 1;
+var $elm$url$Url$Url = F6(
+	function (protocol, host, port_, path, query, fragment) {
+		return {cj: fragment, cp: host, bg: path, cH: port_, cK: protocol, b: query};
+	});
+var $elm$core$String$contains = _String_contains;
+var $elm$core$String$length = _String_length;
+var $elm$core$String$slice = _String_slice;
+var $elm$core$String$dropLeft = F2(
+	function (n, string) {
+		return (n < 1) ? string : A3(
+			$elm$core$String$slice,
+			n,
+			$elm$core$String$length(string),
+			string);
+	});
+var $elm$core$String$indexes = _String_indexes;
+var $elm$core$String$isEmpty = function (string) {
+	return string === '';
+};
+var $elm$core$String$left = F2(
+	function (n, string) {
+		return (n < 1) ? '' : A3($elm$core$String$slice, 0, n, string);
+	});
+var $elm$core$String$toInt = _String_toInt;
+var $elm$url$Url$chompBeforePath = F5(
+	function (protocol, path, params, frag, str) {
+		if ($elm$core$String$isEmpty(str) || A2($elm$core$String$contains, '@', str)) {
+			return $elm$core$Maybe$Nothing;
+		} else {
+			var _v0 = A2($elm$core$String$indexes, ':', str);
+			if (!_v0.b) {
+				return $elm$core$Maybe$Just(
+					A6($elm$url$Url$Url, protocol, str, $elm$core$Maybe$Nothing, path, params, frag));
+			} else {
+				if (!_v0.b.b) {
+					var i = _v0.a;
+					var _v1 = $elm$core$String$toInt(
+						A2($elm$core$String$dropLeft, i + 1, str));
+					if (_v1.$ === 1) {
+						return $elm$core$Maybe$Nothing;
+					} else {
+						var port_ = _v1;
+						return $elm$core$Maybe$Just(
+							A6(
+								$elm$url$Url$Url,
+								protocol,
+								A2($elm$core$String$left, i, str),
+								port_,
+								path,
+								params,
+								frag));
+					}
+				} else {
+					return $elm$core$Maybe$Nothing;
+				}
+			}
+		}
+	});
+var $elm$url$Url$chompBeforeQuery = F4(
+	function (protocol, params, frag, str) {
+		if ($elm$core$String$isEmpty(str)) {
+			return $elm$core$Maybe$Nothing;
+		} else {
+			var _v0 = A2($elm$core$String$indexes, '/', str);
+			if (!_v0.b) {
+				return A5($elm$url$Url$chompBeforePath, protocol, '/', params, frag, str);
+			} else {
+				var i = _v0.a;
+				return A5(
+					$elm$url$Url$chompBeforePath,
+					protocol,
+					A2($elm$core$String$dropLeft, i, str),
+					params,
+					frag,
+					A2($elm$core$String$left, i, str));
+			}
+		}
+	});
+var $elm$url$Url$chompBeforeFragment = F3(
+	function (protocol, frag, str) {
+		if ($elm$core$String$isEmpty(str)) {
+			return $elm$core$Maybe$Nothing;
+		} else {
+			var _v0 = A2($elm$core$String$indexes, '?', str);
+			if (!_v0.b) {
+				return A4($elm$url$Url$chompBeforeQuery, protocol, $elm$core$Maybe$Nothing, frag, str);
+			} else {
+				var i = _v0.a;
+				return A4(
+					$elm$url$Url$chompBeforeQuery,
+					protocol,
+					$elm$core$Maybe$Just(
+						A2($elm$core$String$dropLeft, i + 1, str)),
+					frag,
+					A2($elm$core$String$left, i, str));
+			}
+		}
+	});
+var $elm$url$Url$chompAfterProtocol = F2(
+	function (protocol, str) {
+		if ($elm$core$String$isEmpty(str)) {
+			return $elm$core$Maybe$Nothing;
+		} else {
+			var _v0 = A2($elm$core$String$indexes, '#', str);
+			if (!_v0.b) {
+				return A3($elm$url$Url$chompBeforeFragment, protocol, $elm$core$Maybe$Nothing, str);
+			} else {
+				var i = _v0.a;
+				return A3(
+					$elm$url$Url$chompBeforeFragment,
+					protocol,
+					$elm$core$Maybe$Just(
+						A2($elm$core$String$dropLeft, i + 1, str)),
+					A2($elm$core$String$left, i, str));
+			}
+		}
+	});
+var $elm$core$String$startsWith = _String_startsWith;
+var $elm$url$Url$fromString = function (str) {
+	return A2($elm$core$String$startsWith, 'http://', str) ? A2(
+		$elm$url$Url$chompAfterProtocol,
+		0,
+		A2($elm$core$String$dropLeft, 7, str)) : (A2($elm$core$String$startsWith, 'https://', str) ? A2(
+		$elm$url$Url$chompAfterProtocol,
+		1,
+		A2($elm$core$String$dropLeft, 8, str)) : $elm$core$Maybe$Nothing);
+};
+var $elm$core$Basics$never = function (_v0) {
+	never:
+	while (true) {
+		var nvr = _v0;
+		var $temp$_v0 = nvr;
+		_v0 = $temp$_v0;
+		continue never;
+	}
+};
+var $elm$core$Task$Perform = $elm$core$Basics$identity;
+var $elm$core$Task$succeed = _Scheduler_succeed;
+var $elm$core$Task$init = $elm$core$Task$succeed(0);
+var $elm$core$List$foldrHelper = F4(
+	function (fn, acc, ctr, ls) {
+		if (!ls.b) {
+			return acc;
+		} else {
+			var a = ls.a;
+			var r1 = ls.b;
+			if (!r1.b) {
+				return A2(fn, a, acc);
+			} else {
+				var b = r1.a;
+				var r2 = r1.b;
+				if (!r2.b) {
+					return A2(
+						fn,
+						a,
+						A2(fn, b, acc));
+				} else {
+					var c = r2.a;
+					var r3 = r2.b;
+					if (!r3.b) {
+						return A2(
+							fn,
+							a,
+							A2(
+								fn,
+								b,
+								A2(fn, c, acc)));
+					} else {
+						var d = r3.a;
+						var r4 = r3.b;
+						var res = (ctr > 500) ? A3(
+							$elm$core$List$foldl,
+							fn,
+							acc,
+							$elm$core$List$reverse(r4)) : A4($elm$core$List$foldrHelper, fn, acc, ctr + 1, r4);
+						return A2(
+							fn,
+							a,
+							A2(
+								fn,
+								b,
+								A2(
+									fn,
+									c,
+									A2(fn, d, res))));
+					}
+				}
+			}
+		}
+	});
+var $elm$core$List$foldr = F3(
+	function (fn, acc, ls) {
+		return A4($elm$core$List$foldrHelper, fn, acc, 0, ls);
+	});
+var $elm$core$List$map = F2(
+	function (f, xs) {
+		return A3(
+			$elm$core$List$foldr,
+			F2(
+				function (x, acc) {
+					return A2(
+						$elm$core$List$cons,
+						f(x),
+						acc);
+				}),
+			_List_Nil,
+			xs);
+	});
+var $elm$core$Task$andThen = _Scheduler_andThen;
+var $elm$core$Task$map = F2(
+	function (func, taskA) {
+		return A2(
+			$elm$core$Task$andThen,
+			function (a) {
+				return $elm$core$Task$succeed(
+					func(a));
+			},
+			taskA);
+	});
+var $elm$core$Task$map2 = F3(
+	function (func, taskA, taskB) {
+		return A2(
+			$elm$core$Task$andThen,
+			function (a) {
+				return A2(
+					$elm$core$Task$andThen,
+					function (b) {
+						return $elm$core$Task$succeed(
+							A2(func, a, b));
+					},
+					taskB);
+			},
+			taskA);
+	});
+var $elm$core$Task$sequence = function (tasks) {
+	return A3(
+		$elm$core$List$foldr,
+		$elm$core$Task$map2($elm$core$List$cons),
+		$elm$core$Task$succeed(_List_Nil),
+		tasks);
+};
+var $elm$core$Platform$sendToApp = _Platform_sendToApp;
+var $elm$core$Task$spawnCmd = F2(
+	function (router, _v0) {
+		var task = _v0;
+		return _Scheduler_spawn(
+			A2(
+				$elm$core$Task$andThen,
+				$elm$core$Platform$sendToApp(router),
+				task));
+	});
+var $elm$core$Task$onEffects = F3(
+	function (router, commands, state) {
+		return A2(
+			$elm$core$Task$map,
+			function (_v0) {
+				return 0;
+			},
+			$elm$core$Task$sequence(
+				A2(
+					$elm$core$List$map,
+					$elm$core$Task$spawnCmd(router),
+					commands)));
+	});
+var $elm$core$Task$onSelfMsg = F3(
+	function (_v0, _v1, _v2) {
+		return $elm$core$Task$succeed(0);
+	});
+var $elm$core$Task$cmdMap = F2(
+	function (tagger, _v0) {
+		var task = _v0;
+		return A2($elm$core$Task$map, tagger, task);
+	});
+_Platform_effectManagers['Task'] = _Platform_createManager($elm$core$Task$init, $elm$core$Task$onEffects, $elm$core$Task$onSelfMsg, $elm$core$Task$cmdMap);
+var $elm$core$Task$command = _Platform_leaf('Task');
+var $elm$core$Task$perform = F2(
+	function (toMessage, task) {
+		return $elm$core$Task$command(
+			A2($elm$core$Task$map, toMessage, task));
+	});
+var $elm$browser$Browser$element = _Browser_element;
+var $elm$json$Json$Decode$field = _Json_decodeField;
+var $elm$json$Json$Decode$value = _Json_decodeValue;
+var $author$project$Main$fromJs = _Platform_incomingPort('fromJs', $elm$json$Json$Decode$value);
+var $author$project$Main$QueryRead = 1;
+var $author$project$Main$RepositoryRead = 0;
+var $elm$core$Platform$Cmd$batch = _Platform_batch;
+var $elm$core$Dict$RBEmpty_elm_builtin = {$: -2};
+var $elm$core$Dict$empty = $elm$core$Dict$RBEmpty_elm_builtin;
+var $author$project$View$Forms$Create = 0;
+var $author$project$View$Forms$initial = {au: 0, Z: '', _: 'human', aa: '', aM: '', db: '', ai: $elm$core$Maybe$Nothing, dc: '', ak: '', av: '', bt: '', dr: false, L: '', bB: '', bH: 'delta', aT: $elm$core$Maybe$Nothing, bO: '', cL: '', bT: '', aW: '', bW: '', ee: false, cP: false, aX: $elm$core$Maybe$Nothing, bj: _List_Nil, N: '', b_: false, aY: '', P: '', eq: '', F: ''};
+var $author$project$Route$Browse = 0;
+var $author$project$Main$initialQuery = {a1: '', J: '', a6: 'HEAD~1', a7: 'HEAD', bw: '', dD: '', bb: false, cw: 100, bH: 'hybrid', bf: 'newest', bh: 'collapsed', aE: 'HEAD', bZ: false, aF: '', b4: '', aI: '', c_: 0, ev: false};
+var $elm$core$Dict$Black = 1;
+var $elm$core$Dict$RBNode_elm_builtin = F5(
+	function (a, b, c, d, e) {
+		return {$: -1, a: a, b: b, c: c, d: d, e: e};
+	});
+var $elm$core$Dict$Red = 0;
+var $elm$core$Dict$balance = F5(
+	function (color, key, value, left, right) {
+		if ((right.$ === -1) && (!right.a)) {
+			var _v1 = right.a;
+			var rK = right.b;
+			var rV = right.c;
+			var rLeft = right.d;
+			var rRight = right.e;
+			if ((left.$ === -1) && (!left.a)) {
+				var _v3 = left.a;
+				var lK = left.b;
+				var lV = left.c;
+				var lLeft = left.d;
+				var lRight = left.e;
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					0,
+					key,
+					value,
+					A5($elm$core$Dict$RBNode_elm_builtin, 1, lK, lV, lLeft, lRight),
+					A5($elm$core$Dict$RBNode_elm_builtin, 1, rK, rV, rLeft, rRight));
+			} else {
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					color,
+					rK,
+					rV,
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, key, value, left, rLeft),
+					rRight);
+			}
+		} else {
+			if ((((left.$ === -1) && (!left.a)) && (left.d.$ === -1)) && (!left.d.a)) {
+				var _v5 = left.a;
+				var lK = left.b;
+				var lV = left.c;
+				var _v6 = left.d;
+				var _v7 = _v6.a;
+				var llK = _v6.b;
+				var llV = _v6.c;
+				var llLeft = _v6.d;
+				var llRight = _v6.e;
+				var lRight = left.e;
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					0,
+					lK,
+					lV,
+					A5($elm$core$Dict$RBNode_elm_builtin, 1, llK, llV, llLeft, llRight),
+					A5($elm$core$Dict$RBNode_elm_builtin, 1, key, value, lRight, right));
+			} else {
+				return A5($elm$core$Dict$RBNode_elm_builtin, color, key, value, left, right);
+			}
+		}
+	});
+var $elm$core$Basics$compare = _Utils_compare;
+var $elm$core$Dict$insertHelp = F3(
+	function (key, value, dict) {
+		if (dict.$ === -2) {
+			return A5($elm$core$Dict$RBNode_elm_builtin, 0, key, value, $elm$core$Dict$RBEmpty_elm_builtin, $elm$core$Dict$RBEmpty_elm_builtin);
+		} else {
+			var nColor = dict.a;
+			var nKey = dict.b;
+			var nValue = dict.c;
+			var nLeft = dict.d;
+			var nRight = dict.e;
+			var _v1 = A2($elm$core$Basics$compare, key, nKey);
+			switch (_v1) {
+				case 0:
+					return A5(
+						$elm$core$Dict$balance,
+						nColor,
+						nKey,
+						nValue,
+						A3($elm$core$Dict$insertHelp, key, value, nLeft),
+						nRight);
+				case 1:
+					return A5($elm$core$Dict$RBNode_elm_builtin, nColor, nKey, value, nLeft, nRight);
+				default:
+					return A5(
+						$elm$core$Dict$balance,
+						nColor,
+						nKey,
+						nValue,
+						nLeft,
+						A3($elm$core$Dict$insertHelp, key, value, nRight));
+			}
+		}
+	});
+var $elm$core$Dict$insert = F3(
+	function (key, value, dict) {
+		var _v0 = A3($elm$core$Dict$insertHelp, key, value, dict);
+		if ((_v0.$ === -1) && (!_v0.a)) {
+			var _v1 = _v0.a;
+			var k = _v0.b;
+			var v = _v0.c;
+			var l = _v0.d;
+			var r = _v0.e;
+			return A5($elm$core$Dict$RBNode_elm_builtin, 1, k, v, l, r);
+		} else {
+			var x = _v0;
+			return x;
+		}
+	});
+var $elm$core$Platform$Cmd$none = $elm$core$Platform$Cmd$batch(_List_Nil);
+var $elm$json$Json$Encode$null = _Json_encodeNull;
+var $elm$json$Json$Encode$object = function (pairs) {
+	return _Json_wrap(
+		A3(
+			$elm$core$List$foldl,
+			F2(
+				function (_v0, obj) {
+					var k = _v0.a;
+					var v = _v0.b;
+					return A3(_Json_addField, k, v, obj);
+				}),
+			_Json_emptyObject(0),
+			pairs));
+};
+var $elm$json$Json$Encode$string = _Json_wrap;
+var $elm$core$Maybe$withDefault = F2(
+	function (_default, maybe) {
+		if (!maybe.$) {
+			var value = maybe.a;
+			return value;
+		} else {
+			return _default;
+		}
+	});
+var $author$project$Api$request = F4(
+	function (requestId, method, path, body) {
+		return $elm$json$Json$Encode$object(
+			_List_fromArray(
+				[
+					_Utils_Tuple2(
+					'type',
+					$elm$json$Json$Encode$string('request')),
+					_Utils_Tuple2(
+					'request_id',
+					$elm$json$Json$Encode$string(requestId)),
+					_Utils_Tuple2(
+					'method',
+					$elm$json$Json$Encode$string(method)),
+					_Utils_Tuple2(
+					'path',
+					$elm$json$Json$Encode$string(path)),
+					_Utils_Tuple2(
+					'body',
+					A2($elm$core$Maybe$withDefault, $elm$json$Json$Encode$null, body))
+				]));
+	});
+var $author$project$Main$requestKey = function (kind) {
+	switch (kind) {
+		case 0:
+			return 'repository';
+		case 1:
+			return 'query';
+		case 2:
+			return 'collapsed';
+		case 3:
+			return 'exploded';
+		default:
+			return 'mutation';
+	}
+};
+var $author$project$Main$toJs = _Platform_outgoingPort('toJs', $elm$core$Basics$identity);
+var $author$project$Main$issue = F5(
+	function (kind, method, path, body, model) {
+		if (model.k) {
+			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+		} else {
+			var pending = {ax: path, z: model.z, A: model.A, bc: kind};
+			var identifier = 'ui-' + $elm$core$String$fromInt(model.aB);
+			var next = _Utils_update(
+				model,
+				{
+					aQ: A3(
+						$elm$core$Dict$insert,
+						$author$project$Main$requestKey(kind),
+						identifier,
+						model.aQ),
+					aB: model.aB + 1,
+					U: A3($elm$core$Dict$insert, identifier, pending, model.U)
+				});
+			return _Utils_Tuple2(
+				next,
+				$author$project$Main$toJs(
+					A4($author$project$Api$request, identifier, method, path, body)));
+		}
+	});
+var $author$project$Route$bool = function (value) {
+	return value ? 'true' : 'false';
+};
+var $elm$core$Basics$clamp = F3(
+	function (low, high, number) {
+		return (_Utils_cmp(number, low) < 0) ? low : ((_Utils_cmp(number, high) > 0) ? high : number);
+	});
+var $elm$core$String$trim = _String_trim;
+var $author$project$Route$optional = F2(
+	function (key, value) {
+		return ($elm$core$String$trim(value) === '') ? _List_Nil : _List_fromArray(
+			[
+				_Utils_Tuple2(key, value)
+			]);
+	});
+var $elm$url$Url$percentEncode = _Url_percentEncode;
+var $author$project$Route$path = F2(
+	function (base, fields) {
+		return base + ('?' + A2(
+			$elm$core$String$join,
+			'&',
+			A2(
+				$elm$core$List$map,
+				function (_v0) {
+					var key = _v0.a;
+					var value = _v0.b;
+					return $elm$url$Url$percentEncode(key) + ('=' + $elm$url$Url$percentEncode(value));
+				},
+				fields)));
+	});
+var $author$project$Route$queryPath = function (query) {
+	var revision = ($elm$core$String$trim(query.aE) === '') ? 'HEAD' : query.aE;
+	var resultLimit = $elm$core$String$fromInt(
+		A3($elm$core$Basics$clamp, 1, 1000, query.cw));
+	var filter = _Utils_ap(
+		A2($author$project$Route$optional, 'domain', query.bw),
+		_Utils_ap(
+			A2($author$project$Route$optional, 'file', query.dD),
+			_Utils_ap(
+				A2($author$project$Route$optional, 'actor', query.a1),
+				_Utils_ap(
+					A2($author$project$Route$optional, 'since', query.aF),
+					A2($author$project$Route$optional, 'until', query.aI)))));
+	var at = _List_fromArray(
+		[
+			_Utils_Tuple2('at', revision)
+		]);
+	var _v0 = query.c_;
+	switch (_v0) {
+		case 0:
+			return A2(
+				$author$project$Route$path,
+				'/api/v1/search',
+				_Utils_ap(
+					_List_fromArray(
+						[
+							_Utils_Tuple2('q', ''),
+							_Utils_Tuple2('mode', query.bH),
+							_Utils_Tuple2('view', query.bh),
+							_Utils_Tuple2('limit', resultLimit),
+							_Utils_Tuple2(
+							'include_obsolete',
+							$author$project$Route$bool(query.bb)),
+							_Utils_Tuple2(
+							'shallow',
+							$author$project$Route$bool(query.bZ))
+						]),
+					_Utils_ap(at, filter)));
+		case 1:
+			return A2(
+				$author$project$Route$path,
+				'/api/v1/search',
+				_Utils_ap(
+					_List_fromArray(
+						[
+							_Utils_Tuple2('q', query.b4),
+							_Utils_Tuple2('mode', query.bH),
+							_Utils_Tuple2('view', query.bh),
+							_Utils_Tuple2('limit', resultLimit),
+							_Utils_Tuple2(
+							'include_obsolete',
+							$author$project$Route$bool(query.bb)),
+							_Utils_Tuple2(
+							'shallow',
+							$author$project$Route$bool(query.bZ))
+						]),
+					_Utils_ap(at, filter)));
+		case 2:
+			return A2(
+				$author$project$Route$path,
+				'/api/v1/relevant',
+				_Utils_ap(
+					_List_fromArray(
+						[
+							_Utils_Tuple2('file', query.dD),
+							_Utils_Tuple2(
+							'limit',
+							$elm$core$String$fromInt(
+								A3($elm$core$Basics$clamp, 1, 100, query.cw))),
+							_Utils_Tuple2(
+							'include_obsolete',
+							$author$project$Route$bool(query.bb)),
+							_Utils_Tuple2(
+							'worktree',
+							$author$project$Route$bool(query.ev))
+						]),
+					query.ev ? _List_Nil : at));
+		case 3:
+			return A2(
+				$author$project$Route$path,
+				'/api/v1/history',
+				_Utils_ap(
+					_List_fromArray(
+						[
+							_Utils_Tuple2('limit', resultLimit),
+							_Utils_Tuple2('order', query.bf)
+						]),
+					_Utils_ap(
+						at,
+						_Utils_ap(
+							A2($author$project$Route$optional, 'adr', query.J),
+							_Utils_ap(
+								A2($author$project$Route$optional, 'actor', query.a1),
+								_Utils_ap(
+									A2($author$project$Route$optional, 'since', query.aF),
+									A2($author$project$Route$optional, 'until', query.aI)))))));
+		case 4:
+			return A2(
+				$author$project$Route$path,
+				'/api/v1/compare',
+				_List_fromArray(
+					[
+						_Utils_Tuple2('from', query.a6),
+						_Utils_Tuple2('to', query.a7),
+						_Utils_Tuple2('include_unchanged', 'false')
+					]));
+		case 5:
+			return A2($author$project$Route$path, '/api/v1/conflicts', at);
+		default:
+			return A2($author$project$Route$path, '/api/v1/doctor', at);
+	}
+};
+var $author$project$Route$repository = '/api/v1/repository';
+var $author$project$Main$init = function (flags) {
+	var base = {
+		s: $elm$core$Dict$empty,
+		Q: false,
+		aw: $elm$core$Maybe$Nothing,
+		al: $elm$core$Maybe$Nothing,
+		a8: $elm$core$Maybe$Nothing,
+		c: $author$project$View$Forms$initial,
+		z: 0,
+		A: 0,
+		f: $elm$core$Maybe$Nothing,
+		I: false,
+		m: flags.m,
+		aA: $elm$core$Maybe$Nothing,
+		r: $elm$core$Maybe$Nothing,
+		u: $elm$core$Dict$empty,
+		aQ: $elm$core$Dict$empty,
+		X: $elm$core$Maybe$Nothing,
+		aB: 1,
+		d: '',
+		j: 0,
+		U: $elm$core$Dict$empty,
+		b: $author$project$Main$initialQuery,
+		aU: $elm$core$Maybe$Nothing,
+		ae: 0,
+		aV: $elm$core$Maybe$Nothing,
+		M: $elm$core$Maybe$Nothing,
+		x: false,
+		af: $elm$core$Maybe$Nothing,
+		D: $elm$core$Maybe$Nothing,
+		V: $elm$core$Maybe$Nothing,
+		O: flags.m ? 'connecting' : 'unavailable',
+		k: false,
+		e: true,
+		bq: '0'
+	};
+	var _v0 = A5($author$project$Main$issue, 0, 'GET', $author$project$Route$repository, $elm$core$Maybe$Nothing, base);
+	var withRepository = _v0.a;
+	var repositoryCommand = _v0.b;
+	var _v1 = A5(
+		$author$project$Main$issue,
+		1,
+		'GET',
+		$author$project$Route$queryPath($author$project$Main$initialQuery),
+		$elm$core$Maybe$Nothing,
+		withRepository);
+	var withQuery = _v1.a;
+	var queryCommand = _v1.b;
+	return _Utils_Tuple2(
+		withQuery,
+		$elm$core$Platform$Cmd$batch(
+			_List_fromArray(
+				[
+					repositoryCommand,
+					queryCommand,
+					flags.m ? $author$project$Main$toJs(
+					$elm$json$Json$Encode$object(
+						_List_fromArray(
+							[
+								_Utils_Tuple2(
+								'type',
+								$elm$json$Json$Encode$string('connect'))
+							]))) : $elm$core$Platform$Cmd$none
+				])));
+};
+var $author$project$View$Forms$candidateLabels = function (inspection) {
+	return _Utils_ap(
+		A2(
+			$elm$core$List$map,
+			function (candidate) {
+				return candidate.ba + (' · ' + (candidate.F + (' · ' + candidate.P)));
+			},
+			inspection.a2.cM),
+		_Utils_ap(
+			A2(
+				$elm$core$List$map,
+				function (candidate) {
+					return candidate.ba + (' · ' + candidate.P);
+				},
+				inspection.a2.N),
+			A2(
+				$elm$core$List$map,
+				function (candidate) {
+					return candidate.ba + (' · ' + candidate.P);
+				},
+				inspection.a2.L)));
+};
+var $author$project$View$Forms$heads = function (inspection) {
+	return _Utils_ap(
+		inspection.bS,
+		_Utils_ap(
+			inspection.bX,
+			_Utils_ap(inspection.bx, inspection.b1)));
+};
+var $elm$core$Maybe$map = F2(
+	function (f, maybe) {
+		if (!maybe.$) {
+			var value = maybe.a;
+			return $elm$core$Maybe$Just(
+				f(value));
+		} else {
+			return $elm$core$Maybe$Nothing;
+		}
+	});
+var $author$project$View$Forms$baseline = F2(
+	function (repository, inspection) {
+		return {
+			dc: repository.aY,
+			ak: A2(
+				$elm$core$Maybe$withDefault,
+				'',
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.ak;
+					},
+					inspection)),
+			a2: A2(
+				$elm$core$Maybe$withDefault,
+				_List_Nil,
+				A2($elm$core$Maybe$map, $author$project$View$Forms$candidateLabels, inspection)),
+			L: A2(
+				$elm$core$Maybe$withDefault,
+				_List_Nil,
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.L;
+					},
+					inspection)),
+			dI: repository.dI,
+			dJ: repository.dJ,
+			dK: A2(
+				$elm$core$Maybe$withDefault,
+				_List_Nil,
+				A2($elm$core$Maybe$map, $author$project$View$Forms$heads, inspection)),
+			N: A2(
+				$elm$core$Maybe$withDefault,
+				_List_Nil,
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.N;
+					},
+					inspection)),
+			aY: A2(
+				$elm$core$Maybe$withDefault,
+				'',
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.aY;
+					},
+					inspection)),
+			P: A2(
+				$elm$core$Maybe$withDefault,
+				'',
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.P;
+					},
+					inspection)),
+			F: A2(
+				$elm$core$Maybe$withDefault,
+				'',
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.F;
+					},
+					inspection))
+		};
+	});
+var $elm$core$Basics$neq = _Utils_notEqual;
+var $author$project$View$Forms$adopt = F3(
+	function (repository, inspection, draft) {
+		return (!_Utils_eq(draft.eq, inspection.J)) ? $elm$core$Result$Err('Inspect the draft\u0027s target ADR before adopting tokens.') : ((!_Utils_eq(inspection.ah, repository.dI)) ? $elm$core$Result$Err('Inspect the exact current repository HEAD before adopting tokens.') : $elm$core$Result$Ok(
+			_Utils_update(
+				draft,
+				{
+					db: repository.dI,
+					ai: repository.dJ,
+					dc: repository.aY,
+					cP: true,
+					aX: $elm$core$Maybe$Just(
+						A2(
+							$author$project$View$Forms$baseline,
+							repository,
+							$elm$core$Maybe$Just(inspection))),
+					bj: $author$project$View$Forms$heads(inspection),
+					b_: false,
+					aY: inspection.aY
+				})));
+	});
+var $author$project$View$Forms$adoptCreate = F2(
+	function (repository, draft) {
+		return _Utils_update(
+			draft,
+			{
+				db: repository.dI,
+				ai: repository.dJ,
+				dc: repository.aY,
+				cP: true,
+				aX: $elm$core$Maybe$Just(
+					A2($author$project$View$Forms$baseline, repository, $elm$core$Maybe$Nothing)),
+				b_: false
+			});
+	});
+var $author$project$View$Forms$begin = F4(
+	function (action, repository, inspection, previous) {
+		var selected = function () {
+			var _v0 = (!action) ? $elm$core$Maybe$Nothing : inspection;
+			if (_v0.$ === 1) {
+				return $author$project$View$Forms$initial;
+			} else {
+				var item = _v0.a;
+				return _Utils_update(
+					$author$project$View$Forms$initial,
+					{
+						ak: item.ak,
+						L: A2($elm$core$String$join, '\u000A', item.L),
+						bj: $author$project$View$Forms$heads(item),
+						N: A2($elm$core$String$join, '\u000A', item.N),
+						aY: item.aY,
+						P: item.P,
+						eq: item.J,
+						F: item.F
+					});
+			}
+		}();
+		return _Utils_update(
+			selected,
+			{
+				au: action,
+				Z: previous.Z,
+				_: previous._,
+				aa: previous.aa,
+				db: repository.dI,
+				ai: repository.dJ,
+				dc: repository.aY,
+				aT: $elm$core$Maybe$Just(
+					A2(
+						$author$project$View$Forms$baseline,
+						repository,
+						(!action) ? $elm$core$Maybe$Nothing : inspection)),
+				cP: _Utils_eq(
+					A2(
+						$elm$core$Maybe$map,
+						function ($) {
+							return $.ah;
+						},
+						inspection),
+					$elm$core$Maybe$Just(repository.dI)) && (_Utils_eq(
+					A2(
+						$elm$core$Maybe$map,
+						function ($) {
+							return $.c_;
+						},
+						inspection),
+					$elm$core$Maybe$Just('collapsed')) && (!(!action))),
+				aX: $elm$core$Maybe$Nothing,
+				b_: (!_Utils_eq(inspection, $elm$core$Maybe$Nothing)) && ((!_Utils_eq(
+					A2(
+						$elm$core$Maybe$map,
+						function ($) {
+							return $.ah;
+						},
+						inspection),
+					$elm$core$Maybe$Just(repository.dI))) && (!(!action)))
+			});
+	});
+var $author$project$View$Forms$change = F3(
+	function (field, content, draft) {
+		var modified = function () {
+			switch (field) {
+				case 0:
+					return _Utils_update(
+						draft,
+						{F: content});
+				case 1:
+					return _Utils_update(
+						draft,
+						{P: content});
+				case 2:
+					return _Utils_update(
+						draft,
+						{ak: content});
+				case 3:
+					return _Utils_update(
+						draft,
+						{av: content});
+				case 4:
+					return _Utils_update(
+						draft,
+						{cL: content});
+				case 5:
+					return _Utils_update(
+						draft,
+						{L: content});
+				case 6:
+					return _Utils_update(
+						draft,
+						{N: content});
+				case 7:
+					return _Utils_update(
+						draft,
+						{aM: content});
+				case 8:
+					return _Utils_update(
+						draft,
+						{aW: content});
+				case 9:
+					return _Utils_update(
+						draft,
+						{bT: content});
+				case 10:
+					return _Utils_update(
+						draft,
+						{bW: content});
+				case 11:
+					return _Utils_update(
+						draft,
+						{_: content});
+				case 12:
+					return _Utils_update(
+						draft,
+						{Z: content});
+				case 13:
+					return _Utils_update(
+						draft,
+						{aa: content});
+				case 14:
+					return _Utils_update(
+						draft,
+						{bB: content});
+				case 15:
+					return _Utils_update(
+						draft,
+						{bO: content});
+				case 16:
+					return _Utils_update(
+						draft,
+						{bt: content});
+				default:
+					return _Utils_update(
+						draft,
+						{bH: content});
+			}
+		}();
+		return _Utils_update(
+			modified,
+			{dr: true});
+	});
+var $elm$core$Basics$not = _Basics_not;
+var $author$project$Main$inspectionReady = function (model) {
+	return (!model.k) && (model.x && (model.Q && (model.I && (_Utils_eq(
+		A2(
+			$elm$core$Maybe$map,
+			function ($) {
+				return $.c_;
+			},
+			model.r),
+		$elm$core$Maybe$Just('collapsed')) && (_Utils_eq(
+		model.V,
+		A2(
+			$elm$core$Maybe$map,
+			function ($) {
+				return $.dI;
+			},
+			model.M)) && _Utils_eq(
+		model.D,
+		A2(
+			$elm$core$Maybe$map,
+			function ($) {
+				return $.J;
+			},
+			model.r)))))));
+};
+var $author$project$Main$isHistorical = function (model) {
+	return (model.b.aE !== 'HEAD') || ((!_Utils_eq(model.D, $elm$core$Maybe$Nothing)) && (!_Utils_eq(
+		model.V,
+		A2(
+			$elm$core$Maybe$map,
+			function ($) {
+				return $.dI;
+			},
+			model.M))));
+};
+var $author$project$Route$Relevant = 2;
+var $elm$json$Json$Encode$list = F2(
+	function (func, entries) {
+		return _Json_wrap(
+			A3(
+				$elm$core$List$foldl,
+				_Json_addEntry(func),
+				_Json_emptyArray(0),
+				entries));
+	});
+var $author$project$Route$Compare = 4;
+var $elm$core$Basics$ge = _Utils_ge;
+var $author$project$Main$signedDecimal = function (raw) {
+	var digits = A2($elm$core$String$startsWith, '-', raw) ? A2($elm$core$String$dropLeft, 1, raw) : raw;
+	return (!$elm$core$String$isEmpty(digits)) && A2(
+		$elm$core$String$all,
+		function (c) {
+			return (c >= '0') && (c <= '9');
+		},
+		digits);
+};
+var $author$project$Main$validateQuery = function (query) {
+	return ((query.cw < 1) || (_Utils_cmp(
+		query.cw,
+		(query.c_ === 2) ? 100 : 1000) > 0)) ? $elm$core$Maybe$Just('Window limit must be between 1 and 1000 (100 for relevance).') : (((query.c_ === 2) && ($elm$core$String$trim(query.dD) === '')) ? $elm$core$Maybe$Just('Choose a repository-relative file for relevance.') : (((query.c_ === 2) && (query.ev && (query.aE !== 'HEAD'))) ? $elm$core$Maybe$Just('Worktree relevance cannot use an explicit revision.') : (((query.c_ === 4) && (($elm$core$String$trim(query.a6) === '') || ($elm$core$String$trim(query.a7) === ''))) ? $elm$core$Maybe$Just('Choose both comparison revisions.') : (((!($elm$core$String$isEmpty(query.aF) || $author$project$Main$signedDecimal(query.aF))) || (!($elm$core$String$isEmpty(query.aI) || $author$project$Main$signedDecimal(query.aI)))) ? $elm$core$Maybe$Just('Time filters must be signed Unix milliseconds.') : $elm$core$Maybe$Nothing))));
+};
+var $author$project$Main$loadActive = function (model) {
+	var _v0 = $author$project$Main$validateQuery(model.b);
+	if (!_v0.$) {
+		var problem = _v0.a;
+		return _Utils_Tuple2(
+			_Utils_update(
+				model,
+				{
+					f: $elm$core$Maybe$Just(problem),
+					e: true
+				}),
+			$elm$core$Platform$Cmd$none);
+	} else {
+		var path = $author$project$Route$queryPath(model.b);
+		var interest = ((model.b.c_ === 2) && model.b.ev) ? _List_fromArray(
+			[model.b.dD]) : _List_Nil;
+		var _v1 = A5(
+			$author$project$Main$issue,
+			1,
+			'GET',
+			path,
+			$elm$core$Maybe$Nothing,
+			_Utils_update(
+				model,
+				{f: $elm$core$Maybe$Nothing, j: 0, e: true}));
+		var next = _v1.a;
+		var command = _v1.b;
+		return _Utils_Tuple2(
+			next,
+			$elm$core$Platform$Cmd$batch(
+				_List_fromArray(
+					[
+						command,
+						model.m ? $author$project$Main$toJs(
+						$elm$json$Json$Encode$object(
+							_List_fromArray(
+								[
+									_Utils_Tuple2(
+									'type',
+									$elm$json$Json$Encode$string('active-files')),
+									_Utils_Tuple2(
+									'paths',
+									A2($elm$json$Json$Encode$list, $elm$json$Json$Encode$string, interest))
+								]))) : $elm$core$Platform$Cmd$none
+					])));
+	}
+};
+var $author$project$Main$load = function (model) {
+	return model.k ? _Utils_Tuple2(model, $elm$core$Platform$Cmd$none) : $author$project$Main$loadActive(model);
+};
+var $elm$core$Basics$composeR = F3(
+	function (f, g, x) {
+		return g(
+			f(x));
+	});
+var $author$project$Route$pageSize = 100;
+var $author$project$Route$pageCount = function (items) {
+	return A2(
+		$elm$core$Basics$max,
+		1,
+		((($elm$core$List$length(items) + $author$project$Route$pageSize) - 1) / $author$project$Route$pageSize) | 0);
+};
+var $author$project$Main$maxPage = function (model) {
+	var _v0 = model.b.c_;
+	switch (_v0) {
+		case 0:
+			return A2(
+				$elm$core$Maybe$withDefault,
+				0,
+				A2(
+					$elm$core$Maybe$map,
+					A2(
+						$elm$core$Basics$composeR,
+						function ($) {
+							return $.cO;
+						},
+						A2(
+							$elm$core$Basics$composeR,
+							$author$project$Route$pageCount,
+							function (n) {
+								return n - 1;
+							})),
+					model.af));
+		case 1:
+			return A2(
+				$elm$core$Maybe$withDefault,
+				0,
+				A2(
+					$elm$core$Maybe$map,
+					A2(
+						$elm$core$Basics$composeR,
+						function ($) {
+							return $.cO;
+						},
+						A2(
+							$elm$core$Basics$composeR,
+							$author$project$Route$pageCount,
+							function (n) {
+								return n - 1;
+							})),
+					model.af));
+		case 3:
+			return A2(
+				$elm$core$Maybe$withDefault,
+				0,
+				A2(
+					$elm$core$Maybe$map,
+					A2(
+						$elm$core$Basics$composeR,
+						function ($) {
+							return $.be;
+						},
+						A2(
+							$elm$core$Basics$composeR,
+							$author$project$Route$pageCount,
+							function (n) {
+								return n - 1;
+							})),
+					model.aA));
+		default:
+			return 0;
+	}
+};
+var $author$project$Main$CollapsedRead = 2;
+var $author$project$Main$ExplodedRead = 3;
+var $elm$core$Dict$get = F2(
+	function (targetKey, dict) {
+		get:
+		while (true) {
+			if (dict.$ === -2) {
+				return $elm$core$Maybe$Nothing;
+			} else {
+				var key = dict.b;
+				var value = dict.c;
+				var left = dict.d;
+				var right = dict.e;
+				var _v1 = A2($elm$core$Basics$compare, targetKey, key);
+				switch (_v1) {
+					case 0:
+						var $temp$targetKey = targetKey,
+							$temp$dict = left;
+						targetKey = $temp$targetKey;
+						dict = $temp$dict;
+						continue get;
+					case 1:
+						return $elm$core$Maybe$Just(value);
+					default:
+						var $temp$targetKey = targetKey,
+							$temp$dict = right;
+						targetKey = $temp$targetKey;
+						dict = $temp$dict;
+						continue get;
+				}
+			}
+		}
+	});
+var $author$project$Route$showPath = F3(
+	function (adr, revision, projection) {
+		return A2(
+			$author$project$Route$path,
+			'/api/v1/adrs/' + $elm$url$Url$percentEncode(adr),
+			_List_fromArray(
+				[
+					_Utils_Tuple2('at', revision),
+					_Utils_Tuple2('view', projection)
+				]));
+	});
+var $author$project$Main$selectedPath = F2(
+	function (viewMode, model) {
+		var _v0 = _Utils_Tuple2(model.D, model.V);
+		if ((!_v0.a.$) && (!_v0.b.$)) {
+			var adr = _v0.a.a;
+			var revision = _v0.b.a;
+			return A3($author$project$Route$showPath, adr, revision, viewMode);
+		} else {
+			return '';
+		}
+	});
+var $author$project$Main$readPendingCurrent = F3(
+	function (requestId, pending, model) {
+		return (!model.k) && (_Utils_eq(
+			A2(
+				$elm$core$Dict$get,
+				$author$project$Main$requestKey(pending.bc),
+				model.aQ),
+			$elm$core$Maybe$Just(requestId)) && (_Utils_eq(pending.A, model.A) && (((pending.bc !== 1) || _Utils_eq(
+			pending.ax,
+			$author$project$Route$queryPath(model.b))) && (((pending.bc !== 2) || _Utils_eq(
+			pending.ax,
+			A2($author$project$Main$selectedPath, 'collapsed', model))) && ((pending.bc !== 3) || _Utils_eq(
+			pending.ax,
+			A2($author$project$Main$selectedPath, 'exploded', model)))))));
+	});
+var $elm$json$Json$Decode$decodeValue = _Json_run;
+var $author$project$Api$Event = F4(
+	function (generation, asOf, kind, facts) {
+		return {ah: asOf, dB: facts, ck: generation, bc: kind};
+	});
+var $author$project$Api$AtCommit = function (a) {
+	return {$: 0, a: a};
+};
+var $author$project$Api$AtComparison = F2(
+	function (a, b) {
+		return {$: 1, a: a, b: b};
+	});
+var $author$project$Api$Unavailable = function (a) {
+	return {$: 2, a: a};
+};
+var $elm$json$Json$Decode$fail = _Json_fail;
+var $elm$json$Json$Decode$string = _Json_decodeString;
+var $author$project$Api$asOf = A2(
+	$elm$json$Json$Decode$andThen,
+	function (kind) {
+		switch (kind) {
+			case 'commit':
+				return A2(
+					$elm$json$Json$Decode$map,
+					$author$project$Api$AtCommit,
+					A2($elm$json$Json$Decode$field, 'oid', $elm$json$Json$Decode$string));
+			case 'comparison':
+				return A3(
+					$elm$json$Json$Decode$map2,
+					$author$project$Api$AtComparison,
+					A2($elm$json$Json$Decode$field, 'from', $elm$json$Json$Decode$string),
+					A2($elm$json$Json$Decode$field, 'to', $elm$json$Json$Decode$string));
+			case 'unavailable':
+				return A2(
+					$elm$json$Json$Decode$map,
+					$author$project$Api$Unavailable,
+					A2($elm$json$Json$Decode$field, 'reason', $elm$json$Json$Decode$string));
+			default:
+				return $elm$json$Json$Decode$fail('unknown as_of kind');
+		}
+	},
+	A2($elm$json$Json$Decode$field, 'kind', $elm$json$Json$Decode$string));
+var $elm$json$Json$Decode$at = F2(
+	function (fields, decoder) {
+		return A3($elm$core$List$foldr, $elm$json$Json$Decode$field, decoder, fields);
+	});
+var $author$project$Api$validGeneration = function (raw) {
+	var maxWord = '18446744073709551615';
+	var digits = (!$elm$core$String$isEmpty(raw)) && A2(
+		$elm$core$String$all,
+		function (c) {
+			return (c >= '0') && (c <= '9');
+		},
+		raw);
+	var canonical = (raw === '0') || (!A2($elm$core$String$startsWith, '0', raw));
+	return digits && (canonical && ((_Utils_cmp(
+		$elm$core$String$length(raw),
+		$elm$core$String$length(maxWord)) < 0) || (_Utils_eq(
+		$elm$core$String$length(raw),
+		$elm$core$String$length(maxWord)) && (_Utils_cmp(raw, maxWord) < 1))));
+};
+var $author$project$Api$generation = A2(
+	$elm$json$Json$Decode$andThen,
+	function (raw) {
+		return $author$project$Api$validGeneration(raw) ? $elm$json$Json$Decode$succeed(raw) : $elm$json$Json$Decode$fail('generation must be a canonical unsigned decimal Word64 string');
+	},
+	$elm$json$Json$Decode$string);
+var $elm$json$Json$Decode$list = _Json_decodeList;
+var $elm$json$Json$Decode$map4 = _Json_map4;
+var $elm$core$Dict$fromList = function (assocs) {
+	return A3(
+		$elm$core$List$foldl,
+		F2(
+			function (_v0, dict) {
+				var key = _v0.a;
+				var value = _v0.b;
+				return A3($elm$core$Dict$insert, key, value, dict);
+			}),
+		$elm$core$Dict$empty,
+		assocs);
+};
+var $elm$json$Json$Decode$keyValuePairs = _Json_decodeKeyValuePairs;
+var $elm$json$Json$Decode$dict = function (decoder) {
+	return A2(
+		$elm$json$Json$Decode$map,
+		$elm$core$Dict$fromList,
+		$elm$json$Json$Decode$keyValuePairs(decoder));
+};
+var $elm$json$Json$Decode$null = _Json_decodeNull;
+var $author$project$Api$lookupAt = F2(
+	function (path, whole) {
+		lookupAt:
+		while (true) {
+			if (!path.b) {
+				return $elm$core$Result$Ok(
+					$elm$core$Maybe$Just(whole));
+			} else {
+				var key = path.a;
+				var rest = path.b;
+				var _v1 = A2(
+					$elm$json$Json$Decode$decodeValue,
+					$elm$json$Json$Decode$null(0),
+					whole);
+				if (!_v1.$) {
+					return $elm$core$Result$Ok($elm$core$Maybe$Nothing);
+				} else {
+					var _v2 = A2(
+						$elm$json$Json$Decode$decodeValue,
+						$elm$json$Json$Decode$dict($elm$json$Json$Decode$value),
+						whole);
+					if (_v2.$ === 1) {
+						return $elm$core$Result$Err('invalid object before ' + key);
+					} else {
+						var object = _v2.a;
+						var _v3 = A2($elm$core$Dict$get, key, object);
+						if (_v3.$ === 1) {
+							return $elm$core$Result$Ok($elm$core$Maybe$Nothing);
+						} else {
+							var value = _v3.a;
+							var $temp$path = rest,
+								$temp$whole = value;
+							path = $temp$path;
+							whole = $temp$whole;
+							continue lookupAt;
+						}
+					}
+				}
+			}
+		}
+	});
+var $author$project$Api$optionalAt = F3(
+	function (path, decoder, fallback) {
+		return A2(
+			$elm$json$Json$Decode$andThen,
+			function (whole) {
+				var _v0 = A2($author$project$Api$lookupAt, path, whole);
+				if (_v0.$ === 1) {
+					var problem = _v0.a;
+					return $elm$json$Json$Decode$fail(problem);
+				} else {
+					if (_v0.a.$ === 1) {
+						var _v1 = _v0.a;
+						return $elm$json$Json$Decode$succeed(fallback);
+					} else {
+						var raw = _v0.a.a;
+						var _v2 = A2($elm$json$Json$Decode$decodeValue, decoder, raw);
+						if (!_v2.$) {
+							var decoded = _v2.a;
+							return $elm$json$Json$Decode$succeed(decoded);
+						} else {
+							return $elm$json$Json$Decode$fail(
+								'invalid ' + A2($elm$core$String$join, '.', path));
+						}
+					}
+				}
+			},
+			$elm$json$Json$Decode$value);
+	});
+var $author$project$Api$event = A2(
+	$elm$json$Json$Decode$andThen,
+	function (schema) {
+		return (schema !== 'adrai/events/v1') ? $elm$json$Json$Decode$fail('unsupported event schema') : A5(
+			$elm$json$Json$Decode$map4,
+			$author$project$Api$Event,
+			A2($elm$json$Json$Decode$field, 'generation', $author$project$Api$generation),
+			A2($elm$json$Json$Decode$field, 'as_of', $author$project$Api$asOf),
+			A2(
+				$elm$json$Json$Decode$at,
+				_List_fromArray(
+					['event', 'type']),
+				$elm$json$Json$Decode$string),
+			A3(
+				$author$project$Api$optionalAt,
+				_List_fromArray(
+					['event', 'facts']),
+				$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+				_List_Nil));
+	},
+	A2($elm$json$Json$Decode$field, 'schema', $elm$json$Json$Decode$string));
+var $author$project$Api$compareGeneration = F2(
+	function (left, right) {
+		var _v0 = A2(
+			$elm$core$Basics$compare,
+			$elm$core$String$length(left),
+			$elm$core$String$length(right));
+		if (_v0 === 1) {
+			return A2($elm$core$Basics$compare, left, right);
+		} else {
+			var answer = _v0;
+			return answer;
+		}
+	});
+var $author$project$View$Forms$markStale = function (draft) {
+	return _Utils_update(
+		draft,
+		{cP: false, b_: draft.dr || draft.b_});
+};
+var $author$project$Main$refreshActive = function (model) {
+	var stale = _Utils_update(
+		model,
+		{
+			s: $elm$core$Dict$empty,
+			Q: false,
+			c: $author$project$View$Forms$markStale(model.c),
+			A: model.A + 1,
+			I: false,
+			u: $elm$core$Dict$empty,
+			x: false,
+			e: true
+		});
+	var _v0 = A5($author$project$Main$issue, 0, 'GET', $author$project$Route$repository, $elm$core$Maybe$Nothing, stale);
+	var withRepository = _v0.a;
+	var repositoryCommand = _v0.b;
+	var _v1 = $author$project$Main$load(withRepository);
+	var withView = _v1.a;
+	var viewCommand = _v1.b;
+	return _Utils_Tuple2(
+		withView,
+		$elm$core$Platform$Cmd$batch(
+			_List_fromArray(
+				[repositoryCommand, viewCommand])));
+};
+var $author$project$Main$refresh = function (model) {
+	return model.k ? _Utils_Tuple2(model, $elm$core$Platform$Cmd$none) : $author$project$Main$refreshActive(model);
+};
+var $author$project$Main$eventReceived = F2(
+	function (event, model) {
+		if (model.k || (A2($author$project$Api$compareGeneration, event.ck, model.bq) !== 2)) {
+			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+		} else {
+			var changed = _Utils_update(
+				model,
+				{
+					c: $author$project$View$Forms$markStale(model.c),
+					A: model.A + 1,
+					ae: (event.bc === 'repository-invalidated') ? 0 : model.ae,
+					e: true,
+					bq: event.ck
+				});
+			if (event.bc === 'observation-failed') {
+				return $author$project$Main$refresh(
+					_Utils_update(
+						changed,
+						{
+							f: $elm$core$Maybe$Just('Repository observation failed; refreshing.')
+						}));
+			} else {
+				var _v0 = event.ah;
+				if (_v0.$ === 2) {
+					var reason = _v0.a;
+					return $author$project$Main$refresh(
+						_Utils_update(
+							changed,
+							{
+								f: $elm$core$Maybe$Just('Live observation unavailable: ' + reason)
+							}));
+				} else {
+					return $author$project$Main$refresh(changed);
+				}
+			}
+		}
+	});
+var $elm$json$Json$Decode$int = _Json_decodeInt;
+var $elm$json$Json$Decode$map3 = _Json_map3;
+var $elm$core$Tuple$pair = F2(
+	function (a, b) {
+		return _Utils_Tuple2(a, b);
+	});
+var $author$project$Main$MutationWrite = 4;
+var $author$project$Main$RetryRead = F2(
+	function (a, b) {
+		return {$: 15, a: a, b: b};
+	});
+var $author$project$Api$Failure = F5(
+	function (metadata, category, status, code, message) {
+		return {dj: category, bs: code, cx: message, cy: metadata, ar: status};
+	});
+var $elm$json$Json$Decode$map5 = _Json_map5;
+var $author$project$Api$Metadata = F2(
+	function (generation, asOf) {
+		return {ah: asOf, ck: generation};
+	});
+var $author$project$Api$metadata = A3(
+	$elm$json$Json$Decode$map2,
+	$author$project$Api$Metadata,
+	A2($elm$json$Json$Decode$field, 'generation', $author$project$Api$generation),
+	A2($elm$json$Json$Decode$field, 'as_of', $author$project$Api$asOf));
+var $author$project$Api$failure = A2(
+	$elm$json$Json$Decode$andThen,
+	function (schema) {
+		return (schema === 'adrai/api/v1') ? A6(
+			$elm$json$Json$Decode$map5,
+			$author$project$Api$Failure,
+			A2($elm$json$Json$Decode$field, 'metadata', $author$project$Api$metadata),
+			A2(
+				$elm$json$Json$Decode$at,
+				_List_fromArray(
+					['error', 'category']),
+				$elm$json$Json$Decode$string),
+			A2(
+				$elm$json$Json$Decode$at,
+				_List_fromArray(
+					['error', 'status']),
+				$elm$json$Json$Decode$int),
+			A2(
+				$elm$json$Json$Decode$at,
+				_List_fromArray(
+					['error', 'code']),
+				$elm$json$Json$Decode$string),
+			A2(
+				$elm$json$Json$Decode$at,
+				_List_fromArray(
+					['error', 'message']),
+				$elm$json$Json$Decode$string)) : $elm$json$Json$Decode$fail('unsupported API schema');
+	},
+	A2($elm$json$Json$Decode$field, 'schema', $elm$json$Json$Decode$string));
+var $elm$core$List$maybeCons = F3(
+	function (f, mx, xs) {
+		var _v0 = f(mx);
+		if (!_v0.$) {
+			var x = _v0.a;
+			return A2($elm$core$List$cons, x, xs);
+		} else {
+			return xs;
+		}
+	});
+var $elm$core$List$filterMap = F2(
+	function (f, xs) {
+		return A3(
+			$elm$core$List$foldr,
+			$elm$core$List$maybeCons(f),
+			_List_Nil,
+			xs);
+	});
+var $elm$json$Json$Decode$oneOf = _Json_oneOf;
+var $elm$json$Json$Decode$nullable = function (decoder) {
+	return $elm$json$Json$Decode$oneOf(
+		_List_fromArray(
+			[
+				$elm$json$Json$Decode$null($elm$core$Maybe$Nothing),
+				A2($elm$json$Json$Decode$map, $elm$core$Maybe$Just, decoder)
+			]));
+};
+var $author$project$Api$optional = F3(
+	function (key, decoder, fallback) {
+		return A3(
+			$author$project$Api$optionalAt,
+			_List_fromArray(
+				[key]),
+			decoder,
+			fallback);
+	});
+var $author$project$Api$mutation = A2(
+	$elm$json$Json$Decode$andThen,
+	function (base) {
+		return A3(
+			$elm$json$Json$Decode$map2,
+			F2(
+				function (indexError, warning) {
+					return _Utils_update(
+						base,
+						{bA: indexError, bP: warning});
+				}),
+			A3(
+				$author$project$Api$optional,
+				'index_error',
+				$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+				$elm$core$Maybe$Nothing),
+			A3(
+				$author$project$Api$optional,
+				'publication_warning',
+				$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+				$elm$core$Maybe$Nothing));
+	},
+	A6(
+		$elm$json$Json$Decode$map5,
+		F5(
+			function (committed, operationId, commit, adr, indexed) {
+				return {J: adr, a5: commit, cc: committed, bA: $elm$core$Maybe$Nothing, cq: indexed, aC: operationId, bP: $elm$core$Maybe$Nothing};
+			}),
+		A2($elm$json$Json$Decode$field, 'committed', $elm$json$Json$Decode$bool),
+		A2($elm$json$Json$Decode$field, 'operation', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'commit', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'indexed', $elm$json$Json$Decode$bool)));
+var $author$project$Api$Envelope = F2(
+	function (metadata, data) {
+		return {dn: data, cy: metadata};
+	});
+var $author$project$Api$response = function (dataDecoder) {
+	return A2(
+		$elm$json$Json$Decode$andThen,
+		function (schema) {
+			return (schema === 'adrai/api/v1') ? A3(
+				$elm$json$Json$Decode$map2,
+				$author$project$Api$Envelope,
+				A2($elm$json$Json$Decode$field, 'metadata', $author$project$Api$metadata),
+				A2($elm$json$Json$Decode$field, 'data', dataDecoder)) : $elm$json$Json$Decode$fail('unsupported API schema');
+		},
+		A2($elm$json$Json$Decode$field, 'schema', $elm$json$Json$Decode$string));
+};
+var $author$project$Main$terminalMessage = 'Event generation exhausted. Restart the web server, then reopen its new bootstrap URL.';
+var $author$project$Main$terminalExhaustion = function (model) {
+	var statusText = A2($elm$core$String$contains, $author$project$Main$terminalMessage, model.d) ? model.d : ($elm$core$String$isEmpty(model.d) ? $author$project$Main$terminalMessage : (model.d + (' ' + $author$project$Main$terminalMessage)));
+	var draft = model.c;
+	return _Utils_Tuple2(
+		_Utils_update(
+			model,
+			{
+				s: $elm$core$Dict$empty,
+				Q: false,
+				c: _Utils_update(
+					draft,
+					{cP: false, b_: true}),
+				A: model.A + 1,
+				f: $elm$core$Maybe$Just($author$project$Main$terminalMessage),
+				I: false,
+				u: $elm$core$Dict$empty,
+				d: statusText,
+				x: false,
+				O: 'unavailable',
+				k: true,
+				e: true
+			}),
+		$author$project$Main$toJs(
+			$elm$json$Json$Encode$object(
+				_List_fromArray(
+					[
+						_Utils_Tuple2(
+						'type',
+						$elm$json$Json$Encode$string('disconnect'))
+					]))));
+};
+var $author$project$Main$mutationResponse = F5(
+	function (requestId, pending, status, body, model) {
+		var cleared = _Utils_update(
+			model,
+			{
+				X: _Utils_eq(
+					model.X,
+					$elm$core$Maybe$Just(requestId)) ? $elm$core$Maybe$Nothing : model.X
+			});
+		var _v0 = A2(
+			$elm$json$Json$Decode$decodeValue,
+			$author$project$Api$response($author$project$Api$mutation),
+			body);
+		if (!_v0.$) {
+			var envelope = _v0.a;
+			if ((status < 400) && envelope.dn.cc) {
+				var outcome = envelope.dn;
+				var warning = A2(
+					$elm$core$String$join,
+					'',
+					A2(
+						$elm$core$List$filterMap,
+						$elm$core$Basics$identity,
+						_List_fromArray(
+							[
+								A2(
+								$elm$core$Maybe$map,
+								function (value) {
+									return ' Publication warning: ' + value;
+								},
+								outcome.bP),
+								outcome.cq ? $elm$core$Maybe$Nothing : $elm$core$Maybe$Just(
+								' Index warning: ' + A2($elm$core$Maybe$withDefault, 'index unavailable', outcome.bA))
+							])));
+				var statusText = 'Committed ' + (outcome.aC + (' at ' + (outcome.a5 + ('.' + warning))));
+				var currentDraft = model.c;
+				var safe = _Utils_update(
+					cleared,
+					{
+						c: _Utils_eq(pending.z, model.z) ? _Utils_update(
+							currentDraft,
+							{cP: false, b_: true}) : model.c,
+						d: statusText,
+						e: true
+					});
+				return (model.k || _Utils_eq(
+					outcome.bP,
+					$elm$core$Maybe$Just('generation-exhausted'))) ? $author$project$Main$terminalExhaustion(safe) : $author$project$Main$refresh(safe);
+			} else {
+				if (status >= 400) {
+					return _Utils_Tuple2(
+						_Utils_update(
+							cleared,
+							{
+								c: $author$project$View$Forms$markStale(model.c),
+								d: 'The response is inconsistent. Inspect operation history before another submission.'
+							}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							cleared,
+							{
+								c: $author$project$View$Forms$markStale(model.c),
+								d: 'Server did not confirm a commit. Inspect current repository state.'
+							}),
+						$elm$core$Platform$Cmd$none);
+				}
+			}
+		} else {
+			var _v1 = A2($elm$json$Json$Decode$decodeValue, $author$project$Api$failure, body);
+			if (!_v1.$) {
+				var failure = _v1.a;
+				return (!_Utils_eq(failure.ar, status)) ? _Utils_Tuple2(
+					_Utils_update(
+						cleared,
+						{
+							c: $author$project$View$Forms$markStale(model.c),
+							d: 'The response is inconsistent. Inspect operation history before another submission.'
+						}),
+					$elm$core$Platform$Cmd$none) : (((status === 503) && (failure.bs === 'generation-exhausted')) ? $author$project$Main$terminalExhaustion(
+					_Utils_update(
+						cleared,
+						{d: 'Operation rejected (generation-exhausted): ' + failure.cx})) : ((status === 401) ? _Utils_Tuple2(
+					_Utils_update(
+						cleared,
+						{
+							c: $author$project$View$Forms$markStale(model.c),
+							m: false,
+							d: 'Session unavailable. Reopen the process bootstrap URL.',
+							O: 'unavailable'
+						}),
+					$author$project$Main$toJs(
+						$elm$json$Json$Encode$object(
+							_List_fromArray(
+								[
+									_Utils_Tuple2(
+									'type',
+									$elm$json$Json$Encode$string('disconnect'))
+								])))) : _Utils_Tuple2(
+					_Utils_update(
+						cleared,
+						{
+							c: (status === 409) ? $author$project$View$Forms$markStale(model.c) : model.c,
+							d: 'Operation rejected (' + (failure.bs + ('): ' + (failure.cx + ((status === 409) ? ' Refresh, inspect, and adopt tokens.' : ''))))
+						}),
+					$elm$core$Platform$Cmd$none)));
+			} else {
+				return _Utils_Tuple2(
+					_Utils_update(
+						cleared,
+						{
+							c: $author$project$View$Forms$markStale(model.c),
+							d: 'The result is uncertain. Inspect repository and operation history before another submission.'
+						}),
+					$elm$core$Platform$Cmd$none);
+			}
+		}
+	});
+var $author$project$Main$readIssue = F3(
+	function (kind, message, model) {
+		switch (kind) {
+			case 2:
+				return _Utils_update(
+					model,
+					{
+						u: A3($elm$core$Dict$insert, 'collapsed', message, model.u),
+						e: true
+					});
+			case 3:
+				return _Utils_update(
+					model,
+					{
+						u: A3($elm$core$Dict$insert, 'exploded', message, model.u),
+						e: true
+					});
+			default:
+				return _Utils_update(
+					model,
+					{
+						f: $elm$core$Maybe$Just(message),
+						e: true
+					});
+		}
+	});
+var $author$project$Main$accept = F4(
+	function (decoder, body, set, model) {
+		var _v0 = A2(
+			$elm$json$Json$Decode$decodeValue,
+			$author$project$Api$response(decoder),
+			body);
+		if (!_v0.$) {
+			var envelope = _v0.a;
+			var _v1 = envelope.cy.ah;
+			switch (_v1.$) {
+				case 2:
+					var reason = _v1.a;
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								f: $elm$core$Maybe$Just('Snapshot unavailable: ' + reason),
+								e: true
+							}),
+						$elm$core$Platform$Cmd$none);
+				case 0:
+					var oid = _v1.a;
+					return _Utils_Tuple2(
+						A2(
+							set,
+							envelope.dn,
+							_Utils_update(
+								model,
+								{
+									f: $elm$core$Maybe$Nothing,
+									aU: $elm$core$Maybe$Just(oid)
+								})),
+						$elm$core$Platform$Cmd$none);
+				default:
+					var toOid = _v1.b;
+					return _Utils_Tuple2(
+						A2(
+							set,
+							envelope.dn,
+							_Utils_update(
+								model,
+								{
+									f: $elm$core$Maybe$Nothing,
+									aU: $elm$core$Maybe$Just(toOid)
+								})),
+						$elm$core$Platform$Cmd$none);
+			}
+		} else {
+			return _Utils_Tuple2(
+				_Utils_update(
+					model,
+					{
+						f: $elm$core$Maybe$Just('Response has an unsupported shape.'),
+						e: true
+					}),
+				$elm$core$Platform$Cmd$none);
+		}
+	});
+var $author$project$Api$CompareWindow = F3(
+	function (from, to, entries) {
+		return {dv: entries, dH: from, er: to};
+	});
+var $author$project$Api$CompareEntry = F6(
+	function (adr, title, kind, before, after, changes) {
+		return {J: adr, b5: after, b9: before, a3: changes, bc: kind, F: title};
+	});
+var $author$project$Api$CompareChange = F4(
+	function (field, before, after, diff) {
+		return {b5: after, b9: before, dq: diff, dC: field};
+	});
+var $author$project$Api$readableValue = $elm$json$Json$Decode$oneOf(
+	_List_fromArray(
+		[
+			$elm$json$Json$Decode$string,
+			A2(
+			$elm$json$Json$Decode$map,
+			$elm$core$String$join(', '),
+			$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+			A2(
+			$elm$json$Json$Decode$map,
+			function (value) {
+				return value ? 'true' : 'false';
+			},
+			$elm$json$Json$Decode$bool),
+			A2($elm$json$Json$Decode$map, $elm$core$String$fromInt, $elm$json$Json$Decode$int),
+			$elm$json$Json$Decode$null('')
+		]));
+var $author$project$Api$compareChange = A5(
+	$elm$json$Json$Decode$map4,
+	$author$project$Api$CompareChange,
+	A2($elm$json$Json$Decode$field, 'field', $elm$json$Json$Decode$string),
+	A3($author$project$Api$optional, 'before', $author$project$Api$readableValue, ''),
+	A3($author$project$Api$optional, 'after', $author$project$Api$readableValue, ''),
+	A3(
+		$author$project$Api$optional,
+		'diff',
+		$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+		$elm$core$Maybe$Nothing));
+var $author$project$Api$CompareSnapshot = F6(
+	function (title, summary, body, status, domains, scopes) {
+		return {ak: body, L: domains, N: scopes, ar: status, P: summary, F: title};
+	});
+var $elm$json$Json$Decode$map6 = _Json_map6;
+var $author$project$Api$compareSnapshot = A7(
+	$elm$json$Json$Decode$map6,
+	$author$project$Api$CompareSnapshot,
+	A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'summary', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'body', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'status', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'domains',
+		$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+	A2(
+		$elm$json$Json$Decode$field,
+		'applies_to',
+		$elm$json$Json$Decode$list($elm$json$Json$Decode$string)));
+var $author$project$Api$compareEntry = A7(
+	$elm$json$Json$Decode$map6,
+	$author$project$Api$CompareEntry,
+	A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'kind', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'before',
+		$elm$json$Json$Decode$nullable($author$project$Api$compareSnapshot)),
+	A2(
+		$elm$json$Json$Decode$field,
+		'after',
+		$elm$json$Json$Decode$nullable($author$project$Api$compareSnapshot)),
+	A2(
+		$elm$json$Json$Decode$field,
+		'changes',
+		$elm$json$Json$Decode$list($author$project$Api$compareChange)));
+var $author$project$Api$comparison = A4(
+	$elm$json$Json$Decode$map3,
+	$author$project$Api$CompareWindow,
+	A2($elm$json$Json$Decode$field, 'from', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'to', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'entries',
+		$elm$json$Json$Decode$list($author$project$Api$compareEntry)));
+var $author$project$Api$ConflictWindow = function (conflicts) {
+	return {al: conflicts};
+};
+var $author$project$Api$ConflictEntry = F4(
+	function (adr, code, summaries, candidates) {
+		return {J: adr, a2: candidates, bs: code, en: summaries};
+	});
+var $author$project$Api$ConflictCandidate = F3(
+	function (axis, heads, summary) {
+		return {c8: axis, dK: heads, P: summary};
+	});
+var $author$project$Api$conflictCandidate = A4(
+	$elm$json$Json$Decode$map3,
+	$author$project$Api$ConflictCandidate,
+	A2($elm$json$Json$Decode$field, 'axis', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'heads',
+		$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+	A2($elm$json$Json$Decode$field, 'summary', $elm$json$Json$Decode$string));
+var $author$project$Api$conflictEntry = A5(
+	$elm$json$Json$Decode$map4,
+	$author$project$Api$ConflictEntry,
+	A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'code', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'summaries',
+		$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+	A2(
+		$elm$json$Json$Decode$field,
+		'candidates',
+		$elm$json$Json$Decode$list($author$project$Api$conflictCandidate)));
+var $author$project$Api$conflicts = A2(
+	$elm$json$Json$Decode$map,
+	$author$project$Api$ConflictWindow,
+	A2(
+		$elm$json$Json$Decode$field,
+		'conflicts',
+		$elm$json$Json$Decode$list($author$project$Api$conflictEntry)));
+var $author$project$Api$Doctor = function (issues) {
+	return {dP: issues};
+};
+var $author$project$Api$Issue = F4(
+	function (severity, code, message, path) {
+		return {bs: code, cx: message, bg: path, ek: severity};
+	});
+var $author$project$Api$issue = A5(
+	$elm$json$Json$Decode$map4,
+	$author$project$Api$Issue,
+	A2($elm$json$Json$Decode$field, 'severity', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'code', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'message', $elm$json$Json$Decode$string),
+	A3(
+		$author$project$Api$optional,
+		'path',
+		$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+		$elm$core$Maybe$Nothing));
+var $author$project$Api$doctor = A3(
+	$elm$json$Json$Decode$map2,
+	F2(
+		function (_v0, issues) {
+			return $author$project$Api$Doctor(issues);
+		}),
+	A2($elm$json$Json$Decode$field, 'ok', $elm$json$Json$Decode$bool),
+	A2(
+		$elm$json$Json$Decode$field,
+		'issues',
+		$elm$json$Json$Decode$list($author$project$Api$issue)));
+var $author$project$Api$HistoryWindow = F4(
+	function (asOf, limit, truncated, operations) {
+		return {ah: asOf, cw: limit, be: operations, es: truncated};
+	});
+var $elm$json$Json$Decode$map8 = _Json_map8;
+var $author$project$Api$historyItem = A2(
+	$elm$json$Json$Decode$andThen,
+	function (base) {
+		return A2(
+			$elm$json$Json$Decode$map,
+			function (changes) {
+				return _Utils_update(
+					base,
+					{a3: changes});
+			},
+			A2(
+				$elm$json$Json$Decode$field,
+				'changes',
+				$elm$json$Json$Decode$list($elm$json$Json$Decode$string)));
+	},
+	A9(
+		$elm$json$Json$Decode$map8,
+		F8(
+			function (adr, title, label, actor, claimedAt, operationId, reason, commit) {
+				return {a1: actor, J: adr, a3: _List_Nil, a4: claimedAt, a5: commit, cu: label, aC: operationId, cL: reason, F: title};
+			}),
+		A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'label', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'actor', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'claimed_at', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'operation', $elm$json$Json$Decode$string),
+		A3(
+			$author$project$Api$optional,
+			'reason',
+			$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+			$elm$core$Maybe$Nothing),
+		A3(
+			$author$project$Api$optional,
+			'commit',
+			$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+			$elm$core$Maybe$Nothing)));
+var $author$project$Api$history = A5(
+	$elm$json$Json$Decode$map4,
+	$author$project$Api$HistoryWindow,
+	A2($elm$json$Json$Decode$field, 'as_of', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'limit', $elm$json$Json$Decode$int),
+	A2($elm$json$Json$Decode$field, 'truncated', $elm$json$Json$Decode$bool),
+	A2(
+		$elm$json$Json$Decode$field,
+		'operations',
+		$elm$json$Json$Decode$list($author$project$Api$historyItem)));
+var $author$project$Api$CandidateRecord = F5(
+	function (id, title, summary, body, path) {
+		return {ak: body, ba: id, bg: path, P: summary, F: title};
+	});
+var $author$project$Api$candidateDomain = A4(
+	$elm$json$Json$Decode$map3,
+	F3(
+		function (id, domains, path) {
+			return A5(
+				$author$project$Api$CandidateRecord,
+				id,
+				'Domain candidate',
+				A2($elm$core$String$join, ', ', domains),
+				'',
+				path);
+		}),
+	A2($elm$json$Json$Decode$field, 'connection', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'domains',
+		$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+	A2($elm$json$Json$Decode$field, 'path', $elm$json$Json$Decode$string));
+var $author$project$Api$candidateRecord = A5(
+	$elm$json$Json$Decode$map4,
+	F4(
+		function (id, title, summary, path) {
+			return A5($author$project$Api$CandidateRecord, id, title, summary, '', path);
+		}),
+	A2($elm$json$Json$Decode$field, 'record', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'summary', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'path', $elm$json$Json$Decode$string));
+var $author$project$Api$candidateScope = A4(
+	$elm$json$Json$Decode$map3,
+	F3(
+		function (id, scopes, path) {
+			return A5(
+				$author$project$Api$CandidateRecord,
+				id,
+				'Scope candidate',
+				A2($elm$core$String$join, ', ', scopes),
+				'',
+				path);
+		}),
+	A2($elm$json$Json$Decode$field, 'connection', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'applies_to',
+		$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+	A2($elm$json$Json$Decode$field, 'path', $elm$json$Json$Decode$string));
+var $author$project$Api$landing = A2(
+	$elm$json$Json$Decode$andThen,
+	function (base) {
+		return A2(
+			$elm$json$Json$Decode$map,
+			function (complete) {
+				return base + (' · ' + (complete ? 'complete landing' : 'partial landing'));
+			},
+			A2($elm$json$Json$Decode$field, 'complete', $elm$json$Json$Decode$bool));
+	},
+	A4(
+		$elm$json$Json$Decode$map3,
+		F3(
+			function (ref, commit, line) {
+				return ref + (' · ' + (commit + (' · ' + line)));
+			}),
+		A2($elm$json$Json$Decode$field, 'ref', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'commit', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'line', $elm$json$Json$Decode$string)));
+var $author$project$Api$placement = A2(
+	$elm$json$Json$Decode$andThen,
+	function (base) {
+		return A5(
+			$elm$json$Json$Decode$map4,
+			F4(
+				function (authored, committed, parents, reachable) {
+					return base + (' · authored ' + (authored + (' · committed ' + (committed + (' · parents ' + (A2($elm$core$String$join, ', ', parents) + (' · ' + (reachable ? 'reachable' : 'unreachable'))))))));
+				}),
+			A2($elm$json$Json$Decode$field, 'authored_at', $elm$json$Json$Decode$string),
+			A2($elm$json$Json$Decode$field, 'committed_at', $elm$json$Json$Decode$string),
+			A2(
+				$elm$json$Json$Decode$field,
+				'parents',
+				$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+			A2($elm$json$Json$Decode$field, 'reachable', $elm$json$Json$Decode$bool));
+	},
+	A4(
+		$elm$json$Json$Decode$map3,
+		F3(
+			function (classification, commit, subject) {
+				return classification + (' · ' + (commit + (' · ' + subject)));
+			}),
+		A2($elm$json$Json$Decode$field, 'classification', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'commit', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'subject', $elm$json$Json$Decode$string)));
+var $author$project$Api$provenance = A2(
+	$elm$json$Json$Decode$andThen,
+	function (base) {
+		return A2(
+			$elm$json$Json$Decode$andThen,
+			function (extended) {
+				return A5(
+					$elm$json$Json$Decode$map4,
+					F4(
+						function (topIntroductions, whenIntroductions, topOriginals, whenOriginals) {
+							return _Utils_update(
+								extended,
+								{
+									bC: _Utils_ap(topIntroductions, whenIntroductions),
+									bK: _Utils_ap(topOriginals, whenOriginals)
+								});
+						}),
+					A3(
+						$author$project$Api$optional,
+						'introductions',
+						$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+						_List_Nil),
+					A3(
+						$author$project$Api$optionalAt,
+						_List_fromArray(
+							['when', 'introductions']),
+						$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+						_List_Nil),
+					A3(
+						$author$project$Api$optional,
+						'original_commits',
+						$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+						_List_Nil),
+					A3(
+						$author$project$Api$optionalAt,
+						_List_fromArray(
+							['when', 'original_operation_commits']),
+						$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+						_List_Nil));
+			},
+			A6(
+				$elm$json$Json$Decode$map5,
+				F5(
+					function (input, prompt, context, placements, landings) {
+						return _Utils_update(
+							base,
+							{bt: context, bB: input, bD: landings, bM: placements, bO: prompt});
+					}),
+				A3(
+					$author$project$Api$optional,
+					'input_digest',
+					$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+					$elm$core$Maybe$Nothing),
+				A3(
+					$author$project$Api$optional,
+					'prompt_digest',
+					$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+					$elm$core$Maybe$Nothing),
+				A3(
+					$author$project$Api$optional,
+					'context_digest',
+					$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+					$elm$core$Maybe$Nothing),
+				A3(
+					$author$project$Api$optional,
+					'placements',
+					$elm$json$Json$Decode$list($author$project$Api$placement),
+					_List_Nil),
+				A3(
+					$author$project$Api$optional,
+					'line_landings',
+					$elm$json$Json$Decode$list($author$project$Api$landing),
+					_List_Nil)));
+	},
+	A6(
+		$elm$json$Json$Decode$map5,
+		F5(
+			function (actor, model, claimedAt, basis, operationId) {
+				return {a1: actor, b8: basis, a4: claimedAt, bt: $elm$core$Maybe$Nothing, bB: $elm$core$Maybe$Nothing, bC: _List_Nil, bD: _List_Nil, cz: model, aC: operationId, bK: _List_Nil, bM: _List_Nil, bO: $elm$core$Maybe$Nothing};
+			}),
+		A2($elm$json$Json$Decode$field, 'actor', $elm$json$Json$Decode$string),
+		A3(
+			$author$project$Api$optional,
+			'model',
+			$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+			$elm$core$Maybe$Nothing),
+		A2($elm$json$Json$Decode$field, 'claimed_at', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'basis', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'operation', $elm$json$Json$Decode$string)));
+var $author$project$Api$resolutionConflict = A5(
+	$elm$json$Json$Decode$map4,
+	F4(
+		function (_v0, _v1, _v2, _v3) {
+			return 0;
+		}),
+	A2($elm$json$Json$Decode$field, 'kind', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'head_count', $elm$json$Json$Decode$int),
+	A2(
+		$elm$json$Json$Decode$field,
+		'heads',
+		$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+	A2($elm$json$Json$Decode$field, 'summary', $elm$json$Json$Decode$string));
+var $author$project$Api$resolution = A4(
+	$elm$json$Json$Decode$map3,
+	F3(
+		function (_v0, _v1, _v2) {
+			return 0;
+		}),
+	A2($elm$json$Json$Decode$field, 'resolved', $elm$json$Json$Decode$bool),
+	A2($elm$json$Json$Decode$field, 'resolution_required', $elm$json$Json$Decode$bool),
+	A2(
+		$elm$json$Json$Decode$field,
+		'conflicts',
+		$elm$json$Json$Decode$list($author$project$Api$resolutionConflict)));
+var $author$project$Api$collapsedRequired = A2(
+	$elm$json$Json$Decode$andThen,
+	function (_v8) {
+		return A2(
+			$elm$json$Json$Decode$andThen,
+			function (_v17) {
+				return A4(
+					$elm$json$Json$Decode$map3,
+					F3(
+						function (_v18, _v19, _v20) {
+							return 0;
+						}),
+					A2($elm$json$Json$Decode$field, 'resolved', $elm$json$Json$Decode$bool),
+					A2($elm$json$Json$Decode$field, 'resolution_required', $elm$json$Json$Decode$bool),
+					A2($elm$json$Json$Decode$field, 'resolution', $author$project$Api$resolution));
+			},
+			A9(
+				$elm$json$Json$Decode$map8,
+				F8(
+					function (_v9, _v10, _v11, _v12, _v13, _v14, _v15, _v16) {
+						return 0;
+					}),
+				A2(
+					$elm$json$Json$Decode$field,
+					'domain_heads',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+				A2(
+					$elm$json$Json$Decode$field,
+					'status_heads',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+				A2(
+					$elm$json$Json$Decode$field,
+					'candidate_records',
+					$elm$json$Json$Decode$list($author$project$Api$candidateRecord)),
+				A2(
+					$elm$json$Json$Decode$field,
+					'candidate_scopes',
+					$elm$json$Json$Decode$list($author$project$Api$candidateScope)),
+				A2(
+					$elm$json$Json$Decode$field,
+					'candidate_domains',
+					$elm$json$Json$Decode$list($author$project$Api$candidateDomain)),
+				A2(
+					$elm$json$Json$Decode$field,
+					'conflicts',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+				A2(
+					$elm$json$Json$Decode$field,
+					'source_paths',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+				A2(
+					$elm$json$Json$Decode$field,
+					'provenance',
+					$elm$json$Json$Decode$dict(
+						$elm$json$Json$Decode$nullable($author$project$Api$provenance)))));
+	},
+	A9(
+		$elm$json$Json$Decode$map8,
+		F8(
+			function (_v0, _v1, _v2, _v3, _v4, _v5, _v6, _v7) {
+				return 0;
+			}),
+		A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'summary', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'body', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'status', $elm$json$Json$Decode$string),
+		A2(
+			$elm$json$Json$Decode$field,
+			'domains',
+			$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+		A2(
+			$elm$json$Json$Decode$field,
+			'applies_to',
+			$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+		A2(
+			$elm$json$Json$Decode$field,
+			'record_heads',
+			$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+		A2(
+			$elm$json$Json$Decode$field,
+			'scope_heads',
+			$elm$json$Json$Decode$list($elm$json$Json$Decode$string))));
+var $author$project$Api$Operation = F3(
+	function (id, items, provenance) {
+		return {ba: id, dR: items, bi: provenance};
+	});
+var $author$project$Api$parentDiff = A3(
+	$elm$json$Json$Decode$map2,
+	F2(
+		function (parent, diff) {
+			return parent + ('\u000A' + diff);
+		}),
+	A2($elm$json$Json$Decode$field, 'parent', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'diff', $elm$json$Json$Decode$string));
+var $author$project$Api$operationItem = A2(
+	$elm$json$Json$Decode$andThen,
+	function (base) {
+		return A2(
+			$elm$json$Json$Decode$andThen,
+			function (extended) {
+				return A5(
+					$elm$json$Json$Decode$map4,
+					F4(
+						function (relation, rawSemantic, parents, diffs) {
+							return _Utils_update(
+								extended,
+								{bv: diffs, bL: parents, bR: rawSemantic, bU: relation});
+						}),
+					A3(
+						$author$project$Api$optional,
+						'relation',
+						$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+						$elm$core$Maybe$Nothing),
+					A3(
+						$author$project$Api$optional,
+						'raw_semantic',
+						$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+						$elm$core$Maybe$Nothing),
+					A3(
+						$author$project$Api$optional,
+						'parents',
+						$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+						_List_Nil),
+					A3(
+						$author$project$Api$optional,
+						'diffs',
+						$elm$json$Json$Decode$list($author$project$Api$parentDiff),
+						_List_Nil));
+			},
+			A2(
+				$elm$json$Json$Decode$andThen,
+				function (extended) {
+					return A7(
+						$elm$json$Json$Decode$map6,
+						F6(
+							function (scopes, state, replacement, added, removed, refinements) {
+								return _Utils_update(
+									extended,
+									{br: added, bT: refinements, bV: removed, bW: replacement, N: scopes, b0: state});
+							}),
+						A3(
+							$author$project$Api$optionalAt,
+							_List_fromArray(
+								['metadata', 'applies_to']),
+							$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+							_List_Nil),
+						A3(
+							$author$project$Api$optionalAt,
+							_List_fromArray(
+								['metadata', 'state']),
+							$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+							$elm$core$Maybe$Nothing),
+						A3(
+							$author$project$Api$optionalAt,
+							_List_fromArray(
+								['metadata', 'replacement']),
+							$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+							$elm$core$Maybe$Nothing),
+						A3(
+							$author$project$Api$optionalAt,
+							_List_fromArray(
+								['metadata', 'added']),
+							$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+							_List_Nil),
+						A3(
+							$author$project$Api$optionalAt,
+							_List_fromArray(
+								['metadata', 'removed']),
+							$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+							_List_Nil),
+						A3(
+							$author$project$Api$optionalAt,
+							_List_fromArray(
+								['metadata', 'refinements']),
+							$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+							_List_Nil));
+				},
+				A6(
+					$elm$json$Json$Decode$map5,
+					F5(
+						function (title, summary, body, rationale, domains) {
+							return _Utils_update(
+								base,
+								{ak: body, L: domains, bQ: rationale, P: summary, F: title});
+						}),
+					A3(
+						$author$project$Api$optional,
+						'title',
+						$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+						$elm$core$Maybe$Nothing),
+					A3(
+						$author$project$Api$optional,
+						'summary',
+						$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+						$elm$core$Maybe$Nothing),
+					A3(
+						$author$project$Api$optional,
+						'body',
+						$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+						$elm$core$Maybe$Nothing),
+					A3(
+						$author$project$Api$optional,
+						'rationale',
+						$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+						$elm$core$Maybe$Nothing),
+					A3(
+						$author$project$Api$optional,
+						'domains',
+						$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+						_List_Nil))));
+	},
+	A5(
+		$elm$json$Json$Decode$map4,
+		F4(
+			function (id, kind, eventName, path) {
+				return {br: _List_Nil, ak: $elm$core$Maybe$Nothing, bv: _List_Nil, L: _List_Nil, ci: eventName, ba: id, bc: kind, bL: _List_Nil, bg: path, bQ: $elm$core$Maybe$Nothing, bR: $elm$core$Maybe$Nothing, bT: _List_Nil, bU: $elm$core$Maybe$Nothing, bV: _List_Nil, bW: $elm$core$Maybe$Nothing, N: _List_Nil, b0: $elm$core$Maybe$Nothing, P: $elm$core$Maybe$Nothing, F: $elm$core$Maybe$Nothing};
+			}),
+		A2($elm$json$Json$Decode$field, 'item', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'type', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'event', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'path', $elm$json$Json$Decode$string)));
+var $author$project$Api$operation = A4(
+	$elm$json$Json$Decode$map3,
+	$author$project$Api$Operation,
+	A2($elm$json$Json$Decode$field, 'operation', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'items',
+		$elm$json$Json$Decode$list($author$project$Api$operationItem)),
+	A2(
+		$elm$json$Json$Decode$field,
+		'provenance',
+		$elm$json$Json$Decode$nullable($author$project$Api$provenance)));
+var $author$project$Api$explodedRequired = A5(
+	$elm$json$Json$Decode$map4,
+	F4(
+		function (_v0, _v1, _v2, _v3) {
+			return 0;
+		}),
+	A2(
+		$elm$json$Json$Decode$field,
+		'operations',
+		$elm$json$Json$Decode$list($author$project$Api$operation)),
+	A2($elm$json$Json$Decode$field, 'resolution', $author$project$Api$resolution),
+	A2($elm$json$Json$Decode$field, 'resolution_required', $elm$json$Json$Decode$bool),
+	A2($elm$json$Json$Decode$field, 'resolved', $elm$json$Json$Decode$bool));
+var $author$project$Api$CandidateSet = F3(
+	function (records, scopes, domains) {
+		return {L: domains, cM: records, N: scopes};
+	});
+var $author$project$Api$candidateSet = A4(
+	$elm$json$Json$Decode$map3,
+	$author$project$Api$CandidateSet,
+	A3(
+		$author$project$Api$optional,
+		'candidate_records',
+		$elm$json$Json$Decode$list($author$project$Api$candidateRecord),
+		_List_Nil),
+	A3(
+		$author$project$Api$optional,
+		'candidate_scopes',
+		$elm$json$Json$Decode$list($author$project$Api$candidateScope),
+		_List_Nil),
+	A3(
+		$author$project$Api$optional,
+		'candidate_domains',
+		$elm$json$Json$Decode$list($author$project$Api$candidateDomain),
+		_List_Nil));
+var $elm$core$Dict$values = function (dict) {
+	return A3(
+		$elm$core$Dict$foldr,
+		F3(
+			function (key, value, valueList) {
+				return A2($elm$core$List$cons, value, valueList);
+			}),
+		_List_Nil,
+		dict);
+};
+var $author$project$Api$provenanceSet = A2(
+	$elm$json$Json$Decode$map,
+	A2(
+		$elm$core$Basics$composeR,
+		$elm$core$Dict$values,
+		$elm$core$List$filterMap($elm$core$Basics$identity)),
+	A3(
+		$author$project$Api$optional,
+		'provenance',
+		$elm$json$Json$Decode$dict(
+			$elm$json$Json$Decode$nullable($author$project$Api$provenance)),
+		$elm$core$Dict$empty));
+var $author$project$Api$inspectionFields = A2(
+	$elm$json$Json$Decode$andThen,
+	function (base) {
+		return A2(
+			$elm$json$Json$Decode$andThen,
+			function (extended) {
+				return A5(
+					$elm$json$Json$Decode$map4,
+					F4(
+						function (paths, operations, originDetails, required) {
+							return _Utils_update(
+								extended,
+								{be: operations, bi: originDetails, aD: required, aH: paths});
+						}),
+					A3(
+						$author$project$Api$optional,
+						'source_paths',
+						$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+						_List_Nil),
+					A3(
+						$author$project$Api$optional,
+						'operations',
+						$elm$json$Json$Decode$list($author$project$Api$operation),
+						_List_Nil),
+					$author$project$Api$provenanceSet,
+					A2($elm$json$Json$Decode$field, 'resolution_required', $elm$json$Json$Decode$bool));
+			},
+			A9(
+				$elm$json$Json$Decode$map8,
+				F8(
+					function (domains, scopes, recordHeads, scopeHeads, domainHeads, statusHeads, candidates, conflictSummaries) {
+						return _Utils_update(
+							base,
+							{a2: candidates, al: conflictSummaries, bx: domainHeads, L: domains, bS: recordHeads, bX: scopeHeads, N: scopes, b1: statusHeads});
+					}),
+				A3(
+					$author$project$Api$optional,
+					'domains',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+					_List_Nil),
+				A3(
+					$author$project$Api$optional,
+					'applies_to',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+					_List_Nil),
+				A3(
+					$author$project$Api$optional,
+					'record_heads',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+					_List_Nil),
+				A3(
+					$author$project$Api$optional,
+					'scope_heads',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+					_List_Nil),
+				A3(
+					$author$project$Api$optional,
+					'domain_heads',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+					_List_Nil),
+				A3(
+					$author$project$Api$optional,
+					'status_heads',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+					_List_Nil),
+				$author$project$Api$candidateSet,
+				A3(
+					$author$project$Api$optional,
+					'conflicts',
+					$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+					_List_Nil)));
+	},
+	A9(
+		$elm$json$Json$Decode$map8,
+		F8(
+			function (adr, revision, view, title, summary, body, status, token) {
+				return {
+					J: adr,
+					ah: revision,
+					ak: body,
+					a2: {L: _List_Nil, cM: _List_Nil, N: _List_Nil},
+					al: _List_Nil,
+					bx: _List_Nil,
+					L: _List_Nil,
+					be: _List_Nil,
+					bi: _List_Nil,
+					bS: _List_Nil,
+					aD: false,
+					bX: _List_Nil,
+					N: _List_Nil,
+					aH: _List_Nil,
+					aY: token,
+					ar: status,
+					b1: _List_Nil,
+					P: summary,
+					F: title,
+					c_: view
+				};
+			}),
+		A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'as_of', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'view', $elm$json$Json$Decode$string),
+		A3($author$project$Api$optional, 'title', $elm$json$Json$Decode$string, ''),
+		A3($author$project$Api$optional, 'summary', $elm$json$Json$Decode$string, ''),
+		A3($author$project$Api$optional, 'body', $elm$json$Json$Decode$string, ''),
+		A3($author$project$Api$optional, 'status', $elm$json$Json$Decode$string, ''),
+		A2($elm$json$Json$Decode$field, 'state_token', $elm$json$Json$Decode$string)));
+var $author$project$Api$inspection = A2(
+	$elm$json$Json$Decode$andThen,
+	function (_v0) {
+		var schema = _v0.a;
+		var viewMode = _v0.b;
+		var _v1 = _Utils_Tuple2(schema, viewMode);
+		_v1$2:
+		while (true) {
+			switch (_v1.a) {
+				case 'adrai/show-collapsed/v1':
+					if (_v1.b === 'collapsed') {
+						return A3(
+							$elm$json$Json$Decode$map2,
+							F2(
+								function (_v2, value) {
+									return value;
+								}),
+							$author$project$Api$collapsedRequired,
+							$author$project$Api$inspectionFields);
+					} else {
+						break _v1$2;
+					}
+				case 'adrai/show-exploded/v1':
+					if (_v1.b === 'exploded') {
+						return A3(
+							$elm$json$Json$Decode$map2,
+							F2(
+								function (_v3, value) {
+									return value;
+								}),
+							$author$project$Api$explodedRequired,
+							$author$project$Api$inspectionFields);
+					} else {
+						break _v1$2;
+					}
+				default:
+					break _v1$2;
+			}
+		}
+		return $elm$json$Json$Decode$fail('unsupported inspection schema or view');
+	},
+	A3(
+		$elm$json$Json$Decode$map2,
+		$elm$core$Tuple$pair,
+		A2($elm$json$Json$Decode$field, 'schema', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'view', $elm$json$Json$Decode$string)));
+var $author$project$Api$SearchWindow = F3(
+	function (asOf, limit, results) {
+		return {ah: asOf, cw: limit, cO: results};
+	});
+var $elm$json$Json$Decode$float = _Json_decodeFloat;
+var $author$project$Api$searchHit = A2(
+	$elm$json$Json$Decode$andThen,
+	function (base) {
+		return A7(
+			$elm$json$Json$Decode$map6,
+			F6(
+				function (matched, fields, terms, paths, conflictSummaries, required) {
+					return _Utils_update(
+						base,
+						{al: conflictSummaries, bE: fields, bF: terms, bG: matched, aD: required, aH: paths});
+				}),
+			A3(
+				$author$project$Api$optional,
+				'matched_title',
+				$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string),
+				$elm$core$Maybe$Nothing),
+			A3(
+				$author$project$Api$optionalAt,
+				_List_fromArray(
+					['matches', 'fields']),
+				$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+				_List_Nil),
+			A3(
+				$author$project$Api$optionalAt,
+				_List_fromArray(
+					['matches', 'terms']),
+				$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+				_List_Nil),
+			A3(
+				$author$project$Api$optional,
+				'source_paths',
+				$elm$json$Json$Decode$list($elm$json$Json$Decode$string),
+				_List_Nil),
+			A3(
+				$author$project$Api$optional,
+				'conflicts',
+				$elm$json$Json$Decode$list(
+					A2($elm$json$Json$Decode$field, 'summary', $elm$json$Json$Decode$string)),
+				_List_Nil),
+			A3($author$project$Api$optional, 'resolution_required', $elm$json$Json$Decode$bool, false));
+	},
+	A9(
+		$elm$json$Json$Decode$map8,
+		F8(
+			function (adr, title, summary, status, domains, scopes, stateToken, score) {
+				return {J: adr, al: _List_Nil, L: domains, bE: _List_Nil, bF: _List_Nil, bG: $elm$core$Maybe$Nothing, aD: false, N: scopes, bn: score, aH: _List_Nil, aY: stateToken, ar: status, P: summary, F: title};
+			}),
+		A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'summary', $elm$json$Json$Decode$string),
+		A2($elm$json$Json$Decode$field, 'status', $elm$json$Json$Decode$string),
+		A2(
+			$elm$json$Json$Decode$field,
+			'domains',
+			$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+		A2(
+			$elm$json$Json$Decode$field,
+			'applies_to',
+			$elm$json$Json$Decode$list($elm$json$Json$Decode$string)),
+		A2($elm$json$Json$Decode$field, 'state_token', $elm$json$Json$Decode$string),
+		A2(
+			$elm$json$Json$Decode$field,
+			'score',
+			$elm$json$Json$Decode$nullable($elm$json$Json$Decode$float))));
+var $author$project$Api$search = A4(
+	$elm$json$Json$Decode$map3,
+	$author$project$Api$SearchWindow,
+	A2($elm$json$Json$Decode$field, 'as_of', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'limit', $elm$json$Json$Decode$int),
+	A2(
+		$elm$json$Json$Decode$field,
+		'results',
+		$elm$json$Json$Decode$list($author$project$Api$searchHit)));
+var $author$project$Main$readSearch = F2(
+	function (body, model) {
+		return A4(
+			$author$project$Main$accept,
+			$author$project$Api$search,
+			body,
+			F2(
+				function (window, state) {
+					return _Utils_update(
+						state,
+						{
+							j: 0,
+							af: $elm$core$Maybe$Just(window),
+							e: false
+						});
+				}),
+			model);
+	});
+var $author$project$Api$RelevantWindow = F4(
+	function (asOf, file, source, results) {
+		return {ah: asOf, dD: file, cO: results, el: source};
+	});
+var $author$project$Api$RelevantHit = F8(
+	function (adr, title, summary, status, scopeMatch, confidence, score, evidence) {
+		return {J: adr, dm: confidence, dx: evidence, ei: scopeMatch, bn: score, ar: status, P: summary, F: title};
+	});
+var $author$project$Api$Evidence = F4(
+	function (fileExcerpt, adrExcerpt, section, score) {
+		return {c6: adrExcerpt, dE: fileExcerpt, bn: score, ej: section};
+	});
+var $author$project$Api$evidence = A5(
+	$elm$json$Json$Decode$map4,
+	$author$project$Api$Evidence,
+	A2($elm$json$Json$Decode$field, 'file_excerpt', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'adr_excerpt', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'adr_section', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'score', $elm$json$Json$Decode$float));
+var $author$project$Api$relevantHit = A9(
+	$elm$json$Json$Decode$map8,
+	$author$project$Api$RelevantHit,
+	A2($elm$json$Json$Decode$field, 'adr', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'title', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'summary', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'status', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'scope_match', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'confidence', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'score', $elm$json$Json$Decode$float),
+	A2(
+		$elm$json$Json$Decode$field,
+		'evidence',
+		$elm$json$Json$Decode$list($author$project$Api$evidence)));
+var $author$project$Api$relevant = A5(
+	$elm$json$Json$Decode$map4,
+	$author$project$Api$RelevantWindow,
+	A2($elm$json$Json$Decode$field, 'as_of', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$at,
+		_List_fromArray(
+			['file', 'path']),
+		$elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$at,
+		_List_fromArray(
+			['file', 'source']),
+		$elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'results',
+		$elm$json$Json$Decode$list($author$project$Api$relevantHit)));
+var $author$project$Api$Repository = F4(
+	function (worktree, head, headRef, stateToken) {
+		return {dI: head, dJ: headRef, aY: stateToken, ev: worktree};
+	});
+var $author$project$Api$repository = A5(
+	$elm$json$Json$Decode$map4,
+	$author$project$Api$Repository,
+	A2($elm$json$Json$Decode$field, 'worktree', $elm$json$Json$Decode$string),
+	A2($elm$json$Json$Decode$field, 'head', $elm$json$Json$Decode$string),
+	A2(
+		$elm$json$Json$Decode$field,
+		'head_ref',
+		$elm$json$Json$Decode$nullable($elm$json$Json$Decode$string)),
+	A2(
+		$elm$json$Json$Decode$at,
+		_List_fromArray(
+			['repository_state', 'token']),
+		$elm$json$Json$Decode$string));
+var $author$project$View$Forms$seedBasis = F2(
+	function (repository, draft) {
+		return (draft.dc === '') ? _Utils_update(
+			draft,
+			{
+				db: repository.dI,
+				ai: repository.dJ,
+				dc: repository.aY,
+				aT: $elm$core$Maybe$Just(
+					A2($author$project$View$Forms$baseline, repository, $elm$core$Maybe$Nothing))
+			}) : draft;
+	});
+var $elm$core$Dict$getMin = function (dict) {
+	getMin:
+	while (true) {
+		if ((dict.$ === -1) && (dict.d.$ === -1)) {
+			var left = dict.d;
+			var $temp$dict = left;
+			dict = $temp$dict;
+			continue getMin;
+		} else {
+			return dict;
+		}
+	}
+};
+var $elm$core$Dict$moveRedLeft = function (dict) {
+	if (((dict.$ === -1) && (dict.d.$ === -1)) && (dict.e.$ === -1)) {
+		if ((dict.e.d.$ === -1) && (!dict.e.d.a)) {
+			var clr = dict.a;
+			var k = dict.b;
+			var v = dict.c;
+			var _v1 = dict.d;
+			var lClr = _v1.a;
+			var lK = _v1.b;
+			var lV = _v1.c;
+			var lLeft = _v1.d;
+			var lRight = _v1.e;
+			var _v2 = dict.e;
+			var rClr = _v2.a;
+			var rK = _v2.b;
+			var rV = _v2.c;
+			var rLeft = _v2.d;
+			var _v3 = rLeft.a;
+			var rlK = rLeft.b;
+			var rlV = rLeft.c;
+			var rlL = rLeft.d;
+			var rlR = rLeft.e;
+			var rRight = _v2.e;
+			return A5(
+				$elm$core$Dict$RBNode_elm_builtin,
+				0,
+				rlK,
+				rlV,
+				A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					1,
+					k,
+					v,
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, lK, lV, lLeft, lRight),
+					rlL),
+				A5($elm$core$Dict$RBNode_elm_builtin, 1, rK, rV, rlR, rRight));
+		} else {
+			var clr = dict.a;
+			var k = dict.b;
+			var v = dict.c;
+			var _v4 = dict.d;
+			var lClr = _v4.a;
+			var lK = _v4.b;
+			var lV = _v4.c;
+			var lLeft = _v4.d;
+			var lRight = _v4.e;
+			var _v5 = dict.e;
+			var rClr = _v5.a;
+			var rK = _v5.b;
+			var rV = _v5.c;
+			var rLeft = _v5.d;
+			var rRight = _v5.e;
+			if (clr === 1) {
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					1,
+					k,
+					v,
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, lK, lV, lLeft, lRight),
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, rK, rV, rLeft, rRight));
+			} else {
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					1,
+					k,
+					v,
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, lK, lV, lLeft, lRight),
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, rK, rV, rLeft, rRight));
+			}
+		}
+	} else {
+		return dict;
+	}
+};
+var $elm$core$Dict$moveRedRight = function (dict) {
+	if (((dict.$ === -1) && (dict.d.$ === -1)) && (dict.e.$ === -1)) {
+		if ((dict.d.d.$ === -1) && (!dict.d.d.a)) {
+			var clr = dict.a;
+			var k = dict.b;
+			var v = dict.c;
+			var _v1 = dict.d;
+			var lClr = _v1.a;
+			var lK = _v1.b;
+			var lV = _v1.c;
+			var _v2 = _v1.d;
+			var _v3 = _v2.a;
+			var llK = _v2.b;
+			var llV = _v2.c;
+			var llLeft = _v2.d;
+			var llRight = _v2.e;
+			var lRight = _v1.e;
+			var _v4 = dict.e;
+			var rClr = _v4.a;
+			var rK = _v4.b;
+			var rV = _v4.c;
+			var rLeft = _v4.d;
+			var rRight = _v4.e;
+			return A5(
+				$elm$core$Dict$RBNode_elm_builtin,
+				0,
+				lK,
+				lV,
+				A5($elm$core$Dict$RBNode_elm_builtin, 1, llK, llV, llLeft, llRight),
+				A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					1,
+					k,
+					v,
+					lRight,
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, rK, rV, rLeft, rRight)));
+		} else {
+			var clr = dict.a;
+			var k = dict.b;
+			var v = dict.c;
+			var _v5 = dict.d;
+			var lClr = _v5.a;
+			var lK = _v5.b;
+			var lV = _v5.c;
+			var lLeft = _v5.d;
+			var lRight = _v5.e;
+			var _v6 = dict.e;
+			var rClr = _v6.a;
+			var rK = _v6.b;
+			var rV = _v6.c;
+			var rLeft = _v6.d;
+			var rRight = _v6.e;
+			if (clr === 1) {
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					1,
+					k,
+					v,
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, lK, lV, lLeft, lRight),
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, rK, rV, rLeft, rRight));
+			} else {
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					1,
+					k,
+					v,
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, lK, lV, lLeft, lRight),
+					A5($elm$core$Dict$RBNode_elm_builtin, 0, rK, rV, rLeft, rRight));
+			}
+		}
+	} else {
+		return dict;
+	}
+};
+var $elm$core$Dict$removeHelpPrepEQGT = F7(
+	function (targetKey, dict, color, key, value, left, right) {
+		if ((left.$ === -1) && (!left.a)) {
+			var _v1 = left.a;
+			var lK = left.b;
+			var lV = left.c;
+			var lLeft = left.d;
+			var lRight = left.e;
+			return A5(
+				$elm$core$Dict$RBNode_elm_builtin,
+				color,
+				lK,
+				lV,
+				lLeft,
+				A5($elm$core$Dict$RBNode_elm_builtin, 0, key, value, lRight, right));
+		} else {
+			_v2$2:
+			while (true) {
+				if ((right.$ === -1) && (right.a === 1)) {
+					if (right.d.$ === -1) {
+						if (right.d.a === 1) {
+							var _v3 = right.a;
+							var _v4 = right.d;
+							var _v5 = _v4.a;
+							return $elm$core$Dict$moveRedRight(dict);
+						} else {
+							break _v2$2;
+						}
+					} else {
+						var _v6 = right.a;
+						var _v7 = right.d;
+						return $elm$core$Dict$moveRedRight(dict);
+					}
+				} else {
+					break _v2$2;
+				}
+			}
+			return dict;
+		}
+	});
+var $elm$core$Dict$removeMin = function (dict) {
+	if ((dict.$ === -1) && (dict.d.$ === -1)) {
+		var color = dict.a;
+		var key = dict.b;
+		var value = dict.c;
+		var left = dict.d;
+		var lColor = left.a;
+		var lLeft = left.d;
+		var right = dict.e;
+		if (lColor === 1) {
+			if ((lLeft.$ === -1) && (!lLeft.a)) {
+				var _v3 = lLeft.a;
+				return A5(
+					$elm$core$Dict$RBNode_elm_builtin,
+					color,
+					key,
+					value,
+					$elm$core$Dict$removeMin(left),
+					right);
+			} else {
+				var _v4 = $elm$core$Dict$moveRedLeft(dict);
+				if (_v4.$ === -1) {
+					var nColor = _v4.a;
+					var nKey = _v4.b;
+					var nValue = _v4.c;
+					var nLeft = _v4.d;
+					var nRight = _v4.e;
+					return A5(
+						$elm$core$Dict$balance,
+						nColor,
+						nKey,
+						nValue,
+						$elm$core$Dict$removeMin(nLeft),
+						nRight);
+				} else {
+					return $elm$core$Dict$RBEmpty_elm_builtin;
+				}
+			}
+		} else {
+			return A5(
+				$elm$core$Dict$RBNode_elm_builtin,
+				color,
+				key,
+				value,
+				$elm$core$Dict$removeMin(left),
+				right);
+		}
+	} else {
+		return $elm$core$Dict$RBEmpty_elm_builtin;
+	}
+};
+var $elm$core$Dict$removeHelp = F2(
+	function (targetKey, dict) {
+		if (dict.$ === -2) {
+			return $elm$core$Dict$RBEmpty_elm_builtin;
+		} else {
+			var color = dict.a;
+			var key = dict.b;
+			var value = dict.c;
+			var left = dict.d;
+			var right = dict.e;
+			if (_Utils_cmp(targetKey, key) < 0) {
+				if ((left.$ === -1) && (left.a === 1)) {
+					var _v4 = left.a;
+					var lLeft = left.d;
+					if ((lLeft.$ === -1) && (!lLeft.a)) {
+						var _v6 = lLeft.a;
+						return A5(
+							$elm$core$Dict$RBNode_elm_builtin,
+							color,
+							key,
+							value,
+							A2($elm$core$Dict$removeHelp, targetKey, left),
+							right);
+					} else {
+						var _v7 = $elm$core$Dict$moveRedLeft(dict);
+						if (_v7.$ === -1) {
+							var nColor = _v7.a;
+							var nKey = _v7.b;
+							var nValue = _v7.c;
+							var nLeft = _v7.d;
+							var nRight = _v7.e;
+							return A5(
+								$elm$core$Dict$balance,
+								nColor,
+								nKey,
+								nValue,
+								A2($elm$core$Dict$removeHelp, targetKey, nLeft),
+								nRight);
+						} else {
+							return $elm$core$Dict$RBEmpty_elm_builtin;
+						}
+					}
+				} else {
+					return A5(
+						$elm$core$Dict$RBNode_elm_builtin,
+						color,
+						key,
+						value,
+						A2($elm$core$Dict$removeHelp, targetKey, left),
+						right);
+				}
+			} else {
+				return A2(
+					$elm$core$Dict$removeHelpEQGT,
+					targetKey,
+					A7($elm$core$Dict$removeHelpPrepEQGT, targetKey, dict, color, key, value, left, right));
+			}
+		}
+	});
+var $elm$core$Dict$removeHelpEQGT = F2(
+	function (targetKey, dict) {
+		if (dict.$ === -1) {
+			var color = dict.a;
+			var key = dict.b;
+			var value = dict.c;
+			var left = dict.d;
+			var right = dict.e;
+			if (_Utils_eq(targetKey, key)) {
+				var _v1 = $elm$core$Dict$getMin(right);
+				if (_v1.$ === -1) {
+					var minKey = _v1.b;
+					var minValue = _v1.c;
+					return A5(
+						$elm$core$Dict$balance,
+						color,
+						minKey,
+						minValue,
+						left,
+						$elm$core$Dict$removeMin(right));
+				} else {
+					return $elm$core$Dict$RBEmpty_elm_builtin;
+				}
+			} else {
+				return A5(
+					$elm$core$Dict$balance,
+					color,
+					key,
+					value,
+					left,
+					A2($elm$core$Dict$removeHelp, targetKey, right));
+			}
+		} else {
+			return $elm$core$Dict$RBEmpty_elm_builtin;
+		}
+	});
+var $elm$core$Dict$remove = F2(
+	function (key, dict) {
+		var _v0 = A2($elm$core$Dict$removeHelp, key, dict);
+		if ((_v0.$ === -1) && (!_v0.a)) {
+			var _v1 = _v0.a;
+			var k = _v0.b;
+			var v = _v0.c;
+			var l = _v0.d;
+			var r = _v0.e;
+			return A5($elm$core$Dict$RBNode_elm_builtin, 1, k, v, l, r);
+		} else {
+			var x = _v0;
+			return x;
+		}
+	});
+var $author$project$Main$clearInspectionRetries = function (retries) {
+	return A2(
+		$elm$core$Dict$remove,
+		'collapsed',
+		A2($elm$core$Dict$remove, 'exploded', retries));
+};
+var $author$project$Main$selectAdrAt = F3(
+	function (adr, revision, model) {
+		var selected = _Utils_update(
+			model,
+			{
+				s: $author$project$Main$clearInspectionRetries(model.s),
+				Q: false,
+				I: false,
+				u: $elm$core$Dict$empty,
+				D: $elm$core$Maybe$Just(adr),
+				V: $elm$core$Maybe$Just(revision)
+			});
+		var _v0 = A5(
+			$author$project$Main$issue,
+			2,
+			'GET',
+			A3($author$project$Route$showPath, adr, revision, 'collapsed'),
+			$elm$core$Maybe$Nothing,
+			selected);
+		var withCollapsed = _v0.a;
+		var collapsedCommand = _v0.b;
+		var _v1 = A5(
+			$author$project$Main$issue,
+			3,
+			'GET',
+			A3($author$project$Route$showPath, adr, revision, 'exploded'),
+			$elm$core$Maybe$Nothing,
+			withCollapsed);
+		var withExploded = _v1.a;
+		var explodedCommand = _v1.b;
+		return _Utils_Tuple2(
+			withExploded,
+			$elm$core$Platform$Cmd$batch(
+				_List_fromArray(
+					[collapsedCommand, explodedCommand])));
+	});
+var $author$project$Main$readResponse = F3(
+	function (kind, body, model) {
+		switch (kind) {
+			case 0:
+				var _v1 = A2(
+					$elm$json$Json$Decode$decodeValue,
+					$author$project$Api$response($author$project$Api$repository),
+					body);
+				if (!_v1.$) {
+					var envelope = _v1.a;
+					var _v2 = envelope.cy.ah;
+					switch (_v2.$) {
+						case 2:
+							var reason = _v2.a;
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Repository observation unavailable: ' + reason),
+										e: true
+									}),
+								$elm$core$Platform$Cmd$none);
+						case 0:
+							var oid = _v2.a;
+							var repository = envelope.dn;
+							var updated = _Utils_update(
+								model,
+								{
+									c: A2($author$project$View$Forms$seedBasis, repository, model.c),
+									f: $elm$core$Maybe$Nothing,
+									M: $elm$core$Maybe$Just(repository),
+									x: true
+								});
+							if (!_Utils_eq(oid, repository.dI)) {
+								return _Utils_Tuple2(
+									_Utils_update(
+										model,
+										{
+											f: $elm$core$Maybe$Just('Repository response basis disagrees with its metadata.'),
+											e: true
+										}),
+									$elm$core$Platform$Cmd$none);
+							} else {
+								var _v3 = _Utils_Tuple2(model.D, model.b.aE);
+								if ((!_v3.a.$) && (_v3.b === 'HEAD')) {
+									var adr = _v3.a.a;
+									return A3($author$project$Main$selectAdrAt, adr, repository.dI, updated);
+								} else {
+									return _Utils_Tuple2(updated, $elm$core$Platform$Cmd$none);
+								}
+							}
+						default:
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Repository response has an invalid comparison basis.'),
+										e: true
+									}),
+								$elm$core$Platform$Cmd$none);
+					}
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								f: $elm$core$Maybe$Just('Repository response has an unsupported shape.'),
+								e: true
+							}),
+						$elm$core$Platform$Cmd$none);
+				}
+			case 1:
+				var _v4 = model.b.c_;
+				switch (_v4) {
+					case 0:
+						return A2($author$project$Main$readSearch, body, model);
+					case 1:
+						return A2($author$project$Main$readSearch, body, model);
+					case 2:
+						return A4(
+							$author$project$Main$accept,
+							$author$project$Api$relevant,
+							body,
+							F2(
+								function (window, state) {
+									return _Utils_update(
+										state,
+										{
+											j: 0,
+											aV: $elm$core$Maybe$Just(window),
+											e: false
+										});
+								}),
+							model);
+					case 3:
+						return A4(
+							$author$project$Main$accept,
+							$author$project$Api$history,
+							body,
+							F2(
+								function (window, state) {
+									return _Utils_update(
+										state,
+										{
+											aA: $elm$core$Maybe$Just(window),
+											j: 0,
+											e: false
+										});
+								}),
+							model);
+					case 4:
+						return A4(
+							$author$project$Main$accept,
+							$author$project$Api$comparison,
+							body,
+							F2(
+								function (window, state) {
+									return _Utils_update(
+										state,
+										{
+											aw: $elm$core$Maybe$Just(window),
+											j: 0,
+											e: false
+										});
+								}),
+							model);
+					case 5:
+						return A4(
+							$author$project$Main$accept,
+							$author$project$Api$conflicts,
+							body,
+							F2(
+								function (window, state) {
+									return _Utils_update(
+										state,
+										{
+											al: $elm$core$Maybe$Just(window),
+											j: 0,
+											e: false
+										});
+								}),
+							model);
+					default:
+						return A4(
+							$author$project$Main$accept,
+							$author$project$Api$doctor,
+							body,
+							F2(
+								function (window, state) {
+									return _Utils_update(
+										state,
+										{
+											a8: $elm$core$Maybe$Just(window),
+											j: 0,
+											e: false
+										});
+								}),
+							model);
+				}
+			case 2:
+				var _v5 = A2(
+					$elm$json$Json$Decode$decodeValue,
+					$author$project$Api$response($author$project$Api$inspection),
+					body);
+				if (!_v5.$) {
+					var envelope = _v5.a;
+					var _v6 = envelope.cy.ah;
+					switch (_v6.$) {
+						case 2:
+							var reason = _v6.a;
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Inspection unavailable: ' + reason),
+										e: true
+									}),
+								$elm$core$Platform$Cmd$none);
+						case 0:
+							var oid = _v6.a;
+							var previous = model.r;
+							var inspection = envelope.dn;
+							var merged = function () {
+								if (!previous.$) {
+									var prior = previous.a;
+									return (_Utils_eq(prior.J, inspection.J) && _Utils_eq(prior.ah, inspection.ah)) ? _Utils_update(
+										inspection,
+										{be: prior.be}) : inspection;
+								} else {
+									return inspection;
+								}
+							}();
+							return ((inspection.c_ !== 'collapsed') || ((!_Utils_eq(oid, inspection.ah)) || ((!_Utils_eq(
+								model.V,
+								$elm$core$Maybe$Just(oid))) || (!_Utils_eq(
+								model.D,
+								$elm$core$Maybe$Just(inspection.J)))))) ? _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Inspection basis disagrees with the selected ADR and revision.'),
+										e: true
+									}),
+								$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										Q: true,
+										f: $elm$core$Maybe$Nothing,
+										r: $elm$core$Maybe$Just(merged)
+									}),
+								$elm$core$Platform$Cmd$none);
+						default:
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Inspection has an invalid comparison basis.'),
+										e: true
+									}),
+								$elm$core$Platform$Cmd$none);
+					}
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								f: $elm$core$Maybe$Just('Inspection response has an unsupported shape.'),
+								e: true
+							}),
+						$elm$core$Platform$Cmd$none);
+				}
+			case 3:
+				var _v8 = A2(
+					$elm$json$Json$Decode$decodeValue,
+					$author$project$Api$response($author$project$Api$inspection),
+					body);
+				if (!_v8.$) {
+					var envelope = _v8.a;
+					var _v9 = envelope.cy.ah;
+					switch (_v9.$) {
+						case 2:
+							var reason = _v9.a;
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Operation history unavailable: ' + reason),
+										e: true
+									}),
+								$elm$core$Platform$Cmd$none);
+						case 0:
+							var oid = _v9.a;
+							var exploded = envelope.dn;
+							if ((exploded.c_ !== 'exploded') || ((!_Utils_eq(oid, exploded.ah)) || ((!_Utils_eq(
+								model.V,
+								$elm$core$Maybe$Just(oid))) || (!_Utils_eq(
+								model.D,
+								$elm$core$Maybe$Just(exploded.J)))))) {
+								return _Utils_Tuple2(
+									_Utils_update(
+										model,
+										{
+											f: $elm$core$Maybe$Just('Operation history basis disagrees with the selected ADR and revision.'),
+											e: true
+										}),
+									$elm$core$Platform$Cmd$none);
+							} else {
+								var _v10 = model.r;
+								if (!_v10.$) {
+									var collapsed = _v10.a;
+									return (_Utils_eq(collapsed.J, exploded.J) && _Utils_eq(collapsed.ah, exploded.ah)) ? _Utils_Tuple2(
+										_Utils_update(
+											model,
+											{
+												I: true,
+												r: $elm$core$Maybe$Just(
+													_Utils_update(
+														collapsed,
+														{be: exploded.be}))
+											}),
+										$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
+										_Utils_update(
+											model,
+											{
+												I: true,
+												r: $elm$core$Maybe$Just(exploded)
+											}),
+										$elm$core$Platform$Cmd$none);
+								} else {
+									return _Utils_Tuple2(
+										_Utils_update(
+											model,
+											{
+												I: true,
+												r: $elm$core$Maybe$Just(exploded)
+											}),
+										$elm$core$Platform$Cmd$none);
+								}
+							}
+						default:
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Operation history has an invalid comparison basis.'),
+										e: true
+									}),
+								$elm$core$Platform$Cmd$none);
+					}
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{
+								f: $elm$core$Maybe$Just('Operation history has an unsupported shape.'),
+								e: true
+							}),
+						$elm$core$Platform$Cmd$none);
+				}
+			default:
+				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+		}
+	});
+var $elm$core$List$any = F2(
+	function (isOkay, list) {
+		any:
+		while (true) {
+			if (!list.b) {
+				return false;
+			} else {
+				var x = list.a;
+				var xs = list.b;
+				if (isOkay(x)) {
+					return true;
+				} else {
+					var $temp$isOkay = isOkay,
+						$temp$list = xs;
+					isOkay = $temp$isOkay;
+					list = $temp$list;
+					continue any;
+				}
+			}
+		}
+	});
+var $elm$core$List$member = F2(
+	function (x, xs) {
+		return A2(
+			$elm$core$List$any,
+			function (a) {
+				return _Utils_eq(a, x);
+			},
+			xs);
+	});
+var $author$project$Main$retryableBusy = function (body) {
+	var _v0 = A2($elm$json$Json$Decode$decodeValue, $author$project$Api$failure, body);
+	if (!_v0.$) {
+		var problem = _v0.a;
+		return (problem.ar === 503) && A2(
+			$elm$core$List$member,
+			problem.bs,
+			_List_fromArray(
+				['repository-busy', 'repository-lock-unavailable']));
+	} else {
+		return false;
+	}
+};
+var $elm$core$Process$sleep = _Process_sleep;
+var $author$project$Main$terminalFailure = function (body) {
+	var _v0 = A2($elm$json$Json$Decode$decodeValue, $author$project$Api$failure, body);
+	if (!_v0.$) {
+		var failure = _v0.a;
+		return (failure.ar === 503) && (failure.bs === 'generation-exhausted');
+	} else {
+		return false;
+	}
+};
+var $author$project$Main$receiveResponse = F4(
+	function (requestId, status, body, model) {
+		var _v0 = A2($elm$core$Dict$get, requestId, model.U);
+		if (_v0.$ === 1) {
+			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+		} else {
+			var pending = _v0.a;
+			var without = _Utils_update(
+				model,
+				{
+					U: A2($elm$core$Dict$remove, requestId, model.U)
+				});
+			var current = A3($author$project$Main$readPendingCurrent, requestId, pending, model);
+			if (pending.bc === 4) {
+				return A5($author$project$Main$mutationResponse, requestId, pending, status, body, without);
+			} else {
+				if ((status === 503) && $author$project$Main$terminalFailure(body)) {
+					return $author$project$Main$terminalExhaustion(without);
+				} else {
+					if (!current) {
+						return _Utils_Tuple2(without, $elm$core$Platform$Cmd$none);
+					} else {
+						if ((status === 503) && $author$project$Main$retryableBusy(body)) {
+							var key = $author$project$Main$requestKey(pending.bc);
+							var attempts = A2(
+								$elm$core$Maybe$withDefault,
+								0,
+								A2($elm$core$Dict$get, key, model.s));
+							return (attempts < 2) ? _Utils_Tuple2(
+								A3(
+									$author$project$Main$readIssue,
+									pending.bc,
+									'Repository is busy; retrying this read.',
+									_Utils_update(
+										without,
+										{
+											s: A3($elm$core$Dict$insert, key, attempts + 1, model.s)
+										})),
+								A2(
+									$elm$core$Task$perform,
+									function (_v1) {
+										return A2($author$project$Main$RetryRead, requestId, pending);
+									},
+									$elm$core$Process$sleep(400))) : _Utils_Tuple2(
+								A3(
+									$author$project$Main$readIssue,
+									pending.bc,
+									((pending.bc === 2) || (pending.bc === 3)) ? 'Repository remains busy. Retry this inspection when it settles.' : 'Repository remains busy. Refresh when it settles.',
+									without),
+								$elm$core$Platform$Cmd$none);
+						} else {
+							if (status >= 400) {
+								var _v2 = A2($elm$json$Json$Decode$decodeValue, $author$project$Api$failure, body);
+								if (!_v2.$) {
+									var failure = _v2.a;
+									return (!_Utils_eq(failure.ar, status)) ? _Utils_Tuple2(
+										A3($author$project$Main$readIssue, pending.bc, 'The server returned an inconsistent error status.', without),
+										$elm$core$Platform$Cmd$none) : ((failure.ar === 401) ? _Utils_Tuple2(
+										_Utils_update(
+											without,
+											{
+												f: $elm$core$Maybe$Just('Session unavailable. Reopen the process bootstrap URL.'),
+												m: false,
+												O: 'unavailable',
+												e: true
+											}),
+										$author$project$Main$toJs(
+											$elm$json$Json$Encode$object(
+												_List_fromArray(
+													[
+														_Utils_Tuple2(
+														'type',
+														$elm$json$Json$Encode$string('disconnect'))
+													])))) : _Utils_Tuple2(
+										A3($author$project$Main$readIssue, pending.bc, failure.bs + (': ' + failure.cx), without),
+										$elm$core$Platform$Cmd$none));
+								} else {
+									return _Utils_Tuple2(
+										A3($author$project$Main$readIssue, pending.bc, 'The server returned an unreadable error.', without),
+										$elm$core$Platform$Cmd$none);
+								}
+							} else {
+								return A3(
+									$author$project$Main$readResponse,
+									pending.bc,
+									body,
+									_Utils_update(
+										without,
+										{
+											s: A2(
+												$elm$core$Dict$remove,
+												$author$project$Main$requestKey(pending.bc),
+												without.s),
+											u: A2(
+												$elm$core$Dict$remove,
+												$author$project$Main$requestKey(pending.bc),
+												without.u)
+										}));
+							}
+						}
+					}
+				}
+			}
+		}
+	});
+var $author$project$Main$requestFailed = F3(
+	function (requestId, message, model) {
+		var _v0 = A2($elm$core$Dict$get, requestId, model.U);
+		if (_v0.$ === 1) {
+			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+		} else {
+			var pending = _v0.a;
+			var without = _Utils_update(
+				model,
+				{
+					U: A2($elm$core$Dict$remove, requestId, model.U)
+				});
+			return (pending.bc === 4) ? _Utils_Tuple2(
+				_Utils_update(
+					without,
+					{
+						c: $author$project$View$Forms$markStale(model.c),
+						X: $elm$core$Maybe$Nothing,
+						d: 'Mutation outcome is uncertain. Inspect current history before retrying.'
+					}),
+				$elm$core$Platform$Cmd$none) : ((!A3($author$project$Main$readPendingCurrent, requestId, pending, model)) ? _Utils_Tuple2(without, $elm$core$Platform$Cmd$none) : _Utils_Tuple2(
+				A3($author$project$Main$readIssue, pending.bc, message, without),
+				$elm$core$Platform$Cmd$none));
+		}
+	});
+var $author$project$Main$Reconnect = {$: 14};
+var $elm$core$Basics$min = F2(
+	function (x, y) {
+		return (_Utils_cmp(x, y) < 0) ? x : y;
+	});
+var $elm$core$Basics$pow = _Basics_pow;
+var $author$project$Main$socketChanged = F2(
+	function (state, model) {
+		if (model.k) {
+			return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+		} else {
+			if ((state === 'closed') && (model.m && (model.ae < 4))) {
+				var attempts = model.ae + 1;
+				var pause = A2(
+					$elm$core$Basics$min,
+					8000,
+					500 * A2($elm$core$Basics$pow, 2, attempts));
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							Q: false,
+							c: $author$project$View$Forms$markStale(model.c),
+							I: false,
+							ae: attempts,
+							x: false,
+							O: 'closed',
+							e: true
+						}),
+					A2(
+						$elm$core$Task$perform,
+						function (_v0) {
+							return $author$project$Main$Reconnect;
+						},
+						$elm$core$Process$sleep(pause)));
+			} else {
+				if ((state === 'closed') && model.m) {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{Q: false, I: false, x: false, O: 'unavailable', e: true}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{O: state}),
+						$elm$core$Platform$Cmd$none);
+				}
+			}
+		}
+	});
+var $author$project$Main$receive = F2(
+	function (raw, model) {
+		var _v0 = A2(
+			$elm$json$Json$Decode$decodeValue,
+			A2($elm$json$Json$Decode$field, 'type', $elm$json$Json$Decode$string),
+			raw);
+		_v0$4:
+		while (true) {
+			if (!_v0.$) {
+				switch (_v0.a) {
+					case 'response':
+						var _v1 = A2(
+							$elm$json$Json$Decode$decodeValue,
+							A4(
+								$elm$json$Json$Decode$map3,
+								F3(
+									function (requestId, status, body) {
+										return _Utils_Tuple3(requestId, status, body);
+									}),
+								A2($elm$json$Json$Decode$field, 'request_id', $elm$json$Json$Decode$string),
+								A2($elm$json$Json$Decode$field, 'status', $elm$json$Json$Decode$int),
+								A2($elm$json$Json$Decode$field, 'body', $elm$json$Json$Decode$value)),
+							raw);
+						if (!_v1.$) {
+							var _v2 = _v1.a;
+							var requestId = _v2.a;
+							var status = _v2.b;
+							var body = _v2.c;
+							return A4($author$project$Main$receiveResponse, requestId, status, body, model);
+						} else {
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Malformed transport response.')
+									}),
+								$elm$core$Platform$Cmd$none);
+						}
+					case 'request-failed':
+						var _v3 = A2(
+							$elm$json$Json$Decode$decodeValue,
+							A3(
+								$elm$json$Json$Decode$map2,
+								$elm$core$Tuple$pair,
+								A2($elm$json$Json$Decode$field, 'request_id', $elm$json$Json$Decode$string),
+								A2($elm$json$Json$Decode$field, 'message', $elm$json$Json$Decode$string)),
+							raw);
+						if (!_v3.$) {
+							var _v4 = _v3.a;
+							var requestId = _v4.a;
+							var message = _v4.b;
+							return A3($author$project$Main$requestFailed, requestId, message, model);
+						} else {
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Malformed transport failure.')
+									}),
+								$elm$core$Platform$Cmd$none);
+						}
+					case 'socket-state':
+						var _v5 = A2(
+							$elm$json$Json$Decode$decodeValue,
+							A2($elm$json$Json$Decode$field, 'state', $elm$json$Json$Decode$string),
+							raw);
+						if (!_v5.$) {
+							var state = _v5.a;
+							return ((state === 'unavailable') && _Utils_eq(
+								A2(
+									$elm$json$Json$Decode$decodeValue,
+									A2($elm$json$Json$Decode$field, 'reason', $elm$json$Json$Decode$string),
+									raw),
+								$elm$core$Result$Ok('generation-exhausted'))) ? $author$project$Main$terminalExhaustion(model) : A2($author$project$Main$socketChanged, state, model);
+						} else {
+							return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+						}
+					case 'event':
+						var _v6 = A2(
+							$elm$json$Json$Decode$decodeValue,
+							A2($elm$json$Json$Decode$field, 'body', $author$project$Api$event),
+							raw);
+						if (!_v6.$) {
+							var event = _v6.a;
+							return A2($author$project$Main$eventReceived, event, model);
+						} else {
+							return $author$project$Main$refresh(
+								_Utils_update(
+									model,
+									{
+										f: $elm$core$Maybe$Just('Event decoding failed; refreshing snapshots.')
+									}));
+						}
+					default:
+						break _v0$4;
+				}
+			} else {
+				break _v0$4;
+			}
+		}
+		return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+	});
+var $author$project$Main$retryInspection = F3(
+	function (kind, path, model) {
+		return model.k ? _Utils_Tuple2(model, $elm$core$Platform$Cmd$none) : A5(
+			$author$project$Main$issue,
+			kind,
+			'GET',
+			path,
+			$elm$core$Maybe$Nothing,
+			_Utils_update(
+				model,
+				{
+					s: A2(
+						$elm$core$Dict$remove,
+						$author$project$Main$requestKey(kind),
+						model.s),
+					u: A2(
+						$elm$core$Dict$remove,
+						$author$project$Main$requestKey(kind),
+						model.u)
+				}));
+	});
+var $author$project$Main$currentViewRevision = function (model) {
+	var _v0 = model.b.c_;
+	switch (_v0) {
+		case 0:
+			return A2(
+				$elm$core$Maybe$withDefault,
+				'HEAD',
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.ah;
+					},
+					model.af));
+		case 1:
+			return A2(
+				$elm$core$Maybe$withDefault,
+				'HEAD',
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.ah;
+					},
+					model.af));
+		case 2:
+			return A2(
+				$elm$core$Maybe$withDefault,
+				'HEAD',
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.ah;
+					},
+					model.aV));
+		case 3:
+			return A2(
+				$elm$core$Maybe$withDefault,
+				'HEAD',
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.ah;
+					},
+					model.aA));
+		case 4:
+			return A2(
+				$elm$core$Maybe$withDefault,
+				'HEAD',
+				A2(
+					$elm$core$Maybe$map,
+					function ($) {
+						return $.er;
+					},
+					model.aw));
+		default:
+			return A2($elm$core$Maybe$withDefault, 'HEAD', model.aU);
+	}
+};
+var $author$project$Main$selectAdr = F2(
+	function (adr, model) {
+		var revision = $author$project$Main$currentViewRevision(model);
+		var selected = _Utils_update(
+			model,
+			{
+				s: $author$project$Main$clearInspectionRetries(model.s),
+				Q: false,
+				f: $elm$core$Maybe$Nothing,
+				I: false,
+				r: $elm$core$Maybe$Nothing,
+				u: $elm$core$Dict$empty,
+				D: $elm$core$Maybe$Just(adr),
+				V: $elm$core$Maybe$Just(revision)
+			});
+		var _v0 = A5(
+			$author$project$Main$issue,
+			2,
+			'GET',
+			A3($author$project$Route$showPath, adr, revision, 'collapsed'),
+			$elm$core$Maybe$Nothing,
+			selected);
+		var withCollapsed = _v0.a;
+		var collapsedCommand = _v0.b;
+		var _v1 = A5(
+			$author$project$Main$issue,
+			3,
+			'GET',
+			A3($author$project$Route$showPath, adr, revision, 'exploded'),
+			$elm$core$Maybe$Nothing,
+			withCollapsed);
+		var withExploded = _v1.a;
+		var explodedCommand = _v1.b;
+		return _Utils_Tuple2(
+			withExploded,
+			$elm$core$Platform$Cmd$batch(
+				_List_fromArray(
+					[collapsedCommand, explodedCommand])));
+	});
+var $author$project$View$Forms$actionName = function (action) {
+	switch (action) {
+		case 0:
+			return 'create';
+		case 1:
+			return 'amend';
+		case 2:
+			return 'scope';
+		case 3:
+			return 'domain';
+		case 4:
+			return 'obsolete';
+		default:
+			return 'reactivate';
+	}
+};
+var $author$project$View$Forms$optionalDigest = F2(
+	function (key, content) {
+		return ($elm$core$String$trim(content) === '') ? _List_Nil : _List_fromArray(
+			[
+				_Utils_Tuple2(
+				key,
+				$elm$json$Json$Encode$string(
+					$elm$core$String$trim(content)))
+			]);
+	});
+var $author$project$View$Forms$common = function (draft) {
+	return _Utils_ap(
+		_List_fromArray(
+			[
+				_Utils_Tuple2(
+				'repository_state',
+				$elm$json$Json$Encode$object(
+					_List_fromArray(
+						[
+							_Utils_Tuple2(
+							'kind',
+							$elm$json$Json$Encode$string('repository')),
+							_Utils_Tuple2(
+							'token',
+							$elm$json$Json$Encode$string(draft.dc)),
+							_Utils_Tuple2(
+							'head',
+							$elm$json$Json$Encode$string(draft.db)),
+							_Utils_Tuple2(
+							'head_ref',
+							A2(
+								$elm$core$Maybe$withDefault,
+								$elm$json$Json$Encode$null,
+								A2($elm$core$Maybe$map, $elm$json$Json$Encode$string, draft.ai)))
+						]))),
+				_Utils_Tuple2(
+				'actor',
+				$elm$json$Json$Encode$object(
+					_Utils_ap(
+						_List_fromArray(
+							[
+								_Utils_Tuple2(
+								'kind',
+								$elm$json$Json$Encode$string(draft._)),
+								_Utils_Tuple2(
+								'id',
+								$elm$json$Json$Encode$string(draft.Z))
+							]),
+						($elm$core$String$trim(draft.aa) === '') ? _List_Nil : _List_fromArray(
+							[
+								_Utils_Tuple2(
+								'model',
+								$elm$json$Json$Encode$string(draft.aa))
+							]))))
+			]),
+		_Utils_ap(
+			(!draft.au) ? _List_Nil : _List_fromArray(
+				[
+					_Utils_Tuple2(
+					'state_token',
+					$elm$json$Json$Encode$string(draft.aY))
+				]),
+			_Utils_ap(
+				A2($author$project$View$Forms$optionalDigest, 'input_digest', draft.bB),
+				_Utils_ap(
+					A2($author$project$View$Forms$optionalDigest, 'prompt_digest', draft.bO),
+					A2($author$project$View$Forms$optionalDigest, 'context_digest', draft.bt)))));
+};
+var $elm$json$Json$Encode$bool = _Json_wrap;
+var $author$project$View$Forms$canonicalBody = function (content) {
+	return $elm$core$String$trim(content) + '\u000A';
+};
+var $elm$core$List$filter = F2(
+	function (isGood, list) {
+		return A3(
+			$elm$core$List$foldr,
+			F2(
+				function (x, xs) {
+					return isGood(x) ? A2($elm$core$List$cons, x, xs) : xs;
+				}),
+			_List_Nil,
+			list);
+	});
+var $author$project$View$Forms$lines = function (content) {
+	return A2(
+		$elm$core$List$filter,
+		$elm$core$Basics$neq(''),
+		A2(
+			$elm$core$List$map,
+			$elm$core$String$trim,
+			A2($elm$core$String$split, '\u000A', content)));
+};
+var $author$project$View$Forms$strings = function (content) {
+	return A2(
+		$elm$json$Json$Encode$list,
+		$elm$json$Json$Encode$string,
+		$author$project$View$Forms$lines(content));
+};
+var $author$project$View$Forms$Domain = 3;
+var $elm$core$List$isEmpty = function (xs) {
+	if (!xs.b) {
+		return true;
+	} else {
+		return false;
+	}
+};
+var $author$project$View$Forms$variant = F3(
+	function (draft, reviewedField, reviewedValues) {
+		var _v0 = draft.bH;
+		switch (_v0) {
+			case 'delta':
+				return $elm$core$Result$Ok(
+					_List_fromArray(
+						[
+							_Utils_Tuple2(
+							'reason',
+							$elm$json$Json$Encode$string(draft.cL)),
+							_Utils_Tuple2(
+							'mode',
+							$elm$json$Json$Encode$string('delta')),
+							_Utils_Tuple2(
+							'add',
+							$author$project$View$Forms$strings(draft.aM)),
+							_Utils_Tuple2(
+							'remove',
+							$author$project$View$Forms$strings(draft.aW))
+						]));
+			case 'reviewed':
+				return $elm$core$Result$Ok(
+					_List_fromArray(
+						[
+							_Utils_Tuple2(
+							'reason',
+							$elm$json$Json$Encode$string(draft.cL)),
+							_Utils_Tuple2(
+							'mode',
+							$elm$json$Json$Encode$string('reviewed')),
+							_Utils_Tuple2(
+							reviewedField,
+							$author$project$View$Forms$strings(reviewedValues))
+						]));
+			case 'refine':
+				return ((draft.au !== 3) || $elm$core$List$isEmpty(
+					$author$project$View$Forms$lines(draft.bT))) ? $elm$core$Result$Err('Domain refinements must contain at least one entry.') : $elm$core$Result$Ok(
+					_List_fromArray(
+						[
+							_Utils_Tuple2(
+							'reason',
+							$elm$json$Json$Encode$string(draft.cL)),
+							_Utils_Tuple2(
+							'mode',
+							$elm$json$Json$Encode$string('refine')),
+							_Utils_Tuple2(
+							'refinements',
+							$author$project$View$Forms$strings(draft.bT))
+						]));
+			default:
+				return $elm$core$Result$Err('Choose a supported change mode.');
+		}
+	});
+var $author$project$View$Forms$fields = function (draft) {
+	var _v0 = draft.au;
+	switch (_v0) {
+		case 0:
+			return ($elm$core$String$trim(draft.F) === '') ? $elm$core$Result$Err('Title is required.') : $elm$core$Result$Ok(
+				_List_fromArray(
+					[
+						_Utils_Tuple2(
+						'title',
+						$elm$json$Json$Encode$string(draft.F)),
+						_Utils_Tuple2(
+						'summary',
+						$elm$json$Json$Encode$string(draft.P)),
+						_Utils_Tuple2(
+						'body',
+						$elm$json$Json$Encode$string(
+							$author$project$View$Forms$canonicalBody(draft.ak))),
+						_Utils_Tuple2(
+						'domains',
+						$author$project$View$Forms$strings(draft.L)),
+						_Utils_Tuple2(
+						'scopes',
+						$author$project$View$Forms$strings(draft.N))
+					]));
+		case 1:
+			return ($elm$core$String$trim(draft.av) === '') ? $elm$core$Result$Err('Change summary is required.') : $elm$core$Result$Ok(
+				_List_fromArray(
+					[
+						_Utils_Tuple2(
+						'change_summary',
+						$elm$json$Json$Encode$string(draft.av)),
+						_Utils_Tuple2(
+						'title',
+						$elm$json$Json$Encode$string(draft.F)),
+						_Utils_Tuple2(
+						'summary',
+						$elm$json$Json$Encode$string(draft.P)),
+						_Utils_Tuple2(
+						'body',
+						$elm$json$Json$Encode$string(
+							$author$project$View$Forms$canonicalBody(draft.ak)))
+					]));
+		case 2:
+			return ($elm$core$String$trim(draft.cL) === '') ? $elm$core$Result$Err('Scope reason is required.') : A3($author$project$View$Forms$variant, draft, 'patterns', draft.N);
+		case 3:
+			return ($elm$core$String$trim(draft.cL) === '') ? $elm$core$Result$Err('Domain reason is required.') : A3($author$project$View$Forms$variant, draft, 'domains', draft.L);
+		case 4:
+			return ($elm$core$String$trim(draft.cL) === '') ? $elm$core$Result$Err('Obsolete reason is required.') : $elm$core$Result$Ok(
+				_Utils_ap(
+					_List_fromArray(
+						[
+							_Utils_Tuple2(
+							'reason',
+							$elm$json$Json$Encode$string(draft.cL)),
+							_Utils_Tuple2(
+							'resolve',
+							$elm$json$Json$Encode$bool(draft.ee))
+						]),
+					($elm$core$String$trim(draft.bW) === '') ? _List_Nil : _List_fromArray(
+						[
+							_Utils_Tuple2(
+							'replacement',
+							$elm$json$Json$Encode$string(
+								$elm$core$String$trim(draft.bW)))
+						])));
+		default:
+			return ($elm$core$String$trim(draft.cL) === '') ? $elm$core$Result$Err('Reactivate reason is required.') : $elm$core$Result$Ok(
+				_List_fromArray(
+					[
+						_Utils_Tuple2(
+						'reason',
+						$elm$json$Json$Encode$string(draft.cL)),
+						_Utils_Tuple2(
+						'resolve',
+						$elm$json$Json$Encode$bool(draft.ee))
+					]));
+	}
+};
+var $author$project$View$Forms$build = function (draft) {
+	if ((draft.dc === '') || (draft.db === '')) {
+		return $elm$core$Result$Err('Refresh the repository before submitting.');
+	} else {
+		if (draft.b_ || ((!draft.cP) && (!(!draft.au)))) {
+			return $elm$core$Result$Err('Review current heads and adopt fresh tokens before submitting.');
+		} else {
+			if (draft.Z === '') {
+				return $elm$core$Result$Err('Actor ID is required.');
+			} else {
+				if (!A2(
+					$elm$core$List$member,
+					draft._,
+					_List_fromArray(
+						['human', 'llm', 'service']))) {
+					return $elm$core$Result$Err('Actor kind must be human, llm, or service.');
+				} else {
+					if ((!(!draft.au)) && ((draft.eq === '') || (draft.aY === ''))) {
+						return $elm$core$Result$Err('Select and inspect an ADR before submitting.');
+					} else {
+						var _v0 = $author$project$View$Forms$fields(draft);
+						if (_v0.$ === 1) {
+							var problem = _v0.a;
+							return $elm$core$Result$Err(problem);
+						} else {
+							var actionFields = _v0.a;
+							return $elm$core$Result$Ok(
+								$elm$json$Json$Encode$object(
+									_Utils_ap(
+										$author$project$View$Forms$common(draft),
+										actionFields)));
+						}
+					}
+				}
+			}
+		}
+	}
+};
+var $author$project$Route$mutationPath = F2(
+	function (action, adr) {
+		return (action === 'create') ? '/api/v1/adrs' : ('/api/v1/adrs/' + ($elm$url$Url$percentEncode(adr) + ('/' + action)));
+	});
+var $author$project$Main$submit = function (model) {
+	var historical = $author$project$Main$isHistorical(model);
+	var draft = model.c;
+	if (model.k) {
+		return _Utils_Tuple2(
+			_Utils_update(
+				model,
+				{d: $author$project$Main$terminalMessage}),
+			$elm$core$Platform$Cmd$none);
+	} else {
+		if (!model.m) {
+			return _Utils_Tuple2(
+				_Utils_update(
+					model,
+					{d: 'Reopen the process bootstrap URL to make changes.'}),
+				$elm$core$Platform$Cmd$none);
+		} else {
+			if ((!model.x) || ((!(!draft.au)) && (!$author$project$Main$inspectionReady(model)))) {
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{d: 'Wait for fresh repository and both inspection views before submitting.'}),
+					$elm$core$Platform$Cmd$none);
+			} else {
+				if (!_Utils_eq(model.X, $elm$core$Maybe$Nothing)) {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{d: 'Wait for the current operation result.'}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					if (historical) {
+						return _Utils_Tuple2(
+							_Utils_update(
+								model,
+								{d: 'Historical inspection is read-only. Return to current HEAD and review it.'}),
+							$elm$core$Platform$Cmd$none);
+					} else {
+						if ((!_Utils_eq(
+							A2(
+								$elm$core$Maybe$map,
+								function ($) {
+									return $.dI;
+								},
+								model.M),
+							$elm$core$Maybe$Just(draft.db))) || (!_Utils_eq(
+							A2(
+								$elm$core$Maybe$map,
+								function ($) {
+									return $.aY;
+								},
+								model.M),
+							$elm$core$Maybe$Just(draft.dc)))) {
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{d: 'Repository changed. Refresh, inspect, then adopt tokens.'}),
+								$elm$core$Platform$Cmd$none);
+						} else {
+							var _v0 = $author$project$View$Forms$build(draft);
+							if (_v0.$ === 1) {
+								var problem = _v0.a;
+								return _Utils_Tuple2(
+									_Utils_update(
+										model,
+										{d: problem}),
+									$elm$core$Platform$Cmd$none);
+							} else {
+								var body = _v0.a;
+								var path = A2(
+									$author$project$Route$mutationPath,
+									$author$project$View$Forms$actionName(draft.au),
+									draft.eq);
+								var identifier = 'ui-' + $elm$core$String$fromInt(model.aB);
+								var _v1 = A5(
+									$author$project$Main$issue,
+									4,
+									'POST',
+									path,
+									$elm$core$Maybe$Just(body),
+									model);
+								var next = _v1.a;
+								var command = _v1.b;
+								return _Utils_Tuple2(
+									_Utils_update(
+										next,
+										{
+											X: $elm$core$Maybe$Just(identifier),
+											d: 'Submitting checked operation…'
+										}),
+									command);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 };
 var $author$project$Main$update = F2(
 	function (message, model) {
-		return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+		switch (message.$) {
+			case 0:
+				var value = message.a;
+				return A2($author$project$Main$receive, value, model);
+			case 1:
+				var selected = message.a;
+				var current = model.b;
+				var query = _Utils_update(
+					current,
+					{c_: selected});
+				return $author$project$Main$load(
+					_Utils_update(
+						model,
+						{f: $elm$core$Maybe$Nothing, j: 0, b: query, e: true}));
+			case 2:
+				var key = message.a;
+				var content = message.b;
+				var current = model.b;
+				var query = function () {
+					switch (key) {
+						case 'revision':
+							return _Utils_update(
+								current,
+								{aE: content});
+						case 'text':
+							return _Utils_update(
+								current,
+								{b4: content});
+						case 'mode':
+							return _Utils_update(
+								current,
+								{bH: content});
+						case 'projection':
+							return _Utils_update(
+								current,
+								{bh: content});
+						case 'domain':
+							return _Utils_update(
+								current,
+								{bw: content});
+						case 'file':
+							return _Utils_update(
+								current,
+								{dD: content});
+						case 'actor':
+							return _Utils_update(
+								current,
+								{a1: content});
+						case 'since':
+							return _Utils_update(
+								current,
+								{aF: content});
+						case 'until':
+							return _Utils_update(
+								current,
+								{aI: content});
+						case 'limit':
+							return _Utils_update(
+								current,
+								{
+									cw: A2(
+										$elm$core$Maybe$withDefault,
+										0,
+										$elm$core$String$toInt(content))
+								});
+						case 'order':
+							return _Utils_update(
+								current,
+								{bf: content});
+						case 'adr':
+							return _Utils_update(
+								current,
+								{J: content});
+						case 'compareFrom':
+							return _Utils_update(
+								current,
+								{a6: content});
+						case 'compareTo':
+							return _Utils_update(
+								current,
+								{a7: content});
+						default:
+							return current;
+					}
+				}();
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{j: 0, b: query, e: true}),
+					$elm$core$Platform$Cmd$none);
+			case 3:
+				var key = message.a;
+				var checked = message.b;
+				var current = model.b;
+				var query = function () {
+					switch (key) {
+						case 'includeObsolete':
+							return _Utils_update(
+								current,
+								{bb: checked});
+						case 'shallow':
+							return _Utils_update(
+								current,
+								{bZ: checked});
+						case 'worktree':
+							return _Utils_update(
+								current,
+								{ev: checked});
+						default:
+							return current;
+					}
+				}();
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{j: 0, b: query, e: true}),
+					$elm$core$Platform$Cmd$none);
+			case 4:
+				return $author$project$Main$load(model);
+			case 5:
+				var adr = message.a;
+				return A2($author$project$Main$selectAdr, adr, model);
+			case 6:
+				var adr = message.a;
+				var revision = message.b;
+				return A3(
+					$author$project$Main$selectAdrAt,
+					adr,
+					revision,
+					_Utils_update(
+						model,
+						{
+							r: $elm$core$Maybe$Nothing,
+							D: $elm$core$Maybe$Just(adr)
+						}));
+			case 7:
+				var page = message.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							j: A3(
+								$elm$core$Basics$clamp,
+								0,
+								$author$project$Main$maxPage(model),
+								page)
+						}),
+					$elm$core$Platform$Cmd$none);
+			case 8:
+				return $author$project$Main$refresh(model);
+			case 9:
+				var action = message.a;
+				if (model.k) {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{d: $author$project$Main$terminalMessage}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					if ($author$project$Main$isHistorical(model)) {
+						return _Utils_Tuple2(
+							_Utils_update(
+								model,
+								{d: 'Historical inspection is read-only. Return to current HEAD first.'}),
+							$elm$core$Platform$Cmd$none);
+					} else {
+						var _v3 = model.M;
+						if (_v3.$ === 1) {
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{d: 'Refresh the repository before editing.'}),
+								$elm$core$Platform$Cmd$none);
+						} else {
+							var repository = _v3.a;
+							return ((!model.x) || ((!(!action)) && (!$author$project$Main$inspectionReady(model)))) ? _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{d: 'Wait for fresh repository and both inspection views before editing.'}),
+								$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{
+										c: A4($author$project$View$Forms$begin, action, repository, model.r, model.c),
+										z: model.z + 1,
+										d: 'Review original values against current heads before submitting.'
+									}),
+								$elm$core$Platform$Cmd$none);
+						}
+					}
+				}
+			case 10:
+				var field = message.a;
+				var content = message.b;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							c: A3($author$project$View$Forms$change, field, content, model.c),
+							z: model.z + 1
+						}),
+					$elm$core$Platform$Cmd$none);
+			case 11:
+				var checked = message.a;
+				var current = model.c;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{
+							c: _Utils_update(
+								current,
+								{dr: true, ee: checked}),
+							z: model.z + 1
+						}),
+					$elm$core$Platform$Cmd$none);
+			case 12:
+				if (model.k) {
+					return _Utils_Tuple2(
+						_Utils_update(
+							model,
+							{d: $author$project$Main$terminalMessage}),
+						$elm$core$Platform$Cmd$none);
+				} else {
+					if ($author$project$Main$isHistorical(model)) {
+						return _Utils_Tuple2(
+							_Utils_update(
+								model,
+								{d: 'Historical inspection is read-only. Return to current HEAD first.'}),
+							$elm$core$Platform$Cmd$none);
+					} else {
+						var _v4 = model.M;
+						if (_v4.$ === 1) {
+							return _Utils_Tuple2(
+								_Utils_update(
+									model,
+									{d: 'Refresh the repository first.'}),
+								$elm$core$Platform$Cmd$none);
+						} else {
+							var repository = _v4.a;
+							if (!model.x) {
+								return _Utils_Tuple2(
+									_Utils_update(
+										model,
+										{d: 'Wait for a fresh repository read before adopting tokens.'}),
+									$elm$core$Platform$Cmd$none);
+							} else {
+								if (!model.c.au) {
+									return _Utils_Tuple2(
+										_Utils_update(
+											model,
+											{
+												c: A2($author$project$View$Forms$adoptCreate, repository, model.c),
+												d: 'Current repository basis adopted.'
+											}),
+										$elm$core$Platform$Cmd$none);
+								} else {
+									if ($author$project$Main$inspectionReady(model)) {
+										var _v5 = model.r;
+										if (!_v5.$) {
+											var inspection = _v5.a;
+											var _v6 = A3($author$project$View$Forms$adopt, repository, inspection, model.c);
+											if (!_v6.$) {
+												var draft = _v6.a;
+												return _Utils_Tuple2(
+													_Utils_update(
+														model,
+														{c: draft, d: 'Current heads reviewed; fresh tokens adopted.'}),
+													$elm$core$Platform$Cmd$none);
+											} else {
+												var problem = _v6.a;
+												return _Utils_Tuple2(
+													_Utils_update(
+														model,
+														{d: problem}),
+													$elm$core$Platform$Cmd$none);
+											}
+										} else {
+											return _Utils_Tuple2(
+												_Utils_update(
+													model,
+													{d: 'Inspect the target ADR before adopting tokens.'}),
+												$elm$core$Platform$Cmd$none);
+										}
+									} else {
+										return _Utils_Tuple2(
+											_Utils_update(
+												model,
+												{d: 'Wait for fresh collapsed and exploded inspection at current HEAD.'}),
+											$elm$core$Platform$Cmd$none);
+									}
+								}
+							}
+						}
+					}
+				}
+			case 13:
+				return $author$project$Main$submit(model);
+			case 14:
+				return (model.k || ((!model.m) || (model.ae > 4))) ? _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{O: 'unavailable'}),
+					$elm$core$Platform$Cmd$none) : _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{O: 'connecting'}),
+					$author$project$Main$toJs(
+						$elm$json$Json$Encode$object(
+							_List_fromArray(
+								[
+									_Utils_Tuple2(
+									'type',
+									$elm$json$Json$Encode$string('connect'))
+								]))));
+			case 15:
+				var requestId = message.a;
+				var pending = message.b;
+				return A3($author$project$Main$readPendingCurrent, requestId, pending, model) ? A5($author$project$Main$issue, pending.bc, 'GET', pending.ax, $elm$core$Maybe$Nothing, model) : _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+			default:
+				var kind = message.a;
+				var _v7 = _Utils_Tuple3(kind, model.D, model.V);
+				_v7$2:
+				while (true) {
+					if ((!_v7.b.$) && (!_v7.c.$)) {
+						switch (_v7.a) {
+							case 2:
+								var _v8 = _v7.a;
+								var adr = _v7.b.a;
+								var revision = _v7.c.a;
+								return A3(
+									$author$project$Main$retryInspection,
+									kind,
+									A3($author$project$Route$showPath, adr, revision, 'collapsed'),
+									model);
+							case 3:
+								var _v9 = _v7.a;
+								var adr = _v7.b.a;
+								var revision = _v7.c.a;
+								return A3(
+									$author$project$Main$retryInspection,
+									kind,
+									A3($author$project$Route$showPath, adr, revision, 'exploded'),
+									model);
+							default:
+								break _v7$2;
+						}
+					} else {
+						break _v7$2;
+					}
+				}
+				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
+		}
 	});
-var $elm$json$Json$Decode$value = _Json_decodeValue;
-var $elm$core$Platform$worker = _Platform_worker;
-var $author$project$Main$main = $elm$core$Platform$worker(
-	{h: $author$project$Main$init, i: $author$project$Main$subscriptions, j: $author$project$Main$update});
-_Platform_export({'Main':{'init':$author$project$Main$main($elm$json$Json$Decode$value)(0)}});}(this));
+var $author$project$Main$AdoptTokens = {$: 12};
+var $author$project$Main$EditDraft = F2(
+	function (a, b) {
+		return {$: 10, a: a, b: b};
+	});
+var $author$project$Main$ResolveDraft = function (a) {
+	return {$: 11, a: a};
+};
+var $author$project$Main$StartAction = function (a) {
+	return {$: 9, a: a};
+};
+var $author$project$Main$Submit = {$: 13};
+var $elm$html$Html$Attributes$stringProperty = F2(
+	function (key, string) {
+		return A2(
+			_VirtualDom_property,
+			key,
+			$elm$json$Json$Encode$string(string));
+	});
+var $elm$html$Html$Attributes$class = $elm$html$Html$Attributes$stringProperty('className');
+var $elm$html$Html$div = _VirtualDom_node('div');
+var $elm$html$Html$p = _VirtualDom_node('p');
+var $elm$virtual_dom$VirtualDom$text = _VirtualDom_text;
+var $elm$html$Html$text = $elm$virtual_dom$VirtualDom$text;
+var $author$project$View$Forms$ActorId = 12;
+var $author$project$View$Forms$ActorKind = 11;
+var $author$project$View$Forms$ActorModel = 13;
+var $author$project$View$Forms$Add = 7;
+var $author$project$View$Forms$Amend = 1;
+var $author$project$View$Forms$Body = 2;
+var $author$project$View$Forms$ChangeSummary = 3;
+var $author$project$View$Forms$ContextDigest = 16;
+var $author$project$View$Forms$Domains = 5;
+var $author$project$View$Forms$InputDigest = 14;
+var $author$project$View$Forms$Mode = 17;
+var $author$project$View$Forms$Obsolete = 4;
+var $author$project$View$Forms$PromptDigest = 15;
+var $author$project$View$Forms$Reactivate = 5;
+var $author$project$View$Forms$Reason = 4;
+var $author$project$View$Forms$Refinements = 9;
+var $author$project$View$Forms$Remove = 8;
+var $author$project$View$Forms$Replacement = 10;
+var $author$project$View$Forms$Scope = 2;
+var $author$project$View$Forms$Scopes = 6;
+var $author$project$View$Forms$Summary = 1;
+var $author$project$View$Forms$Title = 0;
+var $author$project$View$Forms$actionFrom = function (raw) {
+	switch (raw) {
+		case 'amend':
+			return 1;
+		case 'scope':
+			return 2;
+		case 'domain':
+			return 3;
+		case 'obsolete':
+			return 4;
+		case 'reactivate':
+			return 5;
+		default:
+			return 0;
+	}
+};
+var $elm$html$Html$button = _VirtualDom_node('button');
+var $elm$html$Html$Attributes$boolProperty = F2(
+	function (key, bool) {
+		return A2(
+			_VirtualDom_property,
+			key,
+			$elm$json$Json$Encode$bool(bool));
+	});
+var $elm$html$Html$Attributes$checked = $elm$html$Html$Attributes$boolProperty('checked');
+var $elm$html$Html$Attributes$disabled = $elm$html$Html$Attributes$boolProperty('disabled');
+var $elm$html$Html$fieldset = _VirtualDom_node('fieldset');
+var $elm$html$Html$Attributes$for = $elm$html$Html$Attributes$stringProperty('htmlFor');
+var $elm$html$Html$h3 = _VirtualDom_node('h3');
+var $elm$html$Html$Attributes$id = $elm$html$Html$Attributes$stringProperty('id');
+var $elm$html$Html$input = _VirtualDom_node('input');
+var $elm$html$Html$label = _VirtualDom_node('label');
+var $elm$html$Html$legend = _VirtualDom_node('legend');
+var $elm$virtual_dom$VirtualDom$Normal = function (a) {
+	return {$: 0, a: a};
+};
+var $elm$virtual_dom$VirtualDom$on = _VirtualDom_on;
+var $elm$html$Html$Events$on = F2(
+	function (event, decoder) {
+		return A2(
+			$elm$virtual_dom$VirtualDom$on,
+			event,
+			$elm$virtual_dom$VirtualDom$Normal(decoder));
+	});
+var $elm$html$Html$Events$targetChecked = A2(
+	$elm$json$Json$Decode$at,
+	_List_fromArray(
+		['target', 'checked']),
+	$elm$json$Json$Decode$bool);
+var $elm$html$Html$Events$onCheck = function (tagger) {
+	return A2(
+		$elm$html$Html$Events$on,
+		'change',
+		A2($elm$json$Json$Decode$map, tagger, $elm$html$Html$Events$targetChecked));
+};
+var $elm$html$Html$Events$onClick = function (msg) {
+	return A2(
+		$elm$html$Html$Events$on,
+		'click',
+		$elm$json$Json$Decode$succeed(msg));
+};
+var $elm$html$Html$Events$alwaysStop = function (x) {
+	return _Utils_Tuple2(x, true);
+};
+var $elm$virtual_dom$VirtualDom$MayStopPropagation = function (a) {
+	return {$: 1, a: a};
+};
+var $elm$html$Html$Events$stopPropagationOn = F2(
+	function (event, decoder) {
+		return A2(
+			$elm$virtual_dom$VirtualDom$on,
+			event,
+			$elm$virtual_dom$VirtualDom$MayStopPropagation(decoder));
+	});
+var $elm$html$Html$Events$targetValue = A2(
+	$elm$json$Json$Decode$at,
+	_List_fromArray(
+		['target', 'value']),
+	$elm$json$Json$Decode$string);
+var $elm$html$Html$Events$onInput = function (tagger) {
+	return A2(
+		$elm$html$Html$Events$stopPropagationOn,
+		'input',
+		A2(
+			$elm$json$Json$Decode$map,
+			$elm$html$Html$Events$alwaysStop,
+			A2($elm$json$Json$Decode$map, tagger, $elm$html$Html$Events$targetValue)));
+};
+var $elm$html$Html$option = _VirtualDom_node('option');
+var $elm$html$Html$h4 = _VirtualDom_node('h4');
+var $elm$html$Html$li = _VirtualDom_node('li');
+var $elm$html$Html$pre = _VirtualDom_node('pre');
+var $elm$html$Html$ul = _VirtualDom_node('ul');
+var $author$project$View$Forms$reviewView = F2(
+	function (label, review) {
+		return A2(
+			$elm$html$Html$div,
+			_List_Nil,
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$h4,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(label)
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'HEAD ' + (review.dI + (' · ' + A2($elm$core$Maybe$withDefault, 'detached', review.dJ))))
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Repository basis token: ' + review.dc)
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('ADR state token: ' + review.aY)
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Title: ' + review.F)
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Summary: ' + review.P)
+						])),
+					A2(
+					$elm$html$Html$pre,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(review.ak)
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'Domains: ' + A2($elm$core$String$join, ', ', review.L))
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'Scopes: ' + A2($elm$core$String$join, ', ', review.N))
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'Heads: ' + A2($elm$core$String$join, ', ', review.dK))
+						])),
+					A2(
+					$elm$html$Html$ul,
+					_List_Nil,
+					A2(
+						$elm$core$List$map,
+						function (candidate) {
+							return A2(
+								$elm$html$Html$li,
+								_List_Nil,
+								_List_fromArray(
+									[
+										$elm$html$Html$text(candidate)
+									]));
+						},
+						review.a2))
+				]));
+	});
+var $elm$html$Html$select = _VirtualDom_node('select');
+var $elm$html$Html$Attributes$selected = $elm$html$Html$Attributes$boolProperty('selected');
+var $elm$html$Html$textarea = _VirtualDom_node('textarea');
+var $elm$html$Html$Attributes$type_ = $elm$html$Html$Attributes$stringProperty('type');
+var $elm$html$Html$Attributes$value = $elm$html$Html$Attributes$stringProperty('value');
+var $author$project$View$Forms$view = function (controls) {
+	var named = F3(
+		function (field, name, content) {
+			return A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$label,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$for(name)
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(name)
+							])),
+						A2(
+						$elm$html$Html$input,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$id(name),
+								$elm$html$Html$Attributes$value(content),
+								$elm$html$Html$Events$onInput(
+								controls.d4(field))
+							]),
+						_List_Nil)
+					]));
+		});
+	var multiline = F3(
+		function (field, name, content) {
+			return A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$label,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$for(name)
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(name)
+							])),
+						A2(
+						$elm$html$Html$textarea,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$id(name),
+								$elm$html$Html$Attributes$value(content),
+								$elm$html$Html$Events$onInput(
+								controls.d4(field))
+							]),
+						_List_Nil)
+					]));
+		});
+	var draft = controls.c;
+	return A2(
+		$elm$html$Html$div,
+		_List_Nil,
+		_List_fromArray(
+			[
+				A2(
+				$elm$html$Html$h3,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Checked operation')
+					])),
+				A2(
+				$elm$html$Html$label,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$for('action')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Action')
+					])),
+				A2(
+				$elm$html$Html$select,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$id('action'),
+						$elm$html$Html$Attributes$disabled(!controls.dg),
+						$elm$html$Html$Events$onInput(
+						function (value) {
+							return controls.d5(
+								$author$project$View$Forms$actionFrom(value));
+						})
+					]),
+				A2(
+					$elm$core$List$map,
+					function (action) {
+						return A2(
+							$elm$html$Html$option,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$value(
+									$author$project$View$Forms$actionName(action)),
+									$elm$html$Html$Attributes$selected(
+									_Utils_eq(draft.au, action)),
+									$elm$html$Html$Attributes$disabled((!(!action)) && (!controls.dh))
+								]),
+							_List_fromArray(
+								[
+									$elm$html$Html$text(
+									$author$project$View$Forms$actionName(action))
+								]));
+					},
+					_List_fromArray(
+						[0, 1, 2, 3, 4, 5]))),
+				A2(
+				$elm$html$Html$p,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'Target: ' + ((draft.eq === '') ? 'new ADR' : draft.eq))
+					])),
+				A2(
+				$elm$html$Html$p,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Original HEAD: ' + draft.db)
+					])),
+				draft.b_ ? A2(
+				$elm$html$Html$p,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Draft is stale. Refresh the repository, inspect current heads and candidates, then adopt the new tokens.')
+					])) : $elm$html$Html$text(''),
+				((!draft.au) || (draft.au === 1)) ? A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_Utils_ap(
+					_List_fromArray(
+						[
+							A3(named, 0, 'Title', draft.F),
+							A3(multiline, 1, 'Summary', draft.P),
+							A3(multiline, 2, 'Body', draft.ak)
+						]),
+					(draft.au === 1) ? _List_fromArray(
+						[
+							A3(named, 3, 'Change summary', draft.av)
+						]) : _List_fromArray(
+						[
+							A3(multiline, 5, 'Domains, one per line', draft.L),
+							A3(multiline, 6, 'Scopes, one per line', draft.N)
+						]))) : A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_Utils_ap(
+					_List_fromArray(
+						[
+							A3(named, 4, 'Reason', draft.cL)
+						]),
+					_Utils_ap(
+						((draft.au === 2) || (draft.au === 3)) ? _Utils_ap(
+							_List_fromArray(
+								[
+									A2(
+									$elm$html$Html$label,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$for('change-mode')
+										]),
+									_List_fromArray(
+										[
+											$elm$html$Html$text('Change mode')
+										])),
+									A2(
+									$elm$html$Html$select,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$id('change-mode'),
+											$elm$html$Html$Events$onInput(
+											controls.d4(17))
+										]),
+									A2(
+										$elm$core$List$map,
+										function (mode) {
+											return A2(
+												$elm$html$Html$option,
+												_List_fromArray(
+													[
+														$elm$html$Html$Attributes$value(mode),
+														$elm$html$Html$Attributes$selected(
+														_Utils_eq(draft.bH, mode))
+													]),
+												_List_fromArray(
+													[
+														$elm$html$Html$text(mode)
+													]));
+										},
+										(draft.au === 3) ? _List_fromArray(
+											['delta', 'reviewed', 'refine']) : _List_fromArray(
+											['delta', 'reviewed'])))
+								]),
+							function () {
+								var _v0 = draft.bH;
+								switch (_v0) {
+									case 'delta':
+										return _List_fromArray(
+											[
+												A3(multiline, 7, 'Add, one per line', draft.aM),
+												A3(multiline, 8, 'Remove, one per line', draft.aW)
+											]);
+									case 'refine':
+										return _List_fromArray(
+											[
+												A3(multiline, 9, 'Refinements, one per line', draft.bT)
+											]);
+									default:
+										return _List_fromArray(
+											[
+												A3(
+												multiline,
+												(draft.au === 2) ? 6 : 5,
+												'Reviewed set, one per line',
+												(draft.au === 2) ? draft.N : draft.L)
+											]);
+								}
+							}()) : _List_fromArray(
+							[
+								A2(
+								$elm$html$Html$label,
+								_List_fromArray(
+									[
+										$elm$html$Html$Attributes$for('resolve')
+									]),
+								_List_fromArray(
+									[
+										$elm$html$Html$text('Resolve status conflict')
+									])),
+								A2(
+								$elm$html$Html$input,
+								_List_fromArray(
+									[
+										$elm$html$Html$Attributes$id('resolve'),
+										$elm$html$Html$Attributes$type_('checkbox'),
+										$elm$html$Html$Attributes$checked(draft.ee),
+										$elm$html$Html$Events$onCheck(controls.d6)
+									]),
+								_List_Nil)
+							]),
+						(draft.au === 4) ? _List_fromArray(
+							[
+								A3(named, 10, 'Replacement ADR (optional)', draft.bW)
+							]) : _List_Nil))),
+				A2(
+				$elm$html$Html$fieldset,
+				_List_Nil,
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$legend,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Actor and provenance')
+							])),
+						A2(
+						$elm$html$Html$label,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$for('actor-kind')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Actor kind')
+							])),
+						A2(
+						$elm$html$Html$select,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$id('actor-kind'),
+								$elm$html$Html$Events$onInput(
+								controls.d4(11))
+							]),
+						A2(
+							$elm$core$List$map,
+							function (kind) {
+								return A2(
+									$elm$html$Html$option,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$value(kind),
+											$elm$html$Html$Attributes$selected(
+											_Utils_eq(draft._, kind))
+										]),
+									_List_fromArray(
+										[
+											$elm$html$Html$text(kind)
+										]));
+							},
+							_List_fromArray(
+								['human', 'llm', 'service']))),
+						A3(named, 12, 'Actor ID', draft.Z),
+						A3(named, 13, 'Model (optional)', draft.aa),
+						A3(named, 14, 'Input digest (optional)', draft.bB),
+						A3(named, 15, 'Prompt digest (optional)', draft.bO),
+						A3(named, 16, 'Context digest (optional)', draft.bt)
+					])),
+				A2(
+				$elm$html$Html$h3,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Review original and current state')
+					])),
+				function () {
+				var _v1 = draft.aT;
+				if (!_v1.$) {
+					var original = _v1.a;
+					return A2($author$project$View$Forms$reviewView, 'Original reviewed state', original);
+				} else {
+					return A2(
+						$elm$html$Html$p,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text('No original snapshot has been reviewed yet.')
+							]));
+				}
+			}(),
+				function () {
+				var _v2 = controls.dG;
+				if (!_v2.$) {
+					var repository = _v2.a;
+					return A2(
+						$author$project$View$Forms$reviewView,
+						'Current freshly inspected state',
+						A2($author$project$View$Forms$baseline, repository, controls.dF));
+				} else {
+					return A2(
+						$elm$html$Html$p,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Current state is not fresh. Refresh the repository and inspect both views.')
+							]));
+				}
+			}(),
+				A2(
+				$elm$html$Html$button,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$type_('button'),
+						$elm$html$Html$Attributes$disabled(!controls.df),
+						$elm$html$Html$Events$onClick(controls.d3)
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						(!draft.au) ? 'Review repository and adopt current basis' : 'Review heads and adopt current tokens')
+					])),
+				A2(
+				$elm$html$Html$button,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$type_('button'),
+						$elm$html$Html$Attributes$disabled(!controls.di),
+						$elm$html$Html$Events$onClick(controls.d7)
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'Submit ' + $author$project$View$Forms$actionName(draft.au))
+					])),
+				A2(
+				$elm$html$Html$p,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text(controls.ar)
+					]))
+			]));
+};
+var $author$project$Main$actionsPane = function (model) {
+	var historical = $author$project$Main$isHistorical(model);
+	var canSubmit = model.m && ((!model.k) && (model.x && (_Utils_eq(model.X, $elm$core$Maybe$Nothing) && ((!historical) && ((!model.c.b_) && ((!model.c.au) || $author$project$Main$inspectionReady(model)))))));
+	var canChooseAction = (!model.k) && ((!historical) && model.x);
+	var canAdopt = model.m && ((!model.k) && ((!historical) && (model.x && ((!model.c.au) || $author$project$Main$inspectionReady(model)))));
+	return A2(
+		$elm$html$Html$div,
+		_List_Nil,
+		_List_fromArray(
+			[
+				historical ? A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('notice')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Historical inspection is read-only. Return to current HEAD before submitting changes.')
+					])) : $elm$html$Html$text(''),
+				(!model.m) ? A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('notice')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('This cleaned-URL session can read snapshots. Reopen the process bootstrap URL for a new in-memory credential before submitting.')
+					])) : $elm$html$Html$text(''),
+				$author$project$View$Forms$view(
+				{
+					df: canAdopt,
+					dg: canChooseAction,
+					dh: canChooseAction && $author$project$Main$inspectionReady(model),
+					di: canSubmit,
+					c: model.c,
+					dF: $author$project$Main$inspectionReady(model) ? model.r : $elm$core$Maybe$Nothing,
+					dG: (model.x && ((!model.c.au) || $author$project$Main$inspectionReady(model))) ? model.M : $elm$core$Maybe$Nothing,
+					d3: $author$project$Main$AdoptTokens,
+					d4: $author$project$Main$EditDraft,
+					d5: $author$project$Main$StartAction,
+					d6: $author$project$Main$ResolveDraft,
+					d7: $author$project$Main$Submit,
+					ar: model.d
+				})
+			]));
+};
+var $author$project$Main$ChooseView = function (a) {
+	return {$: 1, a: a};
+};
+var $author$project$Route$Conflicts = 5;
+var $author$project$Route$Doctor = 6;
+var $author$project$Main$EditQuery = F2(
+	function (a, b) {
+		return {$: 2, a: a, b: b};
+	});
+var $author$project$Route$History = 3;
+var $author$project$Main$Load = {$: 4};
+var $author$project$Main$Refresh = {$: 8};
+var $author$project$Route$Search = 1;
+var $author$project$Main$ToggleQuery = F2(
+	function (a, b) {
+		return {$: 3, a: a, b: b};
+	});
+var $author$project$Main$SelectAdr = function (a) {
+	return {$: 5, a: a};
+};
+var $author$project$Main$SelectCompareAdr = F2(
+	function (a, b) {
+		return {$: 6, a: a, b: b};
+	});
+var $elm$html$Html$article = _VirtualDom_node('article');
+var $elm$core$String$fromFloat = _String_fromNumber;
+var $elm$core$List$drop = F2(
+	function (n, list) {
+		drop:
+		while (true) {
+			if (n <= 0) {
+				return list;
+			} else {
+				if (!list.b) {
+					return list;
+				} else {
+					var x = list.a;
+					var xs = list.b;
+					var $temp$n = n - 1,
+						$temp$list = xs;
+					n = $temp$n;
+					list = $temp$list;
+					continue drop;
+				}
+			}
+		}
+	});
+var $elm$core$List$takeReverse = F3(
+	function (n, list, kept) {
+		takeReverse:
+		while (true) {
+			if (n <= 0) {
+				return kept;
+			} else {
+				if (!list.b) {
+					return kept;
+				} else {
+					var x = list.a;
+					var xs = list.b;
+					var $temp$n = n - 1,
+						$temp$list = xs,
+						$temp$kept = A2($elm$core$List$cons, x, kept);
+					n = $temp$n;
+					list = $temp$list;
+					kept = $temp$kept;
+					continue takeReverse;
+				}
+			}
+		}
+	});
+var $elm$core$List$takeTailRec = F2(
+	function (n, list) {
+		return $elm$core$List$reverse(
+			A3($elm$core$List$takeReverse, n, list, _List_Nil));
+	});
+var $elm$core$List$takeFast = F3(
+	function (ctr, n, list) {
+		if (n <= 0) {
+			return _List_Nil;
+		} else {
+			var _v0 = _Utils_Tuple2(n, list);
+			_v0$1:
+			while (true) {
+				_v0$5:
+				while (true) {
+					if (!_v0.b.b) {
+						return list;
+					} else {
+						if (_v0.b.b.b) {
+							switch (_v0.a) {
+								case 1:
+									break _v0$1;
+								case 2:
+									var _v2 = _v0.b;
+									var x = _v2.a;
+									var _v3 = _v2.b;
+									var y = _v3.a;
+									return _List_fromArray(
+										[x, y]);
+								case 3:
+									if (_v0.b.b.b.b) {
+										var _v4 = _v0.b;
+										var x = _v4.a;
+										var _v5 = _v4.b;
+										var y = _v5.a;
+										var _v6 = _v5.b;
+										var z = _v6.a;
+										return _List_fromArray(
+											[x, y, z]);
+									} else {
+										break _v0$5;
+									}
+								default:
+									if (_v0.b.b.b.b && _v0.b.b.b.b.b) {
+										var _v7 = _v0.b;
+										var x = _v7.a;
+										var _v8 = _v7.b;
+										var y = _v8.a;
+										var _v9 = _v8.b;
+										var z = _v9.a;
+										var _v10 = _v9.b;
+										var w = _v10.a;
+										var tl = _v10.b;
+										return (ctr > 1000) ? A2(
+											$elm$core$List$cons,
+											x,
+											A2(
+												$elm$core$List$cons,
+												y,
+												A2(
+													$elm$core$List$cons,
+													z,
+													A2(
+														$elm$core$List$cons,
+														w,
+														A2($elm$core$List$takeTailRec, n - 4, tl))))) : A2(
+											$elm$core$List$cons,
+											x,
+											A2(
+												$elm$core$List$cons,
+												y,
+												A2(
+													$elm$core$List$cons,
+													z,
+													A2(
+														$elm$core$List$cons,
+														w,
+														A3($elm$core$List$takeFast, ctr + 1, n - 4, tl)))));
+									} else {
+										break _v0$5;
+									}
+							}
+						} else {
+							if (_v0.a === 1) {
+								break _v0$1;
+							} else {
+								break _v0$5;
+							}
+						}
+					}
+				}
+				return list;
+			}
+			var _v1 = _v0.b;
+			var x = _v1.a;
+			return _List_fromArray(
+				[x]);
+		}
+	});
+var $elm$core$List$take = F2(
+	function (n, list) {
+		return A3($elm$core$List$takeFast, 0, n, list);
+	});
+var $author$project$Route$pageSlice = F2(
+	function (number, items) {
+		return A2(
+			$elm$core$List$take,
+			$author$project$Route$pageSize,
+			A2(
+				$elm$core$List$drop,
+				A2($elm$core$Basics$max, 0, number) * $author$project$Route$pageSize,
+				items));
+	});
+var $author$project$Main$SetPage = function (a) {
+	return {$: 7, a: a};
+};
+var $elm$html$Html$span = _VirtualDom_node('span');
+var $author$project$Main$pager = function (model) {
+	return A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				$elm$html$Html$Attributes$class('pager')
+			]),
+		_List_fromArray(
+			[
+				A2(
+				$elm$html$Html$button,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$type_('button'),
+						$elm$html$Html$Attributes$disabled(model.j <= 0),
+						$elm$html$Html$Events$onClick(
+						$author$project$Main$SetPage(model.j - 1))
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Previous page')
+					])),
+				A2(
+				$elm$html$Html$span,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'Page ' + ($elm$core$String$fromInt(model.j + 1) + (' of ' + $elm$core$String$fromInt(
+							$author$project$Main$maxPage(model) + 1))))
+					])),
+				A2(
+				$elm$html$Html$button,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$type_('button'),
+						$elm$html$Html$Attributes$disabled(
+						_Utils_cmp(
+							model.j,
+							$author$project$Main$maxPage(model)) > -1),
+						$elm$html$Html$Events$onClick(
+						$author$project$Main$SetPage(model.j + 1))
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Next page')
+					]))
+			]));
+};
+var $elm$html$Html$strong = _VirtualDom_node('strong');
+var $author$project$Main$searchResults = function (model) {
+	var _v0 = model.af;
+	if (_v0.$ === 1) {
+		return A2(
+			$elm$html$Html$p,
+			_List_Nil,
+			_List_fromArray(
+				[
+					$elm$html$Html$text('No result window loaded.')
+				]));
+	} else {
+		var window = _v0.a;
+		return A2(
+			$elm$html$Html$div,
+			_List_Nil,
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$p,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('meta')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'At ' + (window.ah + (' · ' + ($elm$core$String$fromInt(
+								$elm$core$List$length(window.cO)) + ' results in a bounded window'))))
+						])),
+					(_Utils_cmp(
+					$elm$core$List$length(window.cO),
+					window.cw) > -1) ? A2(
+					$elm$html$Html$p,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('notice')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Result window full; more may exist.')
+						])) : $elm$html$Html$text(''),
+					$author$project$Main$pager(model),
+					A2(
+					$elm$html$Html$ul,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('result-list')
+						]),
+					A2(
+						$elm$core$List$map,
+						function (hit) {
+							return A2(
+								$elm$html$Html$li,
+								_List_Nil,
+								_List_fromArray(
+									[
+										A2(
+										$elm$html$Html$button,
+										_List_fromArray(
+											[
+												$elm$html$Html$Attributes$type_('button'),
+												$elm$html$Html$Events$onClick(
+												$author$project$Main$SelectAdr(hit.J))
+											]),
+										_List_fromArray(
+											[
+												A2(
+												$elm$html$Html$strong,
+												_List_Nil,
+												_List_fromArray(
+													[
+														$elm$html$Html$text(hit.F)
+													])),
+												$elm$html$Html$text(' · ' + hit.J)
+											])),
+										A2(
+										$elm$html$Html$p,
+										_List_Nil,
+										_List_fromArray(
+											[
+												$elm$html$Html$text(hit.P)
+											])),
+										A2(
+										$elm$html$Html$p,
+										_List_fromArray(
+											[
+												$elm$html$Html$Attributes$class('meta')
+											]),
+										_List_fromArray(
+											[
+												$elm$html$Html$text(
+												hit.ar + (' · ' + (A2($elm$core$String$join, ', ', hit.L) + (' · score ' + A2(
+													$elm$core$Maybe$withDefault,
+													'n/a',
+													A2($elm$core$Maybe$map, $elm$core$String$fromFloat, hit.bn))))))
+											])),
+										$elm$core$List$isEmpty(hit.bE) ? $elm$html$Html$text('') : A2(
+										$elm$html$Html$p,
+										_List_Nil,
+										_List_fromArray(
+											[
+												$elm$html$Html$text(
+												'Matched ' + (A2($elm$core$String$join, ', ', hit.bE) + (' for ' + A2($elm$core$String$join, ', ', hit.bF))))
+											])),
+										hit.aD ? A2(
+										$elm$html$Html$p,
+										_List_fromArray(
+											[
+												$elm$html$Html$Attributes$class('notice')
+											]),
+										_List_fromArray(
+											[
+												$elm$html$Html$text(
+												'Conflict: ' + A2($elm$core$String$join, '; ', hit.al))
+											])) : $elm$html$Html$text('')
+									]));
+						},
+						A2($author$project$Route$pageSlice, model.j, window.cO)))
+				]));
+	}
+};
+var $author$project$Main$snapshotView = F2(
+	function (label, snapshot) {
+		if (snapshot.$ === 1) {
+			return A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('meta')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(label + ': absent at this revision')
+					]));
+		} else {
+			var value = snapshot.a;
+			return A2(
+				$elm$html$Html$article,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('candidate')
+					]),
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$h4,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text(label)
+							])),
+						A2(
+						$elm$html$Html$p,
+						_List_Nil,
+						_List_fromArray(
+							[
+								A2(
+								$elm$html$Html$strong,
+								_List_Nil,
+								_List_fromArray(
+									[
+										$elm$html$Html$text(value.F)
+									])),
+								$elm$html$Html$text(' · ' + value.ar)
+							])),
+						A2(
+						$elm$html$Html$p,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text(value.P)
+							])),
+						A2(
+						$elm$html$Html$pre,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$class('body-text')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(value.ak)
+							])),
+						A2(
+						$elm$html$Html$p,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text(
+								'Domains: ' + A2($elm$core$String$join, ', ', value.L))
+							])),
+						A2(
+						$elm$html$Html$p,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text(
+								'Scopes: ' + A2($elm$core$String$join, ', ', value.N))
+							]))
+					]));
+		}
+	});
+var $author$project$Main$results = function (model) {
+	var _v0 = model.b.c_;
+	switch (_v0) {
+		case 0:
+			return $author$project$Main$searchResults(model);
+		case 1:
+			return $author$project$Main$searchResults(model);
+		case 2:
+			var _v1 = model.aV;
+			if (_v1.$ === 1) {
+				return A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('No relevance results loaded.')
+						]));
+			} else {
+				var window = _v1.a;
+				return A2(
+					$elm$html$Html$div,
+					_List_Nil,
+					_List_fromArray(
+						[
+							A2(
+							$elm$html$Html$p,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$class('meta')
+								]),
+							_List_fromArray(
+								[
+									$elm$html$Html$text('Source: ' + (window.dD + (' · ' + window.el)))
+								])),
+							A2(
+							$elm$html$Html$ul,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$class('result-list')
+								]),
+							A2(
+								$elm$core$List$map,
+								function (hit) {
+									return A2(
+										$elm$html$Html$li,
+										_List_Nil,
+										_List_fromArray(
+											[
+												A2(
+												$elm$html$Html$button,
+												_List_fromArray(
+													[
+														$elm$html$Html$Attributes$type_('button'),
+														$elm$html$Html$Events$onClick(
+														$author$project$Main$SelectAdr(hit.J))
+													]),
+												_List_fromArray(
+													[
+														A2(
+														$elm$html$Html$strong,
+														_List_Nil,
+														_List_fromArray(
+															[
+																$elm$html$Html$text(hit.F)
+															])),
+														$elm$html$Html$text(' · ' + hit.J)
+													])),
+												A2(
+												$elm$html$Html$p,
+												_List_Nil,
+												_List_fromArray(
+													[
+														$elm$html$Html$text(hit.P)
+													])),
+												A2(
+												$elm$html$Html$p,
+												_List_fromArray(
+													[
+														$elm$html$Html$Attributes$class('meta')
+													]),
+												_List_fromArray(
+													[
+														$elm$html$Html$text(
+														'Declared applicability: ' + (hit.ei + (' · Semantic evidence: ' + (hit.dm + (' · Score ' + $elm$core$String$fromFloat(hit.bn))))))
+													])),
+												A2(
+												$elm$html$Html$ul,
+												_List_Nil,
+												A2(
+													$elm$core$List$map,
+													function (e) {
+														return A2(
+															$elm$html$Html$li,
+															_List_Nil,
+															_List_fromArray(
+																[
+																	$elm$html$Html$text(e.ej + (': ' + (e.dE + (' ↔ ' + e.c6))))
+																]));
+													},
+													hit.dx))
+											]));
+								},
+								window.cO))
+						]));
+			}
+		case 3:
+			var _v2 = model.aA;
+			if (_v2.$ === 1) {
+				return A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('No history loaded.')
+						]));
+			} else {
+				var window = _v2.a;
+				return A2(
+					$elm$html$Html$div,
+					_List_Nil,
+					_List_fromArray(
+						[
+							window.es ? A2(
+							$elm$html$Html$p,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$class('notice')
+								]),
+							_List_fromArray(
+								[
+									$elm$html$Html$text('History window truncated by the server.')
+								])) : $elm$html$Html$text(''),
+							$author$project$Main$pager(model),
+							A2(
+							$elm$html$Html$ul,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$class('result-list')
+								]),
+							A2(
+								$elm$core$List$map,
+								function (item) {
+									return A2(
+										$elm$html$Html$li,
+										_List_Nil,
+										_List_fromArray(
+											[
+												A2(
+												$elm$html$Html$button,
+												_List_fromArray(
+													[
+														$elm$html$Html$Attributes$type_('button'),
+														$elm$html$Html$Events$onClick(
+														$author$project$Main$SelectAdr(item.J))
+													]),
+												_List_fromArray(
+													[
+														$elm$html$Html$text(item.F + (' · ' + item.cu))
+													])),
+												A2(
+												$elm$html$Html$p,
+												_List_fromArray(
+													[
+														$elm$html$Html$Attributes$class('meta')
+													]),
+												_List_fromArray(
+													[
+														$elm$html$Html$text(item.a1 + (' · ' + (item.a4 + (' · ' + item.aC))))
+													])),
+												A2(
+												$elm$html$Html$p,
+												_List_Nil,
+												_List_fromArray(
+													[
+														$elm$html$Html$text(
+														A2($elm$core$String$join, ', ', item.a3))
+													]))
+											]));
+								},
+								A2($author$project$Route$pageSlice, model.j, window.be)))
+						]));
+			}
+		case 4:
+			var _v3 = model.aw;
+			if (_v3.$ === 1) {
+				return A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('No comparison loaded.')
+						]));
+			} else {
+				var window = _v3.a;
+				return A2(
+					$elm$html$Html$div,
+					_List_Nil,
+					_List_fromArray(
+						[
+							A2(
+							$elm$html$Html$p,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$class('meta')
+								]),
+							_List_fromArray(
+								[
+									$elm$html$Html$text(window.dH + (' → ' + window.er))
+								])),
+							A2(
+							$elm$html$Html$ul,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$class('result-list')
+								]),
+							A2(
+								$elm$core$List$map,
+								function (entry) {
+									return A2(
+										$elm$html$Html$li,
+										_List_Nil,
+										_List_fromArray(
+											[
+												A2(
+												$elm$html$Html$button,
+												_List_fromArray(
+													[
+														$elm$html$Html$Attributes$type_('button'),
+														$elm$html$Html$Events$onClick(
+														A2(
+															$author$project$Main$SelectCompareAdr,
+															entry.J,
+															_Utils_eq(entry.b5, $elm$core$Maybe$Nothing) ? window.dH : window.er))
+													]),
+												_List_fromArray(
+													[
+														$elm$html$Html$text(entry.F + (' · ' + entry.bc))
+													])),
+												A2($author$project$Main$snapshotView, 'Before', entry.b9),
+												A2($author$project$Main$snapshotView, 'After', entry.b5),
+												A2(
+												$elm$html$Html$div,
+												_List_Nil,
+												A2(
+													$elm$core$List$map,
+													function (change) {
+														return A2(
+															$elm$html$Html$article,
+															_List_fromArray(
+																[
+																	$elm$html$Html$Attributes$class('candidate')
+																]),
+															_List_fromArray(
+																[
+																	A2(
+																	$elm$html$Html$strong,
+																	_List_Nil,
+																	_List_fromArray(
+																		[
+																			$elm$html$Html$text(change.dC)
+																		])),
+																	A2(
+																	$elm$html$Html$p,
+																	_List_Nil,
+																	_List_fromArray(
+																		[
+																			$elm$html$Html$text('Before: ' + change.b9)
+																		])),
+																	A2(
+																	$elm$html$Html$p,
+																	_List_Nil,
+																	_List_fromArray(
+																		[
+																			$elm$html$Html$text('After: ' + change.b5)
+																		])),
+																	function () {
+																	var _v4 = change.dq;
+																	if (!_v4.$) {
+																		var difference = _v4.a;
+																		return A2(
+																			$elm$html$Html$pre,
+																			_List_fromArray(
+																				[
+																					$elm$html$Html$Attributes$class('body-text')
+																				]),
+																			_List_fromArray(
+																				[
+																					$elm$html$Html$text(difference)
+																				]));
+																	} else {
+																		return $elm$html$Html$text('');
+																	}
+																}()
+																]));
+													},
+													entry.a3))
+											]));
+								},
+								window.dv))
+						]));
+			}
+		case 5:
+			var _v5 = model.al;
+			if (_v5.$ === 1) {
+				return A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('No conflict index loaded.')
+						]));
+			} else {
+				var window = _v5.a;
+				return $elm$core$List$isEmpty(window.al) ? A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('No conflicts at this revision.')
+						])) : A2(
+					$elm$html$Html$ul,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('result-list')
+						]),
+					A2(
+						$elm$core$List$map,
+						function (entry) {
+							return A2(
+								$elm$html$Html$li,
+								_List_Nil,
+								_List_fromArray(
+									[
+										A2(
+										$elm$html$Html$button,
+										_List_fromArray(
+											[
+												$elm$html$Html$Attributes$type_('button'),
+												$elm$html$Html$Events$onClick(
+												$author$project$Main$SelectAdr(entry.J))
+											]),
+										_List_fromArray(
+											[
+												$elm$html$Html$text(entry.J)
+											])),
+										A2(
+										$elm$html$Html$p,
+										_List_Nil,
+										_List_fromArray(
+											[
+												$elm$html$Html$text(
+												A2($elm$core$String$join, '; ', entry.en))
+											])),
+										A2(
+										$elm$html$Html$ul,
+										_List_Nil,
+										A2(
+											$elm$core$List$map,
+											function (candidate) {
+												return A2(
+													$elm$html$Html$li,
+													_List_Nil,
+													_List_fromArray(
+														[
+															$elm$html$Html$text(
+															candidate.c8 + (': ' + (candidate.P + (' [' + (A2($elm$core$String$join, ', ', candidate.dK) + ']')))))
+														]));
+											},
+											entry.a2))
+									]));
+						},
+						window.al));
+			}
+		default:
+			var _v6 = model.a8;
+			if (_v6.$ === 1) {
+				return A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('No diagnostics loaded.')
+						]));
+			} else {
+				var doctor = _v6.a;
+				return $elm$core$List$isEmpty(doctor.dP) ? A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('No issues reported.')
+						])) : A2(
+					$elm$html$Html$ul,
+					_List_Nil,
+					A2(
+						$elm$core$List$map,
+						function (diagnostic) {
+							return A2(
+								$elm$html$Html$li,
+								_List_Nil,
+								_List_fromArray(
+									[
+										$elm$html$Html$text(
+										diagnostic.ek + (' · ' + (diagnostic.bs + (': ' + (diagnostic.cx + (' ' + A2($elm$core$Maybe$withDefault, '', diagnostic.bg)))))))
+									]));
+						},
+						doctor.dP));
+			}
+	}
+};
+var $author$project$Main$searchControls = F4(
+	function (model, field, check, withText) {
+		return A2(
+			$elm$html$Html$div,
+			_List_Nil,
+			_List_fromArray(
+				[
+					withText ? A3(field, 'text', 'Search terms', model.b.b4) : A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Browse the ordered result window.')
+						])),
+					A2(
+					$elm$html$Html$label,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$for('mode')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Retrieval mode')
+						])),
+					A2(
+					$elm$html$Html$select,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$id('mode'),
+							$elm$html$Html$Events$onInput(
+							$author$project$Main$EditQuery('mode'))
+						]),
+					A2(
+						$elm$core$List$map,
+						function (mode) {
+							return A2(
+								$elm$html$Html$option,
+								_List_fromArray(
+									[
+										$elm$html$Html$Attributes$value(mode),
+										$elm$html$Html$Attributes$selected(
+										_Utils_eq(model.b.bH, mode))
+									]),
+								_List_fromArray(
+									[
+										$elm$html$Html$text(mode)
+									]));
+						},
+						_List_fromArray(
+							['hybrid', 'fts', 'vector']))),
+					A2(
+					$elm$html$Html$label,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$for('projection')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Result view')
+						])),
+					A2(
+					$elm$html$Html$select,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$id('projection'),
+							$elm$html$Html$Events$onInput(
+							$author$project$Main$EditQuery('projection'))
+						]),
+					_List_fromArray(
+						[
+							A2(
+							$elm$html$Html$option,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$value('collapsed'),
+									$elm$html$Html$Attributes$selected(model.b.bh === 'collapsed')
+								]),
+							_List_fromArray(
+								[
+									$elm$html$Html$text('Collapsed')
+								])),
+							A2(
+							$elm$html$Html$option,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$value('exploded'),
+									$elm$html$Html$Attributes$selected(model.b.bh === 'exploded')
+								]),
+							_List_fromArray(
+								[
+									$elm$html$Html$text('Exploded')
+								]))
+						])),
+					A3(field, 'domain', 'Domain filter', model.b.bw),
+					A3(field, 'file', 'File scope filter', model.b.dD),
+					A3(field, 'actor', 'Actor (kind:identifier)', model.b.a1),
+					A3(field, 'since', 'Since (Unix milliseconds)', model.b.aF),
+					A3(field, 'until', 'Until (Unix milliseconds)', model.b.aI),
+					A3(check, 'includeObsolete', 'Include obsolete', model.b.bb),
+					A3(check, 'shallow', 'Shallow history', model.b.bZ),
+					A3(
+					field,
+					'limit',
+					'Window size (1–1000)',
+					$elm$core$String$fromInt(model.b.cw))
+				]));
+	});
+var $author$project$Main$contextPane = function (model) {
+	var field = F3(
+		function (key, title, content) {
+			return A2(
+				$elm$html$Html$div,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('field')
+					]),
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$label,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$for(key)
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(title)
+							])),
+						A2(
+						$elm$html$Html$input,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$id(key),
+								$elm$html$Html$Attributes$value(content),
+								$elm$html$Html$Events$onInput(
+								$author$project$Main$EditQuery(key))
+							]),
+						_List_Nil)
+					]));
+		});
+	var check = F3(
+		function (key, title, selected) {
+			return A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$label,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$for(key)
+							]),
+						_List_fromArray(
+							[
+								A2(
+								$elm$html$Html$input,
+								_List_fromArray(
+									[
+										$elm$html$Html$Attributes$id(key),
+										$elm$html$Html$Attributes$type_('checkbox'),
+										$elm$html$Html$Attributes$checked(selected),
+										$elm$html$Html$Events$onCheck(
+										$author$project$Main$ToggleQuery(key))
+									]),
+								_List_Nil),
+								$elm$html$Html$text(title)
+							]))
+					]));
+		});
+	return A2(
+		$elm$html$Html$div,
+		_List_Nil,
+		_List_fromArray(
+			[
+				(!model.m) ? A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('notice')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Read-only session. Reopen the process bootstrap URL to restore live updates and checked mutations.')
+					])) : A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('meta')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Live connection: ' + model.O)
+					])),
+				function () {
+				var _v0 = model.f;
+				if (!_v0.$) {
+					var problem = _v0.a;
+					return A2(
+						$elm$html$Html$p,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$class('error')
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text(problem)
+							]));
+				} else {
+					return $elm$html$Html$text('');
+				}
+			}(),
+				model.e ? A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('notice')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Snapshot is loading or stale.')
+					])) : $elm$html$Html$text(''),
+				A2(
+				$elm$html$Html$div,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('nav')
+					]),
+				A2(
+					$elm$core$List$map,
+					function (_v1) {
+						var name = _v1.a;
+						var kind = _v1.b;
+						return A2(
+							$elm$html$Html$button,
+							_List_fromArray(
+								[
+									$elm$html$Html$Attributes$type_('button'),
+									$elm$html$Html$Attributes$class(
+									_Utils_eq(model.b.c_, kind) ? 'selected' : ''),
+									$elm$html$Html$Events$onClick(
+									$author$project$Main$ChooseView(kind))
+								]),
+							_List_fromArray(
+								[
+									$elm$html$Html$text(name)
+								]));
+					},
+					_List_fromArray(
+						[
+							_Utils_Tuple2('Browse', 0),
+							_Utils_Tuple2('Search', 1),
+							_Utils_Tuple2('Relevant', 2),
+							_Utils_Tuple2('History', 3),
+							_Utils_Tuple2('Compare', 4),
+							_Utils_Tuple2('Conflicts', 5),
+							_Utils_Tuple2('Doctor', 6)
+						]))),
+				A3(field, 'revision', 'Revision (HEAD or exact commit)', model.b.aE),
+				function () {
+				var _v2 = model.b.c_;
+				switch (_v2) {
+					case 0:
+						return A4($author$project$Main$searchControls, model, field, check, false);
+					case 1:
+						return A4($author$project$Main$searchControls, model, field, check, true);
+					case 2:
+						return A2(
+							$elm$html$Html$div,
+							_List_Nil,
+							_List_fromArray(
+								[
+									A3(field, 'file', 'Repository-relative source file', model.b.dD),
+									A3(check, 'worktree', 'Use worktree source', model.b.ev),
+									A3(check, 'includeObsolete', 'Include obsolete', model.b.bb),
+									A3(
+									field,
+									'limit',
+									'Result limit (1–100)',
+									$elm$core$String$fromInt(model.b.cw))
+								]));
+					case 3:
+						return A2(
+							$elm$html$Html$div,
+							_List_Nil,
+							_List_fromArray(
+								[
+									A3(field, 'adr', 'ADR filter', model.b.J),
+									A3(field, 'actor', 'Actor (kind:identifier)', model.b.a1),
+									A3(field, 'since', 'Since (Unix milliseconds)', model.b.aF),
+									A3(field, 'until', 'Until (Unix milliseconds)', model.b.aI),
+									A3(
+									field,
+									'limit',
+									'Window size (1–1000)',
+									$elm$core$String$fromInt(model.b.cw)),
+									A2(
+									$elm$html$Html$label,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$for('order')
+										]),
+									_List_fromArray(
+										[
+											$elm$html$Html$text('Order')
+										])),
+									A2(
+									$elm$html$Html$select,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$id('order'),
+											$elm$html$Html$Events$onInput(
+											$author$project$Main$EditQuery('order'))
+										]),
+									_List_fromArray(
+										[
+											A2(
+											$elm$html$Html$option,
+											_List_fromArray(
+												[
+													$elm$html$Html$Attributes$value('newest'),
+													$elm$html$Html$Attributes$selected(model.b.bf === 'newest')
+												]),
+											_List_fromArray(
+												[
+													$elm$html$Html$text('Newest')
+												])),
+											A2(
+											$elm$html$Html$option,
+											_List_fromArray(
+												[
+													$elm$html$Html$Attributes$value('oldest'),
+													$elm$html$Html$Attributes$selected(model.b.bf === 'oldest')
+												]),
+											_List_fromArray(
+												[
+													$elm$html$Html$text('Oldest')
+												]))
+										]))
+								]));
+					case 4:
+						return A2(
+							$elm$html$Html$div,
+							_List_Nil,
+							_List_fromArray(
+								[
+									A3(field, 'compareFrom', 'From revision', model.b.a6),
+									A3(field, 'compareTo', 'To revision', model.b.a7)
+								]));
+					default:
+						return $elm$html$Html$text('');
+				}
+			}(),
+				A2(
+				$elm$html$Html$div,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('actions')
+					]),
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$button,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$type_('button'),
+								$elm$html$Html$Attributes$class('primary'),
+								$elm$html$Html$Events$onClick($author$project$Main$Load)
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Load view')
+							])),
+						A2(
+						$elm$html$Html$button,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$type_('button'),
+								$elm$html$Html$Events$onClick($author$project$Main$Refresh)
+							]),
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Refresh repository')
+							]))
+					])),
+				$author$project$Main$results(model)
+			]));
+};
+var $elm$html$Html$h1 = _VirtualDom_node('h1');
+var $elm$html$Html$h2 = _VirtualDom_node('h2');
+var $elm$html$Html$header = _VirtualDom_node('header');
+var $author$project$Main$RetryInspection = function (a) {
+	return {$: 16, a: a};
+};
+var $author$project$Main$inspectionIssuesView = function (model) {
+	return A2(
+		$elm$html$Html$div,
+		_List_Nil,
+		A2(
+			$elm$core$List$filterMap,
+			function (_v0) {
+				var kind = _v0.a;
+				var label = _v0.b;
+				var _v1 = A2(
+					$elm$core$Dict$get,
+					$author$project$Main$requestKey(kind),
+					model.u);
+				if (!_v1.$) {
+					var problem = _v1.a;
+					return $elm$core$Maybe$Just(
+						A2(
+							$elm$html$Html$div,
+							_List_Nil,
+							_List_fromArray(
+								[
+									A2(
+									$elm$html$Html$p,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$class('error')
+										]),
+									_List_fromArray(
+										[
+											$elm$html$Html$text(label + (': ' + problem))
+										])),
+									A2(
+									$elm$html$Html$button,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$type_('button'),
+											$elm$html$Html$Events$onClick(
+											$author$project$Main$RetryInspection(kind)),
+											$elm$html$Html$Attributes$disabled(model.k)
+										]),
+									_List_fromArray(
+										[
+											$elm$html$Html$text('Retry ' + label)
+										]))
+								])));
+				} else {
+					return $elm$core$Maybe$Nothing;
+				}
+			},
+			_List_fromArray(
+				[
+					_Utils_Tuple2(2, 'decision inspection'),
+					_Utils_Tuple2(3, 'operation history')
+				])));
+};
+var $elm$core$List$append = F2(
+	function (xs, ys) {
+		if (!ys.b) {
+			return xs;
+		} else {
+			return A3($elm$core$List$foldr, $elm$core$List$cons, ys, xs);
+		}
+	});
+var $elm$core$List$concat = function (lists) {
+	return A3($elm$core$List$foldr, $elm$core$List$append, _List_Nil, lists);
+};
+var $elm$core$List$concatMap = F2(
+	function (f, list) {
+		return $elm$core$List$concat(
+			A2($elm$core$List$map, f, list));
+	});
+var $elm$core$List$head = function (list) {
+	if (list.b) {
+		var x = list.a;
+		var xs = list.b;
+		return $elm$core$Maybe$Just(x);
+	} else {
+		return $elm$core$Maybe$Nothing;
+	}
+};
+var $author$project$Main$candidateBodies = F2(
+	function (inspection, candidates) {
+		return A2(
+			$elm$core$List$map,
+			function (candidate) {
+				var _v0 = $elm$core$List$head(
+					A2(
+						$elm$core$List$filter,
+						function (item) {
+							return _Utils_eq(item.ba, candidate.ba);
+						},
+						A2(
+							$elm$core$List$concatMap,
+							function ($) {
+								return $.dR;
+							},
+							inspection.be)));
+				if (!_v0.$) {
+					var item = _v0.a;
+					return _Utils_update(
+						candidate,
+						{
+							ak: A2($elm$core$Maybe$withDefault, '', item.ak)
+						});
+				} else {
+					return candidate;
+				}
+			},
+			candidates);
+	});
+var $author$project$Main$candidateView = F3(
+	function (axis, heads, candidates) {
+		return $elm$core$List$isEmpty(heads) ? $elm$html$Html$text('') : A2(
+			$elm$html$Html$div,
+			_List_Nil,
+			_List_fromArray(
+				[
+					A2(
+					$elm$html$Html$h4,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(axis + ' heads')
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('meta')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							A2($elm$core$String$join, ', ', heads))
+						])),
+					A2(
+					$elm$html$Html$div,
+					_List_Nil,
+					A2(
+						$elm$core$List$map,
+						function (candidate) {
+							return A2(
+								$elm$html$Html$article,
+								_List_fromArray(
+									[
+										$elm$html$Html$Attributes$class('candidate')
+									]),
+								_List_fromArray(
+									[
+										A2(
+										$elm$html$Html$strong,
+										_List_Nil,
+										_List_fromArray(
+											[
+												$elm$html$Html$text(candidate.F)
+											])),
+										A2(
+										$elm$html$Html$p,
+										_List_Nil,
+										_List_fromArray(
+											[
+												$elm$html$Html$text(candidate.P)
+											])),
+										(candidate.ak === '') ? $elm$html$Html$text('') : A2(
+										$elm$html$Html$pre,
+										_List_fromArray(
+											[
+												$elm$html$Html$Attributes$class('body-text')
+											]),
+										_List_fromArray(
+											[
+												$elm$html$Html$text(candidate.ak)
+											])),
+										A2(
+										$elm$html$Html$p,
+										_List_fromArray(
+											[
+												$elm$html$Html$Attributes$class('meta')
+											]),
+										_List_fromArray(
+											[
+												$elm$html$Html$text(candidate.ba + (' · ' + candidate.bg))
+											]))
+									]));
+						},
+						candidates))
+				]));
+	});
+var $author$project$Main$compareDetail = function (model) {
+	var _v0 = _Utils_Tuple3(model.b.c_, model.aw, model.D);
+	if (((_v0.a === 4) && (!_v0.b.$)) && (!_v0.c.$)) {
+		var _v1 = _v0.a;
+		var window = _v0.b.a;
+		var adr = _v0.c.a;
+		var _v2 = $elm$core$List$head(
+			A2(
+				$elm$core$List$filter,
+				function (entry) {
+					return _Utils_eq(entry.J, adr);
+				},
+				window.dv));
+		if (!_v2.$) {
+			var entry = _v2.a;
+			return A2(
+				$elm$html$Html$div,
+				_List_Nil,
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$h3,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text('Comparison: ' + (entry.bc + (' · ' + entry.J)))
+							])),
+						A2($author$project$Main$snapshotView, 'Before', entry.b9),
+						A2($author$project$Main$snapshotView, 'After', entry.b5)
+					]));
+		} else {
+			return $elm$html$Html$text('');
+		}
+	} else {
+		return $elm$html$Html$text('');
+	}
+};
+var $elm$html$Html$details = _VirtualDom_node('details');
+var $author$project$Main$provenanceView = function (provenance) {
+	return A2(
+		$elm$html$Html$div,
+		_List_fromArray(
+			[
+				$elm$html$Html$Attributes$class('candidate')
+			]),
+		_List_fromArray(
+			[
+				A2(
+				$elm$html$Html$p,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Actor: ' + (provenance.a1 + (' · Claimed: ' + provenance.a4)))
+					])),
+				A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('meta')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'Model: ' + (A2($elm$core$Maybe$withDefault, 'none', provenance.cz) + (' · Basis: ' + (provenance.b8 + (' · Operation: ' + provenance.aC)))))
+					])),
+				A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('meta')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'Input digest: ' + A2($elm$core$Maybe$withDefault, 'none', provenance.bB))
+					])),
+				A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('meta')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'Prompt digest: ' + A2($elm$core$Maybe$withDefault, 'none', provenance.bO))
+					])),
+				A2(
+				$elm$html$Html$p,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('meta')
+					]),
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'Context digest: ' + A2($elm$core$Maybe$withDefault, 'none', provenance.bt))
+					])),
+				A2(
+				$elm$html$Html$p,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'Introductions: ' + A2($elm$core$String$join, ', ', provenance.bC))
+					])),
+				A2(
+				$elm$html$Html$p,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text(
+						'Original operation commits: ' + A2($elm$core$String$join, ', ', provenance.bK))
+					])),
+				A2(
+				$elm$html$Html$ul,
+				_List_Nil,
+				A2(
+					$elm$core$List$map,
+					function (placement) {
+						return A2(
+							$elm$html$Html$li,
+							_List_Nil,
+							_List_fromArray(
+								[
+									$elm$html$Html$text(placement)
+								]));
+					},
+					provenance.bM)),
+				A2(
+				$elm$html$Html$ul,
+				_List_Nil,
+				A2(
+					$elm$core$List$map,
+					function (landing) {
+						return A2(
+							$elm$html$Html$li,
+							_List_Nil,
+							_List_fromArray(
+								[
+									$elm$html$Html$text(landing)
+								]));
+					},
+					provenance.bD))
+			]));
+};
+var $elm$html$Html$summary = _VirtualDom_node('summary');
+var $author$project$Main$operationView = function (operation) {
+	return A2(
+		$elm$html$Html$article,
+		_List_fromArray(
+			[
+				$elm$html$Html$Attributes$class('candidate')
+			]),
+		_List_fromArray(
+			[
+				A2(
+				$elm$html$Html$h4,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$elm$html$Html$text('Operation ' + operation.ba)
+					])),
+				function () {
+				var _v0 = operation.bi;
+				if (_v0.$ === 1) {
+					return $elm$html$Html$text('');
+				} else {
+					var provenance = _v0.a;
+					return $author$project$Main$provenanceView(provenance);
+				}
+			}(),
+				A2(
+				$elm$html$Html$ul,
+				_List_Nil,
+				A2(
+					$elm$core$List$map,
+					function (item) {
+						return A2(
+							$elm$html$Html$li,
+							_List_Nil,
+							_List_fromArray(
+								[
+									A2(
+									$elm$html$Html$strong,
+									_List_Nil,
+									_List_fromArray(
+										[
+											$elm$html$Html$text(item.bc + (' · ' + item.ci))
+										])),
+									A2(
+									$elm$html$Html$p,
+									_List_Nil,
+									_List_fromArray(
+										[
+											$elm$html$Html$text(
+											A2($elm$core$Maybe$withDefault, '', item.F) + (' ' + A2($elm$core$Maybe$withDefault, '', item.P)))
+										])),
+									A2(
+									$elm$html$Html$pre,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$class('body-text')
+										]),
+									_List_fromArray(
+										[
+											$elm$html$Html$text(
+											A2($elm$core$Maybe$withDefault, '', item.ak))
+										])),
+									A2(
+									$elm$html$Html$p,
+									_List_Nil,
+									_List_fromArray(
+										[
+											$elm$html$Html$text(
+											'Rationale: ' + A2($elm$core$Maybe$withDefault, 'none', item.bQ))
+										])),
+									A2(
+									$elm$html$Html$p,
+									_List_Nil,
+									_List_fromArray(
+										[
+											$elm$html$Html$text(
+											'Relation: ' + A2($elm$core$Maybe$withDefault, 'none', item.bU))
+										])),
+									A2(
+									$elm$html$Html$p,
+									_List_Nil,
+									_List_fromArray(
+										[
+											$elm$html$Html$text(
+											'Parents: ' + A2($elm$core$String$join, ', ', item.bL))
+										])),
+									A2(
+									$elm$html$Html$div,
+									_List_Nil,
+									A2(
+										$elm$core$List$map,
+										function (difference) {
+											return A2(
+												$elm$html$Html$pre,
+												_List_fromArray(
+													[
+														$elm$html$Html$Attributes$class('body-text')
+													]),
+												_List_fromArray(
+													[
+														$elm$html$Html$text(difference)
+													]));
+										},
+										item.bv)),
+									function () {
+									var _v1 = item.bR;
+									if (!_v1.$) {
+										var raw = _v1.a;
+										return A2(
+											$elm$html$Html$details,
+											_List_fromArray(
+												[
+													$elm$html$Html$Attributes$class('candidate')
+												]),
+											_List_fromArray(
+												[
+													A2(
+													$elm$html$Html$summary,
+													_List_Nil,
+													_List_fromArray(
+														[
+															$elm$html$Html$text('Raw semantic source')
+														])),
+													A2(
+													$elm$html$Html$pre,
+													_List_fromArray(
+														[
+															$elm$html$Html$Attributes$class('body-text')
+														]),
+													_List_fromArray(
+														[
+															$elm$html$Html$text(raw)
+														]))
+												]));
+									} else {
+										return $elm$html$Html$text('');
+									}
+								}(),
+									A2(
+									$elm$html$Html$p,
+									_List_Nil,
+									_List_fromArray(
+										[
+											$elm$html$Html$text(
+											'Scopes: ' + (A2($elm$core$String$join, ', ', item.N) + (' · Domains: ' + A2($elm$core$String$join, ', ', item.L))))
+										])),
+									A2(
+									$elm$html$Html$p,
+									_List_Nil,
+									_List_fromArray(
+										[
+											$elm$html$Html$text(
+											'Status: ' + (A2($elm$core$Maybe$withDefault, '', item.b0) + (' · Replacement: ' + A2($elm$core$Maybe$withDefault, '', item.bW))))
+										])),
+									A2(
+									$elm$html$Html$p,
+									_List_Nil,
+									_List_fromArray(
+										[
+											$elm$html$Html$text(
+											'Added: ' + (A2($elm$core$String$join, ', ', item.br) + (' · Removed: ' + (A2($elm$core$String$join, ', ', item.bV) + (' · Refinements: ' + A2($elm$core$String$join, ', ', item.bT))))))
+										])),
+									A2(
+									$elm$html$Html$p,
+									_List_fromArray(
+										[
+											$elm$html$Html$Attributes$class('meta')
+										]),
+									_List_fromArray(
+										[
+											$elm$html$Html$text(item.ba + (' · ' + item.bg))
+										]))
+								]));
+					},
+					operation.dR))
+			]));
+};
+var $author$project$Main$statusCandidates = function (inspection) {
+	return A2(
+		$elm$core$List$filterMap,
+		function (item) {
+			return A2($elm$core$List$member, item.ba, inspection.b1) ? $elm$core$Maybe$Just(
+				{
+					ak: A2($elm$core$Maybe$withDefault, '', item.bQ),
+					ba: item.ba,
+					bg: item.bg,
+					P: A2($elm$core$Maybe$withDefault, item.ci, item.b0),
+					F: 'Status candidate'
+				}) : $elm$core$Maybe$Nothing;
+		},
+		A2(
+			$elm$core$List$concatMap,
+			function ($) {
+				return $.dR;
+			},
+			inspection.be));
+};
+var $author$project$Main$inspectorPane = function (model) {
+	var _v0 = model.r;
+	if (_v0.$ === 1) {
+		return A2(
+			$elm$html$Html$div,
+			_List_Nil,
+			_List_fromArray(
+				[
+					$author$project$Main$compareDetail(model),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Select an ADR to inspect its decision, candidates, and operation provenance.')
+						]))
+				]));
+	} else {
+		var inspection = _v0.a;
+		return A2(
+			$elm$html$Html$div,
+			_List_Nil,
+			_List_fromArray(
+				[
+					$author$project$Main$compareDetail(model),
+					A2(
+					$elm$html$Html$h3,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							(inspection.F === '') ? inspection.J : inspection.F)
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('meta')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(inspection.J + (' · ' + (inspection.ar + (' · ' + inspection.ah))))
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(inspection.P)
+						])),
+					A2(
+					$elm$html$Html$h4,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Decision body')
+						])),
+					A2(
+					$elm$html$Html$pre,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('body-text')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(inspection.ak)
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'Domains: ' + A2($elm$core$String$join, ', ', inspection.L))
+						])),
+					A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'Scopes: ' + A2($elm$core$String$join, ', ', inspection.N))
+						])),
+					inspection.aD ? A2(
+					$elm$html$Html$p,
+					_List_fromArray(
+						[
+							$elm$html$Html$Attributes$class('notice')
+						]),
+					_List_fromArray(
+						[
+							$elm$html$Html$text(
+							'Review required: ' + A2($elm$core$String$join, '; ', inspection.al))
+						])) : $elm$html$Html$text(''),
+					A3(
+					$author$project$Main$candidateView,
+					'Decision',
+					inspection.bS,
+					A2($author$project$Main$candidateBodies, inspection, inspection.a2.cM)),
+					A3($author$project$Main$candidateView, 'Scope', inspection.bX, inspection.a2.N),
+					A3($author$project$Main$candidateView, 'Domain', inspection.bx, inspection.a2.L),
+					A3(
+					$author$project$Main$candidateView,
+					'Status',
+					inspection.b1,
+					$author$project$Main$statusCandidates(inspection)),
+					A2(
+					$elm$html$Html$h4,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Source paths')
+						])),
+					A2(
+					$elm$html$Html$ul,
+					_List_Nil,
+					A2(
+						$elm$core$List$map,
+						function (path) {
+							return A2(
+								$elm$html$Html$li,
+								_List_Nil,
+								_List_fromArray(
+									[
+										$elm$html$Html$text(path)
+									]));
+						},
+						inspection.aH)),
+					A2(
+					$elm$html$Html$h4,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Current provenance')
+						])),
+					A2(
+					$elm$html$Html$div,
+					_List_Nil,
+					A2($elm$core$List$map, $author$project$Main$provenanceView, inspection.bi)),
+					A2(
+					$elm$html$Html$h4,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('Operations and provenance')
+						])),
+					$elm$core$List$isEmpty(inspection.be) ? A2(
+					$elm$html$Html$p,
+					_List_Nil,
+					_List_fromArray(
+						[
+							$elm$html$Html$text('No exploded operations loaded.')
+						])) : $elm$html$Html$text(''),
+					A2(
+					$elm$html$Html$div,
+					_List_Nil,
+					A2($elm$core$List$map, $author$project$Main$operationView, inspection.be))
+				]));
+	}
+};
+var $elm$html$Html$main_ = _VirtualDom_node('main');
+var $author$project$Main$repositoryLabel = function (model) {
+	var _v0 = model.M;
+	if (!_v0.$) {
+		var repository = _v0.a;
+		return 'HEAD ' + (repository.dI + (' · ' + A2($elm$core$Maybe$withDefault, 'detached', repository.dJ)));
+	} else {
+		return 'Repository loading';
+	}
+};
+var $elm$html$Html$section = _VirtualDom_node('section');
+var $author$project$Main$view = function (model) {
+	return A2(
+		$elm$html$Html$main_,
+		_List_Nil,
+		_List_fromArray(
+			[
+				A2(
+				$elm$html$Html$header,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('masthead')
+					]),
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$h1,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text('ADRAI repository explorer')
+							])),
+						A2(
+						$elm$html$Html$p,
+						_List_Nil,
+						_List_fromArray(
+							[
+								$elm$html$Html$text(
+								$author$project$Main$repositoryLabel(model))
+							]))
+					])),
+				A2(
+				$elm$html$Html$div,
+				_List_fromArray(
+					[
+						$elm$html$Html$Attributes$class('panes')
+					]),
+				_List_fromArray(
+					[
+						A2(
+						$elm$html$Html$section,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$class('pane'),
+								$elm$html$Html$Attributes$id('context-pane')
+							]),
+						_List_fromArray(
+							[
+								A2(
+								$elm$html$Html$h2,
+								_List_Nil,
+								_List_fromArray(
+									[
+										$elm$html$Html$text('Context and results')
+									])),
+								$author$project$Main$contextPane(model)
+							])),
+						A2(
+						$elm$html$Html$section,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$class('pane'),
+								$elm$html$Html$Attributes$id('inspector-pane')
+							]),
+						_List_fromArray(
+							[
+								A2(
+								$elm$html$Html$h2,
+								_List_Nil,
+								_List_fromArray(
+									[
+										$elm$html$Html$text('Inspector')
+									])),
+								$author$project$Main$inspectionIssuesView(model),
+								$author$project$Main$inspectorPane(model)
+							])),
+						A2(
+						$elm$html$Html$section,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$class('pane'),
+								$elm$html$Html$Attributes$id('actions-pane')
+							]),
+						_List_fromArray(
+							[
+								A2(
+								$elm$html$Html$h2,
+								_List_Nil,
+								_List_fromArray(
+									[
+										$elm$html$Html$text('Actions and status')
+									])),
+								$author$project$Main$actionsPane(model)
+							]))
+					]))
+			]));
+};
+var $author$project$Main$main = $elm$browser$Browser$element(
+	{
+		dO: $author$project$Main$init,
+		em: function (_v0) {
+			return $author$project$Main$fromJs($author$project$Main$FromJs);
+		},
+		eu: $author$project$Main$update,
+		c_: $author$project$Main$view
+	});
+_Platform_export({'Main':{'init':$author$project$Main$main(
+	A2(
+		$elm$json$Json$Decode$andThen,
+		function (hasCredential) {
+			return $elm$json$Json$Decode$succeed(
+				{m: hasCredential});
+		},
+		A2($elm$json$Json$Decode$field, 'hasCredential', $elm$json$Json$Decode$bool)))(0)}});}(this));
+;
+(() => {
+  "use strict";
+  const credential = typeof window.__ADRAI_TOKEN__ === "string" && window.__ADRAI_TOKEN__
+    ? window.__ADRAI_TOKEN__ : null;
+  delete window.__ADRAI_TOKEN__;
+
+  const readPaths = new Set([
+    "/api/v1/repository", "/api/v1/search", "/api/v1/relevant",
+    "/api/v1/history", "/api/v1/compare", "/api/v1/conflicts", "/api/v1/doctor"
+  ]);
+  const adrRead = /^\/api\/v1\/adrs\/[A-Za-z0-9-]+$/;
+  const writePath = /^\/api\/v1\/adrs(?:\/[A-Za-z0-9-]+\/(?:amend|scope|domain|obsolete|reactivate))?$/;
+  const socketPath = "/api/v1/events";
+  let socket = null;
+  let interests = [];
+  let app = null;
+
+  function report(payload) {
+    if (app) app.ports.fromJs.send(payload);
+  }
+
+  function validPath(method, path) {
+    if (typeof path !== "string" || path.length > 8192 ||
+        !path.startsWith("/api/v1/") || path.includes("\\") ||
+        path.includes("#") || path.includes("//")) return false;
+    let url;
+    try { url = new URL(path, window.location.origin); } catch { return false; }
+    if (url.origin !== window.location.origin ||
+        url.pathname !== path.split("?")[0] ||
+        url.search.length > 4096) return false;
+    if (method === "GET") return readPaths.has(url.pathname) || adrRead.test(url.pathname);
+    return method === "POST" && !url.search && writePath.test(url.pathname);
+  }
+
+  async function request(command) {
+    const id = command.request_id;
+    if (typeof id !== "string" || id.length > 128 ||
+        !validPath(command.method, command.path)) {
+      report({ type: "request-failed", request_id: String(id || ""), message: "Invalid API request." });
+      return;
+    }
+    if (command.method === "POST" && !credential) {
+      report({ type: "request-failed", request_id: id, message: "Reopen the process bootstrap URL to submit changes." });
+      return;
+    }
+    const headers = {};
+    const options = { method: command.method, credentials: "same-origin", headers };
+    if (command.method === "POST") {
+      headers["Content-Type"] = "application/json";
+      headers.Authorization = "Bearer " + credential;
+      options.body = JSON.stringify(command.body);
+    }
+    try {
+      const response = await fetch(command.path, options);
+      const body = await response.json();
+      report({ type: "response", request_id: id, status: response.status, body });
+    } catch {
+      report({ type: "request-failed", request_id: id, message: "Network or JSON response failed. Inspect repository state before retrying a mutation." });
+    }
+  }
+
+  function validInterests(paths) {
+    return Array.isArray(paths) && paths.length <= 32 &&
+      paths.every(path => typeof path === "string" && path.length > 0 &&
+        path.length <= 1024 && !path.startsWith("/") && !path.includes("\\") &&
+        !path.split("/").some(part => !part || part === "." || part === "..")) &&
+      new Set(paths).size === paths.length;
+  }
+
+  function sendInterests() {
+    if (socket && socket.readyState === WebSocket.OPEN)
+      socket.send(JSON.stringify({ type: "active-files", paths: interests }));
+  }
+
+  function disconnect() {
+    interests = [];
+    if (socket) {
+      const previous = socket;
+      socket = null;
+      if (previous.readyState === WebSocket.OPEN)
+        previous.send(JSON.stringify({ type: "active-files", paths: [] }));
+      previous.close();
+    }
+    report({ type: "socket-state", state: "closed" });
+  }
+
+  function connect() {
+    if (!credential) {
+      report({ type: "socket-state", state: "unavailable" });
+      return;
+    }
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING))
+      return;
+    report({ type: "socket-state", state: "connecting" });
+    const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const current = new WebSocket(scheme + "//" + window.location.host + socketPath);
+    socket = current;
+    current.onopen = () => {
+      if (socket !== current) return;
+      current.send(JSON.stringify({ type: "authenticate", credential }));
+      sendInterests();
+      report({ type: "socket-state", state: "open" });
+    };
+    current.onmessage = event => {
+      if (socket !== current || typeof event.data !== "string") return;
+      try { report({ type: "event", body: JSON.parse(event.data) }); }
+      catch { report({ type: "socket-state", state: "unavailable" }); disconnect(); }
+    };
+    current.onerror = () => {
+      if (socket === current) report({ type: "socket-state", state: "unavailable" });
+    };
+    current.onclose = event => {
+      if (socket !== current) return;
+      socket = null;
+      if (event.reason === "generation-exhausted; restart the web server")
+        report({ type: "socket-state", state: "unavailable", reason: "generation-exhausted" });
+      else
+        report({ type: "socket-state", state: "closed" });
+    };
+  }
+
+  function command(value) {
+    if (!value || typeof value !== "object") return;
+    switch (value.type) {
+      case "request": request(value); break;
+      case "connect": connect(); break;
+      case "disconnect": disconnect(); break;
+      case "active-files":
+        if (validInterests(value.paths)) {
+          interests = value.paths.slice();
+          sendInterests();
+        }
+        break;
+    }
+  }
+
+  function mount() {
+    const node = document.getElementById("adrai-app");
+    if (!node || !window.Elm || !window.Elm.Main) return;
+    app = window.Elm.Main.init({ node, flags: { hasCredential: !!credential } });
+    app.ports.toJs.subscribe(command);
+  }
+
+  if (document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", mount, { once: true });
+  else
+    mount();
+})();
+

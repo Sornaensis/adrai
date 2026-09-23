@@ -56,7 +56,7 @@ Use the identifier printed by `create` in place of `ADR_ID`.
 | `compile` | Build or reuse the repository's derived SQLite index. |
 | `doctor` | Report source, graph, provenance, and cache diagnostics. |
 | `explore` | Open the interactive terminal explorer. |
-| `web` | Start the authenticated loopback HTTP API, event WebSocket, and API-only bootstrap page. |
+| `web` | Start the authenticated loopback repository explorer, HTTP API, and event WebSocket. |
 
 Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands also accept `--json` for stable machine-readable output. Run `adrai COMMAND --help` for the complete option list.
 
@@ -68,6 +68,30 @@ port. Web mode is permanently bound to the current worktree and therefore does
 not accept the global `--repo` option. Authenticated clients may subscribe to
 `/api/v1/events` for repository invalidations; see [Web interface](WEB.md) for
 the WebSocket control frames and reconnect rules.
+
+Open the printed URL to use the three-pane explorer. The left pane chooses a
+revision and shows browse, search, relevance, history, compare, conflicts, and
+doctor results. The middle pane inspects a decision, its conflict candidates,
+and operation provenance. The right pane holds checked create, amend, scope,
+domain, obsolete, and reactivate forms. Search and history use a server window
+of at most 1000 items; pages of at most 100 items move within that window.
+A full search window may have more matches.
+Existing-ADR actions become available after both decision and operation
+inspection have loaded at the selected revision.
+
+The one-time URL credential stays in page memory and is removed from browser
+history before assets load. Reloading the cleaned URL can still show readable
+HTTP snapshots while the session cookie is valid, but live updates and
+mutations require reopening the process bootstrap URL. A stale draft keeps its
+contents; refresh the repository, inspect the exact current decision and
+candidate heads, then explicitly adopt new state tokens before submitting.
+Historical inspection is read-only.
+If a decision inspection is temporarily busy, the explorer retries that view
+without discarding the other view. If it remains busy, use the retry button in
+the middle pane when the repository settles.
+If event generation is exhausted, the explorer preserves its visible snapshots
+and draft but stops freshness-dependent work. Restart the web server and open
+its new bootstrap URL before resuming edits.
 
 ## Exit status
 

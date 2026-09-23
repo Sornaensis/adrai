@@ -69,6 +69,7 @@ authenticated runtime abort connection =
     Left _ -> boundedClose abort connection "client limit reached"
     Right activeClient ->
       bracket (socketSubscribe runtime) releaseSubscriber $ \case
+        Left "generation-exhausted" -> boundedClose abort connection generationExhaustedCloseReason
         Left _ -> boundedClose abort connection "snapshot unavailable"
         Right subscriber -> runOwnedSession abort (senderLoop subscriber) (WS.withPingThread connection 30 (pure ()) (receiveLoop activeClient))
   where
@@ -78,6 +79,7 @@ authenticated runtime abort connection =
     releaseSubscriber (Left _) = pure ()
     releaseSubscriber (Right subscriber) = Events.unregisterSubscriber (socketCoordinator runtime) subscriber
     senderLoop subscriber = Events.readSubscriberEvent subscriber >>= \case
+      Events.SubscriberGenerationExhausted -> boundedClose abort connection generationExhaustedCloseReason
       Events.SubscriberOverflow -> boundedClose abort connection "event queue overflow"
       Events.SubscriberEvent envelope -> do
         sent <- runBeforeDeadlineWithTimeout abort (socketOnSendDeadline runtime) socketSendTimeoutMicros (WS.sendTextData connection (Aeson.encode (Events.eventEnvelopeJson envelope)))
@@ -143,6 +145,9 @@ releasePending runtime True = atomically (modifyTVar' (socketPending runtime) (s
 
 boundedClose :: IO () -> WS.Connection -> Text -> IO ()
 boundedClose abort connection reason = void (runBeforeDeadline abort socketCloseTimeoutMicros (WS.sendClose connection reason))
+
+generationExhaustedCloseReason :: Text
+generationExhaustedCloseReason = "generation-exhausted; restart the web server"
 
 maximumPendingClients, socketSendTimeoutMicros, socketCloseTimeoutMicros, socketIdleTimeoutMicros :: Int
 maximumPendingClients = 16

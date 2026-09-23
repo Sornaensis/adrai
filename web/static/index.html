@@ -3,11 +3,13 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ADRAI web API</title>
+    <meta name="referrer" content="no-referrer">
+    <title>ADRAI repository explorer</title>
     <script>
       (() => {
         const url = new URL(window.location.href);
-        window.__ADRAI_TOKEN__ = url.searchParams.get("token");
+        const token = url.searchParams.get("token");
+        window.__ADRAI_TOKEN__ = token;
         url.searchParams.delete("token");
         window.history.replaceState(null, "", url.pathname + url.search + url.hash);
         const css = document.createElement("link");
@@ -16,15 +18,13 @@
         document.head.appendChild(css);
         const app = document.createElement("script");
         app.src = "/app.js";
-        app.defer = true;
         document.head.appendChild(app);
       })();
     </script>
   </head>
   <body>
-    <main>
-      <h1>ADRAI API is running</h1>
-      <p>The Elm repository explorer is pending.</p>
-    </main>
+    <div id="adrai-app">
+      <main><h1>ADRAI repository explorer</h1><p>Loading repository…</p></main>
+    </div>
   </body>
 </html>

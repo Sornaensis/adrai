@@ -3,6 +3,7 @@
 
 module Adrai.WebServerTest
   ( tests,
+    generationExhaustionTest,
     testEventRuntime,
     testWatchRuntime,
     testCompilationRuntime,
@@ -49,7 +50,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Bits ((.&.), xor)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import qualified Data.Scientific as Scientific
+import Text.Read (readMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -66,7 +67,7 @@ import System.Process (CreateProcess (..), StdStream (CreatePipe), callProcess, 
 import System.Exit (ExitCode (ExitSuccess))
 import System.IO (hGetLine)
 import Numeric (readHex)
-import Data.Word (Word8)
+import Data.Word (Word8, Word64)
 import Database.SQLite.Simple (Only (..))
 import qualified Database.SQLite.Simple as SQLite
 import System.Timeout (timeout)
@@ -85,6 +86,78 @@ tests = testGroup "web server runtime"
     testCase "an occupied explicit port fails without stealing the listener" testOccupiedPort,
     testCase "server shutdown releases the acquired port" testShutdownRelease
   ]
+
+generationExhaustionTest :: TestTree
+generationExhaustionTest = testCase "maximum generation refuses new reads but retains a durable committed mutation" testGenerationExhaustion
+
+testGenerationExhaustion :: IO ()
+testGenerationExhaustion = withSeededRepository $ \root -> do
+  ready <- newEmptyMVar
+  let services = defaultApplicationServices
+        { applicationBeforeCommitPublication = \_ -> takeMVar ready >>= \coordinator -> Events.setEventGenerationForTest coordinator maxBound }
+      injected = dependencies
+        { serverEventCoordinatorReady = putMVar ready,
+          serverApplicationServices = services
+        }
+  started <- withWebServer injected root (Api.WebOptions Nothing False) $ \running _ -> do
+    basis <- repositoryBasis running
+    before <- gitHead root
+    let authority = runningAuthority running
+        token = bootstrapToken running
+        headers =
+          [ ("Origin", TextEncoding.encodeUtf8 (Security.authorityOrigin authority)),
+            ("Authorization", TextEncoding.encodeUtf8 ("Bearer " <> token))
+          ]
+        authenticate = Aeson.encode (Aeson.object ["type" Aeson..= ("authenticate" :: Text), "credential" Aeson..= token])
+    port <- either assertFailure pure (authorityPort (Security.authorityHost authority))
+    socketReady <- newEmptyMVar
+    let connected = runOwnedWebSocketClient 8000000 port headers $ \connection -> do
+          WS.sendTextData connection authenticate
+          initial <- timeout 2000000 (WS.receiveData connection :: IO LBS.ByteString)
+          assertBool "existing authenticated subscriber received initial resync" (maybe False (BS.isInfixOf "repository-invalidated" . LBS.toStrict) initial)
+          putMVar socketReady ()
+          closed <- timeout 3000000 (trySynchronous (WS.receiveDataMessage connection))
+          assertBool "terminal exhaustion closes existing subscriber with restart reason" (expectedClose "generation-exhausted; restart the web server" closed)
+    bracket (async connected) (\worker -> cancel worker >> void (waitCatch worker)) $ \socketWorker -> do
+      readySocket <- timeout 3000000 (takeMVar socketReady)
+      assertBool "existing socket authenticated before mutation publication" (maybe False (const True) readySocket)
+      committed <- postJson running "/api/v1/adrs" (createBody basis)
+      assertCommitted committed
+      after <- gitHead root
+      assertBool "the actual commit survived exhausted publication" (after /= before)
+      textAt ["data", "commit"] committed >>= (@?= after)
+      textAt ["data", "publication_warning"] committed >>= (@?= "commit generation publication failed after the durable commit")
+      textAt ["metadata", "as_of", "kind"] committed >>= (@?= "unavailable")
+      socketEnded <- timeout 5000000 (waitCatch socketWorker)
+      assertBool "existing socket and owned worker finish after terminal close" (maybe False (either (const False) (maybe False (either (const False) (const True)))) socketEnded)
+      (status, exhausted) <- getJsonStatus running "/api/v1/repository"
+      status @?= 503
+      textAt ["metadata", "generation"] exhausted >>= (@?= "18446744073709551615")
+      textAt ["metadata", "as_of", "reason"] exhausted >>= (@?= "generation-exhausted")
+      textAt ["error", "code"] exhausted >>= (@?= "generation-exhausted")
+      repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+      lockAcquired <- newEmptyMVar
+      releaseLock <- newEmptyMVar
+      let holdUntilAcquired remaining = do
+            if remaining <= (0 :: Int) then ioError (userError "terminal WebSocket test could not acquire Git lock") else pure ()
+            attempt <- try @SomeException (withGitLock repository (putMVar lockAcquired () >> takeMVar releaseLock))
+            case attempt of
+              Left failure -> case fromException failure of
+                Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+                Nothing -> threadDelay 20000 >> holdUntilAcquired (remaining - 1)
+              Right () -> pure ()
+      lockOwner <- async (holdUntilAcquired 100)
+      (`finally` do _ <- tryPutMVar releaseLock (); cancel lockOwner; void (waitCatch lockOwner)) $ do
+        held <- timeout 3000000 (race (takeMVar lockAcquired) (waitCatch lockOwner))
+        case held of
+          Just (Left ()) -> pure ()
+          other -> assertFailure ("terminal WebSocket test never held the Git lock: " <> show other)
+        late <- runOwnedWebSocketClient 5000000 port headers $ \connection -> do
+          WS.sendTextData connection authenticate
+          closed <- timeout 2000000 (trySynchronous (WS.receiveDataMessage connection))
+          assertBool "new authenticated socket closes with terminal restart reason while Git lock remains held" (expectedClose "generation-exhausted; restart the web server" closed)
+        assertBool "post-terminal socket owns a bounded close and cleanup before Git unlock" (maybe False (either (const False) (const True)) late)
+  either (assertFailure . Text.unpack) pure started
 
 dependencies :: ServerDependencies
 dependencies = ServerDependencies
@@ -113,6 +186,14 @@ testBootstrap = withServer $ \running _ -> do
   assertBool "cookie is HttpOnly and Strict" ("HttpOnly; SameSite=Strict" `BS.isInfixOf` response)
   assertBool "bootstrap carries snapshot metadata" ("X-Adrai-Generation:" `BS.isInfixOf` response)
   assertBool "bootstrap does not declare resources before token removal" (not ("<script src=" `BS.isInfixOf` response) && not ("<link rel=" `BS.isInfixOf` response))
+  cookie <- sessionCookiePair running
+  reloaded <- request host ("GET / HTTP/1.1\r\nHost: " <> host <> "\r\nCookie: " <> cookie <> "\r\nConnection: close\r\n\r\n")
+  assertBool "cleaned root reload accepts the valid session cookie and serves the explorer" ("HTTP/1.1 200" `BS.isPrefixOf` reloaded && "<title>ADRAI repository explorer</title>" `BS.isInfixOf` reloaded)
+  assertBool "cookie reload does not set another session cookie" (not ("Set-Cookie:" `BS.isInfixOf` reloaded))
+  deniedReload <- request host ("GET / HTTP/1.1\r\nHost: " <> host <> "\r\nConnection: close\r\n\r\n")
+  assertBool "cleaned root without a session remains denied" ("HTTP/1.1 401" `BS.isPrefixOf` deniedReload)
+  deniedQuery <- request host ("GET /?unexpected=1 HTTP/1.1\r\nHost: " <> host <> "\r\nCookie: " <> cookie <> "\r\nConnection: close\r\n\r\n")
+  assertBool "an unexpected root query cannot bypass bootstrap admission" ("HTTP/1.1 401" `BS.isPrefixOf` deniedQuery)
   css <- bearerRequest running "GET /app.css" []
   js <- bearerRequest running "GET /app.js" []
   assertBool "embedded assets require and accept authentication" ("HTTP/1.1 200" `BS.isPrefixOf` css && "HTTP/1.1 200" `BS.isPrefixOf` js)
@@ -151,9 +232,11 @@ testQueryRoutes = withSeededServer $ \root running -> do
   adr <- textAt ["data", "adr"] created
   current <- textAt ["metadata", "as_of", "oid"] created
   repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
-  sharedShown <- Query.runShow repository (Query.ShowRequest adr CollapsedView current False) >>= either (assertFailure . Text.unpack . Query.showFailureText) pure
+  sharedShown <- Query.runWebShow repository (Query.ShowRequest adr CollapsedView current False) >>= either (assertFailure . Text.unpack . Query.showFailureText) pure
   httpShown <- getJson running ("/api/v1/adrs/" <> adr <> "?at=" <> current)
   valueAt ["data"] httpShown >>= (@?= Api.apiResultPayload (Api.ApiShowResult sharedShown))
+  cliShown <- Query.runShow repository (Query.ShowRequest adr CollapsedView current False) >>= either (assertFailure . Text.unpack . Query.showFailureText) pure
+  assertBool "web inspection retains rich candidate detail without changing CLI compact show" (Api.apiResultPayload (Api.ApiShowResult sharedShown) /= Api.apiResultPayload (Api.ApiShowResult cliShown))
   defaultRelevant <- getJson running "/api/v1/relevant?file=seed.txt"
   namedRelevant <- getJson running "/api/v1/relevant?file=seed.txt&at=main"
   explicitRelevant <- getJson running ("/api/v1/relevant?file=seed.txt&at=" <> current)
@@ -162,8 +245,19 @@ testQueryRoutes = withSeededServer $ \root running -> do
   currentOid <- resolveRevision repository (RevisionSpec current) >>= either (assertFailure . show) pure
   relevantPath <- either (assertFailure . show) pure (Types.mkRepoPath "seed.txt")
   BS.writeFile (root </> "seed.txt") "modified worktree relevance bytes"
+  worktreeRelevant <- getJson running "/api/v1/relevant?file=seed.txt&worktree=true"
+  textAt ["data", "file", "source"] worktreeRelevant >>= (@?= "worktree")
+  textAt ["metadata", "as_of", "oid"] worktreeRelevant >>= (@?= current)
+  committedRelevant <- getJson running ("/api/v1/relevant?file=seed.txt&at=" <> current)
+  textAt ["data", "file", "source"] committedRelevant >>= (@?= "revision")
+  worktreeDigest <- textAt ["data", "file", "digest"] worktreeRelevant
+  committedDigest <- textAt ["data", "file", "digest"] committedRelevant
+  assertBool "worktree and committed relevance use distinct file bytes" (worktreeDigest /= committedDigest)
   Query.runRelevantQueryExact repository currentOid (DomainQuery.RelevantRequest relevantPath Types.WorkingRevision False 10)
     >>= either (assertFailure . Text.unpack . Query.relevantFailureText) (const (pure ()))
+  blankSearch <- getJson running ("/api/v1/search?q=&at=" <> current <> "&limit=1000")
+  valueAt ["data", "limit"] blankSearch >>= (@?= Aeson.Number 1000)
+  _ <- getJson running ("/api/v1/history?adr=" <> adr <> "&at=" <> current <> "&limit=1000&actor=service:service&since=-1&until=1000")
   _ <- getJson running ("/api/v1/doctor?at=" <> current)
   let archive = root </> ".adrai" </> "cache" </> Text.unpack current <> ".sqlite"
   bracket (SQLite.open archive) SQLite.close $ \connection ->
@@ -203,7 +297,22 @@ testQueryRoutes = withSeededServer $ \root running -> do
           "/api/v1/search?q=runtime&at=" <> current,
           "/api/v1/relevant?file=seed.txt&at=" <> current
         ]
-  mapM_ (\route -> getJson running route >>= assertCommitMetadata current) routes
+      readAfterMove route = do
+        settled <- timeout 3000000 (retryBusyRead route)
+        assertBool "exact read stayed busy after the external HEAD move" (settled == Just ())
+      retryBusyRead route = do
+        (status, response) <- getJsonStatus running route
+        case status of
+          200 -> assertCommitMetadata current response
+          503 -> do
+            textAt ["error", "category"] response >>= (@?= "service-failure")
+            valueAt ["error", "status"] response >>= (@?= Aeson.Number 503)
+            textAt ["error", "code"] response >>= (@?= "repository-busy")
+            textAt ["metadata", "as_of", "kind"] response >>= (@?= "unavailable")
+            threadDelay 50000
+            retryBusyRead route
+          _ -> assertFailure ("exact read returned unexpected HTTP status " <> show status)
+  mapM_ readAfterMove routes
   withSeededRepository $ \movingRoot -> do
     moved <- newIORef False
     let moveAfterResolution = do
@@ -577,12 +686,18 @@ testEventRuntime = withSeededServer $ \root running -> do
       ended <- timeout 7000000 (mapM waitCatch readers)
       assertBool ("all sixteen silent raw peers receive server EOF before the client guard closes them: " <> show ended)
         (maybe False (all (either (const False) id)) ended)
-      recovered <- runOwnedWebSocketClient 3000000 port headers $ \connection -> do
-        WS.sendTextData connection authenticate
-        initialFrame <- WS.receiveData connection :: IO LBS.ByteString
-        assertBool "a new client authenticates after all timed-out slots are released" ("repository-invalidated" `BS.isInfixOf` LBS.toStrict initialFrame)
-        WS.sendClose connection ("cap recovery complete" :: Text)
-      assertBool ("the released pending capacity admits a fresh authenticated WebSocket: " <> show recovered) (maybe False (either (const False) (const True)) recovered)
+      let awaitReleasedCapacity = do
+            recovered <- runOwnedWebSocketClient 3000000 port headers $ \connection -> do
+              WS.sendTextData connection authenticate
+              initialFrame <- WS.receiveData connection :: IO LBS.ByteString
+              assertBool "a new client authenticates after all timed-out slots are released" ("repository-invalidated" `BS.isInfixOf` LBS.toStrict initialFrame)
+              WS.sendClose connection ("cap recovery complete" :: Text)
+            case recovered of
+              Just (Right ()) -> pure True
+              failure | expectedHandshakeStatus 400 failure -> threadDelay 20000 >> awaitReleasedCapacity
+              _ -> assertFailure "fresh WebSocket failed for a reason other than bounded HTTP 400 admission"
+      released <- timeout 5000000 awaitReleasedCapacity
+      assertBool "pending capacity becomes usable after all timed-out peers close" (released == Just True)
   putStrLn "p7-03-events: pending cap complete"
   Events.decodeClientFrame 4096 "{\"type\":\"active-files\",\"type\":\"active-files\",\"paths\":[]}" @?= Left Events.MalformedFrame
   coordinator <- Events.newEventCoordinator
@@ -594,6 +709,7 @@ testEventRuntime = withSeededServer $ \root running -> do
   Events.readSubscriberEvent subscriber >>= \case
     Events.SubscriberOverflow -> pure ()
     Events.SubscriberEvent _ -> assertFailure "overflowed subscriber delivered a narrower event instead of closing"
+    Events.SubscriberGenerationExhausted -> assertFailure "overflowed subscriber unexpectedly exhausted its generation"
   Events.unregisterSubscriber coordinator subscriber
   bracket (socket AF_INET Stream defaultProtocol) closeOwnedSocket $ \blockedPeer -> do
     stopped <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \second _ ->
@@ -821,6 +937,18 @@ testWatchRuntime = withSeededRepository $ \root -> do
         _ -> assertFailure "coalesced-hint snapshots failed"
     Just (Watch.RepositoryObservationFailure _ failure) -> assertFailure ("coalesced hints ended in observation failure: " <> show failure)
     Nothing -> pure ()
+  terminalAttempts <- newIORef (0 :: Int)
+  terminalWatcher <- Watch.watchRepository observer bound $ \_ -> do
+    atomicModifyIORef' terminalAttempts (\value -> (value + 1, ()))
+    throwIO Events.GenerationExhausted
+  (`finally` do
+      Watch.stopWatching terminalWatcher
+      Watch.awaitWatcher terminalWatcher) $ do
+    BS.writeFile (root </> "seed.txt") "terminal generation changes the active relevant fact"
+    terminalStop <- timeout 3000000 (Watch.awaitWatcher terminalWatcher)
+    assertBool "terminal publication ends verifier and native backend without external shutdown" (maybe False (const True) terminalStop)
+    threadDelay 350000
+    readIORef terminalAttempts >>= (@?= 1)
   Watch.unregisterActiveClient registry client
   Watch.activeFileUnion registry >>= (@?= [])
   nativeBaseline <- Watch.repositorySnapshot observer bound
@@ -899,6 +1027,7 @@ testWatchRuntime = withSeededRepository $ \root -> do
   initialEnvelope <- Events.readSubscriberEvent subscriber >>= \case
     Events.SubscriberEvent envelope -> pure envelope
     Events.SubscriberOverflow -> assertFailure "initial runtime watcher subscriber overflowed"
+    Events.SubscriberGenerationExhausted -> assertFailure "initial runtime watcher subscriber exhausted its generation"
   publishAttempts <- newIORef ([] :: [String])
   runtimeWatcher <- Watch.watchRepository runtimeObserver bound $ \event -> do
     outcome <- try @SomeException (publishWatcherEvent runtime event)
@@ -925,6 +1054,7 @@ testWatchRuntime = withSeededRepository $ \root -> do
           Events.RepositoryInvalidated invalidations -> assertBool "superseded scan is retried to the persistent managed fact" (Events.ManagedSourceChanged `elem` invalidations)
           _ -> assertFailure "superseded scan retry emitted an observation failure"
       Just Events.SubscriberOverflow -> assertFailure "superseded scan retry overflowed its subscriber"
+      Just Events.SubscriberGenerationExhausted -> assertFailure "superseded scan retry exhausted its generation"
       Nothing -> assertFailure "superseded scan was not retried after the active-file epoch advanced"
     readIORef publishAttempts >>= assertBool "the stale scan was explicitly rejected before a later retry published" . any (Text.isInfixOf "superseded" . Text.toLower . Text.pack)
     writeIORef publishAttempts []
@@ -962,6 +1092,7 @@ testWatchRuntime = withSeededRepository $ \root -> do
         Events.eventAsOf envelope @?= Events.EventAt expectedOid
         assertBool "retried watcher publication receives a later coherent generation" (Events.eventGeneration envelope > Events.eventGeneration initialEnvelope)
       Just Events.SubscriberOverflow -> assertFailure "watcher retry subscriber overflowed"
+      Just Events.SubscriberGenerationExhausted -> assertFailure "watcher retry subscriber exhausted its generation"
       Nothing -> do
         attemptsObserved <- readIORef publishAttempts
         assertFailure ("watcher event was not retried after Git-lock release; callback attempts=" <> show (reverse attemptsObserved))
@@ -970,6 +1101,30 @@ testWatchRuntime = withSeededRepository $ \root -> do
     threadDelay 750000
     readIORef publishAttempts >>= (@?= [])
     putStrLn "p7-03-watch: lock retry complete"
+    Events.setEventGenerationForTest (applicationEventCoordinator runtime) maxBound
+    terminalLockAcquired <- newEmptyMVar
+    releaseTerminalLock <- newEmptyMVar
+    let acquireTerminalLock remaining = do
+          if remaining <= (0 :: Int) then ioError (userError "terminal watcher test could not acquire Git lock") else pure ()
+          attempt <- try @SomeException (withGitLock repository (putMVar terminalLockAcquired () >> takeMVar releaseTerminalLock))
+          case attempt of
+            Left failure -> case fromException failure of
+              Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+              Nothing -> threadDelay 20000 >> acquireTerminalLock (remaining - 1)
+            Right () -> pure ()
+    terminalLockOwner <- async (acquireTerminalLock 100)
+    (`finally` do _ <- tryPutMVar releaseTerminalLock (); cancel terminalLockOwner; void (waitCatch terminalLockOwner)) $ do
+      held <- timeout 3000000 (race (takeMVar terminalLockAcquired) (waitCatch terminalLockOwner))
+      case held of
+        Just (Left ()) -> pure ()
+        other -> assertFailure ("terminal watcher test never held the Git lock: " <> show other)
+      BS.writeFile managedDecision "terminal generation while Git lock remains held"
+      terminalStop <- timeout 3000000 (Watch.awaitWatcher runtimeWatcher)
+      assertBool "terminal watcher finishes and joins its native backend before Git unlock" (maybe False (const True) terminalStop)
+      readIORef publishAttempts >>= assertBool "typed terminal failure replaces Git-lock retry" . any (Text.isInfixOf "GenerationExhausted" . Text.pack)
+      Events.readSubscriberEvent subscriber >>= \case
+        Events.SubscriberGenerationExhausted -> pure ()
+        _ -> assertFailure "terminal watcher must wake its existing subscriber before Git unlock"
   let linkedRoot = root <> "-watch-linked"
   callProcess "git" ["-C", root, "worktree", "add", "--detach", linkedRoot, "HEAD"]
   (`finally` callProcess "git" ["-C", root, "worktree", "remove", "--force", linkedRoot]) $ do
@@ -1389,9 +1544,13 @@ textAt path value = valueAt path value >>= \case
 
 integerAt :: [Text] -> Aeson.Value -> IO Integer
 integerAt path value = valueAt path value >>= \case
-  Aeson.Number number -> case (Scientific.floatingOrInteger number :: Either Double Integer) of
-    Right integer -> pure integer
-    Left _ -> assertFailure ("expected integer at " <> show path)
+  Aeson.String raw
+    | not (Text.null raw)
+        && (raw == "0" || Text.head raw /= '0')
+        && Text.all (\character -> character >= '0' && character <= '9') raw ->
+        case readMaybe (Text.unpack raw) of
+          Just integer | integer <= toInteger (maxBound :: Word64) -> pure integer
+          _ -> assertFailure ("expected Word64 decimal generation at " <> show path)
   other -> assertFailure ("expected integer at " <> show path <> ", got " <> show other)
 
 valueAt :: [Text] -> Aeson.Value -> IO Aeson.Value

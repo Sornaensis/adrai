@@ -1,0 +1,25 @@
+{
+  "schema": "adrai/assets/v1",
+  "inputs": {
+    "elm.json": "a645d4f55afc34911f4571f902cfbaa2bcb6ca3933b47ccbeb397c16d52bedd8",
+    "package-lock.json": "5f5c0a606f3355de0850f118daf5fe14e1e9ed240640550db2e98ce9dd315bca",
+    "package.json": "7c539af6eb32dbf7b4ce61cdce314a4ba1ed6d1315fcc8bcd9c158c83bedd101",
+    "src/Api.elm": "ec637dca712d24c8f1525d8f2d4eaa00090640c40456fc2a9f0847074ae498fb",
+    "src/Main.elm": "cc7b046a6c3e94a895571ab8fa8f1841108a9358f4191ea8561e44d6476d971d",
+    "src/Route.elm": "a9f3be1ba500c1d57a87460cded82ba2da927f9bc1baff4773f8f739a6b2918d",
+    "src/View/Forms.elm": "86d1be82f28acd3f954e85ef3806df4a3f426c184e9ccd19597751c8cb14cbcf",
+    "static/app.css": "7edc8058b9b58301ab78c8492517e35d1f53e83815274e5f53fb4d454f98a1a3",
+    "static/bridge.js": "a184c4e00aad9134e9f5232f38a743dc553129cd5f518fb3fe0eeb9f5f8c2b5a",
+    "static/index.html": "4b2f806eb312de2012efd0775608282a3501ef2b300147a79040c9ffb227ccad",
+    "tools/build.mjs": "4251bbae85d36b7ad5fa23d3dc955e6a6d3a0d18975e0afe33f4385fa86406d6",
+    "tools/verify-assets.mjs": "695e8a95fc012e6a6b0c8b17987630c401ef746a73bf8ab6b954211ef18d6fd5"
+  },
+  "toolchain": {
+    "node": "24.15.0",
+    "npm": "npm@11.12.1",
+    "elm": "0.19.2"
+  },
+  "output": {
+    "dist/app.js": "9485ccb133d486819f109c317d9c671adb8ca434126e98104a9f050f28545ae7"
+  }
+}

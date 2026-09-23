@@ -21,10 +21,12 @@ module Adrai.Service.Query
     QueryExecutionHooks (..),
     ExactQueryContext (..),
     runShow,
+    runWebShow,
     runCompare,
     runHistory,
     runSearch,
     runSearchExact,
+    runWebSearchExact,
     runSearchWithHooks,
     runRelevantQuery,
     runRelevantQueryExact,
@@ -115,7 +117,7 @@ import Adrai.Query
     QueryError,
     ReferenceLookupError (..),
     CollapsedProjection (..),
-    ProjectionMode (CompactProjection),
+    ProjectionMode (CompactProjection, RichProjection),
     projectCollapsed,
     compareSnapshots,
     projectExploded,
@@ -295,6 +297,22 @@ runShow repository request
           ShowCollapsed projection -> collapsedResolution projection
           ShowExploded projection -> explodedResolution projection
 
+-- | Keep the validated snapshot and existing projection machinery while
+-- exposing unresolved candidate detail for the web inspector.  CLI callers
+-- continue to receive their semantic-conflict failure from 'runShow'.
+runWebShow :: Repository -> ShowRequest -> IO (Either ShowFailure ShowResult)
+runWebShow repository request
+  | showRequestRaw request && showRequestView request /= ExplodedView = pure (Left ShowRawRequiresExploded)
+  | otherwise = do
+      snapshotResult <- readSnapshotAt repository (showRequestRevision request)
+      pure $ case snapshotResult of
+        Left failure -> Left (showSnapshotFailure failure)
+        Right snapshot -> do
+          adr <- either (Left . ShowReferenceFailure) Right (resolveAdrReference snapshot (showRequestReference request))
+          case showRequestView request of
+            CollapsedView -> ShowCollapsed <$> either (Left . ShowProjectionFailure) Right (projectCollapsed RichProjection snapshot adr)
+            ExplodedView -> ShowExploded <$> either (Left . ShowProjectionFailure) Right (projectExploded (ExplodedOptions (showRequestRaw request)) snapshot adr)
+
 runCompare :: Repository -> CompareRequest -> IO (Either CompareFailure CompareProjection)
 runCompare repository request = do
   beforeResult <- readSnapshotAt repository (compareRequestFrom request)
@@ -348,6 +366,20 @@ runSearchExact repository oid request = do
             searchProjectionWith request (exactQuerySnapshot context) connection (exactQueryMaterialization context)
           pure (maybe (Left (SearchCompilerFailure "validated exact archive is unavailable")) id cached)
 
+-- | The web explorer renders valid unresolved candidates instead of treating
+-- their semantic conflicts as a failed query; archive validation is identical.
+runWebSearchExact :: Repository -> GitOid -> SearchServiceRequest -> IO (Either SearchFailure SearchProjection)
+runWebSearchExact repository oid request = do
+  revisionResult <- resolveRepositoryRevision repository (RevisionSpec (gitOidText oid))
+  case revisionResult of
+    Left problem -> pure (Left (SearchRepositoryFailure (Text.pack (show problem))))
+    Right revision
+      | resolvedCommitOid revision /= oid -> pure (Left (SearchCompilerFailure "exact archive resolved to an unexpected revision"))
+      | otherwise -> do
+          cached <- withExactCacheContext defaultQueryExecutionHooks repository revision (gitOidText oid) $ \connection context ->
+            searchProjectionWithPolicy False request (exactQuerySnapshot context) connection (exactQueryMaterialization context)
+          pure (maybe (Left (SearchCompilerFailure "validated exact archive is unavailable")) id cached)
+
 runSearchWithHooks :: QueryExecutionHooks -> Repository -> SearchServiceRequest -> IO (Either SearchFailure SearchProjection)
 runSearchWithHooks hooks repository request = do
   revisionResult <- resolveRepositoryRevision repository (RevisionSpec (searchServiceRevision request))
@@ -383,12 +415,15 @@ runSearchWithHooks hooks repository request = do
             Just materialization -> searchProjectionWith request snapshot connection materialization
 
 searchProjectionWith :: SearchServiceRequest -> ReadSnapshot -> Connection -> SearchMaterialization -> IO (Either SearchFailure SearchProjection)
-searchProjectionWith request snapshot connection materialization = do
+searchProjectionWith = searchProjectionWithPolicy True
+
+searchProjectionWithPolicy :: Bool -> SearchServiceRequest -> ReadSnapshot -> Connection -> SearchMaterialization -> IO (Either SearchFailure SearchProjection)
+searchProjectionWithPolicy rejectConflicts request snapshot connection materialization = do
   searched <- runCurrentSearch connection snapshot materialization (searchServiceQuery request)
   pure $ case searched of
     Left problem -> Left (SearchQueryFailure problem)
     Right projection
-      | null conflicts -> Right projection
+      | not rejectConflicts || null conflicts -> Right projection
       | otherwise -> Left (SearchSemanticConflict conflicts)
       where
         conflicts =

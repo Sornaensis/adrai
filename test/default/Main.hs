@@ -87,6 +87,7 @@ import qualified Adrai.VectorTest
 import qualified Adrai.WebContractTest
 import qualified Adrai.WebCompilationTest
 import qualified Adrai.WebEventsTest
+import qualified Adrai.WebExplorerApiTest
 import qualified Adrai.WebServerTest
 import qualified Adrai.WebWatchTest
 import Control.Concurrent (getNumCapabilities, threadDelay)
@@ -584,5 +585,10 @@ tests =
             Adrai.WebWatchTest.tests,
             Adrai.WebCompilationTest.exactRevisionCompilationTest,
             Adrai.WebCompilationTest.tests
+          ]
+      , testGroup
+          "P7-04"
+          [ Adrai.WebExplorerApiTest.tests,
+            Adrai.WebServerTest.generationExhaustionTest
           ]
     ]

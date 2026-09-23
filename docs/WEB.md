@@ -1,8 +1,7 @@
 # Web interface contract
 
 `adrai web` starts the repository-bound Haskell HTTP and WebSocket service and
-serves its embedded API-only bootstrap page. The page reports that the API is
-ready. The Elm explorer remains later work.
+serves its embedded Elm explorer from locally embedded assets.
 
 ## Repository binding and routes
 
@@ -36,11 +35,42 @@ The exact POST routes are `/api/v1/adrs` and
 discriminated before request decoding. Query names are route-specific;
 duplicate, valueless, unknown, malformed, and over-bound values fail as typed
 input errors. JSON bodies have a 1 MiB default bound, reject unknown fields,
-and materialize the existing shared service requests. Search/result limits
-default to their CLI values and have a maximum of 100; encoded query data has a
-4096-byte default bound.
+and materialize the existing shared service requests. Search and history
+default to their CLI windows of 10 and 20 and accept limits from 1 through
+1000. Relevant accepts 1 through 100. Encoded query data has a 4096-byte
+default bound. Search requires `q`, including `q=` for deterministic blank
+browse; it also accepts `actor=kind:identifier` and inclusive signed-decimal
+Unix-millisecond `since`/`until` filters. History accepts those same filters.
+Relevant defaults to a committed `at=HEAD` source; `worktree=true` reads the
+safe current worktree file against the exact HEAD compilation context and
+cannot be combined with an explicit `at`.
+
+The explorer keeps each search or history response as one fixed result window
+for its exact revision, filters, and limit. Page controls display at most 100
+items from that window without another request or reranking. Changing the
+window or an input fetches a new response and returns to page one. A full
+search window is labeled as bounded rather than exhaustive; history uses its
+server-provided `truncated` flag.
+
+Collapsed ADR inspection returns the rich shared projection, including
+candidate records, scopes and domains when a valid snapshot is conflicted.
+Exploded inspection retains operation provenance and optional exploded-only
+raw content. Web search also returns valid conflicted candidates for review;
+the CLI's existing semantic-conflict result is unchanged.
 
 Every response carries a monotonic process generation and an explicit `as_of`.
+The JSON `metadata.generation` field, and the event envelope's `generation`,
+are canonical unsigned decimal Word64 strings, including `"0"`. Clients must
+reject numeric, signed, empty, leading-zero, fractional and out-of-range
+forms, and compare valid strings by length followed by lexical order. The
+`X-Adrai-Generation` header uses the same decimal text. At the maximum
+generation, the server cannot allocate another freshness stamp: new dependent
+work returns a 503 `generation-exhausted` unavailable response and requires a
+server restart. Existing authenticated sockets close with
+`generation-exhausted; restart the web server`, and new authenticated sockets
+receive the same close reason; the watcher stops publishing after this terminal
+condition. A mutation already committed before a publication failure
+retains its actual operation and commit with a warning.
 A successful one-snapshot query reports the exact resolved commit used to build
 its payload, and compare reports both exact operands. Snapshot identity and its
 generation are captured together under the shared Git lock; a successful
@@ -52,8 +82,11 @@ freshness metadata instead of claiming a published commit generation.
 Pre-authentication, no-commit, and failure responses use an explicit unavailable reason. JSON puts
 metadata beside the unchanged shared projection; non-JSON responses use
 `X-Adrai-Generation` and `X-Adrai-As-Of`. Events carry the same concepts in the
-`adrai/events/v1` envelope. Clients discard responses or events older than the
-latest generation they have accepted.
+`adrai/events/v1` envelope. Each client view matches replies to its latest
+request and immutable request context. A separate ordered invalidation
+watermark marks affected views stale; an unrelated newer HTTP response cannot
+suppress that invalidation. Known committed mutation outcomes retain their
+operation and actual commit even if a later read or event has a newer stamp.
 
 Malformed input maps to 400 (or 405 for a known route with the wrong method),
 authentication to 401, origin/Host admission to 403, missing routes/resources
@@ -72,6 +105,9 @@ accepts the secret in a query. It creates a process-specific cookie with
 no-store`, and `Referrer-Policy: no-referrer`. The bootstrap script keeps the
 token only in memory and removes it from browser history before loading other
 resources; it never uses browser storage.
+Reloading the cleaned URL can still read snapshots with its valid cookie, but
+has no in-memory mutation or WebSocket credential. The explorer keeps those
+actions disabled and directs the user to reopen the process bootstrap URL.
 
 All requests require the exact `127.0.0.1:<bound-port>` Host and a matching
 process cookie or `Authorization: Bearer`. Query tokens elsewhere and
@@ -104,10 +140,10 @@ metadata. Later invalidations name changed fact categories. An
 `observation-failed` event or unavailable `as_of` means the client must fetch
 fresh HTTP state before acting. There is no durable event replay: reconnect
 always starts with a new full resync. Clients discard responses and events
-older than their latest accepted generation, reload current HEAD/ref and
-repository-state and ADR-state tokens before submitting a mutation, and keep
-dirty forms visible while marking them stale. Rendering and preserving those
-forms is the deferred Elm client's responsibility.
+for superseded view contexts, reload current HEAD/ref and repository-state
+and ADR-state tokens before submitting a mutation, and keep dirty forms visible
+while marking them stale. A draft requires explicit review and token adoption
+after such a refresh; it is never silently rebased or resubmitted.
 
 The runtime admits at most 16 pending/authenticated sockets and 16 subscribers.
 Each subscriber queue holds 64 events; overflow closes that socket so it must

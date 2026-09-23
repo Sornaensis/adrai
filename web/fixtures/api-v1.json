@@ -1,0 +1,2755 @@
+{
+  "schema": "adrai/web-fixtures/v1",
+  "cases": {
+    "repository": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "worktree": "C:/fixture/repo",
+        "git_directory": "C:/fixture/repo/.git",
+        "common_git_directory": "C:/fixture/repo/.git",
+        "head": "1111111111111111111111111111111111111111",
+        "head_ref": "refs/heads/main",
+        "repository_state": {
+          "kind": "repository",
+          "token": "Raaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "head": "1111111111111111111111111111111111111111",
+          "head_ref": "refs/heads/main"
+        }
+      }
+    },
+    "rich_resolved": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "adr": "A11111111111111111111111111",
+        "applies_to": [
+          "src/**"
+        ],
+        "as_of": "1111111111111111111111111111111111111111",
+        "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+        "candidate_domains": [
+          {
+            "connection": "C22222222222222222222222222",
+            "domains": [
+              "compiler"
+            ],
+            "path": "fixtures/C22222222222222222222222222.md"
+          }
+        ],
+        "candidate_records": [
+          {
+            "path": "fixtures/R22222222222222222222222222.md",
+            "record": "R22222222222222222222222222",
+            "summary": "new summary",
+            "title": "Café architecture v2"
+          }
+        ],
+        "candidate_scopes": [
+          {
+            "applies_to": [
+              "src/**"
+            ],
+            "connection": "C11111111111111111111111111",
+            "path": "fixtures/C11111111111111111111111111.md"
+          }
+        ],
+        "conflicts": [],
+        "connection_history": [
+          "C44444444444444444444444444",
+          "C11111111111111111111111111",
+          "C22222222222222222222222222",
+          "C33333333333333333333333333",
+          "C55555555555555555555555555"
+        ],
+        "counts": {
+          "amendments": 1,
+          "domain_revisions": 1,
+          "editions": 2,
+          "scope_revisions": 1,
+          "status_revisions": 2
+        },
+        "decision_history": [
+          "R11111111111111111111111111",
+          "R22222222222222222222222222"
+        ],
+        "domain_heads": [
+          "C22222222222222222222222222"
+        ],
+        "domains": [
+          "compiler"
+        ],
+        "evolution": {
+          "latest": {
+            "actor": "service:service",
+            "claimed_at": "1970-01-01T00:00:00.200000Z",
+            "details": {},
+            "label": "reactivated",
+            "operation": "O33333333333333333333333333",
+            "reason": "status update"
+          },
+          "operation_count": 3,
+          "summary": "created → amended → reactivated"
+        },
+        "issues": [],
+        "obsolete": false,
+        "provenance": {
+          "created": {
+            "actor": "human:architect",
+            "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "claimed_at": "1970-01-01T00:00:00.300000Z",
+            "introductions": [],
+            "line_landings": [
+              {
+                "commit": "landing-1",
+                "complete": true,
+                "line": "trunk",
+                "ref": "refs/heads/main"
+              }
+            ],
+            "model": null,
+            "operation": "O11111111111111111111111111",
+            "original_commits": [
+              "commit-placement-1"
+            ]
+          },
+          "domains": {
+            "actor": "human:architect",
+            "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "claimed_at": "1970-01-01T00:00:00.300000Z",
+            "introductions": [],
+            "line_landings": [
+              {
+                "commit": "landing-1",
+                "complete": true,
+                "line": "trunk",
+                "ref": "refs/heads/main"
+              }
+            ],
+            "model": null,
+            "operation": "O11111111111111111111111111",
+            "original_commits": [
+              "commit-placement-1"
+            ]
+          },
+          "effective": {
+            "actor": "llm:reviewer",
+            "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "claimed_at": "1970-01-01T00:00:00.100000Z",
+            "introductions": [
+              "commit-placement-2"
+            ],
+            "line_landings": [],
+            "model": null,
+            "operation": "O22222222222222222222222222",
+            "original_commits": []
+          },
+          "status": {
+            "actor": "service:service",
+            "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "claimed_at": "1970-01-01T00:00:00.200000Z",
+            "introductions": [],
+            "line_landings": [],
+            "model": null,
+            "operation": "O33333333333333333333333333",
+            "original_commits": []
+          }
+        },
+        "record": "R22222222222222222222222222",
+        "record_heads": [
+          "R22222222222222222222222222"
+        ],
+        "replacement": null,
+        "resolution": {
+          "conflicts": [],
+          "resolution_required": false,
+          "resolved": true
+        },
+        "resolution_required": false,
+        "resolved": true,
+        "schema": "adrai/show-collapsed/v1",
+        "scope_heads": [
+          "C11111111111111111111111111"
+        ],
+        "source_paths": [
+          "fixtures/R22222222222222222222222222.md",
+          "fixtures/C11111111111111111111111111.md",
+          "fixtures/C22222222222222222222222222.md",
+          "fixtures/C55555555555555555555555555.md"
+        ],
+        "state_token": "SYZEeC9tWl0ulonggnO5MTo",
+        "status": "active",
+        "status_heads": [
+          "C55555555555555555555555555"
+        ],
+        "summary": "new summary",
+        "title": "Café architecture v2",
+        "view": "collapsed"
+      }
+    },
+    "rich_conflicted": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "adr": "A00000000000000000000000000",
+        "applies_to": [
+          "src/a,b/**"
+        ],
+        "as_of": "1111111111111111111111111111111111111111",
+        "body": "# Context\nTwo branches amended the decision.\n\n# Decision\nRetain this candidate.\n\n# Context\nTwo branches amended the decision.\n\n# Decision\nRetain this candidate.",
+        "candidate_domains": [
+          {
+            "connection": "C00000000000000000000000001",
+            "domains": [
+              "platform"
+            ],
+            "path": "architecture/adrai/connections/C000/C00000000000000000000000001--domains.connection.md"
+          }
+        ],
+        "candidate_records": [
+          {
+            "path": "architecture/adrai/decisions/R000/R00000000000000000000000001--first-amendment.decision.md",
+            "record": "R00000000000000000000000001",
+            "summary": "A conflicting amendment candidate.",
+            "title": "First amendment"
+          },
+          {
+            "path": "architecture/adrai/decisions/R000/R00000000000000000000000002--second-amendment.decision.md",
+            "record": "R00000000000000000000000002",
+            "summary": "A conflicting amendment candidate.",
+            "title": "Second amendment"
+          }
+        ],
+        "candidate_scopes": [
+          {
+            "applies_to": [
+              "src/a,b/**"
+            ],
+            "connection": "C00000000000000000000000000",
+            "path": "architecture/adrai/connections/C000/C00000000000000000000000000--applies_to.connection.md"
+          }
+        ],
+        "conflicts": [
+          "2 decision heads"
+        ],
+        "connection_history": [
+          "C00000000000000000000000003",
+          "C00000000000000000000000004",
+          "C00000000000000000000000000",
+          "C00000000000000000000000001",
+          "C00000000000000000000000002",
+          "C00000000000000000000000005"
+        ],
+        "counts": {
+          "amendments": 2,
+          "domain_revisions": 1,
+          "editions": 3,
+          "scope_revisions": 1,
+          "status_revisions": 2
+        },
+        "decision_history": [
+          "R00000000000000000000000000",
+          "R00000000000000000000000001",
+          "R00000000000000000000000002"
+        ],
+        "domain_heads": [
+          "C00000000000000000000000001"
+        ],
+        "domains": [
+          "platform"
+        ],
+        "evolution": {
+          "latest": {
+            "actor": "service:adrai-compiler-fixture",
+            "claimed_at": "2023-11-14T22:13:20Z",
+            "details": {},
+            "label": "reactivated",
+            "operation": "O00000000000000000000000003",
+            "reason": "Cover both concurrent decision heads."
+          },
+          "operation_count": 4,
+          "summary": "created → amended ×2 → reactivated"
+        },
+        "issues": [],
+        "obsolete": false,
+        "provenance": {
+          "created": {
+            "actor": "service:adrai-compiler-fixture",
+            "basis": "1111111111111111111111111111111111111111",
+            "claimed_at": "2023-11-14T22:13:20Z",
+            "introductions": [],
+            "line_landings": [],
+            "model": null,
+            "operation": "O00000000000000000000000000",
+            "original_commits": []
+          },
+          "domains": {
+            "actor": "service:adrai-compiler-fixture",
+            "basis": "1111111111111111111111111111111111111111",
+            "claimed_at": "2023-11-14T22:13:20Z",
+            "introductions": [],
+            "line_landings": [],
+            "model": null,
+            "operation": "O00000000000000000000000000",
+            "original_commits": []
+          },
+          "effective": null,
+          "status": {
+            "actor": "service:adrai-compiler-fixture",
+            "basis": "1111111111111111111111111111111111111111",
+            "claimed_at": "2023-11-14T22:13:20Z",
+            "introductions": [],
+            "line_landings": [],
+            "model": null,
+            "operation": "O00000000000000000000000003",
+            "original_commits": []
+          }
+        },
+        "record": null,
+        "record_heads": [
+          "R00000000000000000000000001",
+          "R00000000000000000000000002"
+        ],
+        "replacement": null,
+        "resolution": {
+          "conflicts": [
+            {
+              "head_count": 2,
+              "heads": [
+                "R00000000000000000000000001",
+                "R00000000000000000000000002"
+              ],
+              "kind": "decision",
+              "summary": "2 decision heads"
+            }
+          ],
+          "resolution_required": true,
+          "resolved": false
+        },
+        "resolution_required": true,
+        "resolved": false,
+        "schema": "adrai/show-collapsed/v1",
+        "scope_heads": [
+          "C00000000000000000000000000"
+        ],
+        "source_paths": [
+          "architecture/adrai/connections/C000/C00000000000000000000000000--applies_to.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000001--domains.connection.md",
+          "architecture/adrai/connections/C000/C00000000000000000000000005--status.connection.md"
+        ],
+        "state_token": "Sj9YeufyyQvEIrGF9AdvtHo",
+        "status": "active",
+        "status_heads": [
+          "C00000000000000000000000005"
+        ],
+        "summary": "A conflicting amendment candidate.; A conflicting amendment candidate.",
+        "title": "[conflicted ADR]",
+        "view": "collapsed"
+      }
+    },
+    "exploded": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "adr": "A11111111111111111111111111",
+        "as_of": "1111111111111111111111111111111111111111",
+        "operations": [
+          {
+            "items": [
+              {
+                "event": "connection.amends",
+                "item": "C44444444444444444444444444",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": "R22222222222222222222222222",
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": [
+                    "R11111111111111111111111111"
+                  ]
+                },
+                "operation": "O22222222222222222222222222",
+                "path": "fixtures/C44444444444444444444444444.md",
+                "rationale": "reviewed amendment",
+                "relation": "amends",
+                "type": "connection"
+              },
+              {
+                "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+                "diffs": [
+                  {
+                    "diff": "--- parent\n+++ child\n@@ -1,9 +1,9 @@\n +++\n schema = \"adrai/decision/v1\"\n adr = \"A11111111111111111111111111\"\n-record = \"R11111111111111111111111111\"\n-title = \"Café architecture v1\"\n-summary = \"Café architecture v1 summary\"\n+record = \"R22222222222222222222222222\"\n+title = \"Café architecture v2\"\n+summary = \"new summary\"\n domains = [\"compiler\"]\n +++\n \n@@ -16,5 +16,5 @@\n Shared context 6\n Shared context 7\n Shared context 8\n+Adopt the service architecture.\n Keep the legacy architecture.\n-Adopt the service architecture.\n",
+                    "parent": "R11111111111111111111111111"
+                  }
+                ],
+                "domains": [
+                  "compiler"
+                ],
+                "event": "decision.amend",
+                "item": "R22222222222222222222222222",
+                "operation": "O22222222222222222222222222",
+                "parents": [
+                  "R11111111111111111111111111"
+                ],
+                "path": "fixtures/R22222222222222222222222222.md",
+                "summary": "new summary",
+                "title": "Café architecture v2",
+                "type": "decision"
+              }
+            ],
+            "operation": "O22222222222222222222222222",
+            "provenance": {
+              "actor": "llm:reviewer",
+              "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "branch_hint": null,
+              "claimed_at": "1970-01-01T00:00:00.100000Z",
+              "claimed_ms": 100,
+              "context_digest": null,
+              "events": [
+                "connection.amends",
+                "decision.amend"
+              ],
+              "input_digest": null,
+              "line_anchors": [],
+              "line_landings": [],
+              "model": null,
+              "objects": [
+                "C44444444444444444444444444",
+                "R22222222222222222222222222"
+              ],
+              "operation": "O22222222222222222222222222",
+              "placements": [
+                {
+                  "authored_at": "1970-01-01T00:00:00.090000Z",
+                  "classification": "introduction",
+                  "commit": "commit-placement-2",
+                  "committed_at": "1970-01-01T00:00:00.100000Z",
+                  "parents": [
+                    "commit-placement-1"
+                  ],
+                  "reachable": true,
+                  "subject": "amend ADR"
+                }
+              ],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [],
+                "introductions": [
+                  "commit-placement-2"
+                ],
+                "original_operation_commits": [],
+                "semantic": "1970-01-01T00:00:00.100000Z"
+              }
+            }
+          },
+          {
+            "items": [
+              {
+                "event": "decision.reactivate",
+                "item": "C55555555555555555555555555",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": null,
+                  "parent_connections": [
+                    "C33333333333333333333333333"
+                  ],
+                  "record_heads": [
+                    "R22222222222222222222222222"
+                  ],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": "active",
+                  "to_records": []
+                },
+                "operation": "O33333333333333333333333333",
+                "path": "fixtures/C55555555555555555555555555.md",
+                "rationale": "status update",
+                "relation": "status",
+                "type": "connection"
+              }
+            ],
+            "operation": "O33333333333333333333333333",
+            "provenance": {
+              "actor": "service:service",
+              "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "branch_hint": null,
+              "claimed_at": "1970-01-01T00:00:00.200000Z",
+              "claimed_ms": 200,
+              "context_digest": null,
+              "events": [
+                "decision.reactivate"
+              ],
+              "input_digest": null,
+              "line_anchors": [],
+              "line_landings": [],
+              "model": null,
+              "objects": [
+                "C55555555555555555555555555"
+              ],
+              "operation": "O33333333333333333333333333",
+              "placements": [],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [],
+                "introductions": [],
+                "original_operation_commits": [],
+                "semantic": "1970-01-01T00:00:00.200000Z"
+              }
+            }
+          },
+          {
+            "items": [
+              {
+                "event": "scope.initial",
+                "item": "C11111111111111111111111111",
+                "metadata": {
+                  "added": [
+                    "src/**"
+                  ],
+                  "applies_to": [
+                    "src/**"
+                  ],
+                  "change": "initial",
+                  "domains": [],
+                  "from_record": null,
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": []
+                },
+                "operation": "O11111111111111111111111111",
+                "path": "fixtures/C11111111111111111111111111.md",
+                "rationale": "initial scope",
+                "relation": "applies_to",
+                "type": "connection"
+              },
+              {
+                "event": "domain.initial",
+                "item": "C22222222222222222222222222",
+                "metadata": {
+                  "added": [
+                    "compiler"
+                  ],
+                  "applies_to": [],
+                  "change": "initial",
+                  "domains": [
+                    "compiler"
+                  ],
+                  "from_record": null,
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": []
+                },
+                "operation": "O11111111111111111111111111",
+                "path": "fixtures/C22222222222222222222222222.md",
+                "rationale": "initial domain",
+                "relation": "domains",
+                "type": "connection"
+              },
+              {
+                "event": "status.initial",
+                "item": "C33333333333333333333333333",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": null,
+                  "parent_connections": [],
+                  "record_heads": [
+                    "R11111111111111111111111111"
+                  ],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": "active",
+                  "to_records": []
+                },
+                "operation": "O11111111111111111111111111",
+                "path": "fixtures/C33333333333333333333333333.md",
+                "rationale": "status update",
+                "relation": "status",
+                "type": "connection"
+              },
+              {
+                "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nKeep the legacy architecture.\nAdopt the service architecture.",
+                "diffs": [],
+                "domains": [
+                  "compiler"
+                ],
+                "event": "decision.create",
+                "item": "R11111111111111111111111111",
+                "operation": "O11111111111111111111111111",
+                "parents": [],
+                "path": "fixtures/R11111111111111111111111111.md",
+                "summary": "Café architecture v1 summary",
+                "title": "Café architecture v1",
+                "type": "decision"
+              }
+            ],
+            "operation": "O11111111111111111111111111",
+            "provenance": {
+              "actor": "human:architect",
+              "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "branch_hint": null,
+              "claimed_at": "1970-01-01T00:00:00.300000Z",
+              "claimed_ms": 300,
+              "context_digest": null,
+              "events": [
+                "decision.create",
+                "domain.initial",
+                "scope.initial",
+                "status.initial"
+              ],
+              "input_digest": null,
+              "line_anchors": [],
+              "line_landings": [
+                {
+                  "commit": "landing-1",
+                  "complete": true,
+                  "line": "trunk",
+                  "ref": "refs/heads/main"
+                }
+              ],
+              "model": null,
+              "objects": [
+                "C11111111111111111111111111",
+                "C22222222222222222222222222",
+                "C33333333333333333333333333",
+                "R11111111111111111111111111"
+              ],
+              "operation": "O11111111111111111111111111",
+              "placements": [
+                {
+                  "authored_at": "1970-01-01T00:00:00.250000Z",
+                  "classification": "original",
+                  "commit": "commit-placement-1",
+                  "committed_at": "1970-01-01T00:00:00.300000Z",
+                  "parents": [],
+                  "reachable": true,
+                  "subject": "create ADR"
+                }
+              ],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [
+                  {
+                    "commit": "landing-1",
+                    "complete": true,
+                    "line": "trunk",
+                    "ref": "refs/heads/main"
+                  }
+                ],
+                "introductions": [],
+                "original_operation_commits": [
+                  "commit-placement-1"
+                ],
+                "semantic": "1970-01-01T00:00:00.300000Z"
+              }
+            }
+          }
+        ],
+        "resolution": {
+          "conflicts": [],
+          "resolution_required": false,
+          "resolved": true
+        },
+        "resolution_required": false,
+        "resolved": true,
+        "schema": "adrai/show-exploded/v1",
+        "state_token": "SYZEeC9tWl0ulonggnO5MTo",
+        "view": "exploded"
+      }
+    },
+    "search_blank": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "as_of": "1111111111111111111111111111111111111111",
+        "limit": 10,
+        "mode": "hybrid",
+        "results": [
+          {
+            "adr": "A00000000000000000000000000",
+            "applies_to": [
+              "src/current/**"
+            ],
+            "as_of": "rationale-resolved",
+            "conflict": "1 integrity errors",
+            "conflicts": [
+              {
+                "head_count": 0,
+                "heads": [],
+                "kind": "integrity",
+                "summary": "1 integrity errors"
+              }
+            ],
+            "context": {
+              "domain_ambiguous": false,
+              "domain_revisions": 2,
+              "editions": 2,
+              "scope_ambiguous": false,
+              "scope_revisions": 2,
+              "status_revisions": 2
+            },
+            "domains": [
+              "current.domain"
+            ],
+            "flags": {
+              "conflicted": true,
+              "shallow_history": false
+            },
+            "fts_score": 0,
+            "id": "A00000000000000000000000000",
+            "matches": {
+              "actor_filter": null,
+              "domain_filter": [],
+              "file_scope": null,
+              "fts": false,
+              "vector": false
+            },
+            "obsolete": true,
+            "record": "R00000000000000000000000001",
+            "replacement": null,
+            "resolution_required": true,
+            "resolved": false,
+            "retrieval": {
+              "algorithm": "filtered-list",
+              "profile": null
+            },
+            "score": 1,
+            "source_paths": [
+              "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md",
+              "architecture/adrai/connections/C000/C00000000000000000000000003--applies_to.connection.md",
+              "architecture/adrai/connections/C000/C00000000000000000000000002--domains.connection.md",
+              "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md"
+            ],
+            "state_token": "S0D9J6hZXZn8wOvc3Zr_Xbu",
+            "status": "obsolete",
+            "summary": "Current summary",
+            "title": "Current Decision API (CDAPI)",
+            "vector_score": 0,
+            "view": "collapsed"
+          }
+        ],
+        "schema": "adrai/search/v1",
+        "view": "collapsed"
+      }
+    },
+    "search_ranked": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "as_of": "1111111111111111111111111111111111111111",
+        "limit": 10,
+        "mode": "hybrid",
+        "results": [
+          {
+            "adr": "A00000000000000000000000000",
+            "applies_to": [
+              "src/current/**"
+            ],
+            "as_of": "rationale-resolved",
+            "conflict": "1 integrity errors",
+            "conflicts": [
+              {
+                "head_count": 0,
+                "heads": [],
+                "kind": "integrity",
+                "summary": "1 integrity errors"
+              }
+            ],
+            "context": {
+              "domain_ambiguous": false,
+              "domain_revisions": 2,
+              "editions": 2,
+              "scope_ambiguous": false,
+              "scope_revisions": 2,
+              "status_revisions": 2
+            },
+            "domains": [
+              "current.domain"
+            ],
+            "flags": {
+              "conflicted": true,
+              "shallow_history": false
+            },
+            "fts_score": 0.000008,
+            "id": "A00000000000000000000000000",
+            "identifier_vector_score": -0.00824,
+            "matched_candidate": null,
+            "matched_record": "R00000000000000000000000001",
+            "matched_summary": null,
+            "matched_title": null,
+            "matches": {
+              "actor_filter": null,
+              "best_section": "title-summary",
+              "best_section_score": 1.007202,
+              "channel_ranks": {
+                "fts_identifier": 1,
+                "fts_phrase": 1,
+                "fts_stemmed": 1,
+                "fts_terms": 1,
+                "identifier_vector": 1,
+                "semantic_vector": 1
+              },
+              "domain_filter": [],
+              "exact_phrase_fields": [
+                "title",
+                "identifiers"
+              ],
+              "fields": [
+                "decision",
+                "identifiers",
+                "rationale",
+                "summary",
+                "title"
+              ],
+              "file_scope": null,
+              "fts": true,
+              "identifier_terms": [
+                "api",
+                "cdapi",
+                "current",
+                "decision"
+              ],
+              "terms": [
+                "api",
+                "current",
+                "decision",
+                "cdapi"
+              ],
+              "vector": true
+            },
+            "obsolete": true,
+            "record": "R00000000000000000000000001",
+            "replacement": null,
+            "resolution_required": true,
+            "resolved": false,
+            "retrieval": {
+              "algorithm": "three-fts+exact-summary+section-rerank+weighted-rrf",
+              "aliases": [
+                "cdapi"
+              ],
+              "field_rerank_candidates": 1,
+              "fts": {
+                "channel_candidates": {
+                  "fts_identifier": 1,
+                  "fts_phrase": 1,
+                  "fts_stemmed": 1,
+                  "fts_terms": 1
+                },
+                "profile": "keyword",
+                "queries": {
+                  "identifier": "\"current\" OR \"decision\" OR \"api\" OR \"cdapi\"",
+                  "near": "NEAR(\"current\" \"decision\" \"api\", 6)",
+                  "phrase": "\"current decision api\"",
+                  "prefix": "",
+                  "stemmed": "\"current\" AND \"decision\" AND \"api\"",
+                  "terms": "\"current\" AND \"decision\" AND \"api\""
+                }
+              },
+              "profile": "keyword",
+              "vector": {
+                "algorithm": "exact-summary+bounded-exact-sections",
+                "identifier_corpus": 1,
+                "section_candidates": 1,
+                "sections_scanned": 7,
+                "summary_corpus": 1
+              }
+            },
+            "score": 0.065619,
+            "source_paths": [
+              "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md",
+              "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md",
+              "architecture/adrai/connections/C000/C00000000000000000000000001--amends.connection.md",
+              "architecture/adrai/connections/C000/C00000000000000000000000002--domains.connection.md",
+              "architecture/adrai/connections/C000/C00000000000000000000000003--applies_to.connection.md"
+            ],
+            "state_token": "S0D9J6hZXZn8wOvc3Zr_Xbu",
+            "status": "obsolete",
+            "summary": "Current summary",
+            "title": "Current Decision API (CDAPI)",
+            "vector_score": 1,
+            "view": "collapsed"
+          }
+        ],
+        "schema": "adrai/search/v1",
+        "view": "collapsed"
+      }
+    },
+    "search_conflicted": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "as_of": "1111111111111111111111111111111111111111",
+        "limit": 10,
+        "mode": "hybrid",
+        "results": [
+          {
+            "adr": "A00000000000000000000000000",
+            "applies_to": [
+              "src/a,b/**"
+            ],
+            "as_of": "1111111111111111111111111111111111111111",
+            "conflict": "2 decision heads",
+            "conflicts": [
+              {
+                "head_count": 2,
+                "heads": [
+                  "R00000000000000000000000001",
+                  "R00000000000000000000000002"
+                ],
+                "kind": "decision",
+                "summary": "2 decision heads"
+              }
+            ],
+            "context": {
+              "domain_ambiguous": false,
+              "domain_revisions": 1,
+              "editions": 3,
+              "scope_ambiguous": false,
+              "scope_revisions": 1,
+              "status_revisions": 2
+            },
+            "domains": [
+              "platform"
+            ],
+            "flags": {
+              "conflicted": true,
+              "shallow_history": false
+            },
+            "fts_score": 0,
+            "id": "A00000000000000000000000000",
+            "matches": {
+              "actor_filter": null,
+              "domain_filter": [],
+              "file_scope": null,
+              "fts": false,
+              "vector": false
+            },
+            "obsolete": false,
+            "record": null,
+            "replacement": null,
+            "resolution_required": true,
+            "resolved": false,
+            "retrieval": {
+              "algorithm": "filtered-list",
+              "profile": null
+            },
+            "score": 1,
+            "source_paths": [
+              "architecture/adrai/connections/C000/C00000000000000000000000000--applies_to.connection.md",
+              "architecture/adrai/connections/C000/C00000000000000000000000001--domains.connection.md",
+              "architecture/adrai/connections/C000/C00000000000000000000000005--status.connection.md"
+            ],
+            "state_token": "Sj9YeufyyQvEIrGF9AdvtHo",
+            "status": "active",
+            "summary": "A conflicting amendment candidate.; A conflicting amendment candidate.",
+            "title": "[conflicted ADR]",
+            "vector_score": 0,
+            "view": "collapsed"
+          }
+        ],
+        "schema": "adrai/search/v1",
+        "view": "collapsed"
+      }
+    },
+    "relevant_committed": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "as_of": "1111111111111111111111111111111111111111",
+        "file": {
+          "blob": "blob-rationale",
+          "bytes": 95,
+          "chunks": 1,
+          "digest": "sha256:wpW7-HbX9tGWU0wJg1w6bAmzob04_5GfPvjivkom5M0",
+          "path": "src/current/cache.py",
+          "query_chunks": 1,
+          "revision": "rationale-resolved",
+          "source": "revision"
+        },
+        "results": [
+          {
+            "adr": "A00000000000000000000000000",
+            "applies_to": [
+              "src/current/**"
+            ],
+            "confidence": "high",
+            "domains": [
+              "current.domain"
+            ],
+            "evidence": [
+              {
+                "adr_candidate": "A00000000000000000000000000",
+                "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
+                "adr_excerpt": "decision first decision second",
+                "adr_section": "decision",
+                "candidate_record": "R00000000000000000000000001",
+                "file_excerpt": "current decision api context first decision second consequence current domain cache lease token",
+                "file_lines": [
+                  1,
+                  1
+                ],
+                "lexical_score": 1,
+                "matched_terms": [
+                  "first",
+                  "second"
+                ],
+                "score": 0.352558,
+                "semantic_score": 0.352558
+              }
+            ],
+            "lexical_bonus": 0.1,
+            "lexical_score": 1,
+            "margin": 0.352558,
+            "matched_candidate": null,
+            "matched_record": "R00000000000000000000000001",
+            "matched_title": null,
+            "obsolete": true,
+            "record": "R00000000000000000000000001",
+            "replacement": null,
+            "resolution_required": true,
+            "resolved": false,
+            "scope_bonus": 0.025,
+            "scope_match": "exact",
+            "score": 0.477558,
+            "semantic_score": 0.352558,
+            "source_information": 1,
+            "status": "obsolete",
+            "strongest_lexical_pair": 1,
+            "strongest_pair": 0.352558,
+            "summary": "Current summary",
+            "title": "Current Decision API (CDAPI)"
+          }
+        ],
+        "retrieval": {
+          "adr_shortlist": 1,
+          "candidate_search_items": 1,
+          "eligible_adrs": 1,
+          "eligible_search_items": 1,
+          "exact_rerank_candidates": 7,
+          "identifier_vector_id": "adrai-identifier:-JSyvxW6dxoDl9Pzpm6Q_aoG:768",
+          "implementation": "structured-raw-text-cross-reference",
+          "passage_fts": {
+            "algorithm": "passage-exact+stemmed+identifier-fts",
+            "candidate_pairs": 6,
+            "channel_hits": {
+              "exact": 6,
+              "identifier": 6,
+              "stemmed": 0
+            },
+            "queries": 1
+          },
+          "scope_used_for_eligibility": false,
+          "scoring": {
+            "high_margin": 0.045,
+            "high_pair_score": 0.3,
+            "high_semantic_score": 0.34,
+            "lexical_bonus_cap": 0.1,
+            "lexical_rank_weight": 0.1,
+            "medium_pair_score": 0.14,
+            "medium_semantic_score": 0.16,
+            "minimum_lexical_pair_score": 0.18,
+            "minimum_pair_score": 0.075,
+            "repetitive_chunk_low_confidence": 0.15,
+            "scope_bonus_ambiguous": 0.01,
+            "scope_bonus_exact": 0.025,
+            "second_evidence_weight": 0.1,
+            "third_evidence_weight": 0.05
+          },
+          "search_sections": 7,
+          "sections": {
+            "algorithm": "exact-bounded-section-scan",
+            "bucket_hits": 0,
+            "candidates": 7,
+            "corpus": 7,
+            "fallback_chunks": 0
+          },
+          "selected_source_chunks": 1,
+          "semantic_vector_id": "adrai-semantic:T_yApQ2sJvyBH21HYYBYuQ1X:1024",
+          "source_chunks": 1,
+          "strategy": "exact-summary+passage-fts+bounded-section-rerank",
+          "summary": {
+            "algorithm": "exact",
+            "identifier_corpus": 1,
+            "semantic_corpus": 1
+          }
+        },
+        "schema": "adrai/relevant/v1",
+        "view": "relevant"
+      }
+    },
+    "relevant_worktree": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "as_of": "1111111111111111111111111111111111111111",
+        "file": {
+          "blob": null,
+          "bytes": 95,
+          "chunks": 1,
+          "digest": "sha256:wpW7-HbX9tGWU0wJg1w6bAmzob04_5GfPvjivkom5M0",
+          "path": "src/current/cache.py",
+          "query_chunks": 1,
+          "revision": "1111111111111111111111111111111111111111",
+          "source": "worktree"
+        },
+        "results": [
+          {
+            "adr": "A00000000000000000000000000",
+            "applies_to": [
+              "src/current/**"
+            ],
+            "confidence": "high",
+            "domains": [
+              "current.domain"
+            ],
+            "evidence": [
+              {
+                "adr_candidate": "A00000000000000000000000000",
+                "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
+                "adr_excerpt": "decision first decision second",
+                "adr_section": "decision",
+                "candidate_record": "R00000000000000000000000001",
+                "file_excerpt": "current decision api context first decision second consequence current domain cache lease token",
+                "file_lines": [
+                  1,
+                  1
+                ],
+                "lexical_score": 1,
+                "matched_terms": [
+                  "first",
+                  "second"
+                ],
+                "score": 0.352558,
+                "semantic_score": 0.352558
+              }
+            ],
+            "lexical_bonus": 0.1,
+            "lexical_score": 1,
+            "margin": 0.352558,
+            "matched_candidate": null,
+            "matched_record": "R00000000000000000000000001",
+            "matched_title": null,
+            "obsolete": true,
+            "record": "R00000000000000000000000001",
+            "replacement": null,
+            "resolution_required": true,
+            "resolved": false,
+            "scope_bonus": 0.025,
+            "scope_match": "exact",
+            "score": 0.477558,
+            "semantic_score": 0.352558,
+            "source_information": 1,
+            "status": "obsolete",
+            "strongest_lexical_pair": 1,
+            "strongest_pair": 0.352558,
+            "summary": "Current summary",
+            "title": "Current Decision API (CDAPI)"
+          }
+        ],
+        "retrieval": {
+          "adr_shortlist": 1,
+          "candidate_search_items": 1,
+          "eligible_adrs": 1,
+          "eligible_search_items": 1,
+          "exact_rerank_candidates": 7,
+          "identifier_vector_id": "adrai-identifier:-JSyvxW6dxoDl9Pzpm6Q_aoG:768",
+          "implementation": "structured-raw-text-cross-reference",
+          "passage_fts": {
+            "algorithm": "passage-exact+stemmed+identifier-fts",
+            "candidate_pairs": 6,
+            "channel_hits": {
+              "exact": 6,
+              "identifier": 6,
+              "stemmed": 0
+            },
+            "queries": 1
+          },
+          "scope_used_for_eligibility": false,
+          "scoring": {
+            "high_margin": 0.045,
+            "high_pair_score": 0.3,
+            "high_semantic_score": 0.34,
+            "lexical_bonus_cap": 0.1,
+            "lexical_rank_weight": 0.1,
+            "medium_pair_score": 0.14,
+            "medium_semantic_score": 0.16,
+            "minimum_lexical_pair_score": 0.18,
+            "minimum_pair_score": 0.075,
+            "repetitive_chunk_low_confidence": 0.15,
+            "scope_bonus_ambiguous": 0.01,
+            "scope_bonus_exact": 0.025,
+            "second_evidence_weight": 0.1,
+            "third_evidence_weight": 0.05
+          },
+          "search_sections": 7,
+          "sections": {
+            "algorithm": "exact-bounded-section-scan",
+            "bucket_hits": 0,
+            "candidates": 7,
+            "corpus": 7,
+            "fallback_chunks": 0
+          },
+          "selected_source_chunks": 1,
+          "semantic_vector_id": "adrai-semantic:T_yApQ2sJvyBH21HYYBYuQ1X:1024",
+          "source_chunks": 1,
+          "strategy": "exact-summary+passage-fts+bounded-section-rerank",
+          "summary": {
+            "algorithm": "exact",
+            "identifier_corpus": 1,
+            "semantic_corpus": 1
+          }
+        },
+        "schema": "adrai/relevant/v1",
+        "view": "relevant"
+      }
+    },
+    "history": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "adr": "A11111111111111111111111111",
+        "as_of": "1111111111111111111111111111111111111111",
+        "filters": {
+          "actor": null,
+          "since": null,
+          "until": null
+        },
+        "limit": 20,
+        "operations": [
+          {
+            "actor": "service:service",
+            "adr": "A11111111111111111111111111",
+            "changes": [
+              "status"
+            ],
+            "claimed_at": "1970-01-01T00:00:00.200000Z",
+            "details": {},
+            "label": "reactivated",
+            "operation": "O33333333333333333333333333",
+            "reason": "status update",
+            "resolved": true,
+            "status": "active",
+            "title": "Café architecture v2"
+          },
+          {
+            "actor": "llm:reviewer",
+            "adr": "A11111111111111111111111111",
+            "changes": [
+              "decision"
+            ],
+            "claimed_at": "1970-01-01T00:00:00.100000Z",
+            "commit": "commit-placement-2",
+            "details": {
+              "changed_fields": [
+                "title",
+                "summary",
+                "decision text"
+              ]
+            },
+            "label": "amended",
+            "operation": "O22222222222222222222222222",
+            "placement": "introduction",
+            "reason": "reviewed amendment",
+            "resolved": true,
+            "status": "active",
+            "title": "Café architecture v2"
+          },
+          {
+            "actor": "human:architect",
+            "adr": "A11111111111111111111111111",
+            "changes": [
+              "decision",
+              "scope",
+              "domains",
+              "status"
+            ],
+            "claimed_at": "1970-01-01T00:00:00.300000Z",
+            "commit": "commit-placement-1",
+            "details": {
+              "added_domains": [
+                "compiler"
+              ],
+              "added_scope": [
+                "src/**"
+              ]
+            },
+            "label": "created",
+            "operation": "O11111111111111111111111111",
+            "placement": "original",
+            "reason": "Café architecture v1 summary",
+            "resolved": true,
+            "status": "active",
+            "title": "Café architecture v1"
+          }
+        ],
+        "order": "newest-first",
+        "schema": "adrai/history/v1",
+        "truncated": false,
+        "view": "history"
+      }
+    },
+    "compare": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740994",
+        "as_of": {
+          "kind": "comparison",
+          "from": "1111111111111111111111111111111111111111",
+          "to": "2222222222222222222222222222222222222222"
+        }
+      },
+      "data": {
+        "cache": {
+          "mode": "pure"
+        },
+        "counts": {
+          "added": 0,
+          "changed": 1,
+          "removed": 0,
+          "unchanged": 1
+        },
+        "entries": [
+          {
+            "adr": "A11111111111111111111111111",
+            "after": {
+              "adr": "A11111111111111111111111111",
+              "applies_to": [
+                "src/**"
+              ],
+              "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+              "conflict": null,
+              "conflicts": [],
+              "counts": {
+                "amendments": 1,
+                "domain_revisions": 1,
+                "records": 2,
+                "scope_revisions": 1,
+                "status_revisions": 2
+              },
+              "domain_heads": [
+                "C22222222222222222222222222"
+              ],
+              "domains": [
+                "compiler"
+              ],
+              "obsolete": false,
+              "record": "R22222222222222222222222222",
+              "record_heads": [
+                "R22222222222222222222222222"
+              ],
+              "replacement": null,
+              "resolution_required": false,
+              "resolved": true,
+              "scope_heads": [
+                "C11111111111111111111111111"
+              ],
+              "state_token": "SYZEeC9tWl0ulonggnO5MTo",
+              "status": "active",
+              "status_heads": [
+                "C55555555555555555555555555"
+              ],
+              "summary": "new summary",
+              "title": "Café architecture v2"
+            },
+            "before": {
+              "adr": "A11111111111111111111111111",
+              "applies_to": [
+                "src/**"
+              ],
+              "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nKeep the legacy architecture.\nAdopt the service architecture.",
+              "conflict": null,
+              "conflicts": [],
+              "counts": {
+                "amendments": 0,
+                "domain_revisions": 1,
+                "records": 1,
+                "scope_revisions": 1,
+                "status_revisions": 1
+              },
+              "domain_heads": [
+                "C22222222222222222222222222"
+              ],
+              "domains": [
+                "compiler"
+              ],
+              "obsolete": false,
+              "record": "R11111111111111111111111111",
+              "record_heads": [
+                "R11111111111111111111111111"
+              ],
+              "replacement": null,
+              "resolution_required": false,
+              "resolved": true,
+              "scope_heads": [
+                "C11111111111111111111111111"
+              ],
+              "state_token": "SfklXq4igKWmeWaEQ9tehOp",
+              "status": "active",
+              "status_heads": [
+                "C33333333333333333333333333"
+              ],
+              "summary": "Café architecture v1 summary",
+              "title": "Café architecture v1"
+            },
+            "changes": [
+              {
+                "after": "R22222222222222222222222222",
+                "before": "R11111111111111111111111111",
+                "field": "record"
+              },
+              {
+                "after": "Café architecture v2",
+                "before": "Café architecture v1",
+                "diff": "--- before+++ after@@ -1 +1 @@-Café architecture v1+Café architecture v2",
+                "field": "title"
+              },
+              {
+                "after": "new summary",
+                "before": "Café architecture v1 summary",
+                "diff": "--- before+++ after@@ -1 +1 @@-Café architecture v1 summary+new summary",
+                "field": "summary"
+              },
+              {
+                "after": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+                "before": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nKeep the legacy architecture.\nAdopt the service architecture.",
+                "diff": "--- before+++ after@@ -7,5 +7,5 @@ Shared context 6\n Shared context 7\n Shared context 8\n-Keep the legacy architecture.\n-Adopt the service architecture.+Adopt the service architecture.\n+Keep the legacy architecture.",
+                "field": "body"
+              },
+              {
+                "after": [
+                  "R22222222222222222222222222"
+                ],
+                "before": [
+                  "R11111111111111111111111111"
+                ],
+                "field": "record_heads"
+              },
+              {
+                "after": [
+                  "C55555555555555555555555555"
+                ],
+                "before": [
+                  "C33333333333333333333333333"
+                ],
+                "field": "status_heads"
+              }
+            ],
+            "kind": "changed",
+            "title": "Café architecture v2"
+          },
+          {
+            "adr": "A22222222222222222222222222",
+            "after": {
+              "adr": "A22222222222222222222222222",
+              "applies_to": [],
+              "body": "# Decision\nunchanged",
+              "conflict": "0 scope heads; 0 domain heads; 0 status heads; 3 integrity errors",
+              "conflicts": [
+                {
+                  "head_count": 0,
+                  "heads": [],
+                  "kind": "integrity",
+                  "summary": "0 scope heads"
+                },
+                {
+                  "head_count": 0,
+                  "heads": [],
+                  "kind": "integrity",
+                  "summary": "0 domain heads"
+                },
+                {
+                  "head_count": 0,
+                  "heads": [],
+                  "kind": "integrity",
+                  "summary": "0 status heads"
+                },
+                {
+                  "head_count": 0,
+                  "heads": [],
+                  "kind": "integrity",
+                  "summary": "3 integrity errors"
+                }
+              ],
+              "counts": {
+                "amendments": 0,
+                "domain_revisions": 0,
+                "records": 1,
+                "scope_revisions": 0,
+                "status_revisions": 0
+              },
+              "domain_heads": [],
+              "domains": [],
+              "obsolete": false,
+              "record": "R88888888888888888888888888",
+              "record_heads": [
+                "R88888888888888888888888888"
+              ],
+              "replacement": null,
+              "resolution_required": true,
+              "resolved": false,
+              "scope_heads": [],
+              "state_token": "SmLQ9wpLjNCaLjk_oItdzeL",
+              "status": "conflict",
+              "status_heads": [],
+              "summary": "unchanged summary",
+              "title": "unchanged"
+            },
+            "before": {
+              "adr": "A22222222222222222222222222",
+              "applies_to": [],
+              "body": "# Decision\nunchanged",
+              "conflict": "0 scope heads; 0 domain heads; 0 status heads; 3 integrity errors",
+              "conflicts": [
+                {
+                  "head_count": 0,
+                  "heads": [],
+                  "kind": "integrity",
+                  "summary": "0 scope heads"
+                },
+                {
+                  "head_count": 0,
+                  "heads": [],
+                  "kind": "integrity",
+                  "summary": "0 domain heads"
+                },
+                {
+                  "head_count": 0,
+                  "heads": [],
+                  "kind": "integrity",
+                  "summary": "0 status heads"
+                },
+                {
+                  "head_count": 0,
+                  "heads": [],
+                  "kind": "integrity",
+                  "summary": "3 integrity errors"
+                }
+              ],
+              "counts": {
+                "amendments": 0,
+                "domain_revisions": 0,
+                "records": 1,
+                "scope_revisions": 0,
+                "status_revisions": 0
+              },
+              "domain_heads": [],
+              "domains": [],
+              "obsolete": false,
+              "record": "R88888888888888888888888888",
+              "record_heads": [
+                "R88888888888888888888888888"
+              ],
+              "replacement": null,
+              "resolution_required": true,
+              "resolved": false,
+              "scope_heads": [],
+              "state_token": "SmLQ9wpLjNCaLjk_oItdzeL",
+              "status": "conflict",
+              "status_heads": [],
+              "summary": "unchanged summary",
+              "title": "unchanged"
+            },
+            "changes": [],
+            "kind": "unchanged",
+            "title": "unchanged"
+          }
+        ],
+        "from": "1111111111111111111111111111111111111111",
+        "from_requested": "1111111111111111111111111111111111111111",
+        "to": "2222222222222222222222222222222222222222",
+        "to_requested": "2222222222222222222222222222222222222222",
+        "view": "compare"
+      }
+    },
+    "conflicts": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "conflicts": [
+          {
+            "adr": "A00000000000000000000000000",
+            "candidates": [
+              {
+                "axis": "decision",
+                "head_count": 2,
+                "heads": [
+                  "R00000000000000000000000001",
+                  "R00000000000000000000000002"
+                ],
+                "summary": "2 decision heads"
+              }
+            ],
+            "code": "ADR_CONFLICT",
+            "count": 1,
+            "state_token": "Sj9YeufyyQvEIrGF9AdvtHo",
+            "summaries": [
+              "2 decision heads"
+            ]
+          }
+        ],
+        "schema": "adrai/conflicts/v1"
+      }
+    },
+    "doctor": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "cache": [],
+        "counts": {
+          "errors": 0,
+          "warnings": 0
+        },
+        "current_access": null,
+        "database": null,
+        "issues": [],
+        "ok": true,
+        "revision": "1111111111111111111111111111111111111111",
+        "shallow": false,
+        "database_build": null
+      }
+    },
+    "mutation_create": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "committed": true,
+        "operation": "Oaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "commit": "2222222222222222222222222222222222222222",
+        "created": [
+          "architecture/adrai/decisions/example.md"
+        ],
+        "index_updated": true,
+        "indexed": true,
+        "database": "C:/fixture/repo/.adrai/index.sqlite",
+        "index_revision": "2222222222222222222222222222222222222222",
+        "index_warnings": 0,
+        "adr": "A11111111111111111111111111",
+        "record": "Raaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "scope": "Cbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "domain": "Ccccccccccccccccccccccccccc",
+        "status": "Cdddddddddddddddddddddddddd",
+        "domains": [
+          "architecture"
+        ]
+      }
+    },
+    "mutation_amend": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "committed": true,
+        "operation": "Oaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "commit": "2222222222222222222222222222222222222222",
+        "created": [
+          "architecture/adrai/decisions/example.md"
+        ],
+        "index_updated": true,
+        "indexed": true,
+        "database": "C:/fixture/repo/.adrai/index.sqlite",
+        "index_revision": "2222222222222222222222222222222222222222",
+        "index_warnings": 0,
+        "adr": "A11111111111111111111111111",
+        "record": "Rbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "amends": "Raaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "connection": "Ceeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    "mutation_scope": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "committed": true,
+        "operation": "Oaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "commit": "2222222222222222222222222222222222222222",
+        "created": [
+          "architecture/adrai/decisions/example.md"
+        ],
+        "index_updated": true,
+        "indexed": true,
+        "database": "C:/fixture/repo/.adrai/index.sqlite",
+        "index_revision": "2222222222222222222222222222222222222222",
+        "index_warnings": 0,
+        "adr": "A11111111111111111111111111",
+        "scope": "Cbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "scope_parents": [
+          "Caaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "mode": "delta",
+        "applies_to": [
+          "src/**"
+        ]
+      }
+    },
+    "mutation_domain": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "committed": true,
+        "operation": "Oaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "commit": "2222222222222222222222222222222222222222",
+        "created": [
+          "architecture/adrai/decisions/example.md"
+        ],
+        "index_updated": true,
+        "indexed": true,
+        "database": "C:/fixture/repo/.adrai/index.sqlite",
+        "index_revision": "2222222222222222222222222222222222222222",
+        "index_warnings": 0,
+        "adr": "A11111111111111111111111111",
+        "domain": "Ccccccccccccccccccccccccccc",
+        "domain_parents": [
+          "Caaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "mode": "reviewed",
+        "domains": [
+          "architecture"
+        ],
+        "added": [
+          "architecture"
+        ],
+        "removed": [],
+        "refinements": []
+      }
+    },
+    "mutation_obsolete": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "committed": true,
+        "operation": "Oaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "commit": "2222222222222222222222222222222222222222",
+        "created": [
+          "architecture/adrai/decisions/example.md"
+        ],
+        "index_updated": true,
+        "indexed": true,
+        "database": "C:/fixture/repo/.adrai/index.sqlite",
+        "index_revision": "2222222222222222222222222222222222222222",
+        "index_warnings": 0,
+        "adr": "A11111111111111111111111111",
+        "connection": "Cdddddddddddddddddddddddddd",
+        "obsolete": true,
+        "resolved_status_conflict": false,
+        "covered_records": [
+          "Raaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "replacement": null
+      }
+    },
+    "mutation_reactivate": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "committed": true,
+        "operation": "Oaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "commit": "2222222222222222222222222222222222222222",
+        "created": [
+          "architecture/adrai/decisions/example.md"
+        ],
+        "index_updated": true,
+        "indexed": true,
+        "database": "C:/fixture/repo/.adrai/index.sqlite",
+        "index_revision": "2222222222222222222222222222222222222222",
+        "index_warnings": 0,
+        "adr": "A11111111111111111111111111",
+        "connection": "Ceeeeeeeeeeeeeeeeeeeeeeeeee",
+        "obsolete": false,
+        "resolved_status_conflict": true
+      }
+    },
+    "mutation_warning": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "18446744073709551615",
+        "as_of": {
+          "kind": "unavailable",
+          "reason": "generation-exhausted"
+        }
+      },
+      "data": {
+        "committed": true,
+        "operation": "Oaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "commit": "2222222222222222222222222222222222222222",
+        "created": [
+          "architecture/adrai/decisions/example.md"
+        ],
+        "index_updated": false,
+        "indexed": false,
+        "adr": "A11111111111111111111111111",
+        "index_error": "post-commit index failed",
+        "publication_warning": "generation-exhausted"
+      }
+    },
+    "error": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "0",
+        "as_of": {
+          "kind": "unavailable",
+          "reason": "pre-authentication"
+        }
+      },
+      "error": {
+        "category": "authentication",
+        "status": 401,
+        "code": "missing-credential",
+        "message": "credential required"
+      }
+    },
+    "error_exhausted": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "18446744073709551615",
+        "as_of": {
+          "kind": "unavailable",
+          "reason": "generation-exhausted"
+        }
+      },
+      "error": {
+        "category": "service-failure",
+        "status": 503,
+        "code": "generation-exhausted",
+        "message": "event generation exhausted; restart the server"
+      }
+    },
+    "event_large": {
+      "schema": "adrai/events/v1",
+      "generation": "9007199254740993",
+      "as_of": {
+        "kind": "commit",
+        "oid": "1111111111111111111111111111111111111111"
+      },
+      "event": {
+        "type": "repository-invalidated",
+        "facts": [
+          "head"
+        ]
+      }
+    },
+    "event_max": {
+      "schema": "adrai/events/v1",
+      "generation": "18446744073709551615",
+      "as_of": {
+        "kind": "commit",
+        "oid": "1111111111111111111111111111111111111111"
+      },
+      "event": {
+        "type": "repository-invalidated",
+        "facts": [
+          "head"
+        ]
+      }
+    },
+    "exploded_raw": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "adr": "A11111111111111111111111111",
+        "as_of": "1111111111111111111111111111111111111111",
+        "operations": [
+          {
+            "items": [
+              {
+                "event": "connection.amends",
+                "item": "C44444444444444444444444444",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": "R22222222222222222222222222",
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": [
+                    "R11111111111111111111111111"
+                  ]
+                },
+                "operation": "O22222222222222222222222222",
+                "path": "fixtures/C44444444444444444444444444.md",
+                "rationale": "reviewed amendment",
+                "raw_semantic": "+++\nschema = \"adrai/connection/v1\"\nconnection = \"C44444444444444444444444444\"\nrelation = \"amends\"\nfrom_record = \"R22222222222222222222222222\"\nsubject_adr = \"A11111111111111111111111111\"\nto_records = [\"R11111111111111111111111111\"]\n+++\n\nreviewed amendment\n",
+                "relation": "amends",
+                "type": "connection"
+              },
+              {
+                "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.",
+                "diffs": [
+                  {
+                    "diff": "--- parent\n+++ child\n@@ -1,9 +1,9 @@\n +++\n schema = \"adrai/decision/v1\"\n adr = \"A11111111111111111111111111\"\n-record = \"R11111111111111111111111111\"\n-title = \"Café architecture v1\"\n-summary = \"Café architecture v1 summary\"\n+record = \"R22222222222222222222222222\"\n+title = \"Café architecture v2\"\n+summary = \"new summary\"\n domains = [\"compiler\"]\n +++\n \n@@ -16,5 +16,5 @@\n Shared context 6\n Shared context 7\n Shared context 8\n+Adopt the service architecture.\n Keep the legacy architecture.\n-Adopt the service architecture.\n",
+                    "parent": "R11111111111111111111111111"
+                  }
+                ],
+                "domains": [
+                  "compiler"
+                ],
+                "event": "decision.amend",
+                "item": "R22222222222222222222222222",
+                "operation": "O22222222222222222222222222",
+                "parents": [
+                  "R11111111111111111111111111"
+                ],
+                "path": "fixtures/R22222222222222222222222222.md",
+                "raw_semantic": "+++\nschema = \"adrai/decision/v1\"\nadr = \"A11111111111111111111111111\"\nrecord = \"R22222222222222222222222222\"\ntitle = \"Café architecture v2\"\nsummary = \"new summary\"\ndomains = [\"compiler\"]\n+++\n\n# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nAdopt the service architecture.\nKeep the legacy architecture.\n",
+                "summary": "new summary",
+                "title": "Café architecture v2",
+                "type": "decision"
+              }
+            ],
+            "operation": "O22222222222222222222222222",
+            "provenance": {
+              "actor": "llm:reviewer",
+              "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "branch_hint": null,
+              "claimed_at": "1970-01-01T00:00:00.100000Z",
+              "claimed_ms": 100,
+              "context_digest": null,
+              "events": [
+                "connection.amends",
+                "decision.amend"
+              ],
+              "input_digest": null,
+              "line_anchors": [],
+              "line_landings": [],
+              "model": null,
+              "objects": [
+                "C44444444444444444444444444",
+                "R22222222222222222222222222"
+              ],
+              "operation": "O22222222222222222222222222",
+              "placements": [
+                {
+                  "authored_at": "1970-01-01T00:00:00.090000Z",
+                  "classification": "introduction",
+                  "commit": "commit-placement-2",
+                  "committed_at": "1970-01-01T00:00:00.100000Z",
+                  "parents": [
+                    "commit-placement-1"
+                  ],
+                  "reachable": true,
+                  "subject": "amend ADR"
+                }
+              ],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [],
+                "introductions": [
+                  "commit-placement-2"
+                ],
+                "original_operation_commits": [],
+                "semantic": "1970-01-01T00:00:00.100000Z"
+              }
+            }
+          },
+          {
+            "items": [
+              {
+                "event": "decision.reactivate",
+                "item": "C55555555555555555555555555",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": null,
+                  "parent_connections": [
+                    "C33333333333333333333333333"
+                  ],
+                  "record_heads": [
+                    "R22222222222222222222222222"
+                  ],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": "active",
+                  "to_records": []
+                },
+                "operation": "O33333333333333333333333333",
+                "path": "fixtures/C55555555555555555555555555.md",
+                "rationale": "status update",
+                "raw_semantic": "+++\nschema = \"adrai/connection/v1\"\nconnection = \"C55555555555555555555555555\"\nrelation = \"status\"\nparent_connections = [\"C33333333333333333333333333\"]\nrecord_heads = [\"R22222222222222222222222222\"]\nstate = \"active\"\nsubject_adr = \"A11111111111111111111111111\"\n+++\n\nstatus update\n",
+                "relation": "status",
+                "type": "connection"
+              }
+            ],
+            "operation": "O33333333333333333333333333",
+            "provenance": {
+              "actor": "service:service",
+              "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "branch_hint": null,
+              "claimed_at": "1970-01-01T00:00:00.200000Z",
+              "claimed_ms": 200,
+              "context_digest": null,
+              "events": [
+                "decision.reactivate"
+              ],
+              "input_digest": null,
+              "line_anchors": [],
+              "line_landings": [],
+              "model": null,
+              "objects": [
+                "C55555555555555555555555555"
+              ],
+              "operation": "O33333333333333333333333333",
+              "placements": [],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [],
+                "introductions": [],
+                "original_operation_commits": [],
+                "semantic": "1970-01-01T00:00:00.200000Z"
+              }
+            }
+          },
+          {
+            "items": [
+              {
+                "event": "scope.initial",
+                "item": "C11111111111111111111111111",
+                "metadata": {
+                  "added": [
+                    "src/**"
+                  ],
+                  "applies_to": [
+                    "src/**"
+                  ],
+                  "change": "initial",
+                  "domains": [],
+                  "from_record": null,
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": []
+                },
+                "operation": "O11111111111111111111111111",
+                "path": "fixtures/C11111111111111111111111111.md",
+                "rationale": "initial scope",
+                "raw_semantic": "+++\nschema = \"adrai/connection/v1\"\nconnection = \"C11111111111111111111111111\"\nrelation = \"applies_to\"\nadded = [\"src/**\"]\napplies_to = [\"src/**\"]\nchange = \"initial\"\nparent_connections = []\nremoved = []\nsubject_adr = \"A11111111111111111111111111\"\n+++\n\ninitial scope\n",
+                "relation": "applies_to",
+                "type": "connection"
+              },
+              {
+                "event": "domain.initial",
+                "item": "C22222222222222222222222222",
+                "metadata": {
+                  "added": [
+                    "compiler"
+                  ],
+                  "applies_to": [],
+                  "change": "initial",
+                  "domains": [
+                    "compiler"
+                  ],
+                  "from_record": null,
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": []
+                },
+                "operation": "O11111111111111111111111111",
+                "path": "fixtures/C22222222222222222222222222.md",
+                "rationale": "initial domain",
+                "raw_semantic": "+++\nschema = \"adrai/connection/v1\"\nconnection = \"C22222222222222222222222222\"\nrelation = \"domains\"\nadded = [\"compiler\"]\nchange = \"initial\"\ndomains = [\"compiler\"]\nparent_connections = []\nrefinements = []\nremoved = []\nsubject_adr = \"A11111111111111111111111111\"\n+++\n\ninitial domain\n",
+                "relation": "domains",
+                "type": "connection"
+              },
+              {
+                "event": "status.initial",
+                "item": "C33333333333333333333333333",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": null,
+                  "parent_connections": [],
+                  "record_heads": [
+                    "R11111111111111111111111111"
+                  ],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": "active",
+                  "to_records": []
+                },
+                "operation": "O11111111111111111111111111",
+                "path": "fixtures/C33333333333333333333333333.md",
+                "rationale": "status update",
+                "raw_semantic": "+++\nschema = \"adrai/connection/v1\"\nconnection = \"C33333333333333333333333333\"\nrelation = \"status\"\nparent_connections = []\nrecord_heads = [\"R11111111111111111111111111\"]\nstate = \"active\"\nsubject_adr = \"A11111111111111111111111111\"\n+++\n\nstatus update\n",
+                "relation": "status",
+                "type": "connection"
+              },
+              {
+                "body": "# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nKeep the legacy architecture.\nAdopt the service architecture.",
+                "diffs": [],
+                "domains": [
+                  "compiler"
+                ],
+                "event": "decision.create",
+                "item": "R11111111111111111111111111",
+                "operation": "O11111111111111111111111111",
+                "parents": [],
+                "path": "fixtures/R11111111111111111111111111.md",
+                "raw_semantic": "+++\nschema = \"adrai/decision/v1\"\nadr = \"A11111111111111111111111111\"\nrecord = \"R11111111111111111111111111\"\ntitle = \"Café architecture v1\"\nsummary = \"Café architecture v1 summary\"\ndomains = [\"compiler\"]\n+++\n\n# Decision\nShared context 1\nShared context 2\nShared context 3\nShared context 4\nShared context 5\nShared context 6\nShared context 7\nShared context 8\nKeep the legacy architecture.\nAdopt the service architecture.\n",
+                "summary": "Café architecture v1 summary",
+                "title": "Café architecture v1",
+                "type": "decision"
+              }
+            ],
+            "operation": "O11111111111111111111111111",
+            "provenance": {
+              "actor": "human:architect",
+              "basis": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "branch_hint": null,
+              "claimed_at": "1970-01-01T00:00:00.300000Z",
+              "claimed_ms": 300,
+              "context_digest": null,
+              "events": [
+                "decision.create",
+                "domain.initial",
+                "scope.initial",
+                "status.initial"
+              ],
+              "input_digest": null,
+              "line_anchors": [],
+              "line_landings": [
+                {
+                  "commit": "landing-1",
+                  "complete": true,
+                  "line": "trunk",
+                  "ref": "refs/heads/main"
+                }
+              ],
+              "model": null,
+              "objects": [
+                "C11111111111111111111111111",
+                "C22222222222222222222222222",
+                "C33333333333333333333333333",
+                "R11111111111111111111111111"
+              ],
+              "operation": "O11111111111111111111111111",
+              "placements": [
+                {
+                  "authored_at": "1970-01-01T00:00:00.250000Z",
+                  "classification": "original",
+                  "commit": "commit-placement-1",
+                  "committed_at": "1970-01-01T00:00:00.300000Z",
+                  "parents": [],
+                  "reachable": true,
+                  "subject": "create ADR"
+                }
+              ],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [
+                  {
+                    "commit": "landing-1",
+                    "complete": true,
+                    "line": "trunk",
+                    "ref": "refs/heads/main"
+                  }
+                ],
+                "introductions": [],
+                "original_operation_commits": [
+                  "commit-placement-1"
+                ],
+                "semantic": "1970-01-01T00:00:00.300000Z"
+              }
+            }
+          }
+        ],
+        "resolution": {
+          "conflicts": [],
+          "resolution_required": false,
+          "resolved": true
+        },
+        "resolution_required": false,
+        "resolved": true,
+        "schema": "adrai/show-exploded/v1",
+        "state_token": "SYZEeC9tWl0ulonggnO5MTo",
+        "view": "exploded"
+      }
+    },
+    "exploded_conflicted": {
+      "schema": "adrai/api/v1",
+      "metadata": {
+        "generation": "9007199254740993",
+        "as_of": {
+          "kind": "commit",
+          "oid": "1111111111111111111111111111111111111111"
+        }
+      },
+      "data": {
+        "adr": "A00000000000000000000000000",
+        "as_of": "1111111111111111111111111111111111111111",
+        "operations": [
+          {
+            "items": [
+              {
+                "event": "scope.initial",
+                "item": "C00000000000000000000000000",
+                "metadata": {
+                  "added": [
+                    "src/a,b/**"
+                  ],
+                  "applies_to": [
+                    "src/a,b/**"
+                  ],
+                  "change": "initial",
+                  "domains": [],
+                  "from_record": null,
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": []
+                },
+                "operation": "O00000000000000000000000000",
+                "path": "architecture/adrai/connections/C000/C00000000000000000000000000--applies_to.connection.md",
+                "rationale": "Initial scope.",
+                "relation": "applies_to",
+                "type": "connection"
+              },
+              {
+                "event": "domain.initial",
+                "item": "C00000000000000000000000001",
+                "metadata": {
+                  "added": [
+                    "platform"
+                  ],
+                  "applies_to": [],
+                  "change": "initial",
+                  "domains": [
+                    "platform"
+                  ],
+                  "from_record": null,
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": []
+                },
+                "operation": "O00000000000000000000000000",
+                "path": "architecture/adrai/connections/C000/C00000000000000000000000001--domains.connection.md",
+                "rationale": "Initial domain.",
+                "relation": "domains",
+                "type": "connection"
+              },
+              {
+                "event": "status.initial",
+                "item": "C00000000000000000000000002",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": null,
+                  "parent_connections": [],
+                  "record_heads": [
+                    "R00000000000000000000000000"
+                  ],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": "active",
+                  "to_records": []
+                },
+                "operation": "O00000000000000000000000000",
+                "path": "architecture/adrai/connections/C000/C00000000000000000000000002--status.connection.md",
+                "rationale": "Initial active status.",
+                "relation": "status",
+                "type": "connection"
+              },
+              {
+                "body": "# Context\nRepository state is immutable.\n\n# Decision\nCompile by exact OID.\n\n# Consequences\nCold rebuilds are deterministic.",
+                "diffs": [],
+                "domains": [
+                  "platform"
+                ],
+                "event": "decision.create",
+                "item": "R00000000000000000000000000",
+                "operation": "O00000000000000000000000000",
+                "parents": [],
+                "path": "architecture/adrai/decisions/R000/R00000000000000000000000000--use-a-cold-compiler.decision.md",
+                "summary": "Compile immutable repository observations into disposable SQLite.",
+                "title": "Use a cold compiler",
+                "type": "decision"
+              }
+            ],
+            "operation": "O00000000000000000000000000",
+            "provenance": {
+              "actor": "service:adrai-compiler-fixture",
+              "basis": "1111111111111111111111111111111111111111",
+              "branch_hint": null,
+              "claimed_at": "2023-11-14T22:13:20Z",
+              "claimed_ms": 1700000000000,
+              "context_digest": null,
+              "events": [
+                "decision.create",
+                "domain.initial",
+                "scope.initial",
+                "status.initial"
+              ],
+              "input_digest": null,
+              "line_anchors": [
+                {
+                  "commit": "1111111111111111111111111111111111111111",
+                  "line": "logical@anchor\nsecond-line"
+                }
+              ],
+              "line_landings": [],
+              "model": null,
+              "objects": [
+                "C00000000000000000000000000",
+                "C00000000000000000000000001",
+                "C00000000000000000000000002",
+                "R00000000000000000000000000"
+              ],
+              "operation": "O00000000000000000000000000",
+              "placements": [],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [],
+                "introductions": [],
+                "original_operation_commits": [],
+                "semantic": "2023-11-14T22:13:20Z"
+              }
+            }
+          },
+          {
+            "items": [
+              {
+                "event": "connection.amends",
+                "item": "C00000000000000000000000003",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": "R00000000000000000000000001",
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": [
+                    "R00000000000000000000000000"
+                  ]
+                },
+                "operation": "O00000000000000000000000001",
+                "path": "architecture/adrai/connections/C000/C00000000000000000000000003--amends.connection.md",
+                "rationale": "Concurrent amendment.",
+                "relation": "amends",
+                "type": "connection"
+              },
+              {
+                "body": "# Context\nTwo branches amended the decision.\n\n# Decision\nRetain this candidate.",
+                "diffs": [
+                  {
+                    "diff": "--- parent\n+++ child\n@@ -1,17 +1,14 @@\n +++\n schema = \"adrai/decision/v1\"\n adr = \"A00000000000000000000000000\"\n-record = \"R00000000000000000000000000\"\n-title = \"Use a cold compiler\"\n-summary = \"Compile immutable repository observations into disposable SQLite.\"\n-domains = [\"platform\"]\n+record = \"R00000000000000000000000001\"\n+title = \"First amendment\"\n+summary = \"A conflicting amendment candidate.\"\n+domains = []\n +++\n \n # Context\n-Repository state is immutable.\n+Two branches amended the decision.\n \n # Decision\n-Compile by exact OID.\n-\n-# Consequences\n-Cold rebuilds are deterministic.\n+Retain this candidate.\n",
+                    "parent": "R00000000000000000000000000"
+                  }
+                ],
+                "domains": [],
+                "event": "decision.amend",
+                "item": "R00000000000000000000000001",
+                "operation": "O00000000000000000000000001",
+                "parents": [
+                  "R00000000000000000000000000"
+                ],
+                "path": "architecture/adrai/decisions/R000/R00000000000000000000000001--first-amendment.decision.md",
+                "summary": "A conflicting amendment candidate.",
+                "title": "First amendment",
+                "type": "decision"
+              }
+            ],
+            "operation": "O00000000000000000000000001",
+            "provenance": {
+              "actor": "service:adrai-compiler-fixture",
+              "basis": "1111111111111111111111111111111111111111",
+              "branch_hint": null,
+              "claimed_at": "2023-11-14T22:13:20Z",
+              "claimed_ms": 1700000000000,
+              "context_digest": null,
+              "events": [
+                "connection.amends",
+                "decision.amend"
+              ],
+              "input_digest": null,
+              "line_anchors": [
+                {
+                  "commit": "1111111111111111111111111111111111111111",
+                  "line": "logical@anchor\nsecond-line"
+                }
+              ],
+              "line_landings": [],
+              "model": null,
+              "objects": [
+                "C00000000000000000000000003",
+                "R00000000000000000000000001"
+              ],
+              "operation": "O00000000000000000000000001",
+              "placements": [],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [],
+                "introductions": [],
+                "original_operation_commits": [],
+                "semantic": "2023-11-14T22:13:20Z"
+              }
+            }
+          },
+          {
+            "items": [
+              {
+                "event": "connection.amends",
+                "item": "C00000000000000000000000004",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": "R00000000000000000000000002",
+                  "parent_connections": [],
+                  "record_heads": [],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": null,
+                  "to_records": [
+                    "R00000000000000000000000000"
+                  ]
+                },
+                "operation": "O00000000000000000000000002",
+                "path": "architecture/adrai/connections/C000/C00000000000000000000000004--amends.connection.md",
+                "rationale": "Concurrent amendment.",
+                "relation": "amends",
+                "type": "connection"
+              },
+              {
+                "body": "# Context\nTwo branches amended the decision.\n\n# Decision\nRetain this candidate.",
+                "diffs": [
+                  {
+                    "diff": "--- parent\n+++ child\n@@ -1,17 +1,14 @@\n +++\n schema = \"adrai/decision/v1\"\n adr = \"A00000000000000000000000000\"\n-record = \"R00000000000000000000000000\"\n-title = \"Use a cold compiler\"\n-summary = \"Compile immutable repository observations into disposable SQLite.\"\n-domains = [\"platform\"]\n+record = \"R00000000000000000000000002\"\n+title = \"Second amendment\"\n+summary = \"A conflicting amendment candidate.\"\n+domains = []\n +++\n \n # Context\n-Repository state is immutable.\n+Two branches amended the decision.\n \n # Decision\n-Compile by exact OID.\n-\n-# Consequences\n-Cold rebuilds are deterministic.\n+Retain this candidate.\n",
+                    "parent": "R00000000000000000000000000"
+                  }
+                ],
+                "domains": [],
+                "event": "decision.amend",
+                "item": "R00000000000000000000000002",
+                "operation": "O00000000000000000000000002",
+                "parents": [
+                  "R00000000000000000000000000"
+                ],
+                "path": "architecture/adrai/decisions/R000/R00000000000000000000000002--second-amendment.decision.md",
+                "summary": "A conflicting amendment candidate.",
+                "title": "Second amendment",
+                "type": "decision"
+              }
+            ],
+            "operation": "O00000000000000000000000002",
+            "provenance": {
+              "actor": "service:adrai-compiler-fixture",
+              "basis": "1111111111111111111111111111111111111111",
+              "branch_hint": null,
+              "claimed_at": "2023-11-14T22:13:20Z",
+              "claimed_ms": 1700000000000,
+              "context_digest": null,
+              "events": [
+                "connection.amends",
+                "decision.amend"
+              ],
+              "input_digest": null,
+              "line_anchors": [
+                {
+                  "commit": "1111111111111111111111111111111111111111",
+                  "line": "logical@anchor\nsecond-line"
+                }
+              ],
+              "line_landings": [],
+              "model": null,
+              "objects": [
+                "C00000000000000000000000004",
+                "R00000000000000000000000002"
+              ],
+              "operation": "O00000000000000000000000002",
+              "placements": [],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [],
+                "introductions": [],
+                "original_operation_commits": [],
+                "semantic": "2023-11-14T22:13:20Z"
+              }
+            }
+          },
+          {
+            "items": [
+              {
+                "event": "decision.reactivate",
+                "item": "C00000000000000000000000005",
+                "metadata": {
+                  "added": [],
+                  "applies_to": [],
+                  "change": null,
+                  "domains": [],
+                  "from_record": null,
+                  "parent_connections": [
+                    "C00000000000000000000000002"
+                  ],
+                  "record_heads": [
+                    "R00000000000000000000000001",
+                    "R00000000000000000000000002"
+                  ],
+                  "refinements": [],
+                  "removed": [],
+                  "replacement": null,
+                  "state": "active",
+                  "to_records": []
+                },
+                "operation": "O00000000000000000000000003",
+                "path": "architecture/adrai/connections/C000/C00000000000000000000000005--status.connection.md",
+                "rationale": "Cover both concurrent decision heads.",
+                "relation": "status",
+                "type": "connection"
+              }
+            ],
+            "operation": "O00000000000000000000000003",
+            "provenance": {
+              "actor": "service:adrai-compiler-fixture",
+              "basis": "1111111111111111111111111111111111111111",
+              "branch_hint": null,
+              "claimed_at": "2023-11-14T22:13:20Z",
+              "claimed_ms": 1700000000000,
+              "context_digest": null,
+              "events": [
+                "decision.reactivate"
+              ],
+              "input_digest": null,
+              "line_anchors": [
+                {
+                  "commit": "1111111111111111111111111111111111111111",
+                  "line": "logical@anchor\nsecond-line"
+                }
+              ],
+              "line_landings": [],
+              "model": null,
+              "objects": [
+                "C00000000000000000000000005"
+              ],
+              "operation": "O00000000000000000000000003",
+              "placements": [],
+              "prompt_digest": null,
+              "tool": "adrai/1.0.0",
+              "upstream_hint": null,
+              "when": {
+                "copies": [],
+                "first_present_on_lines": [],
+                "introductions": [],
+                "original_operation_commits": [],
+                "semantic": "2023-11-14T22:13:20Z"
+              }
+            }
+          }
+        ],
+        "resolution": {
+          "conflicts": [
+            {
+              "head_count": 2,
+              "heads": [
+                "R00000000000000000000000001",
+                "R00000000000000000000000002"
+              ],
+              "kind": "decision",
+              "summary": "2 decision heads"
+            }
+          ],
+          "resolution_required": true,
+          "resolved": false
+        },
+        "resolution_required": true,
+        "resolved": false,
+        "schema": "adrai/show-exploded/v1",
+        "state_token": "Sj9YeufyyQvEIrGF9AdvtHo",
+        "view": "exploded"
+      }
+    }
+  }
+}

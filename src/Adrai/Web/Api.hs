@@ -75,7 +75,7 @@ import Adrai.Git
     mkRevisionSpec,
     revisionSpecText,
   )
-import Adrai.History (HistoryOptions (..), HistoryOrder (..))
+import Adrai.History (ActorSelector (..), HistoryOptions (..), HistoryOrder (..))
 import qualified Adrai.History as History
 import Adrai.Provenance (GitOid, encodeBase64Url, gitOidText, mkGitOid, sha256DigestFrames)
 import Adrai.Query (RelevantRequest (..), SearchRequest (..), defaultSearchRequest)
@@ -290,7 +290,7 @@ data ApiLimits = ApiLimits
   deriving (Eq, Show)
 
 defaultApiLimits :: ApiLimits
-defaultApiLimits = ApiLimits (1024 * 1024) 4096 100
+defaultApiLimits = ApiLimits (1024 * 1024) 4096 1000
 
 data RevisionRequest = RevisionRequest
   { revisionRequestRevision :: Text
@@ -378,14 +378,15 @@ requiredQuery key values = maybe (Left (badField key "missing query field")) Rig
 
 decodeSearch :: ApiLimits -> [(Text, Text)] -> Either ApiError SearchServiceRequest
 decodeSearch limits values = do
-  queryFields ["q", "at", "mode", "view", "include_obsolete", "domain", "file", "limit", "shallow"] values
+  queryFields ["q", "at", "mode", "view", "include_obsolete", "domain", "file", "limit", "shallow", "actor", "since", "until"] values
   needle <- requiredQuery "q" values
-  if Text.null (Text.strip needle) then Left (badField "q" "search query must be nonblank") else Right ()
   mode <- maybe (Right HybridRetrieval) parseMode (queryValue "mode" values)
   view <- maybe (Right CollapsedView) parseView (queryValue "view" values)
   includeObsolete <- optionalBool "include_obsolete" False values
   shallow <- optionalBool "shallow" False values
   limit <- boundedLimit limits 10 values
+  actor <- traverse parseActorSelector (queryValue "actor" values)
+  (since, untilBound) <- parseTimeWindow values
   path <- traverse (first (const (badField "file" "invalid repository path")) . mkRepoPath) (queryValue "file" values)
   let base = defaultSearchRequest needle
       request = base
@@ -395,6 +396,9 @@ decodeSearch limits values = do
           searchRequestDomains = maybe [] (Text.splitOn ",") (queryValue "domain" values),
           searchRequestFile = path,
           searchRequestLimit = limit,
+          searchRequestActor = actor,
+          searchRequestSince = since,
+          searchRequestUntil = untilBound,
           searchRequestShallowHistory = shallow
         }
   revision <- validatedRevision "at" (fromMaybe "HEAD" (queryValue "at" values))
@@ -402,13 +406,19 @@ decodeSearch limits values = do
 
 decodeRelevant :: ApiLimits -> [(Text, Text)] -> Either ApiError RelevantRequest
 decodeRelevant limits values = do
-  queryFields ["file", "at", "include_obsolete", "limit"] values
+  queryFields ["file", "at", "include_obsolete", "limit", "worktree"] values
   rawPath <- requiredQuery "file" values
   path <- first (const (badField "file" "invalid repository path")) (mkRepoPath rawPath)
   includeObsolete <- optionalBool "include_obsolete" False values
-  limit <- boundedLimit limits 10 values
-  revision <- validatedRevision "at" (fromMaybe "HEAD" (queryValue "at" values))
-  Right (RelevantRequest path (AtRevision revision) includeObsolete limit)
+  limit <- boundedLimitTo (min 100 (maximumResultLimit limits)) 10 values
+  worktree <- optionalBool "worktree" False values
+  if worktree then do
+    case queryValue "at" values of
+      Just _ -> Left (badField "at" "at is incompatible with worktree=true")
+      Nothing -> Right (RelevantRequest path WorkingRevision includeObsolete limit)
+    else do
+      revision <- validatedRevision "at" (fromMaybe "HEAD" (queryValue "at" values))
+      Right (RelevantRequest path (AtRevision revision) includeObsolete limit)
 
 decodeShow :: AdrId -> [(Text, Text)] -> Either ApiError ShowRequest
 decodeShow adr values = do
@@ -421,16 +431,18 @@ decodeShow adr values = do
 
 decodeHistory :: ApiLimits -> [(Text, Text)] -> Either ApiError HistoryRequest
 decodeHistory limits values = do
-  queryFields ["adr", "at", "limit", "order"] values
+  queryFields ["adr", "at", "limit", "order", "actor", "since", "until"] values
   order <- case queryValue "order" values of
     Nothing -> Right NewestFirst
     Just "newest" -> Right NewestFirst
     Just "oldest" -> Right OldestFirst
     _ -> Left (badField "order" "expected newest or oldest")
   limit <- boundedLimit limits 20 values
+  actor <- traverse parseActorSelector (queryValue "actor" values)
+  (since, untilBound) <- parseTimeWindow values
   reference <- traverse validatedReference (queryValue "adr" values)
   revision <- validatedRevision "at" (fromMaybe "HEAD" (queryValue "at" values))
-  Right (HistoryRequest reference revision (HistoryOptions order limit Nothing Nothing Nothing))
+  Right (HistoryRequest reference revision (HistoryOptions order limit actor since untilBound))
 
 decodeCompare :: [(Text, Text)] -> Either ApiError CompareRequest
 decodeCompare values = do
@@ -472,11 +484,45 @@ optionalBool key fallback values = case queryValue key values of
   _ -> Left (badField key "expected true or false")
 
 boundedLimit :: ApiLimits -> Int -> [(Text, Text)] -> Either ApiError Int
-boundedLimit limits fallback values = case queryValue "limit" values of
+boundedLimit limits = boundedLimitTo (maximumResultLimit limits)
+
+boundedLimitTo :: Int -> Int -> [(Text, Text)] -> Either ApiError Int
+boundedLimitTo maximumAllowed fallback values = case queryValue "limit" values of
   Nothing -> Right fallback
   Just raw -> case readMaybe (Text.unpack raw) of
-    Just value | value >= 1 && value <= maximumResultLimit limits -> Right value
+    Just value | value >= 1 && value <= maximumAllowed -> Right value
     _ -> Left (badField "limit" "limit is outside the configured bound")
+
+parseActorSelector :: Text -> Either ApiError ActorSelector
+parseActorSelector raw = case Text.splitOn ":" raw of
+  [kindText, identifier] -> do
+    kind <- case kindText of
+      "human" -> Right HumanActor
+      "llm" -> Right LlmActor
+      "service" -> Right ServiceActor
+      _ -> Left (badField "actor" "expected kind:identifier with human, llm, or service")
+    _ <- first (const (badField "actor" "invalid actor")) (mkActor kind identifier Nothing)
+    Right (ActorSelector kind identifier)
+  _ -> Left (badField "actor" "expected kind:identifier")
+
+parseTimeWindow :: [(Text, Text)] -> Either ApiError (Maybe Integer, Maybe Integer)
+parseTimeWindow values = do
+  since <- traverse (parseMilliseconds "since") (queryValue "since" values)
+  untilBound <- traverse (parseMilliseconds "until") (queryValue "until" values)
+  case (since, untilBound) of
+    (Just lower, Just upper) | lower > upper -> Left (badField "since" "since must not exceed until")
+    _ -> Right (since, untilBound)
+
+parseMilliseconds :: Text -> Text -> Either ApiError Integer
+parseMilliseconds field raw =
+  let (negative, digits) = case Text.uncons raw of
+        Just ('-', rest) -> (True, rest)
+        Just ('+', rest) -> (False, rest)
+        _ -> (False, raw)
+      asciiDecimal character = character >= '0' && character <= '9'
+   in if Text.null digits || not (Text.all asciiDecimal digits)
+        then Left (badField field "expected signed decimal Unix milliseconds")
+        else maybe (Left (badField field "invalid Unix milliseconds")) (\value -> Right (if negative then negate value else value)) (readMaybe (Text.unpack digits))
 
 decodeObject :: ApiLimits -> ByteString -> Either ApiError Aeson.Object
 decodeObject limits body
@@ -911,7 +957,7 @@ metadataJson metadata = Aeson.object
     "as_of" Aeson..= asOfValue (responseAsOf metadata)
   ]
   where
-    generationValue (Generation value) = value
+    generationValue (Generation value) = Text.pack (show value)
     asOfValue (AsOfCommit oid) = Aeson.object ["kind" Aeson..= ("commit" :: Text), "oid" Aeson..= gitOidText oid]
     asOfValue (AsOfComparison before after) = Aeson.object ["kind" Aeson..= ("comparison" :: Text), "from" Aeson..= gitOidText before, "to" Aeson..= gitOidText after]
     asOfValue (AsOfUnavailable reason) = Aeson.object ["kind" Aeson..= ("unavailable" :: Text), "reason" Aeson..= reason]

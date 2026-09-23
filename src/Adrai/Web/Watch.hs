@@ -18,11 +18,12 @@ import Adrai.Provenance (encodeBase64Url, sha256Digest)
 import Adrai.Types (Config (..), ManagedPaths (..), RepoPath, defaultConfig, digestBytes, repoPathText)
 import Adrai.Web.Api (Repo (..))
 import Adrai.Web.Events (Invalidation (..))
+import qualified Adrai.Web.Events as Events
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (asyncWithUnmask, cancel, waitCatch)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.STM
-import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, fromException, mask, onException, throwIO, try)
+import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, finally, fromException, mask, onException, throwIO, try)
 import Control.Monad (void, when)
 import Data.Bits ((.&.), (.|.))
 import qualified Data.ByteString as BS
@@ -143,7 +144,8 @@ startWatcher registry identities afterHandleOpen repo publish = mask $ \restore 
   current <- newTVarIO initial
   signal <- newEmptyMVar
   backend <- asyncWithUnmask (\unmask -> unmask (backendAction signal))
-  verifier <- asyncWithUnmask (\unmask -> unmask (verificationLoop current signal initial)) `onException` (cancel backend >> void (waitCatch backend))
+  verifier <- asyncWithUnmask (\unmask -> unmask (verificationLoop current signal initial) `finally` (cancel backend >> void (waitCatch backend)))
+    `onException` (cancel backend >> void (waitCatch backend))
   let stopAll = cancel backend >> cancel verifier
       awaitAll = void (waitCatch backend) >> void (waitCatch verifier)
   pure (WatchHandle stopAll awaitAll)
@@ -168,7 +170,9 @@ startWatcher registry identities afterHandleOpen repo publish = mask $ \restore 
             (_, RepositorySnapshot _ _) ->
               publish (RepositoryFactsChanged observedEpoch observed [RepositoryIdentityChanged])
           case published of
-            Left _ -> verificationLoop current signal previous
+            Left failure
+              | Just Events.GenerationExhausted <- fromException failure -> pure ()
+              | otherwise -> verificationLoop current signal previous
             Right () -> atomically (writeTVar current observed) >> verificationLoop current signal observed
 
 snapshotEpoch :: RepositorySnapshot -> ObservationEpoch

@@ -19,6 +19,9 @@ module Adrai.Web.Events
     EventCoordinator,
     EventSubscriber,
     newEventCoordinator,
+    setEventGenerationForTest,
+    GenerationExhausted (..),
+    isGenerationExhausted,
     nextEventGeneration,
     publishInvalidation,
     publishInvalidationWhen,
@@ -32,6 +35,7 @@ where
 import Adrai.Provenance (GitOid, gitOidText)
 import Adrai.Types (RepoPath, mkRepoPath)
 import Control.Concurrent.STM
+import Control.Exception (Exception, throwIO)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -83,7 +87,7 @@ eventEnvelopeJson :: EventEnvelope -> Aeson.Value
 eventEnvelopeJson envelope =
   Aeson.object
     [ "schema" Aeson..= eventsSchema,
-      "generation" Aeson..= eventGeneration envelope,
+      "generation" Aeson..= Text.pack (show (eventGeneration envelope)),
       "as_of" Aeson..= asOfJson (eventAsOf envelope),
       "event" Aeson..= eventJson (eventPayload envelope)
     ]
@@ -243,20 +247,49 @@ acceptClientFrame verify state frame = case state of
     Right (ActiveFilesFrame _) -> SocketClosed DataBeforeAuthentication
 
 data CoordinatorState = CoordinatorState Word64 Int (Map.Map Int EventSubscriber)
-newtype EventCoordinator = EventCoordinator (TVar CoordinatorState)
-data EventSubscriber = EventSubscriber Int (TBQueue EventEnvelope) (TVar Bool)
+data EventCoordinator = EventCoordinator (TVar CoordinatorState) (TVar Bool)
+data EventSubscriber = EventSubscriber Int (TBQueue EventEnvelope) (TVar Bool) (TVar Bool)
 
-data SubscriberRead = SubscriberEvent EventEnvelope | SubscriberOverflow
+data GenerationExhausted = GenerationExhausted deriving (Eq, Show)
+instance Exception GenerationExhausted
+
+data SubscriberRead = SubscriberEvent EventEnvelope | SubscriberOverflow | SubscriberGenerationExhausted
 
 newEventCoordinator :: IO EventCoordinator
-newEventCoordinator = EventCoordinator <$> newTVarIO (CoordinatorState 0 0 Map.empty)
+newEventCoordinator = EventCoordinator <$> newTVarIO (CoordinatorState 0 0 Map.empty) <*> newTVarIO False
+
+-- | Observe terminal state without allocating a generation. A clock already at
+-- its maximum becomes terminal here as well, waking existing subscribers
+-- before callers attempt repository work that may be temporarily locked.
+isGenerationExhausted :: EventCoordinator -> IO Bool
+isGenerationExhausted (EventCoordinator state terminal) = atomically $ do
+  exhausted <- readTVar terminal
+  CoordinatorState generation _ _ <- readTVar state
+  if exhausted || generation == maxBound
+    then writeTVar terminal True >> pure True
+    else pure False
+
+-- | A narrow boundary seam for tests; it can only move a live clock forward.
+setEventGenerationForTest :: EventCoordinator -> Word64 -> IO ()
+setEventGenerationForTest (EventCoordinator state terminal) target = atomically $ do
+  CoordinatorState current next subscribers <- readTVar state
+  exhausted <- readTVar terminal
+  if target >= current && not exhausted
+    then writeTVar state (CoordinatorState target next subscribers)
+    else throwSTM (userError "cannot move generation backward or reset an exhausted coordinator")
 
 nextEventGeneration :: EventCoordinator -> IO Word64
-nextEventGeneration (EventCoordinator state) = atomically $ do
-  CoordinatorState generation next subscribers <- readTVar state
-  let advanced = generation + 1
-  writeTVar state (CoordinatorState advanced next subscribers)
-  pure advanced
+nextEventGeneration (EventCoordinator state terminal) = do
+  result <- atomically $ do
+    exhausted <- readTVar terminal
+    CoordinatorState generation next subscribers <- readTVar state
+    if exhausted || generation == maxBound
+      then writeTVar terminal True >> pure (Left GenerationExhausted)
+      else do
+        let advanced = generation + 1
+        writeTVar state (CoordinatorState advanced next subscribers)
+        pure (Right advanced)
+  either throwIO pure result
 
 publishInvalidation :: EventCoordinator -> EventAsOf -> [Invalidation] -> IO EventEnvelope
 publishInvalidation coordinator asOf invalidations = do
@@ -267,23 +300,32 @@ publishInvalidation coordinator asOf invalidations = do
 -- the same STM transaction.  The caller keeps the repository Git lock around
 -- this bounded in-memory operation.
 publishInvalidationWhen :: STM Bool -> EventCoordinator -> EventAsOf -> [Invalidation] -> IO (Maybe EventEnvelope)
-publishInvalidationWhen admissible (EventCoordinator state) asOf invalidations = atomically $ do
-  accepted <- admissible
-  if not accepted then pure Nothing else do
+publishInvalidationWhen admissible (EventCoordinator state terminal) asOf invalidations = do
+  result <- atomically $ do
+    exhausted <- readTVar terminal
     CoordinatorState generation next subscribers <- readTVar state
-    let advanced = generation + 1
-        envelope = EventEnvelope advanced asOf (RepositoryInvalidated (sort invalidations))
-    mapM_ (enqueue envelope) (Map.elems subscribers)
-    writeTVar state (CoordinatorState advanced next subscribers)
-    pure (Just envelope)
+    if exhausted || generation == maxBound
+      then writeTVar terminal True >> pure (Left GenerationExhausted)
+      else do
+        accepted <- admissible
+        if not accepted then pure (Right Nothing) else do
+          let advanced = generation + 1
+              envelope = EventEnvelope advanced asOf (RepositoryInvalidated (sort invalidations))
+          mapM_ (enqueue envelope) (Map.elems subscribers)
+          writeTVar state (CoordinatorState advanced next subscribers)
+          pure (Right (Just envelope))
+  either throwIO pure result
 
 registerSubscriberWithInitial :: EventCoordinator -> EventAsOf -> IO (Either Text EventSubscriber)
-registerSubscriberWithInitial (EventCoordinator state) asOf = atomically $ do
+registerSubscriberWithInitial (EventCoordinator state terminal) asOf = atomically $ do
+  exhausted <- readTVar terminal
   CoordinatorState generation next subscribers <- readTVar state
-  if Map.size subscribers >= 16 then pure (Left "event subscriber limit reached") else do
+  if exhausted || generation == maxBound then writeTVar terminal True >> pure (Left "generation-exhausted")
+  else if Map.size subscribers >= 16 then pure (Left "event subscriber limit reached")
+  else do
     queue <- newTBQueue 64
     overflow <- newTVar False
-    let subscriber = EventSubscriber next queue overflow
+    let subscriber = EventSubscriber next queue overflow terminal
         advanced = generation + 1
         initial = EventEnvelope advanced asOf (RepositoryInvalidated [minBound .. maxBound])
     writeTBQueue queue initial
@@ -291,16 +333,18 @@ registerSubscriberWithInitial (EventCoordinator state) asOf = atomically $ do
     pure (Right subscriber)
 
 readSubscriberEvent :: EventSubscriber -> IO SubscriberRead
-readSubscriberEvent (EventSubscriber _ queue overflow) = atomically $ do
-  terminal <- readTVar overflow
-  if terminal then pure SubscriberOverflow else SubscriberEvent <$> readTBQueue queue
+readSubscriberEvent (EventSubscriber _ queue overflow terminal) = atomically $ do
+  exhausted <- readTVar terminal
+  if exhausted then pure SubscriberGenerationExhausted else do
+    full <- readTVar overflow
+    if full then pure SubscriberOverflow else SubscriberEvent <$> readTBQueue queue
 
 unregisterSubscriber :: EventCoordinator -> EventSubscriber -> IO ()
-unregisterSubscriber (EventCoordinator state) (EventSubscriber identifier _ _) = atomically $
+unregisterSubscriber (EventCoordinator state _) (EventSubscriber identifier _ _ _) = atomically $
   modifyTVar' state (\(CoordinatorState generation next subscribers) -> CoordinatorState generation next (Map.delete identifier subscribers))
 
 enqueue :: EventEnvelope -> EventSubscriber -> STM ()
-enqueue envelope (EventSubscriber _ queue overflow) = do
+enqueue envelope (EventSubscriber _ queue overflow _) = do
   terminal <- readTVar overflow
   if terminal then pure () else do
     full <- isFullTBQueue queue

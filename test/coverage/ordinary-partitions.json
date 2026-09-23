@@ -1009,6 +1009,8 @@
         "ADRAI.P7-01.web-contracts.amend conversion preserves shared typed request and rejects unknown JSON",
         "ADRAI.P7-01.web-contracts.binding accepts linked worktrees and rejects bare or undiscovered repositories",
         "ADRAI.P7-01.web-contracts.response metadata preserves the exact query snapshot and compare operands",
+        "ADRAI.P7-01.web-contracts.shared web fixtures match public projection serializers",
+        "ADRAI.P7-01.web-contracts.generation strings and exhaustion retain the unsigned boundary",
         "ADRAI.P7-01.web-contracts.repository state tokens are distinct from ADR state tokens",
         "ADRAI.P7-01.web-contracts.events encode adrai events v1 and authenticate before data",
         "ADRAI.P7-01.web-contracts.credentials admit cookie bearer and bootstrap while confining query tokens",
@@ -1029,10 +1031,13 @@
         "ADRAI.P7-03.exact revision compilation is one physical flight",
         "ADRAI.P7-03.web exact compilation.real repository namespaces compile independently",
         "ADRAI.P7-03.web exact compilation.server shutdown cancels the physical compiler and cleans its candidate",
-        "ADRAI.P7-03.web exact compilation.outstanding HTTP compilation retains its revision across CLI publication"
+        "ADRAI.P7-03.web exact compilation.outstanding HTTP compilation retains its revision across CLI publication",
+        "ADRAI.P7-04.web explorer API.real conflicted rich and exploded projections retain the same candidate bodies",
+        "ADRAI.P7-04.web explorer API.1001 valid matching decisions yield one exact 1000-result blank window",
+        "ADRAI.P7-04.maximum generation refuses new reads but retains a durable committed mutation"
       ],
       "rationale": "Exact complement of the thirteen anchored intact groups, proved against the full current ordinary registration before dispatch.",
-      "costProvenance": "Static Rest count 575 after adding six compact P7-03 runtime checks; the locked basis-race regression remains in partition T."
+      "costProvenance": "Static Rest count 580 after five P7-04 API contract and runtime registrations; elapsed cost requires a matching complete snapshot."
     }
   ],
   "queue": [

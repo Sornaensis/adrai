@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Adrai.WebContractTest (tests) where
@@ -12,7 +13,10 @@ import qualified Adrai.Types
 import qualified Adrai.Web.Api as Api
 import qualified Adrai.Web.Events as Events
 import qualified Adrai.Web.Security as Security
+import Control.Exception (try)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Aeson.Types (Pair)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -21,6 +25,7 @@ import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding
+import Data.Word (Word64)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?), (@?=))
 
@@ -33,6 +38,8 @@ tests = testGroup "web-contracts"
     testCase "amend conversion preserves shared typed request and rejects unknown JSON" testSharedConversion,
     testCase "binding accepts linked worktrees and rejects bare or undiscovered repositories" testRepositoryBinding,
     testCase "response metadata preserves the exact query snapshot and compare operands" testResponseMetadata,
+    testCase "shared web fixtures match public projection serializers" testSharedWireFixtures,
+    testCase "generation strings and exhaustion retain the unsigned boundary" testGenerationBoundary,
     testCase "repository state tokens are distinct from ADR state tokens" testTokenKinds,
     testCase "events encode adrai events v1 and authenticate before data" testEvents,
     testCase "credentials admit cookie bearer and bootstrap while confining query tokens" testCredentialAdmission,
@@ -87,7 +94,21 @@ testQueryStrictness :: IO ()
 testQueryStrictness = do
   failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("q", Just "b")] ByteString.empty) @?= "duplicate-query"
   failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("wat", Just "b")] ByteString.empty) @?= "unknown-query"
-  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("limit", Just "101")] ByteString.empty) @?= "invalid-field"
+  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("limit", Just "1001")] ByteString.empty) @?= "invalid-field"
+  assertBool "search accepts a full 1000-result window" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just ""), ("limit", Just "1000")] ByteString.empty))
+  assertBool "history accepts a full 1000-operation window" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.HistoryRoute [("limit", Just "1000")] ByteString.empty))
+  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.HistoryRoute [("limit", Just "1001")] ByteString.empty) @?= "invalid-field"
+  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.RelevantRoute [("file", Just "src/main.hs"), ("limit", Just "101")] ByteString.empty) @?= "invalid-field"
+  assertBool "relevant accepts its 100-result bound" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.RelevantRoute [("file", Just "src/main.hs"), ("limit", Just "100")] ByteString.empty))
+  assertBool "worktree relevance is an existing typed selector" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.RelevantRoute [("file", Just "src/main.hs"), ("worktree", Just "true")] ByteString.empty))
+  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.RelevantRoute [("file", Just "src/main.hs"), ("worktree", Just "true"), ("at", Just "HEAD")] ByteString.empty) @?= "invalid-field"
+  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.RelevantRoute [("file", Just "src/main.hs"), ("worktree", Just "yes")] ByteString.empty) @?= "invalid-field"
+  assertBool "validated actor and inclusive signed time window are accepted" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just " "), ("actor", Just "human:reviewer"), ("since", Just "-1000"), ("until", Just "0")] ByteString.empty))
+  assertBool "history shares validated actor and time window" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.HistoryRoute [("actor", Just "service:adrai"), ("since", Just "0"), ("until", Just "0")] ByteString.empty))
+  assertBool "explicit positive sign remains a signed decimal" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.HistoryRoute [("since", Just "+1")] ByteString.empty))
+  mapM_ (\raw -> failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("actor", Just raw)] ByteString.empty) @?= "invalid-field") ["", "human:", "root:x", "human:a:b"]
+  mapM_ (\raw -> failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.HistoryRoute [("since", Just raw)] ByteString.empty) @?= "invalid-field") ["", "-", "+", "1.5", " 1"]
+  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("since", Just "2"), ("until", Just "1")] ByteString.empty) @?= "invalid-field"
   let tiny = Api.defaultApiLimits {Api.maximumQueryBytes = 1}
   failureCode (Api.decodeApiRequest tiny Api.SearchRoute [("q", Just "abcd")] ByteString.empty) @?= "query-too-large"
   let utf8Bound = Api.defaultApiLimits {Api.maximumQueryBytes = 5}
@@ -178,6 +199,99 @@ testResponseMetadata = do
       errorWire = encoded (Api.errorResponseJson (Api.ApiErrorResponse unavailable (Api.serviceFailure "failed")))
   errorWire `contains` "pre-authentication" @? "error metadata missing"
   lookup "X-Adrai-Generation" (Api.errorResponseHeaders (Api.ApiErrorResponse unavailable (Api.serviceFailure "failed"))) @?= Just "9"
+
+testSharedWireFixtures :: IO ()
+testSharedWireFixtures = do
+  fixture <- decodeFixture "web/fixtures/api-v1.json"
+  let cases = member "cases" fixture
+      payload name = member "data" (member name cases)
+      fixtureOid = Aeson.String "1111111111111111111111111111111111111111"
+      assertFixtureOid name = do
+        let asOf = member "as_of" (member "metadata" (member name cases))
+        member "kind" asOf @?= Aeson.String "commit"
+        member "oid" asOf @?= fixtureOid
+        member "as_of" (payload name) @?= fixtureOid
+      goldenAsOf name path = do
+        golden <- decodeFixture path
+        case golden of
+          Aeson.Object object -> payload name @?= Aeson.Object (KeyMap.insert "as_of" fixtureOid object)
+          _ -> assertFailure (path <> " is not a public projection object")
+  member "schema" fixture @?= Aeson.String "adrai/web-fixtures/v1"
+  mapM_ (\name -> member "schema" (member name cases) @?= Aeson.String "adrai/api/v1")
+    [ "repository", "rich_resolved", "rich_conflicted", "exploded", "exploded_raw", "search_blank", "search_ranked",
+      "search_conflicted", "relevant_committed", "relevant_worktree", "history", "compare", "conflicts",
+      "doctor", "mutation_create", "mutation_amend", "mutation_scope", "mutation_domain",
+      "mutation_obsolete", "mutation_reactivate", "mutation_warning", "error", "error_exhausted"
+    ]
+  mapM_ assertFixtureOid ["rich_resolved", "rich_conflicted", "exploded", "exploded_raw", "history", "search_blank", "search_ranked", "search_conflicted", "relevant_committed", "relevant_worktree"]
+  goldenAsOf "rich_resolved" "test/golden/p2-05/collapsed-rich.golden"
+  goldenAsOf "exploded" "test/golden/p2-05/exploded-compact.golden"
+  goldenAsOf "exploded_raw" "test/golden/p2-05/exploded-raw.golden"
+  goldenAsOf "history" "test/golden/p2-05/history-adr.golden"
+  searchGolden <- decodeFixture "test/golden/p3-04/current-search.golden"
+  mapM_ (\(name, goldenName) -> case member goldenName searchGolden of
+    Aeson.Object object -> payload name @?= Aeson.Object (KeyMap.insert "as_of" fixtureOid object)
+    _ -> assertFailure ("missing public search golden " <> Text.unpack goldenName))
+    [("search_blank", "blank"), ("search_ranked", "hybrid")]
+  relevantGolden <- decodeFixture "test/golden/p3-05/relevance.golden"
+  case member "resolved" relevantGolden of
+    Aeson.Object object -> payload "relevant_committed" @?= Aeson.Object (KeyMap.insert "as_of" fixtureOid object)
+    _ -> assertFailure "missing public relevant golden"
+  member "source" (member "file" (payload "relevant_committed")) @?= Aeson.String "revision"
+  member "source" (member "file" (payload "relevant_worktree")) @?= Aeson.String "worktree"
+  member "resolved" (payload "rich_conflicted") @?= Aeson.Bool False
+  member "resolution_required" (payload "rich_conflicted") @?= Aeson.Bool True
+  case member "candidate_records" (payload "rich_conflicted") of
+    Aeson.Array candidates -> assertBool "conflicted inspection retains distinct candidate bodies" (length candidates >= 2)
+    _ -> assertFailure "conflicted rich projection has no candidate records"
+  mapM_ (\name -> member "committed" (payload name) @?= Aeson.Bool True)
+    ["mutation_create", "mutation_amend", "mutation_scope", "mutation_domain", "mutation_obsolete", "mutation_reactivate", "mutation_warning"]
+  member "generation" (member "metadata" (member "mutation_warning" cases)) @?= Aeson.String "18446744073709551615"
+  member "generation" (member "metadata" (member "error" cases)) @?= Aeson.String "0"
+  mapM_ (\name -> member "schema" (member name cases) @?= Aeson.String "adrai/events/v1") ["event_large", "event_max"]
+  where
+    decodeFixture path = do
+      bytes <- ByteString.readFile path
+      maybe (assertFailure ("invalid JSON fixture: " <> path) >> pure Aeson.Null) pure (Aeson.decodeStrict' bytes)
+    member :: Text -> Aeson.Value -> Aeson.Value
+    member key (Aeson.Object object) = maybe Aeson.Null id (KeyMap.lookup (Key.fromText key) object)
+    member _ _ = Aeson.Null
+
+testGenerationBoundary :: IO ()
+testGenerationBoundary = do
+  let large = 9007199254740993 :: Word64
+      maximumGeneration = maxBound :: Word64
+      metadata generation = Api.ResponseMetadata (Api.mkGeneration generation) (Api.AsOfCommit oid)
+      encodedGeneration generation = encoded (Api.responseJson (Api.ApiResponse (metadata generation) (Api.ApiConflictsResult (Api.ConflictsResult []))))
+  encodedGeneration large `contains` "\"generation\":\"9007199254740993\"" @? "large HTTP generation must be an exact JSON string"
+  encodedGeneration maximumGeneration `contains` "\"generation\":\"18446744073709551615\"" @? "maximum HTTP generation must be an exact JSON string"
+  encoded (Events.eventEnvelopeJson (Events.EventEnvelope maximumGeneration (Events.EventAt oid) (Events.RepositoryInvalidated [Events.HeadChanged])))
+    `contains` "\"generation\":\"18446744073709551615\"" @? "maximum event generation must be an exact JSON string"
+  coordinator <- Events.newEventCoordinator
+  Events.setEventGenerationForTest coordinator (maximumGeneration - 1)
+  nextGeneration <- Events.nextEventGeneration coordinator
+  nextGeneration @?= maximumGeneration
+  exhausted <- try (Events.nextEventGeneration coordinator) :: IO (Either Events.GenerationExhausted Word64)
+  exhausted @?= Left Events.GenerationExhausted
+  initial <- Events.registerSubscriberWithInitial coordinator (Events.EventAt oid)
+  case initial of
+    Left reason -> reason @?= "generation-exhausted"
+    Right _ -> assertFailure "exhausted coordinator admitted a subscriber"
+  publication <- try (Events.publishInvalidation coordinator (Events.EventAt oid) [Events.HeadChanged]) :: IO (Either Events.GenerationExhausted Events.EventEnvelope)
+  publication @?= Left Events.GenerationExhausted
+  live <- Events.newEventCoordinator
+  subscriber <- Events.registerSubscriberWithInitial live (Events.EventAt oid) >>= either (assertFailure . Text.unpack) pure
+  Events.setEventGenerationForTest live maximumGeneration
+  superseded <- try (Events.publishInvalidationWhen (pure False) live (Events.EventAt oid) [Events.HeadChanged]) :: IO (Either Events.GenerationExhausted (Maybe Events.EventEnvelope))
+  superseded @?= Left Events.GenerationExhausted
+  Events.readSubscriberEvent subscriber >>= \case
+    Events.SubscriberGenerationExhausted -> pure ()
+    _ -> assertFailure "terminal exhaustion must preempt an already queued event and wake the subscriber"
+  newSubscriber <- Events.registerSubscriberWithInitial live (Events.EventAt oid)
+  case newSubscriber of
+    Left reason -> reason @?= "generation-exhausted"
+    Right admitted -> Events.unregisterSubscriber live admitted >> assertFailure "terminal coordinator admitted a new subscriber"
+  Events.unregisterSubscriber live subscriber
 
 testTokenKinds :: IO ()
 testTokenKinds = do

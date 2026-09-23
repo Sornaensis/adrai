@@ -3,6 +3,22 @@ version: 1.0.0.0
 license: BSD-3-Clause
 language: GHC2021
 
+extra-source-files:
+  - web/elm.json
+  - web/package.json
+  - web/package-lock.json
+  - web/src/*
+  - web/src/**/*
+  - web/static/index.html
+  - web/static/app.css
+  - web/static/bridge.js
+  - web/tools/build.mjs
+  - web/tools/verify-assets.mjs
+  - web/dist/app.js
+  - web/dist/provenance.json
+  - web/fixtures/*.json
+  - web/tests/*.mjs
+
 dependencies:
   - array
   - base >= 4.20 && < 4.21
@@ -24,6 +40,7 @@ dependencies:
   - Win32
   - sqlite-simple
   - stm
+  - template-haskell
   - text
   - time
   - toml-parser
