@@ -186,7 +186,8 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import Data.Text.Encoding.Error (lenientDecode)
-import Control.Exception (try, SomeException)
+import Control.Exception (try, IOException)
+import System.IO.Error (isDoesNotExistError)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -218,12 +219,18 @@ initCommand repository =
     Just root -> do
       gitattributesContent <- mergeGitattributes root
       gitignoreContent <- mergeGitignore root
-      let generated =
-            [ GeneratedFile (RepoPath ".adrai.toml") (encodeUtf8 defaultConfigText)
-            , GeneratedFile (RepoPath ".gitattributes") gitattributesContent
-            , GeneratedFile (RepoPath ".gitignore") gitignoreContent
-            ]
-      resolveHeadOrEmpty repository >>= \case
+      case (gitattributesContent, gitignoreContent) of
+        (Left err, _) -> pure (Left err)
+        (_, Left err) -> pure (Left err)
+        (Right attrs, Right ignore) -> do
+          let generated =
+                [ GeneratedFile (RepoPath ".adrai.toml") (encodeUtf8 defaultConfigText)
+                , GeneratedFile (RepoPath ".gitattributes") attrs
+                , GeneratedFile (RepoPath ".gitignore") ignore
+                ]
+          commitInit generated
+  where
+    commitInit generated = resolveHeadOrEmpty repository >>= \case
         Right oldHead -> do
           let config =
                 TransactionConfig
@@ -249,25 +256,27 @@ initCommand repository =
                 )
         Left err ->
           pure (Left (Stage3ValidateState ("resolve HEAD: " <> err)))
-  where
-    mergeGitattributes :: FilePath -> IO BS.ByteString
-    mergeGitattributes rp = do
-      result <- try @SomeException (BS.readFile (rp </> ".gitattributes"))
-      case result of
-        Left _ -> pure (encodeUtf8 requiredAttrs)
-        Right _bytes -> pure (encodeUtf8 requiredAttrs)
-      where
-        requiredAttrs =
-          "architecture/adrai/decisions/** text eol=lf\n"
-            <> "architecture/adrai/connections/** text eol=lf\n"
-    mergeGitignore :: FilePath -> IO BS.ByteString
-    mergeGitignore rp = do
-      result <- try @SomeException (BS.readFile (rp </> ".gitignore"))
-      case result of
-        Left _ -> pure (encodeUtf8 requiredIgnore)
-        Right _bytes -> pure (encodeUtf8 requiredIgnore)
-      where
-        requiredIgnore = ".adrai/\n"
+    mergeGitattributes rp = mergeRules rp ".gitattributes"
+      [ "architecture/adrai/decisions/** text eol=lf"
+      , "architecture/adrai/connections/** text eol=lf"
+      ]
+    mergeGitignore rp = mergeRules rp ".gitignore" [".adrai/"]
+
+    mergeRules rp name required = do
+      result <- try @IOException (BS.readFile (rp </> name))
+      pure $ case result of
+        Left err
+          | isDoesNotExistError err -> Right (BS.intercalate "\n" required <> "\n")
+          | otherwise -> Left (Stage3ValidateState ("read " <> T.pack name <> ": " <> T.pack (show err)))
+        Right bytes ->
+          let completeLines = map stripCR (BS.split 10 bytes)
+              missing = filter (`notElem` completeLines) required
+              newline = if "\r\n" `BS.isInfixOf` bytes then "\r\n" else "\n"
+              boundary = if BS.null bytes || BS.last bytes == 10 then BS.empty else newline
+           in Right (bytes <> (if null missing then BS.empty else boundary <> BS.intercalate newline missing <> newline))
+    stripCR line
+      | not (BS.null line) && BS.last line == 13 = BS.init line
+      | otherwise = line
     resolveHeadOrEmpty :: Repository -> IO (Either T.Text GitOid)
     resolveHeadOrEmpty repo = do
       result <-

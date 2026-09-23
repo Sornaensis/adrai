@@ -317,8 +317,57 @@ testP602ARealExecutable =
   testGroup
     "P6-02 compact real executable command wiring"
     [ testCase "launcher scrubs hostile mixed-case Git environment controls" p602aHostileEnvironmentScrubbed,
-      testCase "public commands preserve a staged binary and return canonical exits" p602aCreate
+      testCase "public commands preserve a staged binary and return canonical exits" p602aCreate,
+      testCase "init preserves LF rules and appends missing rules" $
+        p602aInitMergesRules "lf" "*.md text\n" "node_modules/\n" "*.md text\narchitecture/adrai/decisions/** text eol=lf\narchitecture/adrai/connections/** text eol=lf\n" "node_modules/\n.adrai/\n",
+      testCase "init adds a newline boundary to unterminated rules" $
+        p602aInitMergesRules "unterminated" "*.md text" "node_modules/" "*.md text\narchitecture/adrai/decisions/** text eol=lf\narchitecture/adrai/connections/** text eol=lf\n" "node_modules/\n.adrai/\n",
+      testCase "init recognizes complete CRLF and unterminated rules" $
+        p602aInitMergesRules "existing" "*.md text\r\narchitecture/adrai/decisions/** text eol=lf\r\n" ".adrai/" "*.md text\r\narchitecture/adrai/decisions/** text eol=lf\r\narchitecture/adrai/connections/** text eol=lf\r\n" ".adrai/",
+      testCase "init does not mistake comments or longer patterns for rules" $
+        p602aInitMergesRules "lookalike" "# architecture/adrai/decisions/** text eol=lf\narchitecture/adrai/connections/** text eol=lf-extra\n" "# .adrai/\n.adrai/cache\n" "# architecture/adrai/decisions/** text eol=lf\narchitecture/adrai/connections/** text eol=lf-extra\narchitecture/adrai/decisions/** text eol=lf\narchitecture/adrai/connections/** text eol=lf\n" "# .adrai/\n.adrai/cache\n.adrai/\n"
      ]
+
+p602aInitMergesRules :: String -> BS.ByteString -> BS.ByteString -> BS.ByteString -> BS.ByteString -> IO ()
+p602aInitMergesRules label originalAttrs originalIgnore expectedAttrs expectedIgnore =
+  withSystemTempDirectory ("adrai init rules " <> label) $ \temporary -> do
+    let repo = temporary </> "seeded"
+        stagedPath = "caller-staged.bin"
+        stagedBytes = BS.pack [0, 255, 19]
+    createDirectoryIfMissing True repo
+    git repo ["init", "--initial-branch=main"]
+    configureDeterministicGit repo
+    BS.writeFile (repo </> "seed.txt") "seed\n"
+    BS.writeFile (repo </> ".gitattributes") originalAttrs
+    BS.writeFile (repo </> ".gitignore") originalIgnore
+    git repo ["add", "--", "seed.txt", ".gitattributes", ".gitignore"]
+    git repo ["commit", "-m", "seed"]
+    BS.writeFile (repo </> stagedPath) stagedBytes
+    git repo ["add", "--", stagedPath]
+    stagedIndexBefore <- gitStdout repo ["ls-files", "-s", "--", stagedPath]
+
+    stdout <- assertExitSuccess "init" =<< adraiRequiredRaw repo ["init", "--json"]
+    result <- decodeCanonicalJson "init" stdout
+    (requireJsonField "init" result "initialized" :: IO Bool) >>= (@?= True)
+    (sort <$> (requireJsonField "init" result "created" :: IO [Text]))
+      >>= (@?= [".adrai.toml", ".gitattributes", ".gitignore"])
+    currentHead <- headCommit repo
+    (requireJsonField "init" result "commit" :: IO Text) >>= (@?= currentHead)
+    changedPaths <- fmap (sort . T.lines) (gitText repo ["diff-tree", "--no-commit-id", "--name-only", "-r", T.unpack currentHead])
+    changedPaths @?= sort ([".adrai.toml"] <> [".gitattributes" | originalAttrs /= expectedAttrs] <> [".gitignore" | originalIgnore /= expectedIgnore])
+    assertRuleFile currentHead repo ".gitattributes" originalAttrs expectedAttrs
+    assertRuleFile currentHead repo ".gitignore" originalIgnore expectedIgnore
+    assertStagedBinaryPreserved repo stagedPath stagedBytes stagedIndexBefore
+    stagedPaths <- gitStdout repo ["diff", "--cached", "--name-only"]
+    stagedPaths @?= "caller-staged.bin\n"
+
+assertRuleFile :: Text -> FilePath -> FilePath -> BS.ByteString -> BS.ByteString -> IO ()
+assertRuleFile commit repo path original expected = do
+  worktree <- BS.readFile (repo </> path)
+  committed <- LBS.toStrict <$> gitStdout repo ["show", T.unpack commit <> ":" <> path]
+  assertBool (path <> " keeps its original byte prefix") (original `BS.isPrefixOf` worktree)
+  worktree @?= expected
+  committed @?= expected
 
 testP603A0RealExecutable :: TestTree
 testP603A0RealExecutable =
@@ -551,6 +600,10 @@ p602aCreate =
     (requireJsonField "setup init" initResult "index_updated" :: IO Bool) >>= (@?= True)
     initCommit <- headCommit repo
     assertIndexResolvedOid database initCommit
+    assertRuleFile initCommit repo ".gitattributes" "" "architecture/adrai/decisions/** text eol=lf\narchitecture/adrai/connections/** text eol=lf\n"
+    assertRuleFile initCommit repo ".gitignore" "" ".adrai/\n"
+    initChangedPaths <- fmap (sort . T.lines) (gitText repo ["diff-tree", "--no-commit-id", "--name-only", "-r", T.unpack initCommit])
+    initChangedPaths @?= [".adrai.toml", ".gitattributes", ".gitignore"]
     BS.writeFile (repo </> stagedName) stagedBytes
     git repo ["add", "--", stagedName]
     indexBefore <- gitStdout repo ["ls-files", "-s", "--", stagedName]

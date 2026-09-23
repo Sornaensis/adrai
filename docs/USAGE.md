@@ -10,7 +10,7 @@ Initialize ADRAI in an existing Git repository:
 adrai init
 ```
 
-This creates and commits `.adrai.toml`, `.gitattributes`, and `.gitignore`. The default managed roots are `architecture/adrai/decisions` and `architecture/adrai/connections`. Initialize only once per repository.
+This creates and commits `.adrai.toml`, `.gitattributes`, and `.gitignore`. If the Git rule files already exist, `init` keeps their contents and appends only missing ADRAI rules. The default managed roots are `architecture/adrai/decisions` and `architecture/adrai/connections`. Initialize only once per repository.
 
 Create an ADR:
 
