@@ -209,8 +209,10 @@ The cache carrier also checks private old-schema eligibility rejection. Deleted
 N, R, and overlay cases add no focused repetitions, and unchanged race, stress,
 and query cases are not repeated.
 Every selected run remains an exact ledger leaf through Focused mode with a
-maximum 60-second deadline; a focused result is leaf evidence, not a whole-job
-measurement.
+300-second default and maximum deadline; a focused result is leaf evidence, not
+a whole-job measurement. The finite guard leaves about 40 seconds above an
+observed 260-second loaded leaf, including the runner's 10-second cleanup
+reserve. This margin is for test liveness, not a product latency target.
 
 Exclusive scheduling controls observed load; it does not change the lock timeout
 or serialize the competing-target test's two real CLI children. Each `Krace` or
@@ -233,9 +235,10 @@ inside the deadline. Timeout, nonzero exit, missing or unexpected registration,
 an omitted stress opt-in, a root process that exits while descendants remain,
 or cleanup that cannot be confirmed makes the result fail or incomplete.
 
-List and focused modes have a maximum 60-second deadline and use the same
-artifact and registration checks. Focused mode accepts one exact ledger test
-name rather than a free-form Tasty selector:
+List mode has a 60-second maximum deadline. Focused mode has a 300-second
+default and maximum deadline. Both use the same artifact and registration
+checks. Focused mode accepts one exact ledger test name rather than a free-form
+Tasty selector:
 
 ```powershell
 .\tools\RunRetainedTests.ps1 -Mode Focused `
