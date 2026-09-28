@@ -590,7 +590,7 @@ relevantCommandJson snapshot source cmd =
   case relevantCommandRequest commandForSnapshot of
     Left problem ->
       pure $ Aeson.object
-        [ "schema" .= Aeson.String "adrai/relevant/v1"
+        [ "schema" .= Aeson.String "adrai/relevant/v2"
         , "error"  .= Aeson.String problem
         ]
     Right request -> bracket (open ":memory:") close $ \conn -> do
@@ -599,7 +599,7 @@ relevantCommandJson snapshot source cmd =
       case result of
         Left err ->
           pure $ Aeson.object
-            [ "schema" .= Aeson.String "adrai/relevant/v1"
+            [ "schema" .= Aeson.String "adrai/relevant/v2"
             , "error"  .= Aeson.String (Text.pack (show err))
             ]
         Right proj -> pure (toAesonValue (relevantProjectionJson proj))

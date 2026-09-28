@@ -1057,32 +1057,35 @@
             ],
             "evidence": [
               {
-                "adr_candidate": "A00000000000000000000000000",
-                "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
-                "adr_excerpt": "decision first decision second",
-                "adr_section": "decision",
-                "candidate_record": "R00000000000000000000000001",
                 "file_excerpt": "current decision api context first decision second consequence current domain cache lease token",
                 "file_lines": [
                   1,
                   1
                 ],
-                "lexical_score": 1,
+                "lexical_score": 0.2,
                 "matched_terms": [
                   "first",
                   "second"
                 ],
-                "score": 0.352558,
+                "passage": 0,
                 "semantic_score": 0.352558
               }
             ],
             "lexical_bonus": 0.1,
-            "lexical_score": 1,
+            "lexical_score": 0.2,
             "margin": 0.352558,
             "matched_candidate": null,
             "matched_record": "R00000000000000000000000001",
             "matched_title": null,
             "obsolete": true,
+            "passages": [
+              {
+                "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
+                "adr_excerpt": "decision first decision second",
+                "adr_section": "decision",
+                "candidate_record": "R00000000000000000000000001"
+              }
+            ],
             "record": "R00000000000000000000000001",
             "replacement": null,
             "resolution_required": true,
@@ -1091,9 +1094,9 @@
             "scope_match": "exact",
             "score": 0.477558,
             "semantic_score": 0.352558,
-            "source_information": 1,
+            "source_information": 1.0,
             "status": "obsolete",
-            "strongest_lexical_pair": 1,
+            "strongest_lexical_pair": 0.2,
             "strongest_pair": 0.352558,
             "summary": "Current summary",
             "title": "Current Decision API (CDAPI)"
@@ -1122,11 +1125,16 @@
             "high_margin": 0.045,
             "high_pair_score": 0.3,
             "high_semantic_score": 0.34,
-            "lexical_bonus_cap": 0.1,
-            "lexical_rank_weight": 0.1,
+            "lexical_bonus_cap": 0.5,
+            "lexical_definition_full_score_parts": 3.0,
+            "lexical_definition_min_parts": 2.0,
+            "lexical_definition_weight": 0.9,
+            "lexical_fts_secondary_weight": 0.1,
+            "lexical_overlap_saturation_terms": 10.0,
+            "lexical_rank_weight": 0.5,
             "medium_pair_score": 0.14,
             "medium_semantic_score": 0.16,
-            "minimum_lexical_pair_score": 0.18,
+            "minimum_lexical_pair_score": 0.036,
             "minimum_pair_score": 0.075,
             "repetitive_chunk_low_confidence": 0.15,
             "scope_bonus_ambiguous": 0.01,
@@ -1152,7 +1160,7 @@
             "semantic_corpus": 1
           }
         },
-        "schema": "adrai/relevant/v1",
+        "schema": "adrai/relevant/v2",
         "view": "relevant"
       }
     },
@@ -1189,32 +1197,35 @@
             ],
             "evidence": [
               {
-                "adr_candidate": "A00000000000000000000000000",
-                "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
-                "adr_excerpt": "decision first decision second",
-                "adr_section": "decision",
-                "candidate_record": "R00000000000000000000000001",
                 "file_excerpt": "current decision api context first decision second consequence current domain cache lease token",
                 "file_lines": [
                   1,
                   1
                 ],
-                "lexical_score": 1,
+                "lexical_score": 0.2,
                 "matched_terms": [
                   "first",
                   "second"
                 ],
-                "score": 0.352558,
+                "passage": 0,
                 "semantic_score": 0.352558
               }
             ],
             "lexical_bonus": 0.1,
-            "lexical_score": 1,
+            "lexical_score": 0.2,
             "margin": 0.352558,
             "matched_candidate": null,
             "matched_record": "R00000000000000000000000001",
             "matched_title": null,
             "obsolete": true,
+            "passages": [
+              {
+                "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
+                "adr_excerpt": "decision first decision second",
+                "adr_section": "decision",
+                "candidate_record": "R00000000000000000000000001"
+              }
+            ],
             "record": "R00000000000000000000000001",
             "replacement": null,
             "resolution_required": true,
@@ -1223,9 +1234,9 @@
             "scope_match": "exact",
             "score": 0.477558,
             "semantic_score": 0.352558,
-            "source_information": 1,
+            "source_information": 1.0,
             "status": "obsolete",
-            "strongest_lexical_pair": 1,
+            "strongest_lexical_pair": 0.2,
             "strongest_pair": 0.352558,
             "summary": "Current summary",
             "title": "Current Decision API (CDAPI)"
@@ -1254,11 +1265,16 @@
             "high_margin": 0.045,
             "high_pair_score": 0.3,
             "high_semantic_score": 0.34,
-            "lexical_bonus_cap": 0.1,
-            "lexical_rank_weight": 0.1,
+            "lexical_bonus_cap": 0.5,
+            "lexical_definition_full_score_parts": 3.0,
+            "lexical_definition_min_parts": 2.0,
+            "lexical_definition_weight": 0.9,
+            "lexical_fts_secondary_weight": 0.1,
+            "lexical_overlap_saturation_terms": 10.0,
+            "lexical_rank_weight": 0.5,
             "medium_pair_score": 0.14,
             "medium_semantic_score": 0.16,
-            "minimum_lexical_pair_score": 0.18,
+            "minimum_lexical_pair_score": 0.036,
             "minimum_pair_score": 0.075,
             "repetitive_chunk_low_confidence": 0.15,
             "scope_bonus_ambiguous": 0.01,
@@ -1284,7 +1300,7 @@
             "semantic_corpus": 1
           }
         },
-        "schema": "adrai/relevant/v1",
+        "schema": "adrai/relevant/v2",
         "view": "relevant"
       }
     },

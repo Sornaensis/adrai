@@ -93,6 +93,7 @@ schemaFormatTests =
       testCase "public schema tags are exact" $ do
         publicSchemaText SearchPublicV1 @?= "adrai/search/v1"
         publicSchemaText RelevantPublicV1 @?= "adrai/relevant/v1"
+        publicSchemaText RelevantPublicV2 @?= "adrai/relevant/v2"
         publicSchemaText HistoryPublicV1 @?= "adrai/history/v1"
         publicSchemaText ShowCollapsedPublicV1 @?= "adrai/show-collapsed/v1"
         publicSchemaText ShowExplodedPublicV1 @?= "adrai/show-exploded/v1"

@@ -19,7 +19,7 @@ import Adrai.Query
 import Adrai.Relevance
 import Adrai.Retrieval (SearchMaterialization)
 import Adrai.Sqlite (initializeSearchSchema, replaceSearchMaterialization)
-import Adrai.Types (RepoPath, RevisionSelector (..), mkRepoPath)
+import Adrai.Types (RepoPath, RevisionSelector (..), mkRepoPath, recordIdText)
 import Control.Exception (bracket)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
@@ -86,6 +86,27 @@ conflictGroupingContract = withRelevant p304ConflictSnapshot $ \connection mater
   relevantResultTitle result @?= "[conflicted ADR]"
   relevantResultSummary result @?= "left summary; right summary"
   assertBool "matched head stays separate from the logical conflict row" (maybe False (Text.isInfixOf "@") (relevantResultMatchedCandidate result))
+  exploded <- either (assertFailure . show) pure (projectExploded (ExplodedOptions False) p304ConflictSnapshot (relevantResultAdr result))
+  let headRecord = case relevantResultEvidence result of
+        evidence : _ -> recordIdText (relevantEvidenceCandidateRecord evidence)
+        [] -> error "conflict fixture has no evidence"
+      inspectableHeads =
+        [ explodedItemId item
+        | operation <- explodedOperations exploded,
+          item <- explodedOperationItems operation,
+          explodedItemType item == "decision"
+        ]
+  assertBool "web exploded inspection exposes the matched conflicted decision head"
+    (headRecord `elem` inspectableHeads)
+  case lookupNested "results" (Just (relevantProjectionJson projection)) of
+    Just (JsonArray [row]) -> do
+      lookupNested "record" (Just row) @?= Just JsonNull
+      case lookupNested "passages" (Just row) of
+        Just (JsonArray (passage : _)) -> do
+          lookupNested "candidate_record" (Just passage) @?= lookupNested "matched_record" (Just row)
+          lookupNested "candidate_record" (Just passage) @?= Just (JsonString headRecord)
+        _ -> assertFailure "conflict result lost its matched passage"
+    _ -> assertFailure "conflict result is not a single ADR row"
   assertBool "conflict requires resolution" (resolutionStateRequired (relevantResultResolution result))
 
 sourceValidationContract :: IO ()
@@ -164,7 +185,7 @@ repeatabilityContract = withRelevant p303RationaleSnapshot $ \connection materia
   first <- mustRelevant =<< runCurrent connection materialization baseRequest baseSource
   second <- mustRelevant =<< runCurrent connection materialization baseRequest baseSource
   renderRelevantProjection first @?= renderRelevantProjection second
-  assertBool "public schema is frozen" ("\"schema\": \"adrai/relevant/v1\"" `ByteStringChar8.isInfixOf` renderRelevantProjection first)
+  assertBool "public schema is versioned" ("\"schema\": \"adrai/relevant/v2\"" `ByteStringChar8.isInfixOf` renderRelevantProjection first)
   mapM_ assertFiniteResult (relevantProjectionResults first)
 
 resolvedRelevantProjection :: IO RelevantProjection

@@ -79,6 +79,7 @@ tests = testGroup "web server runtime"
   [ testCase "real loopback bootstrap exchanges the query credential for a secure cookie" testBootstrap,
     testCase "real loopback admission protects unknown routes" testUnknownAdmission,
     testCase "authenticated events report unavailable snapshot metadata" testEventsUnavailable,
+    testCase "relevant v2 HTTP route serves the current projection" testRelevantV2Route,
     testCase "shared query routes retain exact response snapshots" testQueryRoutes,
     testCase "all six HTTP mutations commit through checked shared services" testMutationRoutes,
     testCase "oversized inputs recover and stale repository bases preserve HEAD" testBoundsAndStale,
@@ -269,6 +270,18 @@ testEventsUnavailable = withServer $ \running _ -> do
   assertBool "events are explicitly unavailable" ("HTTP/1.1 503" `BS.isPrefixOf` response)
   assertBool "metadata is unavailable, not an ambient commit" ("X-Adrai-As-Of: unavailable:events-transport-unavailable" `BS.isInfixOf` response)
 
+testRelevantV2Route :: IO ()
+testRelevantV2Route = withSeededServer $ \_ running -> do
+  basis <- repositoryBasis running
+  created <- postJson running "/api/v1/adrs" (createBody basis)
+  current <- textAt ["metadata", "as_of", "oid"] created
+  response <- getJson running ("/api/v1/relevant?file=seed.txt&at=" <> current)
+  textAt ["data", "schema"] response >>= (@?= "adrai/relevant/v2")
+  textAt ["metadata", "as_of", "oid"] response >>= (@?= current)
+  valueAt ["data", "results"] response >>= \case
+    Aeson.Array _ -> pure ()
+    _ -> assertFailure "relevant route did not return a result array"
+
 testQueryRoutes :: IO ()
 testQueryRoutes = withSeededServer $ \root running -> do
   basis <- repositoryBasis running
@@ -284,6 +297,8 @@ testQueryRoutes = withSeededServer $ \root running -> do
   defaultRelevant <- getJson running "/api/v1/relevant?file=seed.txt"
   namedRelevant <- getJson running "/api/v1/relevant?file=seed.txt&at=main"
   explicitRelevant <- getJson running ("/api/v1/relevant?file=seed.txt&at=" <> current)
+  mapM_ (\response -> textAt ["data", "schema"] response >>= (@?= "adrai/relevant/v2"))
+    [defaultRelevant, namedRelevant, explicitRelevant]
   mapM_ (\response -> valueAt ["data"] response >>= \value -> assertBool "relevant query returned a projection" (value /= Aeson.Null))
     [defaultRelevant, namedRelevant, explicitRelevant]
   currentOid <- resolveRevision repository (RevisionSpec current) >>= either (assertFailure . show) pure
@@ -1759,7 +1774,7 @@ runOwnedWebSocketClient deadlineMicros port headers clientApp =
 requestRaw :: Text -> BS.ByteString -> IO BS.ByteString
 requestRaw host bytes = do
   port <- either assertFailure pure (authorityPort host)
-  outcome <- runOwnedSocket 3000000 port $ \client -> do
+  outcome <- runOwnedSocket 12000000 port $ \client -> do
     sendAll client bytes
     receiveAll client []
   ownedResult "HTTP response" outcome

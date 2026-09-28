@@ -24,11 +24,6 @@
         ],
         "evidence": [
           {
-            "adr_candidate": "A00000000000000000000000000@R00000000000000000000000001",
-            "adr_chunk": "A00000000000000000000000000@R00000000000000000000000001/section/title-summary/0/1-2",
-            "adr_excerpt": "left left summary",
-            "adr_section": "title-summary",
-            "candidate_record": "R00000000000000000000000001",
             "file_excerpt": "left decision summary right decision summary architectural choice",
             "file_lines": [
               1,
@@ -39,7 +34,7 @@
               "left",
               "summary"
             ],
-            "score": 0.472079,
+            "passage": 0,
             "semantic_score": 0.472079
           }
         ],
@@ -50,6 +45,14 @@
         "matched_record": "R00000000000000000000000001",
         "matched_title": "left",
         "obsolete": false,
+        "passages": [
+          {
+            "adr_chunk": "A00000000000000000000000000@R00000000000000000000000001/section/title-summary/0/1-2",
+            "adr_excerpt": "left left summary",
+            "adr_section": "title-summary",
+            "candidate_record": "R00000000000000000000000001"
+          }
+        ],
         "record": null,
         "replacement": null,
         "resolution_required": true,
@@ -124,7 +127,7 @@
         "semantic_corpus": 2
       }
     },
-    "schema": "adrai/relevant/v1",
+    "schema": "adrai/relevant/v2",
     "view": "relevant"
   },
   "outside_scope": {
@@ -151,11 +154,6 @@
         ],
         "evidence": [
           {
-            "adr_candidate": "A00000000000000000000000000",
-            "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
-            "adr_excerpt": "decision first decision second",
-            "adr_section": "decision",
-            "candidate_record": "R00000000000000000000000001",
             "file_excerpt": "current decision api context first decision second consequence current domain cache lease token",
             "file_lines": [
               1,
@@ -166,7 +164,7 @@
               "first",
               "second"
             ],
-            "score": 0.352558,
+            "passage": 0,
             "semantic_score": 0.352558
           }
         ],
@@ -177,6 +175,14 @@
         "matched_record": "R00000000000000000000000001",
         "matched_title": null,
         "obsolete": true,
+        "passages": [
+          {
+            "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
+            "adr_excerpt": "decision first decision second",
+            "adr_section": "decision",
+            "candidate_record": "R00000000000000000000000001"
+          }
+        ],
         "record": "R00000000000000000000000001",
         "replacement": null,
         "resolution_required": true,
@@ -251,7 +257,7 @@
         "semantic_corpus": 1
       }
     },
-    "schema": "adrai/relevant/v1",
+    "schema": "adrai/relevant/v2",
     "view": "relevant"
   },
   "resolved": {
@@ -278,11 +284,6 @@
         ],
         "evidence": [
           {
-            "adr_candidate": "A00000000000000000000000000",
-            "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
-            "adr_excerpt": "decision first decision second",
-            "adr_section": "decision",
-            "candidate_record": "R00000000000000000000000001",
             "file_excerpt": "current decision api context first decision second consequence current domain cache lease token",
             "file_lines": [
               1,
@@ -293,7 +294,7 @@
               "first",
               "second"
             ],
-            "score": 0.352558,
+            "passage": 0,
             "semantic_score": 0.352558
           }
         ],
@@ -304,6 +305,14 @@
         "matched_record": "R00000000000000000000000001",
         "matched_title": null,
         "obsolete": true,
+        "passages": [
+          {
+            "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
+            "adr_excerpt": "decision first decision second",
+            "adr_section": "decision",
+            "candidate_record": "R00000000000000000000000001"
+          }
+        ],
         "record": "R00000000000000000000000001",
         "replacement": null,
         "resolution_required": true,
@@ -378,7 +387,7 @@
         "semantic_corpus": 1
       }
     },
-    "schema": "adrai/relevant/v1",
+    "schema": "adrai/relevant/v2",
     "view": "relevant"
   },
   "schema": "adrai/p3-05-relevance-golden/v1",

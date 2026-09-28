@@ -162,6 +162,7 @@ publicSchemaText publicSchema =
   case publicSchema of
     SearchPublicV1 -> "adrai/search/v1"
     RelevantPublicV1 -> "adrai/relevant/v1"
+    RelevantPublicV2 -> "adrai/relevant/v2"
     HistoryPublicV1 -> "adrai/history/v1"
     ShowCollapsedPublicV1 -> "adrai/show-collapsed/v1"
     ShowExplodedPublicV1 -> "adrai/show-exploded/v1"

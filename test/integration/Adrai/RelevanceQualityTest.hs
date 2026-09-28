@@ -50,7 +50,8 @@ tests =
       testCase "row 78 translated config health secrets and lease context retain intended ADRs" configLeaseContract,
       testCase "terse x_request_id input retains identifier-backed lexical evidence" terseIdentifierContract,
       testCase "MCP result shaping outranks incidental planning in the same scoped file" mcpResponseContract,
-      testCase "defined authToken receives evidence while a path citation does not" pathAlignedSymbolContract
+      testCase "defined authToken receives evidence while a path citation does not" pathAlignedSymbolContract,
+      testCase "relevant v2 JSON groups unique ADR passages and preserves ranked evidence" compactJsonContract
     ]
 
 crossFormatContract :: IO ()
@@ -227,6 +228,46 @@ pathAlignedSymbolContract = withQuality authTokenQualityAdrs $ \connection mater
       assertBool failure (relevantResultLexicalScore cited == 0)
       assertBool failure (relevantResultConfidence cited /= HighConfidence)
       assertBool failure (elemIndex directId ranked < elemIndex pathId ranked)
+
+compactJsonContract :: IO ()
+compactJsonContract = withQuality mcpQualityAdrs $ \connection materialization -> do
+  projection <- runQualitySource connection materialization mcpToolsSourceKey [mcpResponseAdrKey, planningAdrKey] 10
+  let payload = relevantProjectionJson projection
+      failure = qualityFailure materialization mcpToolsSourceKey [mcpResponseAdrKey, planningAdrKey] projection
+  jsonField "schema" payload @?= Just (JsonString "adrai/relevant/v2")
+  case jsonField "results" payload of
+    Just (JsonArray rows) -> do
+      length rows @?= length (relevantProjectionResults projection)
+      let adrs = [adr | row <- rows, Just (JsonString adr) <- [jsonField "adr" row]]
+      length adrs @?= length rows
+      Set.size (Set.fromList adrs) @?= length rows
+      forM_ rows $ \row ->
+        case (jsonField "passages" row, jsonField "evidence" row) of
+          (Just (JsonArray passages), Just (JsonArray evidence)) -> do
+            assertBool failure (not (null evidence) && length evidence <= 3)
+            assertBool failure (not (null passages) && length passages <= length evidence)
+            let chunks = [chunk | passage <- passages, Just (JsonString chunk) <- [jsonField "adr_chunk" passage]]
+            length chunks @?= length passages
+            Set.size (Set.fromList chunks) @?= length passages
+            assertBool failure (all (hasText "adr_excerpt") passages)
+            assertBool failure (all (hasText "candidate_record") passages)
+            forM_ (zip [0 :: Int ..] evidence) $ \(rank, item) -> do
+              case jsonField "passage" item of
+                Just (JsonNumber index) -> assertBool failure (index >= 0 && index < fromIntegral (length passages))
+                _ -> assertFailure "evidence passage index is missing"
+              assertBool failure (jsonField "file_lines" item /= Nothing)
+              assertBool failure (jsonField "semantic_score" item /= Nothing)
+              assertBool failure (jsonField "lexical_score" item /= Nothing)
+              assertBool failure (jsonField "matched_terms" item /= Nothing)
+              assertBool failure (if rank == 0 then hasText "file_excerpt" item else jsonField "file_excerpt" item == Nothing)
+          _ -> assertFailure "v2 result is missing passages or evidence"
+    _ -> assertFailure "v2 relevance results are missing"
+  where
+    jsonField key (JsonObject members) = lookup key members
+    jsonField _ _ = Nothing
+    hasText key value = case jsonField key value of
+      Just (JsonString content) -> not (Text.null content)
+      _ -> False
 
 withQuality :: NonEmpty AdrTemplate -> (Connection -> QueryMaterialization -> IO value) -> IO value
 withQuality templates action = bracket (open ":memory:") close $ \connection -> do

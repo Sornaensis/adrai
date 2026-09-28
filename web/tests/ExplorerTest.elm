@@ -30,6 +30,21 @@ tests =
             , fixtureTest "search_conflicted" Api.search
             , fixtureTest "relevant_committed" Api.relevant
             , fixtureTest "relevant_worktree" Api.relevant
+            , test "relevant v2 resolves passage references for display" <|
+                \_ ->
+                    case fixture "relevant_committed" (Api.response Api.relevant) of
+                        Ok envelope ->
+                            case List.head envelope.data.results |> Maybe.andThen (\hit -> List.head hit.evidence) of
+                                Just evidence ->
+                                    Expect.equal
+                                        ( "current decision api context first decision second consequence current domain cache lease token", "decision first decision second", "decision" )
+                                        ( evidence.fileExcerpt, evidence.adrExcerpt, evidence.section )
+
+                                Nothing ->
+                                    Expect.fail "relevant fixture has no evidence"
+
+                        Err problem ->
+                            Expect.fail problem
             , fixtureTest "history" Api.history
             , fixtureTest "compare" Api.comparison
             , fixtureTest "conflicts" Api.conflicts

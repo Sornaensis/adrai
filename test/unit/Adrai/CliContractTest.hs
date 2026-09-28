@@ -138,6 +138,7 @@ import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.ByteString as BS
 import qualified Data.Text.Encoding as Text.Encoding
 import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import qualified Data.Vector as Vector
@@ -1223,6 +1224,7 @@ mutationCliContractTests =
         assertBool "relevant rejects outside paths" (either (const True) (const False) (relevantCommandRequest (defaulted {relevantFile = "../outside"})))
         renderRelevantOutcome explicit projection
           @?= CliRendered (renderCanonicalJson (relevantProjectionJson projection)) "" ExitSuccess
+        assertBool "relevant --json emits the v2 projection" ("\"schema\": \"adrai/relevant/v2\"" `Text.isInfixOf` renderedStdout (renderRelevantOutcome explicit projection))
         renderRelevantOutcome (explicit {relevantJson = False}) projection
           @?= CliRendered (Text.Encoding.decodeUtf8 (renderRelevantProjection projection)) "" ExitSuccess
         selectedRepo <- newIORef Nothing

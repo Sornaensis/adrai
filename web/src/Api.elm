@@ -43,6 +43,10 @@ type alias Evidence =
     { fileExcerpt : String, adrExcerpt : String, section : String, score : Float }
 
 
+type alias RelevantPassage =
+    { excerpt : String, section : String }
+
+
 type alias Inspection =
     { adr : String, asOf : String, view : String, title : String, summary : String, body : String, status : String, domains : List String, scopes : List String, stateToken : String, recordHeads : List String, scopeHeads : List String, domainHeads : List String, statusHeads : List String, candidates : CandidateSet, conflicts : List String, sourcePaths : List String, operations : List Operation, provenance : List Provenance, resolutionRequired : Bool }
 
@@ -247,11 +251,18 @@ searchHit =
 
 relevant : Decoder RelevantWindow
 relevant =
-    D.map4 RelevantWindow
-        (D.field "as_of" D.string)
-        (D.at [ "file", "path" ] D.string)
-        (D.at [ "file", "source" ] D.string)
-        (D.field "results" (D.list relevantHit))
+    D.field "schema" D.string
+        |> D.andThen
+            (\schema ->
+                if schema == "adrai/relevant/v2" then
+                    D.map4 RelevantWindow
+                        (D.field "as_of" D.string)
+                        (D.at [ "file", "path" ] D.string)
+                        (D.at [ "file", "source" ] D.string)
+                        (D.field "results" (D.list relevantHit))
+                else
+                    D.fail "unsupported relevant schema"
+            )
 
 
 relevantHit : Decoder RelevantHit
@@ -264,16 +275,46 @@ relevantHit =
         (D.field "scope_match" D.string)
         (D.field "confidence" D.string)
         (D.field "score" D.float)
-        (D.field "evidence" (D.list evidence))
+        (D.field "passages" (D.list relevantPassage)
+            |> D.andThen (\passages -> D.field "evidence" (D.list (evidence passages)))
+        )
 
 
-evidence : Decoder Evidence
-evidence =
-    D.map4 Evidence
-        (D.field "file_excerpt" D.string)
+relevantPassage : Decoder RelevantPassage
+relevantPassage =
+    D.map2 RelevantPassage
         (D.field "adr_excerpt" D.string)
         (D.field "adr_section" D.string)
-        (D.field "score" D.float)
+
+
+evidence : List RelevantPassage -> Decoder Evidence
+evidence passages =
+    D.map4 (\excerpt lines score index -> { excerpt = excerpt, lines = lines, score = score, index = index })
+        (optional "file_excerpt" D.string "")
+        (D.field "file_lines" (D.list D.int))
+        (D.field "semantic_score" D.float)
+        (D.field "passage" D.int)
+        |> D.andThen
+            (\item ->
+                case
+                    if item.index < 0 then
+                        Nothing
+                    else
+                        List.head (List.drop item.index passages)
+                of
+                    Just passage ->
+                        let
+                            source =
+                                if item.excerpt == "" then
+                                    "lines " ++ String.join "-" (List.map String.fromInt item.lines)
+                                else
+                                    item.excerpt
+                        in
+                        D.succeed (Evidence source passage.excerpt passage.section item.score)
+
+                    Nothing ->
+                        D.fail "relevant evidence references a missing passage"
+            )
 
 
 inspection : Decoder Inspection

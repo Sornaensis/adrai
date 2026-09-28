@@ -397,6 +397,7 @@ testPublicSchemaTags =
   map publicSchemaText publicSchemas
     @?= [ "adrai/search/v1",
           "adrai/relevant/v1",
+          "adrai/relevant/v2",
           "adrai/history/v1",
           "adrai/show-collapsed/v1",
           "adrai/show-exploded/v1",
@@ -406,6 +407,7 @@ testPublicSchemaTags =
     publicSchemas =
       [ SearchPublicV1,
         RelevantPublicV1,
+        RelevantPublicV2,
         HistoryPublicV1,
         ShowCollapsedPublicV1,
         ShowExplodedPublicV1,

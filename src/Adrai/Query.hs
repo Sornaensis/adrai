@@ -75,7 +75,7 @@ module Adrai.Query
 where
 
 import Adrai.Domain (Domain, DomainError, canonicalDomains, domainIsWithin, domainRefinementText, domainText)
-import Adrai.Format (renderDigest)
+import Adrai.Format (publicSchemaText, renderDigest)
 import Adrai.Format.Document
 import Adrai.Format.Json
 import Adrai.Graph
@@ -2634,7 +2634,7 @@ snapshotTextDiff field before after
 relevantProjectionJson :: RelevantProjection -> JsonValue
 relevantProjectionJson projection =
   object
-    [ ("schema", JsonString "adrai/relevant/v1"),
+    [ ("schema", JsonString (publicSchemaText RelevantPublicV2)),
       ("view", JsonString "relevant"),
       ("as_of", JsonString (revisionResolved (relevantProjectionRevision projection))),
       ("file", relevantFileJson (relevantProjectionFile projection)),
@@ -2716,26 +2716,43 @@ relevantResultJson result =
       ("strongest_pair", scoreJson (relevantResultStrongestPair result)),
       ("strongest_lexical_pair", scoreJson (relevantResultStrongestLexicalPair result)),
       ("source_information", scoreJson (relevantResultSourceInformation result)),
-      ("evidence", JsonArray (map relevantEvidenceJson (relevantResultEvidence result)))
+      ("passages", JsonArray (map relevantPassageJson passages)),
+      ("evidence", JsonArray (zipWith (relevantEvidenceJson passages) [0 :: Int ..] (relevantResultEvidence result)))
     ]
   where
     resolution = relevantResultResolution result
 
-relevantEvidenceJson :: RelevantEvidence -> JsonValue
-relevantEvidenceJson evidence =
+    -- Preserve the ranked evidence order while storing each ADR passage once.
+    -- At most three evidence pairs are selected upstream, so this scan is bounded.
+    passages = reverse (snd (foldl' addPassage (Set.empty, []) (relevantResultEvidence result)))
+    addPassage (seen, collected) evidence
+      | Set.member chunk seen = (seen, collected)
+      | otherwise = (Set.insert chunk seen, evidence : collected)
+      where
+        chunk = relevantEvidenceAdrChunk evidence
+
+relevantPassageJson :: RelevantEvidence -> JsonValue
+relevantPassageJson evidence =
   object
-    [ ("file_lines", JsonArray [JsonNumber (fromIntegral (relevantEvidenceFileLineStart evidence)), JsonNumber (fromIntegral (relevantEvidenceFileLineEnd evidence))]),
-      ("file_excerpt", JsonString (relevantEvidenceFileExcerpt evidence)),
-      ("adr_chunk", JsonString (relevantEvidenceAdrChunk evidence)),
+    [ ("adr_chunk", JsonString (relevantEvidenceAdrChunk evidence)),
       ("adr_section", JsonString (sectionKindName (relevantEvidenceAdrSection evidence))),
-      ("adr_candidate", JsonString (relevantEvidenceAdrCandidate evidence)),
       ("candidate_record", JsonString (recordIdText (relevantEvidenceCandidateRecord evidence))),
-      ("adr_excerpt", JsonString (relevantEvidenceAdrExcerpt evidence)),
-      ("score", scoreJson (relevantEvidenceScore evidence)),
+      ("adr_excerpt", JsonString (relevantEvidenceAdrExcerpt evidence))
+    ]
+
+relevantEvidenceJson :: [RelevantEvidence] -> Int -> RelevantEvidence -> JsonValue
+relevantEvidenceJson passages ordinal evidence =
+  object
+    ( [ ("passage", JsonNumber (fromIntegral passageIndex)),
+        ("file_lines", JsonArray [JsonNumber (fromIntegral (relevantEvidenceFileLineStart evidence)), JsonNumber (fromIntegral (relevantEvidenceFileLineEnd evidence))]),
       ("semantic_score", scoreJson (relevantEvidenceSemanticScore evidence)),
       ("lexical_score", scoreJson (relevantEvidenceLexicalScore evidence)),
       ("matched_terms", textArray (relevantEvidenceMatchedTerms evidence))
-    ]
+      ]
+        <> if ordinal == 0 then [("file_excerpt", JsonString (relevantEvidenceFileExcerpt evidence))] else []
+    )
+  where
+    passageIndex = length (takeWhile ((/= relevantEvidenceAdrChunk evidence) . relevantEvidenceAdrChunk) passages)
 
 relevanceScopeMatchText :: RelevanceScopeMatch -> Text
 relevanceScopeMatchText RelevanceScopeExact = "exact"

@@ -464,6 +464,7 @@ data SourceSchema
 data PublicSchema
   = SearchPublicV1
   | RelevantPublicV1
+  | RelevantPublicV2
   | HistoryPublicV1
   | ShowCollapsedPublicV1
   | ShowExplodedPublicV1
