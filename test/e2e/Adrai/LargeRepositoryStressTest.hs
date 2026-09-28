@@ -42,7 +42,7 @@ import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.IORef
 import Data.Int (Int64)
-import Data.List (intercalate, isInfixOf)
+import Data.List (intercalate, isInfixOf, isPrefixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
 import Data.Scientific (toBoundedInteger, toRealFloat)
@@ -1329,7 +1329,11 @@ readWindowsProcessTreeSnapshot diagnosticPath rootPid =
   readWindowsProcessTreeSnapshotWithCimRows diagnosticPath rootPid "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,WorkingSetSize,Name"
 
 readWindowsProcessTreeSnapshotWithCimRows :: Maybe FilePath -> String -> String -> IO (Either ProcessTreeSamplerFailure WindowsProcessTreeSnapshot)
-readWindowsProcessTreeSnapshotWithCimRows diagnosticPath rootPid cimRows = do
+readWindowsProcessTreeSnapshotWithCimRows diagnosticPath rootPid cimRows =
+  readWindowsProcessTreeSnapshotWithToolhelpRows diagnosticPath rootPid cimRows "$entries=@([AdraiProcessTree]::Rows());function Get-ToolhelpEntries { [AdraiProcessTree]::Rows() };"
+
+readWindowsProcessTreeSnapshotWithToolhelpRows :: Maybe FilePath -> String -> String -> String -> IO (Either ProcessTreeSamplerFailure WindowsProcessTreeSnapshot)
+readWindowsProcessTreeSnapshotWithToolhelpRows diagnosticPath rootPid cimRows toolhelpEntryRows = do
   -- PowerShell treats tokens after @-Command <script>@ as part of that
   -- script, not as @\$args@. Embed the validated numeric pid so sampling
   -- does not silently fail with a parser error and report a useless zero.
@@ -1340,19 +1344,91 @@ readWindowsProcessTreeSnapshotWithCimRows diagnosticPath rootPid cimRows = do
   -- malformed or temporally impossible topology rather than reporting a low
   -- aggregate for an ambiguous one.
   let root = maybe (-1) id (readNonnegativeInteger rootPid)
+      -- Win32_Process enumeration can be denied in a restricted Windows job
+      -- even when the launched process and its descendants are observable.
+      -- Toolhelp supplies the parent links; Get-Process supplies live creation
+      -- identities and working sets for the selected tree.  Both paths still
+      -- pass through the same chronology and exact-sum validation below.
+      toolhelpRows =
+        unlines
+          [ "Add-Type -TypeDefinition @'",
+            "using System;",
+            "using System.Collections.Generic;",
+            "using System.ComponentModel;",
+            "using System.Runtime.InteropServices;",
+            "public static class AdraiProcessTree {",
+            "  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]",
+            "  public struct Entry {",
+            "    public uint dwSize, cntUsage, th32ProcessID;",
+            "    public IntPtr th32DefaultHeapID;",
+            "    public uint th32ModuleID, cntThreads, th32ParentProcessID;",
+            "    public int pcPriClassBase;",
+            "    public uint dwFlags;",
+            "    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;",
+            "  }",
+            "  [DllImport(\"kernel32.dll\", CharSet = CharSet.Unicode, SetLastError = true)]",
+            "  static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);",
+            "  [DllImport(\"kernel32.dll\", CharSet = CharSet.Unicode, SetLastError = true)]",
+            "  static extern bool Process32FirstW(IntPtr handle, ref Entry entry);",
+            "  [DllImport(\"kernel32.dll\", CharSet = CharSet.Unicode, SetLastError = true)]",
+            "  static extern bool Process32NextW(IntPtr handle, ref Entry entry);",
+            "  [DllImport(\"kernel32.dll\", SetLastError = true)]",
+            "  static extern bool CloseHandle(IntPtr handle);",
+            "  public static Entry[] Rows() {",
+            "    var handle = CreateToolhelp32Snapshot(2, 0);",
+            "    if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());",
+            "    var rows = new List<Entry>();",
+            "    try {",
+            "      var entry = new Entry();",
+            "      entry.dwSize = (uint)Marshal.SizeOf(typeof(Entry));",
+            "      if (!Process32FirstW(handle, ref entry)) throw new Win32Exception(Marshal.GetLastWin32Error());",
+            "      while (true) {",
+            "        rows.Add(entry);",
+            "        entry.dwSize = (uint)Marshal.SizeOf(typeof(Entry));",
+            "        if (Process32NextW(handle, ref entry)) continue;",
+            "        int error = Marshal.GetLastWin32Error();",
+            "        if (error != 18) throw new Win32Exception(error);",
+            "        break;",
+            "      }",
+            "    } finally { CloseHandle(handle); }",
+            "    return rows.ToArray();",
+            "  }",
+            "}",
+            "'@ -ErrorAction Stop;",
+            toolhelpEntryRows,
+            "$entryByPid=@{};foreach($entry in $entries){$entryPid=[uint32]$entry.th32ProcessID;if($entryByPid.ContainsKey($entryPid)){exit 44};$entryByPid[$entryPid]=$entry};$selected=@{};$selected[$rootPid]=$true;",
+            "do{$added=$false;foreach($entry in $entries){if($selected.ContainsKey([uint32]$entry.th32ParentProcessID) -and -not $selected.ContainsKey([uint32]$entry.th32ProcessID)){$selected[[uint32]$entry.th32ProcessID]=$true;$added=$true}}}while($added);",
+            "$live=@{};$missing=@{};$observed=@{};foreach($entry in $entries){$pidValue=[uint32]$entry.th32ProcessID;if(-not $selected.ContainsKey($pidValue)){continue};try{$process=Get-Process -Id $pidValue -ErrorAction Stop;$created=$process.StartTime;$workingSet=$process.WorkingSet64}catch{if($pidValue -eq $rootPid){throw};if($_.CategoryInfo.Category -ne [Management.Automation.ErrorCategory]::ObjectNotFound){try{$null=Get-Process -Id $pidValue -ErrorAction Stop}catch{if($_.CategoryInfo.Category -ne [Management.Automation.ErrorCategory]::ObjectNotFound){throw};$missing[$pidValue]=$true;continue};throw};$missing[$pidValue]=$true;continue};$live[$pidValue]=$true;$observed[$pidValue]=[pscustomobject]@{ProcessId=$pidValue;ParentProcessId=[uint32]$entry.th32ParentProcessID;CreationDate=$created;WorkingSetSize=$workingSet;Name=$entry.szExeFile}};",
+            "foreach($entry in $entries){$pidValue=[uint32]$entry.th32ProcessID;if(-not $live.ContainsKey($pidValue) -or $pidValue -eq $rootPid){continue};$parentPid=[uint32]$entry.th32ParentProcessID;for($steps=0;$parentPid -ne $rootPid;$steps++){if($steps -ge $entries.Count -or $missing.ContainsKey($parentPid) -or -not $live.ContainsKey($parentPid) -or -not $entryByPid.ContainsKey($parentPid)){exit 49};$parentPid=[uint32]$entryByPid[$parentPid].th32ParentProcessID}};",
+            "$verifyEntries=@(Get-ToolhelpEntries);$verifyByPid=@{};foreach($entry in $verifyEntries){$pidValue=[uint32]$entry.th32ProcessID;if($verifyByPid.ContainsKey($pidValue)){exit 50};$verifyByPid[$pidValue]=$entry};",
+            "foreach($entry in $entries){$pidValue=[uint32]$entry.th32ProcessID;if(-not $live.ContainsKey($pidValue)){continue};if(-not $verifyByPid.ContainsKey($pidValue)){exit 50};$verifiedEntry=$verifyByPid[$pidValue];if([uint32]$verifiedEntry.th32ParentProcessID -ne [uint32]$entry.th32ParentProcessID -or [string]$verifiedEntry.szExeFile -cne [string]$entry.szExeFile){exit 50};try{$verifiedProcess=Get-Process -Id $pidValue -ErrorAction Stop;$verifiedCreated=$verifiedProcess.StartTime}catch{exit 50};if($verifiedCreated.Ticks -ne $observed[$pidValue].CreationDate.Ticks){exit 50}};",
+            "foreach($entry in $entries){$pidValue=[uint32]$entry.th32ProcessID;if($live.ContainsKey($pidValue)){$observed[$pidValue]}}"
+          ]
       script =
         "$root="
           <> show root
-          <> ";$ErrorActionPreference='Stop';if($root -lt 1 -or $root -gt [uint32]::MaxValue){exit 43};$rootPid=[uint32]$root;$watch=[Diagnostics.Stopwatch]::StartNew();$all=@("
+          <> ";$ErrorActionPreference='Stop';if($root -lt 1 -or $root -gt [uint32]::MaxValue){exit 43};$rootPid=[uint32]$root;$watch=[Diagnostics.Stopwatch]::StartNew();try{$all=@("
           <> cimRows
-          <> ");$watch.Stop();$byPid=@{};foreach($p in $all){if($null -eq $p.ProcessId){continue};$processPid=[uint32]$p.ProcessId;if($byPid.ContainsKey($processPid)){exit 44};$byPid[$processPid]=$p};if(-not $byPid.ContainsKey($rootPid)){exit 42};function Convert-SelectedRow($p){if($null -eq $p.ProcessId -or $null -eq $p.ParentProcessId -or $null -eq $p.CreationDate -or $null -eq $p.WorkingSetSize -or $null -eq $p.Name){exit 44};$processPid=[int64]$p.ProcessId;$ppid=[int64]$p.ParentProcessId;$created=([datetime]$p.CreationDate).ToUniversalTime().Ticks;$workingSet=[int64]$p.WorkingSetSize;$name=[string]$p.Name;$nameBytes=[Text.Encoding]::UTF8.GetByteCount($name);if($processPid -lt 1 -or $ppid -lt 0 -or $created -le 0 -or $workingSet -lt 0){exit 44};if($nameBytes -lt 1 -or $nameBytes -gt 256){exit 45};[pscustomobject]@{pid=$processPid;ppid=$ppid;creation_ticks=[int64]$created;working_set_bytes=$workingSet;name=$name}};$accepted=@{};$rootRow=Convert-SelectedRow $byPid[$rootPid];$accepted[[uint32]$rootRow.pid]=$rootRow;do{$added=$false;foreach($p in $all){if($null -eq $p.ParentProcessId){continue};$parentPid=[uint32]$p.ParentProcessId;if(-not $accepted.ContainsKey($parentPid)){continue};$candidate=Convert-SelectedRow $p;$candidatePid=[uint32]$candidate.pid;if($accepted.ContainsKey($candidatePid)){continue};$parent=$accepted[$parentPid];if($candidate.creation_ticks -lt $rootRow.creation_ticks -or $candidate.creation_ticks -lt $parent.creation_ticks){continue};$accepted[$candidatePid]=$candidate;$added=$true}}while($added);$rows=@($accepted.Values | Sort-Object pid);if($rows.Count -gt 256){exit 45};$json=([pscustomobject]@{sampled_at=[DateTime]::UtcNow.ToString('o');root_pid=[int64]$rootPid;query_duration_milliseconds=[int64][Math]::Ceiling($watch.Elapsed.TotalMilliseconds);rows=$rows}|ConvertTo-Json -Depth 3 -Compress);$bytes=[Text.Encoding]::UTF8.GetBytes($json);if($bytes.Length -gt 65536){exit 45};$encoded=[Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_');if($encoded.Length -gt 87382){exit 45};[Console]::Out.Write($encoded)"
-  (status, output, _) <- readProcessWithExitCode "powershell" ["-NoProfile", "-NonInteractive", "-Command", script] ""
+          <> ")}catch{if($_.CategoryInfo.Category -ne [Management.Automation.ErrorCategory]::PermissionDenied){[Console]::Error.Write('stage=cim;category='+$_.CategoryInfo.Category);exit 46};try{$all=@(& {"
+          <> toolhelpRows
+          <> "})}catch{[Console]::Error.Write('stage=toolhelp;category='+$_.CategoryInfo.Category);exit 47}};try{$watch.Stop();$byPid=@{};foreach($p in $all){if($null -eq $p.ProcessId){continue};$processPid=[uint32]$p.ProcessId;if($byPid.ContainsKey($processPid)){exit 44};$byPid[$processPid]=$p};if(-not $byPid.ContainsKey($rootPid)){exit 42};function Convert-SelectedRow($p){if($null -eq $p.ProcessId -or $null -eq $p.ParentProcessId -or $null -eq $p.CreationDate -or $null -eq $p.WorkingSetSize -or $null -eq $p.Name){exit 44};$processPid=[int64]$p.ProcessId;$ppid=[int64]$p.ParentProcessId;$created=([datetime]$p.CreationDate).ToUniversalTime().Ticks;$workingSet=[int64]$p.WorkingSetSize;$name=[string]$p.Name;$nameBytes=[Text.Encoding]::UTF8.GetByteCount($name);if($processPid -lt 1 -or $ppid -lt 0 -or $created -le 0 -or $workingSet -lt 0){exit 44};if($nameBytes -lt 1 -or $nameBytes -gt 256){exit 45};[pscustomobject]@{pid=$processPid;ppid=$ppid;creation_ticks=[int64]$created;working_set_bytes=$workingSet;name=$name}};$accepted=@{};$rootRow=Convert-SelectedRow $byPid[$rootPid];$accepted[[uint32]$rootRow.pid]=$rootRow;do{$added=$false;foreach($p in $all){if($null -eq $p.ParentProcessId){continue};$parentPid=[uint32]$p.ParentProcessId;if(-not $accepted.ContainsKey($parentPid)){continue};$candidate=Convert-SelectedRow $p;$candidatePid=[uint32]$candidate.pid;if($accepted.ContainsKey($candidatePid)){continue};$parent=$accepted[$parentPid];if($candidate.creation_ticks -lt $rootRow.creation_ticks -or $candidate.creation_ticks -lt $parent.creation_ticks){continue};$accepted[$candidatePid]=$candidate;$added=$true}}while($added);$rows=@($accepted.Values | Sort-Object pid);if($rows.Count -gt 256){exit 45};$json=([pscustomobject]@{sampled_at=[DateTime]::UtcNow.ToString('o');root_pid=[int64]$rootPid;query_duration_milliseconds=[int64][Math]::Ceiling($watch.Elapsed.TotalMilliseconds);rows=$rows}|ConvertTo-Json -Depth 3 -Compress);$bytes=[Text.Encoding]::UTF8.GetBytes($json);if($bytes.Length -gt 65536){exit 45};$encoded=[Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_');if($encoded.Length -gt 87382){exit 45};[Console]::Out.Write($encoded)}catch{[Console]::Error.Write('stage=encode;category='+$_.CategoryInfo.Category);exit 48}"
+  (status, output, problem) <- readProcessWithExitCode "powershell" ["-NoProfile", "-NonInteractive", "-Command", script] ""
   case status of
     ExitSuccess -> decodeWindowsProcessTreeSnapshot diagnosticPath output
     ExitFailure 42 -> pure (Left RootDisappeared)
     ExitFailure 44 -> persistInvalidWindowsSnapshot diagnosticPath (SnapshotIdentityFailure "PowerShell returned a row with a missing or malformed process identity") output Nothing
     ExitFailure 45 -> persistInvalidWindowsSnapshot diagnosticPath (SnapshotIdentityFailure "PowerShell sampler exceeded its configured transport or row bounds") output Nothing
-    ExitFailure code -> pure (Left (SamplerInvocationFailure ("PowerShell sampler exited " <> show code)))
+    ExitFailure 49 -> persistInvalidWindowsSnapshot diagnosticPath (SnapshotTopologyFailure "Toolhelp observed a live descendant without a live parent in the selected process tree") output Nothing
+    ExitFailure 50 -> persistInvalidWindowsSnapshot diagnosticPath (SnapshotIdentityFailure "Toolhelp process identity changed while reading working-set metrics") output Nothing
+    ExitFailure code -> pure (Left (SamplerInvocationFailure ("PowerShell sampler exited " <> show code <> "; " <> safePowerShellSamplerStderr problem)))
+
+safePowerShellSamplerStderr :: String -> String
+safePowerShellSamplerStderr problem =
+  let marker = take 128 (filter (`notElem` ['\r', '\n']) problem)
+      safeCharacter character = character `elem` (['a' .. 'z'] <> ['A' .. 'Z'] <> ['0' .. '9'] <> "=;_")
+   in if "stage=" `isPrefixOf` marker && all safeCharacter marker
+        then marker
+        else "stderr unavailable or unclassified"
 
 decodeWindowsProcessTreeSnapshot :: Maybe FilePath -> String -> IO (Either ProcessTreeSamplerFailure WindowsProcessTreeSnapshot)
 decodeWindowsProcessTreeSnapshot diagnosticPath output =
@@ -1892,6 +1968,30 @@ windowsProcessTreeIntegrationContract
       expectScriptFailure "missing direct creation identity" (malformedDirect "CreationDate=$null;WorkingSetSize=[int64]7;Name='git.exe'")
       expectScriptFailure "negative direct working set" (malformedDirect "CreationDate=$base.AddTicks(1);WorkingSetSize=[int64]-1;Name='git.exe'")
       expectScriptFailure "empty direct name" (malformedDirect "CreationDate=$base.AddTicks(1);WorkingSetSize=[int64]7;Name=''")
+      let missingIntermediateRows includeGrandchild =
+            "$base=[datetime]::UtcNow;$entries=@([pscustomobject]@{th32ProcessID=[uint32]10;th32ParentProcessID=[uint32]1;szExeFile='root.exe'},"
+              <> "[pscustomobject]@{th32ProcessID=[uint32]11;th32ParentProcessID=[uint32]10;szExeFile='child.exe'}"
+              <> (if includeGrandchild then ",[pscustomobject]@{th32ProcessID=[uint32]12;th32ParentProcessID=[uint32]11;szExeFile='grandchild.exe'}" else "")
+              <> ");function Get-ToolhelpEntries { $entries };function Get-Process { [CmdletBinding()] param([int]$Id);if($Id -eq 11){Write-Error 'vanished' -Category ObjectNotFound -ErrorAction Stop};[pscustomobject]@{StartTime=$base;WorkingSet64=[int64]5}};"
+          reusedPidRows =
+            "$base=[datetime]::UtcNow;$entries=@([pscustomobject]@{th32ProcessID=[uint32]10;th32ParentProcessID=[uint32]1;szExeFile='root.exe'},[pscustomobject]@{th32ProcessID=[uint32]11;th32ParentProcessID=[uint32]10;szExeFile='child.exe'});"
+              <> "function Get-ToolhelpEntries { @([pscustomobject]@{th32ProcessID=[uint32]10;th32ParentProcessID=[uint32]1;szExeFile='root.exe'},[pscustomobject]@{th32ProcessID=[uint32]11;th32ParentProcessID=[uint32]99;szExeFile='reused.exe'}) };"
+              <> "function Get-Process { [CmdletBinding()] param([int]$Id);[pscustomobject]@{StartTime=$base;WorkingSet64=[int64]5}};"
+          forcedCimDenial = "Write-Error 'denied' -Category PermissionDenied -ErrorAction Stop"
+      missingIntermediate <- readWindowsProcessTreeSnapshotWithToolhelpRows Nothing "10" forcedCimDenial (missingIntermediateRows True)
+      case missingIntermediate of
+        Left (SnapshotTopologyFailure problem) -> assertBool "live grandchild with vanished parent must fail closed" ("live descendant" `isInfixOf` problem)
+        other -> assertFailure ("vanished intermediate with live grandchild must fail topology validation: " <> show other)
+      missingLeaf <- readWindowsProcessTreeSnapshotWithToolhelpRows Nothing "10" forcedCimDenial (missingIntermediateRows False)
+      case missingLeaf of
+        Left failure -> assertFailure ("vanished leaf must leave an attributable live root sample: " <> renderProcessTreeSamplerFailure failure)
+        Right snapshot -> do
+          map windowsProcessPid (windowsRows snapshot) @?= [10]
+          sum (map windowsProcessWorkingSetBytes (windowsRows snapshot)) @?= 5
+      reusedPid <- readWindowsProcessTreeSnapshotWithToolhelpRows Nothing "10" forcedCimDenial reusedPidRows
+      case reusedPid of
+        Left (SnapshotIdentityFailure problem) -> assertBool "reused PID with a changed parent and name must fail closed" ("identity changed" `isInfixOf` problem)
+        other -> assertFailure ("reused PID must fail identity validation: " <> show other)
       let cleanup (_, _, _, processHandle) = do
             status <- getProcessExitCode processHandle
             when (isNothing status) (terminateProcess processHandle)
