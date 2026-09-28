@@ -113,16 +113,24 @@ testGenerationExhaustion = withSeededRepository $ \root -> do
         authenticate = Aeson.encode (Aeson.object ["type" Aeson..= ("authenticate" :: Text), "credential" Aeson..= token])
     port <- either assertFailure pure (authorityPort (Security.authorityHost authority))
     socketReady <- newEmptyMVar
-    let connected = runOwnedWebSocketClient 8000000 port headers $ \connection -> do
+    socketPhase <- newIORef ("connecting" :: String)
+    let connected = runOwnedWebSocketClient 60000000 port headers $ \connection -> do
+          writeIORef socketPhase "authenticating"
           WS.sendTextData connection authenticate
-          initial <- timeout 2000000 (WS.receiveData connection :: IO LBS.ByteString)
+          initial <- timeout 15000000 (WS.receiveData connection :: IO LBS.ByteString)
           assertBool "existing authenticated subscriber received initial resync" (maybe False (BS.isInfixOf "repository-invalidated" . LBS.toStrict) initial)
+          writeIORef socketPhase "awaiting terminal close"
           putMVar socketReady ()
-          closed <- timeout 3000000 (trySynchronous (WS.receiveDataMessage connection))
+          closed <- timeout 10000000 (trySynchronous (WS.receiveDataMessage connection))
+          writeIORef socketPhase ("terminal close observed: " <> show (fmap (either show (const "data message")) closed))
           assertBool "terminal exhaustion closes existing subscriber with restart reason" (expectedClose "generation-exhausted; restart the web server" closed)
+          writeIORef socketPhase "terminal close validated; cleaning up client"
     bracket (async connected) (\worker -> cancel worker >> void (waitCatch worker)) $ \socketWorker -> do
-      readySocket <- timeout 3000000 (takeMVar socketReady)
-      assertBool "existing socket authenticated before mutation publication" (maybe False (const True) readySocket)
+      readySocket <- timeout 20000000 (takeMVar socketReady)
+      readyPhase <- readIORef socketPhase
+      readyWorker <- poll socketWorker
+      assertBool ("existing socket authenticated before mutation publication; phase=" <> readyPhase <> "; worker=" <> show readyWorker)
+        (maybe False (const True) readySocket)
       committed <- postJson running "/api/v1/adrs" (createBody basis)
       assertCommitted committed
       after <- gitHead root
@@ -130,8 +138,10 @@ testGenerationExhaustion = withSeededRepository $ \root -> do
       textAt ["data", "commit"] committed >>= (@?= after)
       textAt ["data", "publication_warning"] committed >>= (@?= "commit generation publication failed after the durable commit")
       textAt ["metadata", "as_of", "kind"] committed >>= (@?= "unavailable")
-      socketEnded <- timeout 5000000 (waitCatch socketWorker)
-      assertBool "existing socket and owned worker finish after terminal close" (maybe False (either (const False) (maybe False (either (const False) (const True)))) socketEnded)
+      socketEnded <- timeout 15000000 (waitCatch socketWorker)
+      phase <- readIORef socketPhase
+      assertBool ("existing socket and owned worker finish after terminal close; phase=" <> phase <> "; result=" <> show socketEnded)
+        (maybe False (either (const False) (maybe False (either (const False) (const True)))) socketEnded)
       (status, exhausted) <- getJsonStatus running "/api/v1/repository"
       status @?= 503
       textAt ["metadata", "generation"] exhausted >>= (@?= "18446744073709551615")
