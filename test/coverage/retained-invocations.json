@@ -11,7 +11,7 @@
   "components": [
     {
       "name": "adrai-test",
-      "registrationCount": 893,
+      "registrationCount": 905,
       "registrationState": "source-declared; the canonical retained runner List checks exact registration equality",
       "staticEvidence": {
         "nativeHelperRootProcessesRound6": 12,
@@ -56,7 +56,7 @@
         "mutationServiceRound6ExternalAdraiLaunches": 0,
         "mutationServicePartitionAColdCompilerExecutions": 5,
         "exactQuerySharedSeedInitializations": 1,
-        "exactQueryPrivateCopies": 2,
+        "exactQueryPrivateCopies": 3,
         "exactQuerySuccessfulFullFallbacksBeforeRound8": 5,
         "exactQuerySuccessfulFullFallbacksRound8": 2,
         "exactQueryTotalColdEntriesBeforeRound8": 8,
@@ -72,7 +72,7 @@
       "overlayMergePlacementSeedPrivateCopies": 3,
       "overlayEnsureCalls": 6,
         "overlayDedicatedHistoriesAndResources": 2,
-      "mutationE2ERealCliLaunches": 6,
+      "mutationE2ERealCliLaunches": 10,
         "overlap": "CLI-launch and compile-callsite counts overlap and are not added.",
         "aggregateOrdinaryCliAndSeedCounts": "Unmeasured after Query seed consolidation and partition-specific resource construction; no obsolete partial subtotal is presented as current.",
         "transactionRound7RegisteredCases": 52,
@@ -255,11 +255,11 @@
       {
         "id": "Q",
         "component": "adrai-test",
-        "selectedTests": 2,
+        "selectedTests": 3,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "The shared ExactQuerySeed resource is acquired once in this selected process.",
-        "privateCopies": "Exactly two private seed copies serve the retained archive-hook and acquisition cases; the transferred two-target history and archive are constructed in the shared seed.",
-        "childProcesses": "Round eight reduces successful full fallbacks from five to two, total cold entries from eight to five, raw/analyzer entries from nine to six, queryColdCompile hooks from seven to four, archive CLI launches from three to two and total query SQLite constructions from eight to four. Direct corrupt classifications increase from nine to eleven. Explicit discoveries fall from five to two and whole-Q commit creations from eleven to seven; branch/cherry-pick and both target histories remain."
+        "privateCopies": "Exactly three private seed copies serve the archive-hook, relevance-diagnostics, and acquisition cases; the transferred two-target history and archive are constructed in the shared seed.",
+        "childProcesses": "In the historical round-eight two-case selection, successful full fallbacks fell from five to two, total cold entries from eight to five, raw/analyzer entries from nine to six, queryColdCompile hooks from seven to four, archive CLI launches from three to two and total query SQLite constructions from eight to four. Direct corrupt classifications increase from nine to eleven. Explicit discoveries fall from five to two and whole-Q commit creations from eleven to seven; branch/cherry-pick and both target histories remain."
       },
       {
         "id": "K",
@@ -300,11 +300,11 @@
       {
         "id": "MutationE2E",
         "component": "adrai-test",
-        "selectedTests": 3,
+        "selectedTests": 7,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "The intact compact real-command group remains in one selected process; repository setup is case-local.",
         "privateCopies": "Fixture-local and unmeasured.",
-        "childProcesses": "Exactly six real ADRAI launches remain: the compact command carrier falls from five to three public calls (init/create/show), and reconciliation falls from five to three (incomplete rejection/success/stale rejection). The compact carrier's compiler/analyzer/SQLite paths fall three to two and explicit harness Git calls 34 to 29. Reconciliation keeps two compiler/SQLite builds, including a genuine prior-index compile, while explicit harness Git calls rise 78 to 87 because a sealed two-parent Git history replaces four setup transactions. It creates the repository-local .adrai parent before that seed compile, adding one directory creation without changing source, compile, Git, or CLI process counts. Production-command internal Git fanout remains unmeasured."
+        "childProcesses": "The three retained compact command carrier launches and three reconciliation launches remain. Each of the four added init cases launches ADRAI once, giving ten direct ADRAI launches in these seven cases. The historical compact carrier's compiler/analyzer/SQLite paths fell from three to two and its explicit harness Git calls from 34 to 29; the four init cases add separate Git setup and inspection calls. Reconciliation keeps two compiler/SQLite builds, including a genuine prior-index compile, while explicit harness Git calls rise 78 to 87 because a sealed two-parent Git history replaces four setup transactions. It creates the repository-local .adrai parent before that seed compile, adding one directory creation without changing source, compile, Git, or CLI process counts. Production-command internal Git fanout remains unmeasured."
       },
       {
         "id": "O",
@@ -363,7 +363,7 @@
       {
         "id": "Rest",
         "component": "adrai-test",
-        "selectedTests": 587,
+        "selectedTests": 594,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "Selected-resource constructors outside the thirteen anchored groups are input dependent; the P7-02/P7-03 runtime, P7-04 API, and P7-05 exact-archive diagnostic cases acquire bounded loopback, watcher, exact-compilation and archive-validation fixtures; exact construction count elsewhere is unmeasured.",
         "privateCopies": "Unmeasured; fixture-local private copies and temporary repositories are created by the selected cases.",

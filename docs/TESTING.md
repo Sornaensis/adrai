@@ -144,35 +144,36 @@ multiset from the verified partitions, retained components, and expanded repeat
 counts and requires exact equality with the configured queue before dispatch.
 Quoted command lines are checked against the Windows 32,767-character limit.
 
-The P7-05 source ledger declares 893 unique ordinary tests, 9 cache-selection
-tests, 28 stress tests, and 6 benchmark-registration tests: 936 unique
-registrations. The explicit competing-target repeat makes 937 planned
+The current source ledger declares 905 unique ordinary tests, 9 cache-selection
+tests, 28 stress tests, and 6 benchmark-registration tests: 948 unique
+registrations. The explicit competing-target repeat makes 949 planned
 executions. These source counts require a fresh runner List before they are
 verified; only Complete establishes actual execution. The runner does not
 hardcode these totals. A fresh matching build must list every
 actual registration and prove exact equality before dispatch.
-P7-05 adds seven exact-archive and initial-resync leaves to the P7-04
-ledger of 886 ordinary, 929 unique, and 930 planned executions.
+The P7-05 source ledger declared 893 ordinary, 936 unique, and 937 planned
+executions after adding seven exact-archive and initial-resync leaves to the
+P7-04 ledger of 886 ordinary, 929 unique, and 930 planned executions.
 
 The Round8 2026-09-07 snapshot baseline is historical diagnostic evidence for
 that frozen input set. It is not an elapsed-time forecast for another snapshot:
 
 | Job | Current tests | Round8 2026-09-07 snapshot baseline |
 | --- | ---: | --- |
-| `Q` | 2 | Completed in 125.203237 seconds. |
+| `Q` | 3 | Completed in 125.203237 seconds. |
 | `N` | 70 | The former 77-test job completed in 197.706567 seconds. |
 | `R` | 98 | The former 111-test job completed in 494.973748 seconds. |
-| `T` | 47 | Completed in 220.011431 seconds. |
+| `T` | 48 | Completed in 220.011431 seconds. |
 | `Env` | 2 | Completed in 75.019434 seconds. |
 | `A` | 23 | Completed in 120.079787 seconds. |
 | `CompilerSearch` | 7 | Completed in 46.302814 seconds. |
 | `K` | 9 | The former 13-test job completed in 165.228843 seconds. |
 | `O` | 35 | The former 43-test job was censored at 193.192355 seconds. |
-| `MutationE2E` | 3 | Censored at 90.343516 seconds. |
+| `MutationE2E` | 7 | Censored at 90.343516 seconds. |
 | `D` | 2 | The former 3-test job was censored at 29.257487 seconds. |
 | `cache` | 9 | Unstarted. |
 | `C` | 4 | Unstarted. |
-| `Rest` | 580 | Unstarted. |
+| `Rest` | 594 | Unstarted. |
 | `stress` | 28 | Unstarted; the gate still requires actual `--run-stress`. |
 | `E` | 2 | Unstarted. |
 | `registration` | 6 | Unstarted. |
