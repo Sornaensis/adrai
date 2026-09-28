@@ -37,7 +37,7 @@ import Adrai.Web.Server (RunningServer (..), ServerDependencies (..), withWebSer
 import qualified Adrai.Web.Security as Security
 import Adrai.Web.Socket (unavailableEventsTransport)
 import qualified Adrai.Web.Watch as Watch
-import Control.Concurrent (MVar, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
+import Control.Concurrent (MVar, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.Async (Async, async, cancel, poll, race, wait, waitCatch, withAsync)
 import Control.Exception (SomeAsyncException, SomeException, bracket, bracketOnError, finally, fromException, throwIO, try)
 import Control.Monad (forM, forM_, void)
@@ -924,9 +924,11 @@ testWatchRuntime = withSeededRepository $ \root -> do
   createDirectoryIfMissing True (root </> "architecture" </> "adrai")
   BS.writeFile (root </> "architecture" </> "adrai" </> "native-owned.txt") "owned managed bytes"
   pauseAncestor <- newIORef False
+  lastHandleComponent <- newIORef (Nothing :: Maybe String)
   ancestorOpened <- newEmptyMVar
   resumeAncestor <- newEmptyMVar
   let afterHandleOpen component = do
+        writeIORef lastHandleComponent (Just (show component))
         pause <- atomicModifyIORef' pauseAncestor $ \enabled ->
           let fire = enabled && component == "architecture"
            in (enabled && not fire, fire)
@@ -1099,7 +1101,13 @@ testWatchRuntime = withSeededRepository $ \root -> do
   writeIORef pauseAncestor True
   nativeAfterSwap <- bracket
     (async (Watch.repositorySnapshot observer bound))
-    (\worker -> do _ <- tryPutMVar resumeAncestor (); cancel worker; _ <- waitCatch worker; pure ())
+    (\worker -> do
+        _ <- tryPutMVar resumeAncestor ()
+        cancel worker
+        _ <- waitCatch worker
+        -- The release is only reusable after the first worker has joined.
+        -- Remove an unconsumed token before the cancellation scan uses this latch.
+        void (tryTakeMVar resumeAncestor))
     (\worker -> do
       opened <- timeout 2000000 (takeMVar ancestorOpened)
       assertBool "native scan opened the managed ancestor before the swap" (maybe False (const True) opened)
@@ -1127,6 +1135,7 @@ testWatchRuntime = withSeededRepository $ \root -> do
     Watch.RepositorySnapshotFailed _ _ -> pure ()
     Watch.RepositorySnapshot _ facts -> Watch.factsManagedSourceIdentity facts @?= baselineIdentity
   writeIORef pauseAncestor True
+  writeIORef lastHandleComponent Nothing
   bracket
     (async (Watch.repositorySnapshot observer bound))
     (\worker -> do
@@ -1134,8 +1143,40 @@ testWatchRuntime = withSeededRepository $ \root -> do
         _ <- timeout 2000000 (cancel worker)
         _ <- timeout 2000000 (waitCatch worker)
         pure ()) $ \cancellationWorker -> do
-      cancellationOpened <- timeout 2000000 (takeMVar ancestorOpened)
-      assertBool "cancellation scan owns a verified ancestor handle before cancellation" (maybe False (const True) cancellationOpened)
+      cancellationStarted <- getMonotonicTimeNSec
+      -- Root identity, Git HEAD, and configuration are observed before the
+      -- managed ancestor opens; keep the readiness guard independent of scan cost.
+      cancellationOpened <- timeout 15000000 (race (takeMVar ancestorOpened) (waitCatch cancellationWorker))
+      case cancellationOpened of
+        Just (Left ()) -> do
+          elapsed <- getMonotonicTimeNSec
+          lastComponent <- readIORef lastHandleComponent
+          putStrLn ("p7-03-watch: cancellation ancestor opened after "
+            <> show ((elapsed - cancellationStarted) `div` 1000000) <> "ms; last component=" <> show lastComponent)
+        Just (Right (Left exception)) ->
+          assertFailure ("cancellation scan raised before opening the verified ancestor: " <> show exception)
+        Just (Right (Right (Watch.RepositorySnapshot _ _))) ->
+          assertFailure "cancellation scan returned before opening the verified ancestor"
+        Just (Right (Right (Watch.RepositorySnapshotFailed _ failure))) ->
+          assertFailure ("cancellation scan failed before opening the verified ancestor: " <> show failure)
+        Nothing -> do
+          outcome <- poll cancellationWorker
+          lastComponent <- readIORef lastHandleComponent
+          stillPaused <- readIORef pauseAncestor
+          elapsed <- getMonotonicTimeNSec
+          let workerState = case outcome of
+                Nothing -> "running"
+                Just (Left exception) -> "raised " <> show exception
+                Just (Right (Watch.RepositorySnapshot _ _)) -> "returned a snapshot"
+                Just (Right (Watch.RepositorySnapshotFailed _ _)) -> "returned an observation failure"
+          assertFailure
+            ("cancellation scan did not open a verified ancestor handle within the readiness bound"
+              <> "; elapsed_ms=" <> show ((elapsed - cancellationStarted) `div` 1000000)
+              <> "; worker=" <> workerState
+              <> "; last_opened_component=" <> show lastComponent
+              <> "; pause_enabled=" <> show stillPaused)
+      heldWorker <- poll cancellationWorker
+      assertBool "cancellation scan still holds the verified ancestor before cancellation" (maybe True (const False) heldWorker)
       cancellationStopped <- timeout 2000000 (cancel cancellationWorker)
       assertBool "cancelling a native scan releases its owned handles within the bound" (maybe False (const True) cancellationStopped)
       timeout 2000000 (waitCatch cancellationWorker) >>= assertBool "cancelled native scan joins within the cleanup bound" . maybe False (const True)
