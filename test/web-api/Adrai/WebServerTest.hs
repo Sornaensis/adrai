@@ -980,12 +980,27 @@ testWatchRuntime = withSeededRepository $ \root -> do
   lastHandleComponent <- newIORef (Nothing :: Maybe String)
   ancestorOpened <- newEmptyMVar
   resumeAncestor <- newEmptyMVar
+  nativeSwapTracing <- newIORef False
+  nativeSwapPhases <- newIORef ([] :: [(Word64, String)])
+  let recordNativeSwapPhase phase = do
+        tracing <- readIORef nativeSwapTracing
+        if tracing then do
+          at <- getMonotonicTimeNSec
+          atomicModifyIORef' nativeSwapPhases (\phases -> ((at, phase) : phases, ()))
+        else pure ()
   let afterHandleOpen component = do
         writeIORef lastHandleComponent (Just (show component))
+        recordNativeSwapPhase ("opened component " <> show component)
         pause <- atomicModifyIORef' pauseAncestor $ \enabled ->
           let fire = enabled && component == "architecture"
            in (enabled && not fire, fire)
-        if pause then putMVar ancestorOpened () >> takeMVar resumeAncestor else pure ()
+        if pause then do
+          recordNativeSwapPhase "verified ancestor handle opened"
+          putMVar ancestorOpened ()
+          recordNativeSwapPhase "readiness signalled"
+          takeMVar resumeAncestor
+          recordNativeSwapPhase "ancestor handle released"
+        else pure ()
   observer <- Watch.observerForRegistryWithHandleHook registry bound afterHandleOpen
   let expectFactChange label invalidation action = do
         left <- Watch.repositorySnapshot observer bound
@@ -1177,19 +1192,59 @@ testWatchRuntime = withSeededRepository $ \root -> do
   doesFileExist (controlLink </> "adrai" </> "external-sentinel.txt") >>= assertBool "junction control exposes the external sentinel"
   removeDirectory controlLink
   putStrLn "p7-03-watch: junction control complete"
+  nativeSwapOrigin <- getMonotonicTimeNSec
+  writeIORef nativeSwapTracing True
   writeIORef pauseAncestor True
+  recordNativeSwapPhase "pause enabled"
   nativeAfterSwap <- bracket
-    (async (Watch.repositorySnapshot observer bound))
+    (do
+        recordNativeSwapPhase "worker launching"
+        async $ do
+          recordNativeSwapPhase "worker entered snapshot"
+          snapshot <- Watch.repositorySnapshot observer bound
+          recordNativeSwapPhase "worker returned snapshot"
+          pure snapshot)
     (\worker -> do
+        recordNativeSwapPhase "cleanup releasing ancestor"
         _ <- tryPutMVar resumeAncestor ()
-        cancel worker
-        _ <- waitCatch worker
+        stopped <- timeout 2000000 (cancel worker)
+        joined <- timeout 2000000 (waitCatch worker)
+        assertBool "held native scan cancels within the cleanup bound" (maybe False (const True) stopped)
+        assertBool "held native scan joins within the cleanup bound" (maybe False (const True) joined)
+        recordNativeSwapPhase "worker joined"
         -- The release is only reusable after the first worker has joined.
         -- Remove an unconsumed token before the cancellation scan uses this latch.
         void (tryTakeMVar resumeAncestor))
     (\worker -> do
-      opened <- timeout 2000000 (takeMVar ancestorOpened)
-      assertBool "native scan opened the managed ancestor before the swap" (maybe False (const True) opened)
+      -- Root identity, HEAD, configuration, and index are observed before the
+      -- native ancestor opens; bound readiness separately from the held scan.
+      opened <- timeout 15000000 (race (takeMVar ancestorOpened) (waitCatch worker))
+      case opened of
+        Just (Left ()) -> recordNativeSwapPhase "readiness observed"
+        Just (Right (Left exception)) ->
+          assertFailure ("native scan raised before opening the managed ancestor: " <> show exception)
+        Just (Right (Right (Watch.RepositorySnapshot _ _))) ->
+          assertFailure "native scan returned before opening the managed ancestor"
+        Just (Right (Right (Watch.RepositorySnapshotFailed _ failure))) ->
+          assertFailure ("native scan failed before opening the managed ancestor: " <> show failure)
+        Nothing -> do
+          outcome <- poll worker
+          lastComponent <- readIORef lastHandleComponent
+          stillPaused <- readIORef pauseAncestor
+          phases <- reverse <$> readIORef nativeSwapPhases
+          elapsed <- getMonotonicTimeNSec
+          let workerState = case outcome of
+                Nothing -> "running"
+                Just (Left exception) -> "raised " <> show exception
+                Just (Right (Watch.RepositorySnapshot _ _)) -> "returned a snapshot"
+                Just (Right (Watch.RepositorySnapshotFailed _ failure)) -> "returned an observation failure: " <> show failure
+          assertFailure
+            ("native scan did not open the managed ancestor within the readiness bound"
+              <> "; elapsed_ms=" <> show ((elapsed - nativeSwapOrigin) `div` 1000000)
+              <> "; worker=" <> workerState
+              <> "; last_opened_component=" <> show lastComponent
+              <> "; pause_enabled=" <> show stillPaused
+              <> "; phases_ms=" <> show [((at - nativeSwapOrigin) `div` 1000000, phase) | (at, phase) <- phases])
       renameDirectory architecture ownedArchitecture
       let restoreArchitecture = do
             replacement <- doesDirectoryExist architecture
@@ -1202,12 +1257,18 @@ testWatchRuntime = withSeededRepository $ \root -> do
         (swapExit, _, swapError) <- readCreateProcessWithExitCode (shell ("mklink /J \"" <> architecture <> "\" \"" <> external <> "\"")) ""
         assertBool ("held-ancestor junction replacement failed: " <> swapError) (swapExit == ExitSuccess)
         doesFileExist (architecture </> "adrai" </> "external-sentinel.txt") >>= assertBool "the pathname was replaced by the external junction while the ancestor handle stayed open"
+        recordNativeSwapPhase "junction replacement verified"
         putMVar resumeAncestor ()
+        recordNativeSwapPhase "ancestor released"
         nativeOutcome <- timeout 3000000 (waitCatch worker)
         case nativeOutcome of
           Nothing -> assertFailure "handle-relative scan did not finish after the swap latch was released"
           Just (Left exception) -> assertFailure ("handle-relative scan raised: " <> show exception)
           Just (Right snapshot) -> pure snapshot)
+  writeIORef nativeSwapTracing False
+  nativeSwapTrace <- reverse <$> readIORef nativeSwapPhases
+  putStrLn ("p7-03-watch: native swap phase trace (ms) "
+    <> show [((at - nativeSwapOrigin) `div` 1000000, phase) | (at, phase) <- nativeSwapTrace])
   putStrLn "p7-03-watch: native swap complete"
   baselineIdentity <- managedIdentityOf nativeBaseline
   case nativeAfterSwap of
