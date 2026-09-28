@@ -555,7 +555,7 @@ testColdExactArchive = do
       absentAtFirstGet <- not <$> doesFileExist exactArchive
       assertBool "exact archive is absent immediately before the first HTTP search" absentAtFirstGet
       let exactSearch = "/api/v1/search?q=Seeded&mode=fts&view=collapsed&limit=100&include_obsolete=false&shallow=false&at=" <> gitOidText seedOid
-      outcomes <- timeout 38000000 (mapConcurrently (const (rawSearchStatus running exactSearch)) [1 :: Int .. 12])
+      outcomes <- timeout 38000000 (mapConcurrently (rawSearchStatus running exactSearch) [1 :: Int .. 12])
       statuses <- maybe (assertFailure "cold exact archive requests exceeded the bound") pure outcomes
       assertBool "bounded cold searches return only success or typed busy" (all (`elem` [200, 503]) statuses)
       assertBool "at least one real exact search succeeds" (200 `elem` statuses)
@@ -608,8 +608,8 @@ stopChild handle = do
 fourth :: (a, b, c, d) -> d
 fourth (_, _, _, value) = value
 
-rawSearchStatus :: RunningServer -> Text -> IO Int
-rawSearchStatus running path = do
+rawSearchStatus :: RunningServer -> Text -> Int -> IO Int
+rawSearchStatus running path requestNumber = do
   let host = Security.authorityHost (runningAuthority running)
       token = Text.drop (Text.length "token=") (snd (Text.breakOn "token=" (runningBootstrapUrl running)))
       rawPort = snd (Text.breakOnEnd ":" host)
@@ -617,11 +617,29 @@ rawSearchStatus running path = do
         ("GET " <> path <> " HTTP/1.1\r\nHost: " <> host
           <> "\r\nAuthorization: Bearer " <> token <> "\r\nConnection: close\r\n\r\n")
   port <- maybe (assertFailure "invalid reported loopback port") pure (readMaybe (Text.unpack rawPort) :: Maybe Int)
-  bounded <- timeout 8000000 $ bracket (socket AF_INET Stream defaultProtocol) close $ \client -> do
+  started <- getMonotonicTimeNSec
+  phases <- newIORef [("connecting", started)]
+  let mark phase = do
+        now <- getMonotonicTimeNSec
+        atomicModifyIORef' phases (\entries -> ((phase, now) : entries, ()))
+      report = do
+        entries <- reverse <$> readIORef phases
+        let elapsed = [(phase, (at - started) `div` 1000000) | (phase, at) <- entries]
+        pure ("request " <> show requestNumber <> " phases (ms): " <> show elapsed)
+  -- One request performs the cold exact archive build before its first byte;
+  -- the enclosing 38-second group remains the bound for all twelve peers.
+  bounded <- timeout 30000000 $ bracket (socket AF_INET Stream defaultProtocol) close $ \client -> do
     connect client (SockAddrInet (fromIntegral port) (tupleToHostAddress (127, 0, 0, 1)))
+    mark "sending"
     sendAll client requestBytes
-    receiveAll client []
-  response <- maybe (assertFailure "bounded raw HTTP search timed out") pure bounded
+    mark "awaiting-first-byte"
+    receiveAll mark client [] 0 False False
+  response <- case bounded of
+    Nothing -> report >>= assertFailure . ("bounded raw HTTP search timed out; " <>)
+    Just bytes -> do
+      report >>= putStrLn
+      hFlush stdout
+      pure bytes
   assertBool "raw HTTP response does not disclose the process credential"
     (not (TextEncoding.encodeUtf8 token `ByteString.isInfixOf` response))
   case ByteString8.words (ByteString8.takeWhile (/= '\r') response) of
@@ -631,12 +649,42 @@ rawSearchStatus running path = do
       pure status
     _ -> assertFailure "missing raw HTTP status"
   where
-    receiveAll client chunks = do
+    receiveAll mark client chunks size sawHeaders sawFraming = do
       bytes <- recv client 4096
-      let size = sum (map ByteString.length chunks) + ByteString.length bytes
-      if size > 2 * 1024 * 1024
+      let total = size + ByteString.length bytes
+          response = ByteString.concat (reverse (bytes : chunks))
+          headersSeen = sawHeaders || "\r\n\r\n" `ByteString.isInfixOf` response
+          framed = sawFraming || responseFramed response
+      if total > 2 * 1024 * 1024
         then assertFailure "raw HTTP diagnostic response exceeded its bound"
-        else if ByteString.null bytes then pure (ByteString.concat (reverse chunks)) else receiveAll client (bytes : chunks)
+        else if ByteString.null bytes
+          then mark "eof" >> pure (ByteString.concat (reverse chunks))
+          else do
+            if size == 0 then mark "reading-headers" else pure ()
+            if headersSeen && not sawHeaders
+              then mark ("reading-body status=" <> responseStatus response)
+              else pure ()
+            if framed && not sawFraming then mark "awaiting-eof" else pure ()
+            receiveAll mark client (bytes : chunks) total headersSeen framed
+
+    responseFramed response =
+      let (headers, suffix) = ByteString.breakSubstring "\r\n\r\n" response
+          body = ByteString.drop 4 suffix
+          lengths =
+            [ readMaybe (ByteString8.unpack (ByteString8.dropWhile (== ' ') (ByteString8.drop 15 line))) :: Maybe Int
+            | line <- ByteString8.lines headers,
+              "Content-Length:" `ByteString.isPrefixOf` line
+            ]
+       in not (ByteString.null suffix)
+            && case lengths of
+              Just lengthValue : _ -> ByteString.length body >= lengthValue
+              _ -> "Transfer-Encoding: chunked" `ByteString.isInfixOf` headers
+                && maybe False (const True) (unchunk body)
+
+    responseStatus response =
+      case ByteString8.words (ByteString8.takeWhile (/= '\r') response) of
+        _ : rawStatus : _ -> ByteString8.unpack rawStatus
+        _ -> "unknown"
 
     checkBusyCode response = do
       let (headers, suffix) = ByteString.breakSubstring "\r\n\r\n" response
@@ -650,7 +698,7 @@ rawSearchStatus running path = do
         Aeson.Object outer -> case KeyMap.lookup "error" outer of
           Just (Aeson.Object problem) -> case KeyMap.lookup "code" problem of
             Just (Aeson.String code) -> assertBool "503 is a typed repository busy response"
-              (code `elem` ["repository-busy", "repository-lock-unavailable"])
+              (code == "repository-busy")
             _ -> assertFailure "503 is missing a typed error code"
           _ -> assertFailure "503 is missing a typed error"
         _ -> assertFailure "503 is not a typed JSON response"
