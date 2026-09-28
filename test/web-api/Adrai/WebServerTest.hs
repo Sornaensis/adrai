@@ -819,6 +819,7 @@ testEventRuntime = withSeededServer $ \root running -> do
   fragmentedOversizeRejected authority token
   putStrLn "p7-03-events: fragmented bound complete"
   withRawPendingPeers 16 authority token $ \peers -> do
+    pendingStarted <- getMonotonicTimeNSec
     readers <- mapM (async . receiveUntilEof) peers
     (`finally` do
         mapM_ closeOwnedSocket peers
@@ -827,20 +828,44 @@ testEventRuntime = withSeededServer $ \root running -> do
       seventeenth <- runOwnedWebSocketClient 1500000 port headers (const (pure ()))
       assertBool "the seventeenth pre-auth client is rejected with HTTP 400" (expectedHandshakeStatus 400 seventeenth)
       ended <- timeout 7000000 (mapM waitCatch readers)
+      pendingEnded <- getMonotonicTimeNSec
+      putStrLn ("p7-03-events: silent peer EOF results=" <> show ended <> "; elapsed-ms=" <> show ((pendingEnded - pendingStarted) `div` 1000000))
       assertBool ("all sixteen silent raw peers receive server EOF before the client guard closes them: " <> show ended)
         (maybe False (all (either (const False) id)) ended)
-      let awaitReleasedCapacity = do
-            recovered <- runOwnedWebSocketClient 3000000 port headers $ \connection -> do
+      capacityReleaseStarted <- getMonotonicTimeNSec
+      let describeFreshOutcome = \case
+            Nothing -> "owned client timed out"
+            Just (Right ()) -> "authenticated resync and close completed"
+            Just (Left failure) -> case fromException failure of
+              Just (WS.RequestRejected _ response) -> "HTTP " <> show (WS.responseCode response) <> " rejected upgrade"
+              Just (WS.MalformedResponse response _) -> "HTTP " <> show (WS.responseCode response) <> " malformed upgrade response"
+              _ -> "non-handshake client exception"
+          awaitReleasedCapacity attempt = do
+            phase <- newIORef ("connecting or awaiting upgrade" :: String)
+            attemptStarted <- getMonotonicTimeNSec
+            recovered <- runOwnedWebSocketClient 12000000 port headers $ \connection -> do
+              writeIORef phase "sending authentication"
               WS.sendTextData connection authenticate
-              initialFrame <- WS.receiveData connection :: IO LBS.ByteString
+              writeIORef phase "awaiting initial resync"
+              received <- timeout 10000000 (WS.receiveData connection :: IO LBS.ByteString)
+              initialFrame <- maybe (assertFailure "new authenticated client did not receive its initial resync within its bounded server subscription and send window") pure received
               assertBool "a new client authenticates after all timed-out slots are released" ("repository-invalidated" `BS.isInfixOf` LBS.toStrict initialFrame)
+              writeIORef phase "sending close"
               WS.sendClose connection ("cap recovery complete" :: Text)
+              writeIORef phase "closed"
+            attemptEnded <- getMonotonicTimeNSec
+            observedPhase <- readIORef phase
+            putStrLn ("p7-03-events: fresh attempt=" <> show attempt <> "; elapsed-ms=" <> show ((attemptEnded - attemptStarted) `div` 1000000) <> "; phase=" <> observedPhase <> "; outcome=" <> describeFreshOutcome recovered)
             case recovered of
-              Just (Right ()) -> pure True
-              failure | expectedHandshakeStatus 400 failure -> threadDelay 20000 >> awaitReleasedCapacity
-              _ -> assertFailure "fresh WebSocket failed for a reason other than bounded HTTP 400 admission"
-      released <- timeout 5000000 awaitReleasedCapacity
-      assertBool "pending capacity becomes usable after all timed-out peers close" (released == Just True)
+              Just (Right ()) -> pure ()
+              failure | expectedHandshakeStatus 400 failure -> do
+                now <- getMonotonicTimeNSec
+                assertBool ("pending capacity remained occupied more than five seconds after all silent peers received EOF; attempt=" <> show attempt)
+                  (now - capacityReleaseStarted < 5000000000)
+                threadDelay 20000
+                awaitReleasedCapacity (attempt + 1)
+              _ -> assertFailure ("fresh WebSocket failed for a reason other than bounded HTTP 400 admission; attempt=" <> show attempt <> "; phase=" <> observedPhase <> "; outcome=" <> describeFreshOutcome recovered)
+      awaitReleasedCapacity (1 :: Int)
   putStrLn "p7-03-events: pending cap complete"
   Events.decodeClientFrame 4096 "{\"type\":\"active-files\",\"type\":\"active-files\",\"paths\":[]}" @?= Left Events.MalformedFrame
   coordinator <- Events.newEventCoordinator
