@@ -1153,8 +1153,8 @@ function Read-And-VerifyOrdinaryPartitions {
     Assert-OrdinalSetEquality -Expected $ordinaryNames -Actual $unionNames -Label 'Ordinary partition union'
 
     [string[]]$requiredQueueOrder = @(
-        'Q', 'N', 'R', 'T', 'Env', 'A', 'CompilerSearch', 'K', 'O',
-        'MutationE2E', 'D', 'cache', 'C', 'Rest', 'stress', 'E', 'registration',
+        'O', 'Rest', 'Q', 'N', 'R', 'T', 'Env', 'A', 'CompilerSearch', 'K',
+        'MutationE2E', 'D', 'cache', 'C', 'stress', 'E', 'registration',
         'Krace', 'repeat-001-001'
     )
     $queue = @($overlay.queue)

@@ -1061,6 +1061,14 @@
   ],
   "queue": [
     {
+      "id": "O",
+      "classification": "normal"
+    },
+    {
+      "id": "Rest",
+      "classification": "normal"
+    },
+    {
       "id": "Q",
       "classification": "normal"
     },
@@ -1093,10 +1101,6 @@
       "classification": "normal"
     },
     {
-      "id": "O",
-      "classification": "normal"
-    },
-    {
       "id": "MutationE2E",
       "classification": "normal"
     },
@@ -1110,10 +1114,6 @@
     },
     {
       "id": "C",
-      "classification": "normal"
-    },
-    {
-      "id": "Rest",
       "classification": "normal"
     },
     {

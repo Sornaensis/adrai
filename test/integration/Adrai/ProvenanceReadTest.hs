@@ -51,6 +51,12 @@ import Adrai.Repository
     resolvedRepository,
   )
 import Adrai.Provenance.Ensure (configKey)
+import Adrai.RetainedCLI.RepositorySeed
+  ( RepositorySeed,
+    createRepositorySeed,
+    removeRepositorySeed,
+    withRepositorySeedCopy,
+  )
 import Adrai.History
   ( CommitPlacementEvidence (..),
     LineLandingEvidence (..),
@@ -86,27 +92,28 @@ import Database.SQLite.Simple (Only (..), SQLData (SQLInteger, SQLText), close, 
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
 tests :: TestTree
 tests =
-  testGroup "ProvenanceRead"
+  withResource createReadFixtureSeed removeRepositorySeed $ \getSeed ->
+    testGroup "ProvenanceRead"
     [ testCase "empty snapshot is deterministic and does not create a cache" emptySnapshotTest,
       testCase "cold and warm hydration preserve genuine original placement for Unicode paths" coldWarmTest,
       testCase "configuration evolution is exact and reusable at the public boundary" configEvolutionTest,
       testCase "a real cherry-pick retains copy placement metadata" copyPlacementTest,
       testCase "a real merge preserves first-parent order" mergeParentOrderTest,
-      testCase "historical revision stays isolated after HEAD advances" historicalIsolationTest,
-      testCase "tampered cache mismatches fail closed while missing placement repairs" tamperedCacheTest,
-      testCase "invalid existing schema is typed and byte-preserved" invalidSchemaPreservationTest,
-      testCase "v1 overlay is rebuilt as v2 before placement hydration" v1OverlayRebuiltBeforeHydrationTest,
-      testCase "extra overlay trigger and view are invalid and byte-preserved" extraExecutableObjectsPreservationTest,
+      testCase "historical revision stays isolated after HEAD advances" (getSeed >>= historicalIsolationTest),
+      testCase "tampered cache mismatches fail closed while missing placement repairs" (getSeed >>= tamperedCacheTest),
+      testCase "invalid existing schema is typed and byte-preserved" (getSeed >>= invalidSchemaPreservationTest),
+      testCase "v1 overlay is rebuilt as v2 before placement hydration" (getSeed >>= v1OverlayRebuiltBeforeHydrationTest),
+      testCase "extra overlay trigger and view are invalid and byte-preserved" (getSeed >>= extraExecutableObjectsPreservationTest),
        testCase "materialize indexes canonical identities, groups documents, and rejects registration drift" materializeCheckedIdentityIndexTest,
-       testCase "an unopenable cache location is a synchronous typed failure" synchronousFailureTest,
-      testCase "writer cancellation removes a fresh overlay and releases the lock" freshCancellationCleanupTest,
-      testCase "warm validation cancellation propagates without mutation" warmValidationCancellationTest,
-      testCase "contended lock cancellation propagates without mutation" contendedLockCancellationTest
+       testCase "an unopenable cache location is a synchronous typed failure" (getSeed >>= synchronousFailureTest),
+      testCase "writer cancellation removes a fresh overlay and releases the lock" (getSeed >>= freshCancellationCleanupTest),
+      testCase "warm validation cancellation propagates without mutation" (getSeed >>= warmValidationCancellationTest),
+      testCase "contended lock cancellation propagates without mutation" (getSeed >>= contendedLockCancellationTest)
     ]
 
 data ObservableRepositoryState = ObservableRepositoryState
@@ -376,9 +383,9 @@ mergeParentOrderTest =
           [mergePlacement] -> commitPlacementParents mergePlacement @?= [mainParent, featureCommit]
           other -> assertFailure ("expected one merge placement, got " <> show other)
 
-historicalIsolationTest :: IO ()
-historicalIsolationTest =
-  withFixture "historical" $ \repositoryPath repository resolved document operation -> do
+historicalIsolationTest :: RepositorySeed -> IO ()
+historicalIsolationTest seed =
+  withFixture seed "historical" $ \repositoryPath repository resolved document operation -> do
     before <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     let database = repositoryPath </> ".adrai" </> "provenance.sqlite"
     generationBefore <- bracket (open database) close $ \connection ->
@@ -412,9 +419,9 @@ historicalIsolationTest =
       Right placements -> Map.keys placements @?= [operation]
       Left problem -> assertFailure (show problem)
 
-tamperedCacheTest :: IO ()
-tamperedCacheTest =
-  withFixture "tampered" $ \repositoryPath repository resolved document operation -> do
+tamperedCacheTest :: RepositorySeed -> IO ()
+tamperedCacheTest seed =
+  withFixture seed "tampered" $ \repositoryPath repository resolved document operation -> do
     initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case initial of
       Left problem -> assertFailure (show problem)
@@ -502,9 +509,9 @@ tamperedCacheTest =
   where
     expectedConfigJson = "{\"connections\":\"architecture/adrai/connections\",\"decisions\":\"architecture/adrai/decisions\",\"logical_lines\":[\"trunk\"]}"
 
-invalidSchemaPreservationTest :: IO ()
-invalidSchemaPreservationTest =
-  withFixture "invalid schema" $ \repositoryPath repository resolved document _ -> do
+invalidSchemaPreservationTest :: RepositorySeed -> IO ()
+invalidSchemaPreservationTest seed =
+  withFixture seed "invalid schema" $ \repositoryPath repository resolved document _ -> do
     initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case initial of
       Left problem -> assertFailure (show problem)
@@ -520,9 +527,9 @@ invalidSchemaPreservationTest =
 -- | Overlay v1 predates target-bound placement certificates.  It must be
 -- discarded and rebuilt from the immutable requested documents, never merely
 -- retagged as v2 or trusted for a warm read.
-v1OverlayRebuiltBeforeHydrationTest :: IO ()
-v1OverlayRebuiltBeforeHydrationTest =
-  withFixture "v1 overlay rebuild" $ \repositoryPath repository resolved document operation -> do
+v1OverlayRebuiltBeforeHydrationTest :: RepositorySeed -> IO ()
+v1OverlayRebuiltBeforeHydrationTest seed =
+  withFixture seed "v1 overlay rebuild" $ \repositoryPath repository resolved document operation -> do
     initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case initial of
       Left problem -> assertFailure ("initial v2 hydration: " <> show problem)
@@ -548,9 +555,9 @@ v1OverlayRebuiltBeforeHydrationTest =
     schema @?= [Only "adrai-provenance-cache/2"]
     assertBool "v2 rebuild issues a target-bound placement certificate" (not (null coverage))
 
-extraExecutableObjectsPreservationTest :: IO ()
-extraExecutableObjectsPreservationTest =
-  withFixture "extra overlay executable objects" $ \repositoryPath repository resolved document _ -> do
+extraExecutableObjectsPreservationTest :: RepositorySeed -> IO ()
+extraExecutableObjectsPreservationTest seed =
+  withFixture seed "extra overlay executable objects" $ \repositoryPath repository resolved document _ -> do
     initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case initial of
       Left problem -> assertFailure (show problem)
@@ -654,18 +661,18 @@ materializeCheckedIdentityIndexTest = do
       | nibble < 10 = toEnum (fromEnum '0' + fromIntegral nibble)
       | otherwise = toEnum (fromEnum 'a' + fromIntegral nibble - 10)
 
-synchronousFailureTest :: IO ()
-synchronousFailureTest =
-  withFixture "unopenable" $ \repositoryPath repository resolved document _ -> do
+synchronousFailureTest :: RepositorySeed -> IO ()
+synchronousFailureTest seed =
+  withFixture seed "unopenable" $ \repositoryPath repository resolved document _ -> do
     writeFile (repositoryPath </> ".adrai") "not a cache directory"
     result <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case result of
       Left (PlacementHydrationSynchronousFailure _) -> pure ()
       other -> assertFailure ("expected typed synchronous failure, got " <> show other)
 
-freshCancellationCleanupTest :: IO ()
-freshCancellationCleanupTest =
-  withFixture "fresh cancellation" $ \repositoryPath repository resolved document _ -> do
+freshCancellationCleanupTest :: RepositorySeed -> IO ()
+freshCancellationCleanupTest seed =
+  withFixture seed "fresh cancellation" $ \repositoryPath repository resolved document _ -> do
     let database = repositoryPath </> ".adrai" </> "provenance.sqlite"
     before <- doesFileExist database
     assertBool "fixture begins without an overlay" (not before)
@@ -684,9 +691,9 @@ freshCancellationCleanupTest =
       Left problem -> assertFailure ("fresh-overlay retry failed: " <> show problem)
       Right _ -> pure ()
 
-warmValidationCancellationTest :: IO ()
-warmValidationCancellationTest =
-  withFixture "warm validation cancellation" $ \repositoryPath repository resolved document _ -> do
+warmValidationCancellationTest :: RepositorySeed -> IO ()
+warmValidationCancellationTest seed =
+  withFixture seed "warm validation cancellation" $ \repositoryPath repository resolved document _ -> do
     initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case initial of
       Left problem -> assertFailure (show problem)
@@ -704,9 +711,9 @@ warmValidationCancellationTest =
     retry <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     retry @?= initial
 
-contendedLockCancellationTest :: IO ()
-contendedLockCancellationTest =
-  withFixture "contended lock cancellation" $ \repositoryPath repository resolved document _ -> do
+contendedLockCancellationTest :: RepositorySeed -> IO ()
+contendedLockCancellationTest seed =
+  withFixture seed "contended lock cancellation" $ \repositoryPath repository resolved document _ -> do
     initial <- hydratePlacementEvidenceAt repository resolved testConfig [document]
     case initial of
       Left problem -> assertFailure (show problem)
@@ -735,23 +742,20 @@ contendedLockCancellationTest =
     retry @?= initial
 
 withFixture
-  :: String
+  :: RepositorySeed
+  -> String
   -> (FilePath -> Repository -> ResolvedRepositoryRevision -> ParsedManagedDocument -> OperationId -> IO ())
   -> IO ()
-withFixture label action =
-  withSystemTempDirectory ("adrai provenance read " <> label) $ \temporary -> do
-    let repositoryPath = temporary </> "repo with spaces ünicode"
-        managedPath = "architecture/adrai/decisions/000/ü spaced.decision.md"
-    initTestRepository repositoryPath
-    _ <- commitFile repositoryPath ".gitignore" ".adrai/\n"
-    basisText <- commitFile repositoryPath "seed.txt" "seed\n"
+withFixture seed label action =
+  withRepositorySeedCopy seed ("adrai provenance read " <> label <> " ünicode") $ \_ repositoryPath -> do
+    let managedPath = "architecture/adrai/decisions/000/ü spaced.decision.md"
+    basisText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD^"] ""
     basis <- requireOid basisText
     let operation = requireOperation "O00000000000000000000000091"
         adr = requireAdr "A00000000000000000000000091"
         semantic = "# Unicode provenance\n"
         capsule = makeCapsule operation adr basis semantic
-        documentBytes = TextEncoding.encodeUtf8 (sealSemantic semantic capsule)
-    targetText <- commitFile repositoryPath managedPath documentBytes
+    targetText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD"] ""
     blobText <- outputText <$> gitSuccess repositoryPath ["rev-parse", "HEAD:" <> managedPath] ""
     blob <- requireOid blobText
     resolved <- requireResolved repositoryPath targetText
@@ -763,6 +767,22 @@ withFixture label action =
             parsedSemanticHash = Text.pack (show (semanticDigest semantic))
           }
     action repositoryPath (repositoryOf resolved) resolved document operation
+
+createReadFixtureSeed :: IO RepositorySeed
+createReadFixtureSeed =
+  createRepositorySeed "adrai provenance read seed" $ \repositoryPath -> do
+    let managedPath = "architecture/adrai/decisions/000/ü spaced.decision.md"
+        operation = requireOperation "O00000000000000000000000091"
+        adr = requireAdr "A00000000000000000000000091"
+        semantic = "# Unicode provenance\n"
+    initTestRepository repositoryPath
+    _ <- commitFile repositoryPath ".gitignore" ".adrai/\n"
+    basisText <- commitFile repositoryPath "seed.txt" "seed\n"
+    basis <- requireOid basisText
+    let capsule = makeCapsule operation adr basis semantic
+        documentBytes = TextEncoding.encodeUtf8 (sealSemantic semantic capsule)
+    _ <- commitFile repositoryPath managedPath documentBytes
+    pure ()
 
 tamper :: FilePath -> Text.Text -> [SQLData] -> IO ()
 tamper database statement parameters = do

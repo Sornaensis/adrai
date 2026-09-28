@@ -131,9 +131,10 @@ descendant teardown, evidence finalization, and cleanup verification:
   -BenchmarkRegistrationTestExe C:\path\to\adrai-benchmark-registration-test.exe
 ```
 
-The queue has seventeen normal jobs in this exact order: `Q`, `N`, `R`, `T`,
-`Env`, `A`, `CompilerSearch`, `K`, `O`, `MutationE2E`, `D`, cache-selection,
-`C`, `Rest`, stress, `E`, and benchmark-registration. `Krace` and the unchanged
+The queue has seventeen normal jobs in this exact order: `O`, `Rest`, `Q`, `N`,
+`R`, `T`, `Env`, `A`, `CompilerSearch`, `K`, `MutationE2E`, `D`, cache-selection,
+`C`, stress, `E`, and benchmark-registration. The two longest measured jobs start
+in the initial three-root wave. `Krace` and the unchanged
 named reliability repeat are the final two exclusive jobs. Each exclusive job
 is a barrier: the coordinator drains active jobs before launching it and does
 not launch another job until its complete descendant tree exits. Cache, stress
