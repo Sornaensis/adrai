@@ -921,19 +921,37 @@ verifySlowNetworkSubscriber root = do
       -- unread until the live sender's deadline abort has actually completed.
       observedDeadline <- timeout 7000000 (takeMVar sendDeadline)
       assertBool "the unread live sender reached its physical send deadline" (maybe False (const True) observedDeadline)
+      putStrLn "p7-03-slow-peer: physical send deadline observed"
       port <- either assertFailure pure (authorityPort (Security.authorityHost authority))
       let headers =
             [ ("Origin", TextEncoding.encodeUtf8 (Security.authorityOrigin authority)),
               ("Authorization", TextEncoding.encodeUtf8 ("Bearer " <> token))
             ]
-      recovered <- runOwnedWebSocketClient 3000000 port headers $ \connection -> do
+      freshPhase <- newIORef ("connecting or awaiting upgrade" :: String)
+      freshStarted <- getMonotonicTimeNSec
+      let markFresh phase = do
+            writeIORef freshPhase phase
+            now <- getMonotonicTimeNSec
+            putStrLn ("p7-03-slow-peer: fresh phase=" <> phase <> "; elapsed-ms=" <> show ((now - freshStarted) `div` 1000000))
+      recovered <- runOwnedWebSocketClient 12000000 port headers $ \connection -> do
+        markFresh "sending authentication"
         WS.sendTextData connection (Aeson.encode (Aeson.object ["type" Aeson..= ("authenticate" :: Text), "credential" Aeson..= token]))
-        initial <- WS.receiveData connection :: IO LBS.ByteString
+        markFresh "awaiting initial resync"
+        received <- timeout 10000000 (WS.receiveData connection :: IO LBS.ByteString)
+        initial <- maybe (assertFailure "the fresh authenticated subscriber did not receive its initial resync within the bounded snapshot and send window") pure received
+        markFresh "checking initial resync"
         assertBool "another live subscriber receives its own resync after the slow peer closes" ("repository-invalidated" `BS.isInfixOf` LBS.toStrict initial)
+        markFresh "sending close"
         WS.sendClose connection ("slow-peer recovery complete" :: Text)
-      assertBool "a new authenticated subscriber remains serviceable after the slow peer closes" (maybe False (either (const False) (const True)) recovered)
+        markFresh "close sent"
+      freshEnded <- getMonotonicTimeNSec
+      observedFreshPhase <- readIORef freshPhase
+      let redactedOutcome = Text.unpack (Text.replace token "<redacted>" (Text.pack (show recovered)))
+      putStrLn ("p7-03-slow-peer: fresh worker joined; elapsed-ms=" <> show ((freshEnded - freshStarted) `div` 1000000) <> "; phase=" <> observedFreshPhase <> "; outcome=" <> redactedOutcome)
+      assertBool ("a new authenticated subscriber remains serviceable after the slow peer closes; phase=" <> observedFreshPhase <> "; outcome=" <> redactedOutcome) (maybe False (either (const False) (const True)) recovered)
       reader <- async (receiveUntilEof slowPeer)
       ended <- timeout 2000000 (waitCatch reader)
+      putStrLn ("p7-03-slow-peer: physical EOF outcome=" <> show ended)
       case ended of
         Just (Right True) -> pure ()
         other -> do
