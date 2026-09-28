@@ -751,7 +751,7 @@
       "ordinaryAggregateCliAndSeedTotals": "Unmeasured after shared-seed consolidation; the prior 51-CLI/10-seed partial subtotal is retired.",
       "cacheIntegrationAdraiLaunchesWithoutRepeat": 10,
       "cacheSelectionCompileCalls": 6,
-      "mutationE2ERealCliLaunches": 6,
+      "mutationE2ERealCliLaunches": 10,
       "overlayEnsureCalls": 6,
       "overlayDedicatedHistoriesAndResources": 2,
       "compilerSearchRealAdraiLaunches": 4,
