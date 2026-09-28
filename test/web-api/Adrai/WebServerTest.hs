@@ -54,6 +54,7 @@ import Text.Read (readMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import GHC.Clock (getMonotonicTimeNSec)
 import Network.Socket
   ( Family (AF_INET), PortNumber, ShutdownCmd (ShutdownBoth), SockAddr (SockAddrInet), Socket, SocketOption (RecvBuffer, ReuseAddr), SocketType (Stream),
     bind, close, connect, defaultProtocol, getSocketName, setSocketOption, shutdown, socket, tupleToHostAddress )
@@ -363,21 +364,42 @@ testQueryRoutes = withSeededServer $ \root running -> do
           "/api/v1/search?q=runtime&at=" <> current,
           "/api/v1/relevant?file=seed.txt&at=" <> current
         ]
-      readAfterMove route = do
-        settled <- timeout 3000000 (retryBusyRead route)
-        assertBool "exact read stayed busy after the external HEAD move" (settled == Just ())
-      retryBusyRead route = do
-        (status, response) <- getJsonStatus running route
-        case status of
-          200 -> assertCommitMetadata current response
-          503 -> do
-            textAt ["error", "category"] response >>= (@?= "service-failure")
-            valueAt ["error", "status"] response >>= (@?= Aeson.Number 503)
-            textAt ["error", "code"] response >>= (@?= "repository-busy")
-            textAt ["metadata", "as_of", "kind"] response >>= (@?= "unavailable")
-            threadDelay 50000
-            retryBusyRead route
-          _ -> assertFailure ("exact read returned unexpected HTTP status " <> show status)
+      readAfterMove route = getMonotonicTimeNSec >>= \started -> retryBusyRead route started (1 :: Int) []
+      responseField [] value = Just value
+      responseField (key : rest) (Aeson.Object fields) = KeyMap.lookup (Key.fromText key) fields >>= responseField rest
+      responseField _ _ = Nothing
+      checkPinned route attempt response = do
+        let asOf = responseField ["metadata", "as_of"] response
+            matches = case asOf of
+              Just (Aeson.Object fields) -> case KeyMap.lookup "kind" fields of
+                Just (Aeson.String "comparison") ->
+                  KeyMap.lookup "from" fields == Just (Aeson.String current)
+                    && KeyMap.lookup "to" fields == Just (Aeson.String current)
+                Just (Aeson.String "commit") -> KeyMap.lookup "oid" fields == Just (Aeson.String current)
+                _ -> False
+              _ -> False
+        assertBool ("exact read returned wrong revision: " <> Text.unpack route <> ", attempt " <> show attempt <> ", HTTP 200, expected " <> Text.unpack current <> ", as_of " <> show asOf) matches
+      retryBusyRead route started attempt statuses = do
+        -- Guard an in-flight HTTP request separately from bounded busy retries.
+        -- The old three-second guard canceled successful exact reads mid-request.
+        result <- timeout 30000000 (getJsonStatus running route)
+        case result of
+          Nothing -> do
+            elapsed <- getMonotonicTimeNSec
+            assertFailure ("exact read timed out waiting for HTTP response: " <> Text.unpack route <> ", attempt " <> show attempt <> ", elapsed " <> show ((elapsed - started) `div` 1000000) <> " ms, prior statuses " <> show (reverse statuses))
+          Just (status, response) -> case status of
+            200 -> checkPinned route attempt response
+            503 -> do
+              let typedBusy =
+                    responseField ["error", "category"] response == Just (Aeson.String "service-failure")
+                      && responseField ["error", "status"] response == Just (Aeson.Number 503)
+                      && responseField ["error", "code"] response == Just (Aeson.String "repository-busy")
+                      && responseField ["metadata", "as_of", "kind"] response == Just (Aeson.String "unavailable")
+              assertBool ("exact read returned malformed busy response: " <> Text.unpack route <> ", attempt " <> show attempt <> ", HTTP 503, response " <> show response) typedBusy
+              if attempt == 5
+                then assertFailure ("exact read stayed repository-busy after five responses: " <> Text.unpack route <> ", statuses " <> show (reverse (status : statuses)))
+                else threadDelay 50000 >> retryBusyRead route started (attempt + 1) (status : statuses)
+            _ -> assertFailure ("exact read returned unexpected HTTP status for " <> Text.unpack route <> ", attempt " <> show attempt <> ", HTTP " <> show status <> ", response " <> show response)
   mapM_ readAfterMove routes
   withSeededRepository $ \movingRoot -> do
     moved <- newIORef False
@@ -1606,17 +1628,6 @@ assertCommitted :: Aeson.Value -> IO ()
 assertCommitted value = valueAt ["data", "committed"] value >>= \case
   Aeson.Bool True -> pure ()
   other -> assertFailure ("mutation was not committed: " <> show other)
-
-assertCommitMetadata :: Text -> Aeson.Value -> IO ()
-assertCommitMetadata expected value = do
-  kind <- textAt ["metadata", "as_of", "kind"] value
-  if kind == "comparison"
-    then do
-      textAt ["metadata", "as_of", "from"] value >>= (@?= expected)
-      textAt ["metadata", "as_of", "to"] value >>= (@?= expected)
-    else do
-      kind @?= "commit"
-      textAt ["metadata", "as_of", "oid"] value >>= (@?= expected)
 
 textAt :: [Text] -> Aeson.Value -> IO Text
 textAt path value = valueAt path value >>= \case
