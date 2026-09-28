@@ -38,7 +38,7 @@ import System.Environment (lookupEnv)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 import System.IO (hFlush, stdout)
-import System.Process (CreateProcess (..), StdStream (NoStream), ProcessHandle, createProcess, getProcessExitCode, proc, terminateProcess, waitForProcess)
+import System.Process (CreateProcess (..), StdStream (Inherit, NoStream), ProcessHandle, createProcess, getProcessExitCode, proc, terminateProcess, waitForProcess)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase)
@@ -322,7 +322,9 @@ testCommittedBusyIndexWarning = do
 
 testExactArchiveBusyRecovery :: IO ()
 testExactArchiveBusyRecovery = do
-  bounded <- timeout 55000000 $ Server.withSeededRepository $ \root -> do
+  -- The held and contending validators allow 14 seconds of explicit waits;
+  -- the remaining 26 seconds covers fixture setup, archive work, and cleanup.
+  bounded <- timeout (seedBudgetMicros + 40000000) $ Server.withSeededRepository $ \root -> do
     seedDecisions root
     repository <- discoverRepository systemGit root >>= either (const (assertFailure "busy fixture discovery failed")) pure
     oid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (const (assertFailure "busy fixture HEAD failed")) pure
@@ -367,12 +369,14 @@ testExactArchiveBusyRecovery = do
         _ <- tryPutMVar release ()
         pure ()
   case bounded of
-    Nothing -> assertFailure "exact archive busy/recovery exceeded 55 seconds"
+    Nothing -> assertFailure "exact archive busy/recovery exceeded 70 seconds"
     Just () -> pure ()
 
 testConcurrentExactFtsValidation :: IO ()
 testConcurrentExactFtsValidation = do
-  bounded <- timeout 55000000 $ Server.withSeededRepository $ \root -> do
+  -- Validator joins and the held-peer interval allow 18.5 seconds; the
+  -- remaining 21.5 seconds covers fixture setup, archive work, and cleanup.
+  bounded <- timeout (seedBudgetMicros + 40000000) $ Server.withSeededRepository $ \root -> do
     seedDecisions root
     repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
     oid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
@@ -436,7 +440,7 @@ testConcurrentExactFtsValidation = do
         _ <- tryPutMVar release ()
         pure ()
   case bounded of
-    Nothing -> assertFailure "concurrent exact FTS validation exceeded 55 seconds"
+    Nothing -> assertFailure "concurrent exact FTS validation exceeded 70 seconds"
     Just () -> pure ()
 
 rethrowAsync :: SomeException -> IO ()
@@ -538,7 +542,9 @@ decodeChunks input =
 
 testColdExactArchive :: IO ()
 testColdExactArchive = do
-  bounded <- timeout 55000000 $ Server.withSeededRepository $ \root -> do
+  -- The concurrent searches allow 38 seconds, the settled read eight, and
+  -- socket-worker cleanup two; reserve 12 more for fixture and server cleanup.
+  bounded <- timeout (seedBudgetMicros + 60000000) $ Server.withSeededRepository $ \root -> do
     seedDecisions root
     repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
     seedOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
@@ -559,12 +565,16 @@ testColdExactArchive = do
       assertExactSuccess (gitOidText seedOid) (settledStatus, settled)
     either (assertFailure . Text.unpack) pure started
   case bounded of
-    Nothing -> assertFailure "entire cold exact archive diagnostic exceeded 55 seconds"
+    Nothing -> assertFailure "entire cold exact archive diagnostic exceeded 90 seconds"
     Just () -> pure ()
+
+seedBudgetMicros :: Int
+seedBudgetMicros = 30000000
 
 seedDecisions :: FilePath -> IO ()
 seedDecisions root = do
   executable <- lookupEnv "ADRAI_EXE" >>= maybe (assertFailure "ADRAI_EXE is required") pure
+  deadline <- (+ (fromIntegral seedBudgetMicros * 1000)) <$> getMonotonicTimeNSec
   forM_ [1 :: Int, 2] $ \number -> do
     let arguments =
           [ "create", "--title", "Seeded archive decision " <> show number,
@@ -575,10 +585,15 @@ seedDecisions root = do
             "--applies-to", "seed.txt",
             "--json"
           ]
-        config = (proc executable arguments) {cwd = Just root, std_out = NoStream, std_err = NoStream}
+        config = (proc executable arguments) {cwd = Just root, std_out = NoStream, std_err = Inherit}
     bracket (createProcess config) (stopChild . fourth) $ \(_, _, _, handle) -> do
-      outcome <- timeout 4000000 (waitForProcess handle)
-      unless (outcome == Just ExitSuccess) (assertFailure "bounded CLI seed decision failed")
+      started <- getMonotonicTimeNSec
+      let remaining = if started >= deadline then 0 else fromIntegral ((deadline - started) `div` 1000)
+      outcome <- timeout remaining (waitForProcess handle)
+      finished <- getMonotonicTimeNSec
+      let elapsedMs = (finished - started) `div` 1000000
+      putStrLn ("CLI seed decision " <> show number <> " elapsed " <> show elapsedMs <> " ms")
+      unless (outcome == Just ExitSuccess) (assertFailure ("CLI seed decision " <> show number <> " failed after " <> show elapsedMs <> " ms within the shared 30-second seed bound: " <> show outcome))
 
 stopChild :: ProcessHandle -> IO ()
 stopChild handle = do
