@@ -48,7 +48,9 @@ tests =
       testCase "row 76 large boilerplate source recovers cache and observability evidence after line 500" largeRegionContract,
       testCase "row 77 repeated boilerplate and empty inputs obey hard-negative confidence bounds" hardNegativeContract,
       testCase "row 78 translated config health secrets and lease context retain intended ADRs" configLeaseContract,
-      testCase "terse x_request_id input retains identifier-backed lexical evidence" terseIdentifierContract
+      testCase "terse x_request_id input retains identifier-backed lexical evidence" terseIdentifierContract,
+      testCase "MCP result shaping outranks incidental planning in the same scoped file" mcpResponseContract,
+      testCase "defined authToken receives evidence while a path citation does not" pathAlignedSymbolContract
     ]
 
 crossFormatContract :: IO ()
@@ -188,6 +190,44 @@ terseIdentifierContract = withQuality correlationQualityAdrs $ \connection mater
   assertBool failure (identifierChannelHits (relevantRetrievalPassageFts (relevantProjectionRetrieval projection)) > 0)
   assertBool failure (lookupJsonPath ["retrieval", "scope_used_for_eligibility"] (relevantProjectionJson projection) == Just (JsonBool False))
 
+mcpResponseContract :: IO ()
+mcpResponseContract = withQuality mcpQualityAdrs $ \connection materialization -> do
+  projection <- runQualitySource connection materialization mcpToolsSourceKey [mcpResponseAdrKey, planningAdrKey] 10
+  let failure = qualityFailure materialization mcpToolsSourceKey [mcpResponseAdrKey, planningAdrKey] projection
+      ranked = map relevantResultAdr (relevantProjectionResults projection)
+  assertBool failure (not (null ranked))
+  direct <- expectedResult materialization mcpToolsSourceKey mcpResponseAdrKey projection
+  incidental <- expectedResult materialization mcpToolsSourceKey planningAdrKey projection
+  directId <- lookupAdr materialization mcpResponseAdrKey
+  incidentalId <- lookupAdr materialization planningAdrKey
+  assertQualityProjection failure projection
+  assertBool failure (relevantFileChunks (relevantProjectionFile projection) > relevanceMaxSourceQueryChunks)
+  assertBool failure (relevantFileQueryChunks (relevantProjectionFile projection) == relevanceMaxSourceQueryChunks)
+  assertBool failure (take 1 ranked == [directId])
+  assertBool failure (elemIndex directId ranked < elemIndex incidentalId ranked)
+  assertBool failure (relevantResultLexicalScore direct > 0)
+  assertBool failure (any (elem "compact" . relevantEvidenceMatchedTerms) (relevantResultEvidence direct))
+  assertBool failure (any ((> 240) . relevantEvidenceFileLineStart) (relevantResultEvidence direct))
+  assertBool failure (relevantResultConfidence incidental /= HighConfidence)
+
+pathAlignedSymbolContract :: IO ()
+pathAlignedSymbolContract = withQuality authTokenQualityAdrs $ \connection materialization -> do
+  projection <- runQualitySource connection materialization authTokenSourceKey [authTokenAdrKey, pathCitationAdrKey] 10
+  let failure = qualityFailure materialization authTokenSourceKey [authTokenAdrKey, pathCitationAdrKey] projection
+      ranked = map relevantResultAdr (relevantProjectionResults projection)
+  directId <- lookupAdr materialization authTokenAdrKey
+  pathId <- lookupAdr materialization pathCitationAdrKey
+  direct <- expectedResult materialization authTokenSourceKey authTokenAdrKey projection
+  assertQualityProjection failure projection
+  assertBool failure (relevantResultLexicalScore direct > 0)
+  assertBool failure (any (\evidence -> all (\term -> term `elem` relevantEvidenceMatchedTerms evidence) ["auth", "token"]) (relevantResultEvidence direct))
+  case find ((== pathId) . relevantResultAdr) (relevantProjectionResults projection) of
+    Nothing -> pure ()
+    Just cited -> do
+      assertBool failure (relevantResultLexicalScore cited == 0)
+      assertBool failure (relevantResultConfidence cited /= HighConfidence)
+      assertBool failure (elemIndex directId ranked < elemIndex pathId ranked)
+
 withQuality :: NonEmpty AdrTemplate -> (Connection -> QueryMaterialization -> IO value) -> IO value
 withQuality templates action = bracket (open ":memory:") close $ \connection -> do
   initializeSearchSchema connection >>= (@?= Right ())
@@ -252,7 +292,13 @@ qualityFailure materialization sourceKey expected projection =
       ]
     <> "; actual="
     <> show
-      [ (adrIdText (relevantResultAdr result), relevantResultConfidence result)
+      [ ( adrIdText (relevantResultAdr result),
+          relevantResultConfidence result,
+          roundSix (relevantResultScore result),
+          roundSix (relevantResultSemanticScore result),
+          roundSix (relevantResultLexicalScore result),
+          map relevantEvidenceMatchedTerms (relevantResultEvidence result)
+        )
         | result <- relevantProjectionResults projection
       ]
     <> "; bytes="

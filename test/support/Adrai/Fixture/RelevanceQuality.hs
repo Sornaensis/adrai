@@ -6,6 +6,8 @@ module Adrai.Fixture.RelevanceQuality
     baseQualityAdrs,
     configQualityAdrs,
     correlationQualityAdrs,
+    mcpQualityAdrs,
+    authTokenQualityAdrs,
     relevanceQualitySources,
     literalQueueSourceKey,
     renamedQueueSourceKey,
@@ -17,6 +19,12 @@ module Adrai.Fixture.RelevanceQuality
     healthAdrKey,
     secretsAdrKey,
     correlationAdrKey,
+    mcpResponseAdrKey,
+    planningAdrKey,
+    mcpToolsSourceKey,
+    authTokenSourceKey,
+    authTokenAdrKey,
+    pathCitationAdrKey,
   )
 where
 
@@ -30,6 +38,7 @@ import Adrai.Fixture.Types
     SourceTemplate (..),
   )
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
@@ -49,6 +58,12 @@ configQualityAdrs = appendAdrs baseQualityAdrs [configAdr, healthAdr, secretsAdr
 correlationQualityAdrs :: NonEmpty AdrTemplate
 correlationQualityAdrs = appendAdrs baseQualityAdrs [correlationAdr]
 
+mcpQualityAdrs :: NonEmpty AdrTemplate
+mcpQualityAdrs = appendAdrs baseQualityAdrs [mcpResponseAdr, planningAdr]
+
+authTokenQualityAdrs :: NonEmpty AdrTemplate
+authTokenQualityAdrs = appendAdrs baseQualityAdrs [authTokenAdr, pathCitationAdr]
+
 relevanceQualitySources :: [SourceTemplate]
 relevanceQualitySources =
   NonEmpty.toList (relevanceCorpusSources relevanceCorpusV1)
@@ -57,7 +72,9 @@ relevanceQualitySources =
          largeRegionSource,
          configComposeSource,
          leaseTokenSource,
-         terseCorrelationSource
+         terseCorrelationSource,
+         mcpToolsSource,
+         authTokenSource
        ]
 
 literalQueueSourceKey, renamedQueueSourceKey, largeRegionSourceKey, configComposeSourceKey, leaseTokenSourceKey, terseCorrelationSourceKey :: Text
@@ -68,11 +85,25 @@ configComposeSourceKey = "config-health-secrets-compose"
 leaseTokenSourceKey = "lease-token-context"
 terseCorrelationSourceKey = "terse-x-request-id"
 
+mcpToolsSourceKey :: Text
+mcpToolsSourceKey = "mcp-tools-results"
+
+authTokenSourceKey :: Text
+authTokenSourceKey = "auth-token-symbol"
+
 configAdrKey, healthAdrKey, secretsAdrKey, correlationAdrKey :: AdrKey
 configAdrKey = AdrKey 101
 healthAdrKey = AdrKey 102
 secretsAdrKey = AdrKey 103
 correlationAdrKey = AdrKey 104
+
+mcpResponseAdrKey, planningAdrKey :: AdrKey
+mcpResponseAdrKey = AdrKey 105
+planningAdrKey = AdrKey 106
+
+authTokenAdrKey, pathCitationAdrKey :: AdrKey
+authTokenAdrKey = AdrKey 107
+pathCitationAdrKey = AdrKey 108
 
 configAdr, healthAdr, secretsAdr, correlationAdr :: AdrTemplate
 configAdr =
@@ -110,6 +141,46 @@ correlationAdr =
     "Read X-Request-ID at ingress and pass request_id to structured logs and downstream calls."
     "observability.correlation"
     "src/http/**"
+
+-- Both decisions mention the same tool file, but only one directly governs
+-- the source's result projection. This mirrors the hmem MCP tools example.
+mcpResponseAdr, planningAdr :: AdrTemplate
+mcpResponseAdr =
+  adr
+    mcpResponseAdrKey
+    "Shape MCP results for agent context"
+    "Return compact Observation summaries and operation-specific acknowledgements while retaining detail retrieval."
+    "MCP mutations return acknowledgements with identifiers and status. Observation matches return bounded content previews, provenance, pagination, and match evidence. observation_get returns full detail."
+    "mcp.response"
+    "src/MCP/Tools.hs"
+
+planningAdr =
+  adr
+    planningAdrKey
+    "Keep plan descriptions durable and execution state explicit"
+    "Project and Task descriptions contain lasting scope while statuses track progress and subtasks hold new work."
+    "Project and Task descriptions are durable specifications. Track execution progress with status fields and create subtasks for new atomic work. Evidence: src/MCP/Tools.hs."
+    "planning.semantics"
+    "src/MCP/Tools.hs"
+
+authTokenAdr, pathCitationAdr :: AdrTemplate
+authTokenAdr =
+  adr
+    authTokenAdrKey
+    "Authorize with auth token"
+    "Use the auth token to authorize requests."
+    "The auth token is read from the request and checked before dispatch."
+    "security.authentication"
+    "src/auth_token.hs"
+
+pathCitationAdr =
+  adr
+    pathCitationAdrKey
+    "Repository inventory"
+    "See src/auth_token.hs."
+    "The inventory cites src/auth_token.hs."
+    "repository.inventory"
+    "src/auth_token.hs"
 
 adr :: AdrKey -> Text -> Text -> Text -> Text -> Text -> AdrTemplate
 adr key title summary decision domain scope =
@@ -158,6 +229,27 @@ terseCorrelationSource =
     terseCorrelationSourceKey
     "helpers/correlation.custom"
     "x_request_id = headers.get('X-Request-ID')\n"
+
+mcpToolsSource :: SourceTemplate
+mcpToolsSource =
+  committed
+    mcpToolsSourceKey
+    "src/MCP/Tools.hs"
+    ( "module MCP.Tools where\ntoolDefinitions =\n  tool \"project_create\" \"Project and Task descriptions are durable specifications for scope, constraints, approach, and acceptance intent; statuses track execution progress; create subtasks for discovered atomic work.\"\n"
+        <> ByteString.concat
+          [ "  tool \"endpoint_" <> ByteStringChar8.pack (show ordinal)
+              <> "\" \"Expose one typed endpoint with a validated request body, a bounded list of fields, an explicit cursor, and an authorized HTTP transport boundary for an agent operation.\"\n"
+            | ordinal <- [1 :: Int .. 280]
+          ]
+        <> "compactObservationSummary :: Value -> Value\ncompactObservationSummary result = object [\"preview\" .= boundedContentPreview result, \"provenance\" .= provenance result]\ncompactObservationDetail :: Value -> Value\ncompactObservationDetail result = fullObservationDetail result\ncompactObservationMatches :: Value -> Value\ncompactObservationMatches results = object [\"items\" .= map compactObservationSummary results, \"pagination\" .= nextOffset results, \"match_evidence\" .= matchedSubjects results]\nmutationAck :: Value -> Value\nmutationAck result = acknowledgementWithIdentifierAndStatus result\nstatusAck :: Value -> Value\nstatusAck result = statusAcknowledgement result\n"
+    )
+
+authTokenSource :: SourceTemplate
+authTokenSource =
+  committed
+    authTokenSourceKey
+    "src/auth_token.hs"
+    "module AuthToken where\nauthToken :: Text -> Text\nauthToken value = value\n"
 
 queueBytes :: ByteString.ByteString
 queueBytes =

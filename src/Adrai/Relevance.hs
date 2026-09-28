@@ -55,6 +55,9 @@ module Adrai.Relevance
     focusedEvidenceExcerpt,
     selectInformativeChunks,
     pairRankingScore,
+    passageLexicalEvidence,
+    codePassageLexicalEvidence,
+    sourceDefinitionNames,
     scopeBonus,
     sourceInformationScore,
     aggregateRelevance,
@@ -67,11 +70,11 @@ where
 
 import Adrai.Format (renderDigest)
 import Adrai.Provenance (sha256Digest)
-import Adrai.Vector (semanticTokens)
+import Adrai.Vector (identifierTerms, semanticTokens, splitIdentifier, stem)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Char (isAscii)
-import Data.List (findIndices, sortBy, sortOn)
+import Data.List (findIndices, isSubsequenceOf, sortBy, sortOn, tails)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Ord (Down (..), comparing)
@@ -205,13 +208,15 @@ minimumPairScore :: Double
 minimumPairScore = 0.075
 
 minimumLexicalPairScore :: Double
-minimumLexicalPairScore = 0.18
+-- Text-only source FTS is normalized to one fifth of its prior strength;
+-- this retains the prior raw FTS eligibility floor of 0.18.
+minimumLexicalPairScore = 0.036
 
 lexicalRankWeight :: Double
-lexicalRankWeight = 0.10
+lexicalRankWeight = 0.50
 
 lexicalBonusCap :: Double
-lexicalBonusCap = 0.10
+lexicalBonusCap = 0.50
 
 highSemanticScore :: Double
 highSemanticScore = 0.34
@@ -494,12 +499,23 @@ selectInformativeChunksWithLimit :: Int -> [TextChunk] -> [TextChunk]
 selectInformativeChunksWithLimit limit chunks
   | length chunks <= limit = chunks
   | limit <= 0 = []
-  | otherwise = sortOn textChunkOrdinal (map third (take limit (sortBy informativeOrder scored)))
+  | otherwise = sortOn textChunkOrdinal (anchors <> map third (take (limit - length anchors) informativeRemainder))
   where
-    tokenSets = map (semanticTokenSet . textChunkText) chunks
+    orderedChunks = sortOn textChunkOrdinal chunks
+    -- Preserve coverage of the whole file when one dense region dominates
+    -- rarity scoring. At most half of the bounded query budget is reserved
+    -- for evenly spaced source positions; the rest retains the old selector.
+    anchorCount = min limit (max 2 (limit `div` 2))
+    anchorIndices
+      | anchorCount == 1 = [0]
+      | otherwise = [(index * (length orderedChunks - 1)) `div` (anchorCount - 1) | index <- [0 .. anchorCount - 1]]
+    anchors = [orderedChunks !! index | index <- anchorIndices]
+    anchorOrdinals = Set.fromList (map textChunkOrdinal anchors)
+    tokenSets = map (semanticTokenSet . textChunkText) orderedChunks
     frequencies = Map.fromListWith (+) [(token, 1 :: Int) | tokens <- tokenSets, token <- Set.toList tokens]
     total = length chunks
-    scored = zipWith (scoreChunk total frequencies) chunks tokenSets
+    scored = zipWith (scoreChunk total frequencies) orderedChunks tokenSets
+    informativeRemainder = filter (\(_, _, chunk) -> Set.notMember (textChunkOrdinal chunk) anchorOrdinals) (sortBy informativeOrder scored)
     third (_, _, value) = value
     informativeOrder = comparing (Down . first) <> comparing (Down . second)
     first (value, _, _) = value
@@ -519,6 +535,97 @@ scoreChunk total frequencies chunk tokens =
 
 pairRankingScore :: PairMatch -> Double
 pairRankingScore match = max 0 (pairScore match) + max 0 (pairLexicalScore match) * lexicalRankWeight
+
+-- | Distinct content terms shared by a source chunk and one ADR passage.
+-- Remove literal references to the queried file before comparing terms: a
+-- path citation alone is not a source relationship, while words independently
+-- present in source code remain eligible even when the filename shares them.
+-- A term seen on multiple source lines contributes at most twice; ten
+-- line-weighted terms saturate the bounded lexical signal.
+passageLexicalEvidence :: Map Text Int -> Text -> Text -> (Double, [Text])
+passageLexicalEvidence = lexicalEvidence 10
+
+-- | Collect names introduced by source definitions, ignoring prose in quoted
+-- data and declaration arguments. This optional channel recognizes simple
+-- Haskell bindings and common @def@, @fn@, and @function@ declarations; other
+-- source formats continue to use the semantic and text channels.
+sourceDefinitionNames :: Text -> [Text]
+sourceDefinitionNames source =
+  Set.toAscList . Set.fromList $
+    [ name
+      | line <- Text.lines source,
+        Just name <- [definedName line]
+    ]
+  where
+    definedName line =
+      case Text.words line of
+        keyword : _ | keyword `elem` ["def", "fn", "function"] -> nameAfterKeyword (Text.stripStart (Text.drop (Text.length keyword) (Text.stripStart line)))
+        _ -> bindingName line
+    nameAfterKeyword text =
+      let name = Text.takeWhile isNameCharacter (Text.stripStart text)
+       in if Text.null name then Nothing else Just name
+    bindingName line =
+      let (name, rest) = Text.span isNameCharacter line
+          suffix = Text.stripStart rest
+       in if not (Text.null name) && ("::" `Text.isPrefixOf` suffix || "=" `Text.isPrefixOf` suffix)
+            then Just name
+            else Nothing
+    isNameCharacter character = isAsciiAlnum character || character == '_' || character == '\''
+
+-- | A compound source symbol is evidence only when an ADR passage describes
+-- its parts in order within one sentence. The first two parts must be adjacent
+-- and any remaining parts fit within the next eight words. Scattered mentions
+-- of the same nouns do not describe the combined source concept. Three
+-- meaningful parts yield full strength; two yield half.
+codePassageLexicalEvidence :: [Text] -> Text -> Text -> (Double, [Text])
+codePassageLexicalEvidence definitionNames sourcePath passageText =
+  case sortBy (comparing (\(score, _, _) -> Down score) <> comparing (\(_, name, _) -> Down name)) matches of
+    (score, _, terms) : _ -> (score, terms)
+    [] -> (0, [])
+  where
+    sentenceTokens =
+      [ concatMap (map stem . splitIdentifier . Text.dropAround (not . isNameCharacter)) (Text.words sentence)
+        | sentence <- Text.split (`elem` (".!?;\n" :: String)) (withoutPathMentions sourcePath passageText)
+      ]
+    matches =
+      [ (min 1 (fromIntegral (length parts - 1) / 2), name, parts)
+        | name <- definitionNames,
+          let parts = filter meaningfulPart (splitIdentifier name),
+          length parts >= 2,
+          any (matchesLocal (map stem parts)) sentenceTokens
+      ]
+    matchesLocal (first : second : remaining) tokens =
+      any matchesAt (zip (zip tokens (drop 1 tokens)) (drop 2 (tails tokens)))
+      where
+        matchesAt ((left, right), after) =
+          left == first && right == second && remaining `isSubsequenceOf` take 8 after
+    matchesLocal _ _ = False
+    isNameCharacter character = isAsciiAlnum character || character == '_'
+    meaningfulPart part = Text.length part >= 3 && Set.notMember part definitionStop
+    definitionStop = Set.fromList ["get", "set", "for", "from", "with", "and", "the", "not"]
+
+lexicalEvidence :: Int -> Map Text Int -> Text -> Text -> (Double, [Text])
+lexicalEvidence saturation sourceTermLines sourcePath passageText =
+  (min 1 (fromIntegral weightedMatches / fromIntegral saturation), matched)
+  where
+    content = withoutPathMentions sourcePath passageText
+    passageTerms = Set.union (Set.fromList (semanticTokens content)) (Set.fromList (identifierTerms False content))
+    matched = take 16 (Set.toAscList (Set.intersection (Map.keysSet sourceTermLines) passageTerms))
+    weightedMatches = sum [min 2 (Map.findWithDefault 0 term sourceTermLines) | term <- matched]
+
+withoutPathMentions :: Text -> Text -> Text
+withoutPathMentions sourcePath passageText =
+  foldl' (flip removeReference) passageText references
+  where
+    lowerPath = Text.toLower sourcePath
+    basename = last (Text.splitOn "/" lowerPath)
+    references = filter (not . Text.null) [lowerPath, if Text.any (== '.') basename then basename else ""]
+    removeReference path content =
+      case Text.breakOn path (Text.toLower content) of
+        (_, suffix) | Text.null suffix -> content
+        (prefix, _) ->
+          let start = Text.length prefix
+           in Text.take start content <> " " <> removeReference path (Text.drop (start + Text.length path) content)
 
 scopeBonus :: Maybe RelevanceScopeMatch -> Double
 scopeBonus (Just RelevanceScopeExact) = scopeBonusExact
@@ -577,6 +684,9 @@ insertBest values match = Map.insertWith choose (textChunkOrdinal (pairFileChunk
       | otherwise = previous
     sourceBestKey value = (pairRankingScore value, pairScore value, pairAdrItemId value)
 
+-- Pair ties prefer semantic strength, then earlier source chunks, then a
+-- stable passage ID. ADR ties use total score, semantic score, lexical score,
+-- and ADR ID in Query.relevantAggregatedOrder.
 pairOrder :: PairMatch -> PairMatch -> Ordering
 pairOrder =
   comparing (Down . pairRankingScore)
@@ -669,6 +779,11 @@ relevanceScoringContract =
       ("minimum_lexical_pair_score", minimumLexicalPairScore),
       ("lexical_rank_weight", lexicalRankWeight),
       ("lexical_bonus_cap", lexicalBonusCap),
+      ("lexical_overlap_saturation_terms", 10),
+      ("lexical_definition_min_parts", 2),
+      ("lexical_definition_full_score_parts", 3),
+      ("lexical_definition_weight", 0.9),
+      ("lexical_fts_secondary_weight", 0.1),
       ("high_semantic_score", highSemanticScore),
       ("high_pair_score", highPairScore),
       ("high_margin", highMargin),

@@ -22,6 +22,8 @@ tests =
       testCase "embedding normalization does not mutate evidence text" embeddingContract,
       testCase "informative selection is bounded content-only and ordinal stable" informativeContract,
       testCase "focused excerpts retain exact source line ranges" excerptContract,
+      testCase "lexical evidence requires content terms beyond the file path" lexicalEvidenceContract,
+      testCase "direct content evidence can outrank incidental similarity at equal scope" directEvidenceRankingContract,
       testCase "independent evidence aggregation applies exact weights and scope bonus" aggregationContract,
       testCase "high confidence requires strength and result margin" confidenceContract,
       testCase "relevance section selection changes after exactly 50000 passages" sectionSelectionBoundaryContract,
@@ -90,6 +92,7 @@ informativeContract = do
   length selected @?= relevanceMaxSourceQueryChunks
   ordinals @?= sort ordinals
   assertBool "rare meaningful region survives the max-24 bound" (29 `elem` ordinals)
+  assertBool "a long source keeps evenly spaced coverage" (all (`elem` ordinals) [0, 5, 29])
 
 excerptContract :: IO ()
 excerptContract = do
@@ -99,6 +102,50 @@ excerptContract = do
   let (lineStart, lineEnd, excerpt) = focusedEvidenceExcerpt "noise only\ncache lease token" "cache lease" 10
   (lineStart, lineEnd) @?= (11, 11)
   excerpt @?= "cache lease token"
+
+lexicalEvidenceContract :: IO ()
+lexicalEvidenceContract = do
+  let sourceTerms = Map.fromList [("hmem", 1), ("mcp", 2), ("tools", 1), ("compact", 2), ("observation", 2), ("preview", 1), ("response", 2)]
+      sourcePath = "hmem-mcp/src/HMem/MCP/Tools.hs"
+  passageLexicalEvidence sourceTerms sourcePath "hmem-mcp/src/HMem/MCP/Tools.hs"
+    @?= (0, [])
+  passageLexicalEvidence sourceTerms sourcePath "Compact MCP response returns Observation preview"
+    @?= (0.9, ["compact", "mcp", "observation", "preview", "response"])
+  passageLexicalEvidence sourceTerms sourcePath "Task status appears in Tools.hs"
+    @?= (0, [])
+  let definitions = sourceDefinitionNames "compactObservationDetail :: Value -> Value\ncompactObservationDetail value = value\n  tool \"project_create\" \"durable description\"\n"
+  definitions @?= ["compactObservationDetail"]
+  codePassageLexicalEvidence definitions sourcePath "Return compact Observation detail on request"
+    @?= (1, ["compact", "observation", "detail"])
+  codePassageLexicalEvidence definitions sourcePath "Return compact Observation summaries while keeping explicit detail retrieval"
+    @?= (1, ["compact", "observation", "detail"])
+  codePassageLexicalEvidence definitions sourcePath "Return compact Observation summaries and operation-specific acknowledgements while retaining detail retrieval"
+    @?= (1, ["compact", "observation", "detail"])
+  codePassageLexicalEvidence definitions sourcePath "Compact project plans preserve observations. Full detail retrieval is separate."
+    @?= (0, [])
+  codePassageLexicalEvidence definitions sourcePath "Compact project plans preserve observations and require unrelated detail fields"
+    @?= (0, [])
+  codePassageLexicalEvidence definitions sourcePath "Project and Task descriptions stay durable"
+    @?= (0, [])
+  let authPath = "src/auth_token.hs"
+      authDefinitions = sourceDefinitionNames "authToken :: Text -> Text\nauthToken value = value\n"
+      authTerms = Map.fromList [("auth", 1), ("token", 1)]
+  codePassageLexicalEvidence authDefinitions authPath "Use auth token to authorize requests"
+    @?= (0.5, ["auth", "token"])
+  passageLexicalEvidence authTerms authPath "Use auth token to authorize requests"
+    @?= (0.2, ["auth", "token"])
+  codePassageLexicalEvidence authDefinitions authPath "See src/auth_token.hs and auth_token.hs"
+    @?= (0, [])
+  passageLexicalEvidence authTerms authPath "See src/auth_token.hs and auth_token.hs"
+    @?= (0, [])
+  sourceDefinitionNames "services:\n  environment:\n    TOKEN: value\n" @?= []
+
+directEvidenceRankingContract :: IO ()
+directEvidenceRankingContract = do
+  let direct = expectAggregate (aggregateRelevance [pair 0 "response" "compact response preview" 0.20 0.8] (Just RelevanceScopeExact))
+      incidental = expectAggregate (aggregateRelevance [pair 0 "planning" "planning status" 0.28 0.1] (Just RelevanceScopeExact))
+  assertBool "content evidence lifts the direct decision above incidental semantic similarity" (aggregateScore direct > aggregateScore incidental)
+  assertBool "scope is equal and does not explain the ordering" (aggregateScopeBonus direct == aggregateScopeBonus incidental)
 
 aggregationContract :: IO ()
 aggregationContract = do
@@ -111,16 +158,16 @@ aggregationContract = do
         ]
       plain = expectAggregate (aggregateRelevance matches Nothing)
       scoped = expectAggregate (aggregateRelevance matches (Just RelevanceScopeExact))
-  map pairAdrItemId (aggregateEvidence plain) @?= ["a", "third", "fifth"]
-  assertClose 0.555 (aggregateSemanticScore plain)
-  assertClose 0.21 (aggregateLexicalScore plain)
-  assertClose 0.021 (aggregateLexicalBonus plain)
-  assertClose 0.576 (aggregateScore plain)
+  map pairAdrItemId (aggregateEvidence plain) @?= ["z", "third", "fifth"]
+  assertClose 0.505 (aggregateSemanticScore plain)
+  assertClose 0.41 (aggregateLexicalScore plain)
+  assertClose 0.205 (aggregateLexicalBonus plain)
+  assertClose 0.710 (aggregateScore plain)
   aggregateSemanticScore scoped @?= aggregateSemanticScore plain
   assertClose 0.025 (aggregateScopeBonus scoped)
-  assertClose 0.601 (aggregateScore scoped)
-  aggregateRelevance [pair 0 "weak" "weak" 0.074 0.179] Nothing @?= Nothing
-  assertBool "lexical threshold admits a semantic miss" (isJust (aggregateRelevance [pair 0 "lexical" "identifier" 0 0.18] Nothing))
+  assertClose 0.735 (aggregateScore scoped)
+  aggregateRelevance [pair 0 "weak" "weak" 0.074 0.035] Nothing @?= Nothing
+  assertBool "normalized lexical threshold admits a semantic miss" (isJust (aggregateRelevance [pair 0 "lexical" "identifier" 0 0.036] Nothing))
   let repetitive = Text.intercalate "\n" (replicate 10 "generic module")
       repetitiveAggregate = expectAggregate (aggregateRelevance [pair 0 "repeat" repetitive 0.8 0] Nothing)
   assertClose 0.1 (aggregateSourceInformation repetitiveAggregate)
@@ -152,9 +199,14 @@ fingerprintContract = do
         ("scope_bonus_exact", 0.025),
         ("scope_bonus_ambiguous", 0.010),
         ("minimum_pair_score", 0.075),
-        ("minimum_lexical_pair_score", 0.18),
-        ("lexical_rank_weight", 0.10),
-        ("lexical_bonus_cap", 0.10),
+        ("minimum_lexical_pair_score", 0.036),
+        ("lexical_rank_weight", 0.50),
+        ("lexical_bonus_cap", 0.50),
+        ("lexical_overlap_saturation_terms", 10),
+        ("lexical_definition_min_parts", 2),
+        ("lexical_definition_full_score_parts", 3),
+        ("lexical_definition_weight", 0.9),
+        ("lexical_fts_secondary_weight", 0.1),
         ("high_semantic_score", 0.34),
         ("high_pair_score", 0.30),
         ("high_margin", 0.045),

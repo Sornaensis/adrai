@@ -120,12 +120,10 @@ import Adrai.Vector
     dot,
     embedderVectorId,
     identifierEmbedding,
-    identifierTerms,
     sectionIndexMode,
     selectCandidates,
     semanticEmbedder,
     semanticEmbedding,
-    semanticTokens,
   )
 import Data.Array (Array, (!), listArray)
 import Data.ByteString (ByteString)
@@ -1607,7 +1605,7 @@ runRelevantCandidates connection snapshot corpus request prepared fileInfo allCh
                in case selectRelevantSectionCandidates corpus request semanticVectors shortlistPassages passageChunks of
                     Left problem -> pure (Left problem)
                     Right (candidateSets, sectionDiagnostics, exactCandidateCount) ->
-                      case buildRelevantMatches corpus selectedChunks semanticVectors shortlistPassages passageChunks candidateSets of
+                      case buildRelevantMatches corpus (relevantRequestFile request) selectedChunks semanticVectors shortlistPassages passageChunks candidateSets of
                         Left problem -> pure (Left problem)
                         Right (matchesByAdr, auxByMatch) -> do
                           let aggregated = aggregateRelevantMatches request prepared documents matchesByAdr auxByMatch
@@ -1849,8 +1847,8 @@ mergeRelevantSectionCandidates allowed baseCandidates lexicalCandidates =
 
 type RelevantAuxKey = (Int, AdrId, Text)
 
-buildRelevantMatches :: SearchVectorCorpus -> [TextChunk] -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> [Set Text] -> Either RelevantError (Map AdrId [PairMatch], Map RelevantAuxKey RelevantMatchAux)
-buildRelevantMatches corpus chunks sourceVectors passages passageChunks candidateSets = do
+buildRelevantMatches :: SearchVectorCorpus -> RepoPath -> [TextChunk] -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> [Set Text] -> Either RelevantError (Map AdrId [PairMatch], Map RelevantAuxKey RelevantMatchAux)
+buildRelevantMatches corpus sourcePath chunks sourceVectors passages passageChunks candidateSets = do
   passageVectors <- relevantPassageVectors corpus passages
   perChunk <- traverse (scoreChunk passageVectors) (zip4 chunks sourceVectors passageChunks candidateSets)
   Right
@@ -1858,9 +1856,13 @@ buildRelevantMatches corpus chunks sourceVectors passages passageChunks candidat
       Map.unions [aux | (_, aux) <- perChunk]
     )
   where
+    pathText = repoPathText sourcePath
+    hasDefinitions = any (not . null . sourceDefinitionNames . textChunkText) chunks
     passagesById = Map.fromList [(searchPassageId passage, passage) | passage <- passages]
     scoreChunk passageVectors (chunk, sourceVector, lexical, candidates) = do
-      scored <- traverse (scoreSection passageVectors chunk sourceVector lexical) (Set.toAscList candidates)
+      let sourceTermLines = Map.fromListWith (+) [(term, 1 :: Int) | line <- Text.lines (textChunkText chunk), term <- informativeTerms 96 line]
+          definitions = sourceDefinitionNames (textChunkText chunk)
+      scored <- traverse (scoreSection passageVectors sourceTermLines definitions chunk sourceVector lexical) (Set.toAscList candidates)
       let winners = foldl' chooseBest Map.empty (catMaybes scored)
       Right
         ( Map.fromListWith (<>) [(adr, [match]) | (adr, (match, _, _)) <- Map.toList winners],
@@ -1869,21 +1871,30 @@ buildRelevantMatches corpus chunks sourceVectors passages passageChunks candidat
               | (adr, (match, aux, _)) <- Map.toList winners
             ]
         )
-    scoreSection passageVectors chunk sourceVector lexical sectionId =
+    scoreSection passageVectors sourceTermLines definitions chunk sourceVector lexical sectionId =
       case (Map.lookup sectionId passagesById, Map.lookup sectionId passageVectors) of
         (Just passage, Just passageVector) -> do
           raw <- mapLeft RelevantVectorFailure (dot sourceVector passageVector)
           let semantic = min 1 (raw * searchPassageWeight passage)
-              lexicalStrength = min 1 (Map.findWithDefault 0 sectionId (passageChunkScores lexical) * 24)
+              (overlapStrength, matchedTerms) = passageLexicalEvidence sourceTermLines pathText (searchPassageText passage)
+              (codeStrength, matchedCodeTerms) = codePassageLexicalEvidence definitions pathText (searchPassageText passage)
+              ftsStrength = min 1 (Map.findWithDefault 0 sectionId (passageChunkScores lexical) * 24)
+              -- Source with named definitions gives most lexical weight to a
+              -- local, ordered symbol phrase in the ADR. Broad content overlap
+              -- and FTS remain secondary. Other formats retain the prior
+              -- effective FTS weight so configuration and prose stay eligible.
+              lexicalStrength
+                | not hasDefinitions = ftsStrength * 0.2
+                | null matchedTerms && null matchedCodeTerms = 0
+                | otherwise = max (overlapStrength * 0.1 + codeStrength * 0.9) (ftsStrength * 0.1)
+              evidenceTerms = take 16 (matchedCodeTerms <> filter (`notElem` matchedCodeTerms) matchedTerms)
               ranking = semantic + lexicalStrength * lexicalRankWeight
               match = PairMatch chunk sectionId (searchPassageText passage) semantic lexicalStrength
-              sourceTerms = Set.fromList (informativeTerms 24 (textChunkText chunk))
-              adrTerms = Set.union (Set.fromList (semanticTokens (searchPassageText passage))) (Set.fromList (identifierTerms False (searchPassageText passage)))
               aux =
                 RelevantMatchAux
                   { relevantAuxPassage = passage,
                     relevantAuxCandidateItem = searchPassageDocumentItemId passage,
-                    relevantAuxMatchedTerms = take 16 (Set.toAscList (Set.intersection sourceTerms adrTerms))
+                    relevantAuxMatchedTerms = evidenceTerms
                   }
           Right (Just (searchPassageAdrId passage, (match, aux, ranking)))
         _ -> Right Nothing
