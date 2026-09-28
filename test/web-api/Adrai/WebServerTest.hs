@@ -24,7 +24,7 @@ import Adrai.Format.Config (defaultConfigText)
 import Adrai.Git (Repository (..), RevisionSpec (RevisionSpec), discoverRepository, resolveRevision, systemGit)
 import Adrai.History (revisionRequested, revisionResolved)
 import Adrai.Provenance (gitOidText)
-import Adrai.Provenance.Git.Lock (gitLockStatus, withGitLock)
+import Adrai.Provenance.Git.Lock (GitLockError (LockHeld), gitLockStatus, withGitLock)
 import qualified Adrai.Service.Compilation as Compilation
 import qualified Adrai.Service.Mutation as Mutation
 import qualified Adrai.Service.Query as Query
@@ -39,7 +39,7 @@ import Adrai.Web.Socket (unavailableEventsTransport)
 import qualified Adrai.Web.Watch as Watch
 import Control.Concurrent (MVar, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.Async (Async, async, cancel, poll, race, wait, waitCatch, withAsync)
-import Control.Exception (SomeAsyncException, SomeException, bracket, bracketOnError, finally, fromException, throwIO, try)
+import Control.Exception (SomeAsyncException, SomeException, bracket, bracketOnError, finally, fromException, onException, throwIO, try)
 import Control.Monad (forM, forM_, void)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -1191,21 +1191,40 @@ testWatchRuntime = withSeededRepository $ \root -> do
   supersedeEnabled <- newIORef False
   supersedeOpened <- newEmptyMVar
   supersedeRelease <- newEmptyMVar
+  lockPhase <- newIORef False
+  lockPhases <- newIORef ([] :: [(Word64, String)])
+  let recordLockPhase phase = do
+        active <- readIORef lockPhase
+        if active then do
+          at <- getMonotonicTimeNSec
+          atomicModifyIORef' lockPhases (\phases -> ((at, phase) : phases, ()))
+        else pure ()
   let afterRuntimeHandle component = do
+        if component == "architecture" then recordLockPhase "verified architecture handle opened" else pure ()
         pause <- atomicModifyIORef' supersedeEnabled $ \enabled ->
           let fire = enabled && component == "architecture"
            in (enabled && not fire, fire)
         if pause then putMVar supersedeOpened () >> takeMVar supersedeRelease else pure ()
   runtimeObserver <- Watch.observerForRegistryWithHandleHook (applicationActiveFileRegistry runtime) bound afterRuntimeHandle
   subscriber <- Events.registerSubscriberWithInitial (applicationEventCoordinator runtime) (Events.EventAsOfUnavailable "test") >>= either (assertFailure . Text.unpack) pure
-  initialEnvelope <- Events.readSubscriberEvent subscriber >>= \case
-    Events.SubscriberEvent envelope -> pure envelope
+  Events.readSubscriberEvent subscriber >>= \case
+    Events.SubscriberEvent _ -> pure ()
     Events.SubscriberOverflow -> assertFailure "initial runtime watcher subscriber overflowed"
     Events.SubscriberGenerationExhausted -> assertFailure "initial runtime watcher subscriber exhausted its generation"
   publishAttempts <- newIORef ([] :: [String])
+  lockRejections <- newEmptyMVar
   runtimeWatcher <- Watch.watchRepository runtimeObserver bound $ \event -> do
+    recordLockPhase "publication callback entered"
     outcome <- try @SomeException (publishWatcherEvent runtime event)
+    recordLockPhase ("publication callback returned " <> either show (const "published") outcome)
     atomicModifyIORef' publishAttempts (\observed -> ((either show (const "published") outcome : observed), ()))
+    case outcome of
+      Left failure -> case fromException failure of
+        Just held@(LockHeld _ _) -> do
+          active <- readIORef lockPhase
+          if active then void (tryPutMVar lockRejections held) else pure ()
+        _ -> pure ()
+      Right () -> pure ()
     either throwIO pure outcome
   (`finally` do
       stoppedRuntimeWatcher <- timeout 3000000 (Watch.stopWatching runtimeWatcher >> Watch.awaitWatcher runtimeWatcher)
@@ -1220,13 +1239,14 @@ testWatchRuntime = withSeededRepository $ \root -> do
     Watch.replaceActiveFiles (applicationActiveFileRegistry runtime) runtimeClient [secondPath] >>= either (assertFailure . Text.unpack) pure
     putMVar supersedeRelease ()
     supersedeRecovered <- timeout 4000000 (Events.readSubscriberEvent subscriber)
-    case supersedeRecovered of
+    supersedeGeneration <- case supersedeRecovered of
       Just (Events.SubscriberEvent envelope) -> do
         expectedOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
         Events.eventAsOf envelope @?= Events.EventAt expectedOid
         case Events.eventPayload envelope of
           Events.RepositoryInvalidated invalidations -> assertBool "superseded scan is retried to the persistent managed fact" (Events.ManagedSourceChanged `elem` invalidations)
           _ -> assertFailure "superseded scan retry emitted an observation failure"
+        pure (Events.eventGeneration envelope)
       Just Events.SubscriberOverflow -> assertFailure "superseded scan retry overflowed its subscriber"
       Just Events.SubscriberGenerationExhausted -> assertFailure "superseded scan retry exhausted its generation"
       Nothing -> assertFailure "superseded scan was not retried after the active-file epoch advanced"
@@ -1243,33 +1263,66 @@ testWatchRuntime = withSeededRepository $ \root -> do
               Nothing -> threadDelay 20000 >> acquireUntilHeld (remaining - 1)
             Right () -> pure ()
     lockOwner <- async (acquireUntilHeld 100)
-    acquired <- timeout 3000000 (race (takeMVar lockAcquired) (waitCatch lockOwner))
-    case acquired of
-      Just (Left ()) -> pure ()
-      Just (Right (Left exception)) -> assertFailure ("Git-lock owner failed before acquisition: " <> show exception)
-      Just (Right (Right ())) -> assertFailure "Git-lock owner ended before acquisition"
-      Nothing -> assertFailure "Git-lock acquisition timed out"
-    putStrLn "p7-03-watch: git lock acquired"
-    BS.writeFile managedDecision "contention change without a second filesystem hint"
-    threadDelay 700000
-    rejectedAttempts <- readIORef publishAttempts
-    assertBool
-      ("watcher did not record a real Git-lock rejection while the lock was held: " <> show (reverse rejectedAttempts))
-      (any (Text.isInfixOf "lock" . Text.toLower . Text.pack) rejectedAttempts)
-    putMVar releaseLock ()
-    lockFinished <- timeout 2000000 (waitCatch lockOwner)
-    assertBool "Git-lock owner released within the bound" (maybe False (either (const False) (const True)) lockFinished)
-    observed <- timeout 4000000 (Events.readSubscriberEvent subscriber)
-    expectedOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
-    case observed of
-      Just (Events.SubscriberEvent envelope) -> do
-        Events.eventAsOf envelope @?= Events.EventAt expectedOid
-        assertBool "retried watcher publication receives a later coherent generation" (Events.eventGeneration envelope > Events.eventGeneration initialEnvelope)
-      Just Events.SubscriberOverflow -> assertFailure "watcher retry subscriber overflowed"
-      Just Events.SubscriberGenerationExhausted -> assertFailure "watcher retry subscriber exhausted its generation"
-      Nothing -> do
-        attemptsObserved <- readIORef publishAttempts
-        assertFailure ("watcher event was not retried after Git-lock release; callback attempts=" <> show (reverse attemptsObserved))
+    let stopLockOwner = do
+          void (tryPutMVar releaseLock ())
+          cancel lockOwner
+          void (waitCatch lockOwner)
+        acquisition = do
+          acquired <- timeout 3000000 (race (takeMVar lockAcquired) (waitCatch lockOwner))
+          case acquired of
+            Just (Left ()) -> pure ()
+            Just (Right (Left exception)) -> assertFailure ("Git-lock owner failed before acquisition: " <> show exception)
+            Just (Right (Right ())) -> assertFailure "Git-lock owner ended before acquisition"
+            Nothing -> assertFailure "Git-lock acquisition timed out"
+    acquisition `onException` stopLockOwner
+    (`finally` stopLockOwner) $ do
+      putStrLn "p7-03-watch: git lock acquired"
+      ownerStatus <- gitLockStatus repository
+      (ownerPath, ownerPid) <- case ownerStatus of
+        Left (LockHeld lockPath lockPid) -> pure (lockPath, lockPid)
+        other -> assertFailure ("Git-lock owner was not live after acquisition: " <> show other)
+      phaseOrigin <- getMonotonicTimeNSec
+      writeIORef lockPhase True
+      recordLockPhase "managed file write started under Git lock"
+      BS.writeFile managedDecision "contention change without a second filesystem hint"
+      recordLockPhase "managed file write completed under Git lock"
+      rejected <- timeout 8000000 (takeMVar lockRejections)
+      case rejected of
+        Just (LockHeld rejectedPath rejectedPid) -> do
+          rejectedPath @?= ownerPath
+          rejectedPid @?= ownerPid
+          ownerStillRunning <- poll lockOwner
+          assertBool "Git-lock owner remains live through typed watcher rejection" (maybe True (const False) ownerStillRunning)
+          putStrLn "p7-03-watch: typed Git-lock rejection observed under held owner"
+        Just other -> assertFailure ("watcher reported a different Git-lock error: " <> show other)
+        Nothing -> do
+          phases <- reverse <$> readIORef lockPhases
+          recordedAttempts <- reverse <$> readIORef publishAttempts
+          ownerOutcome <- poll lockOwner
+          assertFailure ("watcher did not report typed LockHeld within the bounded verification interval; phases=" <> show [((at - phaseOrigin) `div` 1000000, phase) | (at, phase) <- phases] <> "; attempts=" <> show recordedAttempts <> "; owner=" <> show ownerOutcome)
+      recordLockPhase "Git-lock owner release requested"
+      putMVar releaseLock ()
+      lockFinished <- timeout 2000000 (waitCatch lockOwner)
+      assertBool "Git-lock owner released within the bound" (maybe False (either (const False) (const True)) lockFinished)
+      recordLockPhase "Git-lock owner released"
+      observed <- timeout 4000000 (Events.readSubscriberEvent subscriber)
+      expectedOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
+      case observed of
+        Just (Events.SubscriberEvent envelope) -> do
+          Events.eventAsOf envelope @?= Events.EventAt expectedOid
+          assertBool "retried watcher publication receives a later coherent generation" (Events.eventGeneration envelope > supersedeGeneration)
+          case Events.eventPayload envelope of
+            Events.RepositoryInvalidated invalidations -> assertBool "retried watcher publication includes the managed file change" (Events.ManagedSourceChanged `elem` invalidations)
+            _ -> assertFailure "Git-lock retry emitted an observation failure"
+          recordLockPhase "subscriber observed the retried managed change"
+        Just Events.SubscriberOverflow -> assertFailure "watcher retry subscriber overflowed"
+        Just Events.SubscriberGenerationExhausted -> assertFailure "watcher retry subscriber exhausted its generation"
+        Nothing -> do
+          attemptsObserved <- readIORef publishAttempts
+          assertFailure ("watcher event was not retried after Git-lock release; callback attempts=" <> show (reverse attemptsObserved))
+      writeIORef lockPhase False
+      phases <- reverse <$> readIORef lockPhases
+      putStrLn ("p7-03-watch: lock phase trace (ms) " <> show [((at - phaseOrigin) `div` 1000000, phase) | (at, phase) <- phases])
     writeIORef publishAttempts []
     withGitLock repository (pure ())
     threadDelay 750000
