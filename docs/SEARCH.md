@@ -5,7 +5,7 @@ ADRAI exposes two related commands:
 - `search [QUERY]` searches compiled ADR content.
 - `relevant FILE` ranks ADRs against a source file.
 
-Both operate against a resolved Git revision and return deterministic `adrai/search/v1` or `adrai/relevant/v2` projections with `--json`.
+Both operate against a resolved Git revision and return `adrai/search/v1` or `adrai/relevant/v2` projections with `--json`. Relevance results and ordering are deterministic for the same revision and source bytes; measured diagnostics vary between runs.
 
 ## ADR search
 
@@ -42,6 +42,10 @@ Input is limited to 4 MiB. Binary-like input, NUL bytes, and very short or uninf
 `adrai relevant FILE --json` and the `data` member of `/api/v1/relevant` now use `adrai/relevant/v2`. The API route version describes the HTTP envelope; the `data.schema` value identifies this projection. Each `results` entry is one ADR, ordered by descending `score`, `semantic_score`, `lexical_score`, then ADR ID. `record` identifies the resolved decision record; a conflict has `record: null`, while `matched_record` and `matched_title` identify the head that supplied the strongest evidence. `title`, `summary`, `domains`, `applies_to`, status, replacement, and resolution fields retain decision context.
 
 `score` combines semantic evidence, `lexical_bonus`, and `scope_bonus`. The lexical signal uses source content and localized source-definition phrases, with file scope a small bonus. The reported `semantic_score`, `lexical_score`, `scope_match`, `scope_bonus`, `margin`, strongest-pair scores, and `source_information` explain ranking and confidence. Scope alone cannot produce high confidence. The `retrieval.scoring` object lists the scoring constants. Result order and evidence order are deterministic for the same revision and file bytes.
+
+Service-backed CLI and HTTP relevance responses also include `diagnostics`. `index_revision` is the exact commit in the validated archive or cold-compiled snapshot actually queried; `checkout_head` is a separate observation of the checkout's HEAD at query start. `stale` means these commits differ. An explicit historical `--at` is therefore expected to be stale when the checkout has advanced. A worktree source still uses HEAD for ADR context; its bytes come from the working file.
+
+`index_preparation` is `cache-hit` or `cold-fallback`. All `timing_ms` values are measured elapsed milliseconds from a monotonic clock. `prepare_index` runs from exact-archive acquisition/validation (including a rejected attempt) through source loading, or through cold snapshot analysis and compilation, until the compiled context and source are ready. `retrieve_candidates` covers source preparation, vector and FTS retrieval, shortlist and fully evaluated passage-pair construction. `rank_results` covers aggregation, ordering, result scoring, and materialization of the published JSON projection, including evidence excerpts and resolution fields. The latter two are `null` when a short or empty source skips candidate work. Timings are observational; they do not affect result scores or ordering and are not latency targets.
 
 Each result has at most three ranked `evidence` entries and at most three distinct `passages`. A passage stores `adr_chunk`, `adr_section`, `candidate_record`, and an `adr_excerpt` once. Each evidence entry has a zero-based `passage` index, source `file_lines`, semantic and lexical pair scores, and `matched_terms`. The first evidence entry also carries `file_excerpt`; later entries use the source line range and passage reference to avoid repeating large excerpts. The first entry and its passage can therefore be read directly from one result.
 

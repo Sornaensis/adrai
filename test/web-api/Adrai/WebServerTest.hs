@@ -278,6 +278,13 @@ testRelevantV2Route = withSeededServer $ \_ running -> do
   response <- getJson running ("/api/v1/relevant?file=seed.txt&at=" <> current)
   textAt ["data", "schema"] response >>= (@?= "adrai/relevant/v2")
   textAt ["metadata", "as_of", "oid"] response >>= (@?= current)
+  textAt ["data", "diagnostics", "index_revision"] response >>= (@?= current)
+  textAt ["data", "diagnostics", "checkout_head"] response >>= (@?= current)
+  valueAt ["data", "diagnostics", "stale"] response >>= (@?= Aeson.Bool False)
+  textAt ["data", "diagnostics", "index_preparation"] response >>= (@?= "cache-hit")
+  valueAt ["data", "diagnostics", "timing_ms", "prepare_index"] response >>= \case
+    Aeson.Number elapsed -> assertBool "HTTP index preparation elapsed is nonnegative" (elapsed >= 0)
+    _ -> assertFailure "HTTP index preparation timing is missing"
   valueAt ["data", "results"] response >>= \case
     Aeson.Array _ -> pure ()
     _ -> assertFailure "relevant route did not return a result array"

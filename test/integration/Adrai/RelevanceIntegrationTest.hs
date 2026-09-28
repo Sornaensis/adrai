@@ -20,7 +20,7 @@ import Adrai.Relevance
 import Adrai.Retrieval (SearchMaterialization)
 import Adrai.Sqlite (initializeSearchSchema, replaceSearchMaterialization)
 import Adrai.Types (RepoPath, RevisionSelector (..), mkRepoPath, recordIdText)
-import Control.Exception (bracket)
+import Control.Exception (SomeException, bracket, try)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.Text as Text
@@ -40,7 +40,8 @@ tests =
       testCase "stopword-only source skips passage FTS channel diagnostics" emptyTermsPassageContract,
       testCase "confidence is computed against all aggregates before the public limit" globalConfidenceContract,
       testCase "injected worktree source is HEAD-bound ephemeral and byte stable" worktreeContract,
-      testCase "relevant projection is canonical finite and repeatable" repeatabilityContract
+      testCase "relevant projection is canonical finite and repeatable" repeatabilityContract,
+      testCase "rank phase forces published evidence before its clock stops" publishedEvidenceForcedContract
     ]
 
 obsoleteVisibilityContract :: IO ()
@@ -187,6 +188,23 @@ repeatabilityContract = withRelevant p303RationaleSnapshot $ \connection materia
   renderRelevantProjection first @?= renderRelevantProjection second
   assertBool "public schema is versioned" ("\"schema\": \"adrai/relevant/v2\"" `ByteStringChar8.isInfixOf` renderRelevantProjection first)
   mapM_ assertFiniteResult (relevantProjectionResults first)
+
+publishedEvidenceForcedContract :: IO ()
+publishedEvidenceForcedContract = do
+  projection <- resolvedRelevantProjection
+  case relevantProjectionResults projection of
+    result : remaining ->
+      case relevantResultEvidence result of
+        evidence : moreEvidence -> do
+          let badEvidence = evidence {relevantEvidenceAdrExcerpt = error "late evidence excerpt"}
+              badResult = result {relevantResultEvidence = badEvidence : moreEvidence}
+              badProjection = projection {relevantProjectionResults = badResult : remaining}
+          forced <- try (forcePublishedRelevantProjection badProjection) :: IO (Either SomeException ())
+          case forced of
+            Left _ -> pure ()
+            Right () -> assertFailure "the ranking boundary left a published evidence excerpt unevaluated"
+        [] -> assertFailure "fixture has no supporting evidence"
+    [] -> assertFailure "fixture has no relevance result"
 
 resolvedRelevantProjection :: IO RelevantProjection
 resolvedRelevantProjection = withRelevant p303RationaleSnapshot $ \connection materialization -> mustRelevant =<< runCurrent connection materialization baseRequest baseSource

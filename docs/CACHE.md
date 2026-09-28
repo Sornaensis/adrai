@@ -13,6 +13,8 @@ Both use the `adrai-cache/3` SQLite/FTS5 schema. They are derived artifacts and 
 
 Vector corpora remain process-local. A corpus belongs to one exact search materialization and is rejected when document identities, passage identities, embedding inputs, or vector implementations differ. Query and relevance-source vectors are request-ephemeral.
 
+`relevant` first validates an exact revision-addressed archive and falls back to cold compilation when one is unavailable. Its `diagnostics.index_revision` names the commit represented by the context actually used, and `diagnostics.index_preparation` reports `cache-hit` or `cold-fallback`. The separately captured `checkout_head` supplies the freshness comparison; an intentionally historical archive remains valid even when `stale` is true. The mutable `index.sqlite` alias is not evidence of which revision a relevance query used.
+
 ## Maintenance
 
 The current compiler does not enforce a revision-snapshot retention limit. Old files under `.adrai/cache/` may therefore accumulate.

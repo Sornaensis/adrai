@@ -55,6 +55,8 @@ module Adrai.Query
     RelevantEvidence (..),
     RelevantResult (..),
     RelevantRetrieval (..),
+    RelevantDiagnostics (..),
+    RelevantTimingHooks (..),
     RelevantProjection (..),
     domainsMatchRequested,
     semanticSummaryText,
@@ -66,11 +68,13 @@ module Adrai.Query
     runCurrentSearch,
     runCurrentSearchWithCorpus,
     runRelevant,
+    runRelevantWithTimingHooks,
     runRelevantWithCorpus,
     searchProjectionJson,
     renderSearchProjection,
     relevantProjectionJson,
     renderRelevantProjection,
+    forcePublishedRelevantProjection,
   )
 where
 
@@ -125,6 +129,7 @@ import Adrai.Vector
     semanticEmbedder,
     semanticEmbedding,
   )
+import Control.Exception (evaluate)
 import Data.Array (Array, (!), listArray)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
@@ -533,9 +538,27 @@ data RelevantProjection = RelevantProjection
   { relevantProjectionRevision :: RevisionIdentity,
     relevantProjectionFile :: RelevantFileInfo,
     relevantProjectionRetrieval :: RelevantRetrieval,
-    relevantProjectionResults :: [RelevantResult]
+    relevantProjectionResults :: [RelevantResult],
+    relevantProjectionDiagnostics :: Maybe RelevantDiagnostics
   }
   deriving (Eq, Show)
+
+-- | Observational service data; it never enters relevance scoring or ordering.
+data RelevantDiagnostics = RelevantDiagnostics
+  { relevantIndexRevision :: Text,
+    relevantCheckoutHead :: Text,
+    relevantIndexStale :: Bool,
+    relevantIndexPreparation :: Text,
+    relevantPrepareIndexMs :: Double,
+    relevantRetrieveCandidatesMs :: Maybe Double,
+    relevantRankResultsMs :: Maybe Double
+  }
+  deriving (Eq, Show)
+
+data RelevantTimingHooks = RelevantTimingHooks
+  { relevantCandidatesRetrieved :: IO (),
+    relevantResultsRanked :: IO ()
+  }
 
 projectCollapsed :: ProjectionMode -> ReadSnapshot -> AdrId -> Either QueryError CollapsedProjection
 projectCollapsed mode snapshot adr = do
@@ -1419,19 +1442,22 @@ data RelevantAggregated = RelevantAggregated
   }
 
 runRelevant :: Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
-runRelevant connection snapshot materialization request source =
+runRelevant = runRelevantWithTimingHooks (RelevantTimingHooks (pure ()) (pure ()))
+
+runRelevantWithTimingHooks :: RelevantTimingHooks -> Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
+runRelevantWithTimingHooks timingHooks connection snapshot materialization request source =
   case buildSearchVectorCorpus materialization of
     Left problem -> pure (Left (RelevantVectorCorpusFailure problem))
-    Right corpus -> runRelevantValidated connection snapshot materialization corpus request source
+    Right corpus -> runRelevantValidated timingHooks connection snapshot materialization corpus request source
 
 runRelevantWithCorpus :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
 runRelevantWithCorpus connection snapshot materialization corpus request source =
   case validateSearchVectorCorpus materialization corpus of
     Left problem -> pure (Left (RelevantVectorCorpusFailure problem))
-    Right () -> runRelevantValidated connection snapshot materialization corpus request source
+    Right () -> runRelevantValidated (RelevantTimingHooks (pure ()) (pure ())) connection snapshot materialization corpus request source
 
-runRelevantValidated :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
-runRelevantValidated connection snapshot materialization corpus request source =
+runRelevantValidated :: RelevantTimingHooks -> Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
+runRelevantValidated timingHooks connection snapshot materialization corpus request source =
   case prepareRelevant snapshot materialization request source of
     Left problem -> pure (Left problem)
     Right prepared ->
@@ -1445,7 +1471,8 @@ runRelevantValidated connection snapshot materialization corpus request source =
                         { relevantProjectionRevision = readSnapshotRevision snapshot,
                           relevantProjectionFile = fileInfo,
                           relevantProjectionRetrieval = emptyRelevantRetrieval [] [],
-                          relevantProjectionResults = []
+                          relevantProjectionResults = [],
+                          relevantProjectionDiagnostics = Nothing
                         }
                   )
        in if meaningfulAlnumByteCount bytes == 0
@@ -1465,11 +1492,12 @@ runRelevantValidated connection snapshot materialization corpus request source =
                                 { relevantProjectionRevision = readSnapshotRevision snapshot,
                                   relevantProjectionFile = fileInfo,
                                   relevantProjectionRetrieval = emptyRelevantRetrieval allChunks selectedChunks,
-                                  relevantProjectionResults = []
+                                  relevantProjectionResults = [],
+                                  relevantProjectionDiagnostics = Nothing
                                 }
                          in if meaningfulCount < minMeaningfulAlnum || null selectedChunks
                               then pure (Right emptyProjection)
-                              else runRelevantCandidates connection snapshot corpus request prepared fileInfo allChunks selectedChunks
+                              else runRelevantCandidates timingHooks connection snapshot corpus request prepared fileInfo allChunks selectedChunks
                    in if meaningfulCount == 0
                         then finish [] []
                         else
@@ -1575,8 +1603,8 @@ emptyRelevantRetrieval allChunks selectedChunks =
       relevantRetrievalExactRerankCandidates = 0
     }
 
-runRelevantCandidates :: Connection -> ReadSnapshot -> SearchVectorCorpus -> RelevantRequest -> RelevantPrepared -> RelevantFileInfo -> [TextChunk] -> [TextChunk] -> IO (Either RelevantError RelevantProjection)
-runRelevantCandidates connection snapshot corpus request prepared fileInfo allChunks selectedChunks
+runRelevantCandidates :: RelevantTimingHooks -> Connection -> ReadSnapshot -> SearchVectorCorpus -> RelevantRequest -> RelevantPrepared -> RelevantFileInfo -> [TextChunk] -> [TextChunk] -> IO (Either RelevantError RelevantProjection)
+runRelevantCandidates timingHooks connection snapshot corpus request prepared fileInfo allChunks selectedChunks
   | Map.null documents =
       pure
         ( Right
@@ -1584,7 +1612,8 @@ runRelevantCandidates connection snapshot corpus request prepared fileInfo allCh
               { relevantProjectionRevision = readSnapshotRevision snapshot,
                 relevantProjectionFile = fileInfo,
                 relevantProjectionRetrieval = emptyRelevantRetrieval allChunks selectedChunks,
-                relevantProjectionResults = []
+                relevantProjectionResults = [],
+                relevantProjectionDiagnostics = Nothing
               }
         )
   | otherwise = do
@@ -1608,6 +1637,8 @@ runRelevantCandidates connection snapshot corpus request prepared fileInfo allCh
                       case buildRelevantMatches corpus (relevantRequestFile request) selectedChunks semanticVectors shortlistPassages passageChunks candidateSets of
                         Left problem -> pure (Left problem)
                         Right (matchesByAdr, auxByMatch) -> do
+                          _ <- evaluate (forceRelevantCandidates matchesByAdr auxByMatch)
+                          relevantCandidatesRetrieved timingHooks
                           let aggregated = aggregateRelevantMatches request prepared documents matchesByAdr auxByMatch
                               orderedAggregated = sortBy relevantAggregatedOrder aggregated
                               results = take (relevantRequestLimit request) (finalizeRelevantResults snapshot (relevantRequestFile request) documents orderedAggregated)
@@ -1642,18 +1673,63 @@ runRelevantCandidates connection snapshot corpus request prepared fileInfo allCh
                                     relevantRetrievalSections = Just sectionDiagnostics,
                                     relevantRetrievalExactRerankCandidates = exactCandidateCount
                                   }
-                          pure
-                            ( Right
-                                RelevantProjection
-                                  { relevantProjectionRevision = readSnapshotRevision snapshot,
-                                    relevantProjectionFile = fileInfo,
-                                    relevantProjectionRetrieval = retrieval,
-                                    relevantProjectionResults = results
-                                  }
-                            )
+                              projection = RelevantProjection
+                                { relevantProjectionRevision = readSnapshotRevision snapshot,
+                                  relevantProjectionFile = fileInfo,
+                                  relevantProjectionRetrieval = retrieval,
+                                  relevantProjectionResults = results,
+                                  relevantProjectionDiagnostics = Nothing
+                                }
+                          forcePublishedRelevantProjection projection
+                          relevantResultsRanked timingHooks
+                          pure (Right projection)
   where
     documents = preparedRelevantDocuments prepared
     passages = preparedRelevantPassages prepared
+
+-- The retrieval clock stops only after the pair scores and passage payloads
+-- consumed by aggregation have been evaluated. Map.size would force keys and
+-- structure while leaving both the scores and passage text as thunks.
+forceRelevantCandidates :: Map AdrId [PairMatch] -> Map RelevantAuxKey RelevantMatchAux -> Int
+forceRelevantCandidates matchesByAdr auxByMatch =
+  Map.foldlWithKey' forceMatches 0 matchesByAdr
+    + Map.foldlWithKey' forceAux 0 auxByMatch
+  where
+    forceMatches count adr pairs =
+      Text.length (adrIdText adr)
+        `seq` foldl' (\total pair -> total + forcePair pair) count pairs
+    forcePair pair =
+      let chunk = pairFileChunk pair
+       in textChunkOrdinal chunk
+            `seq` textChunkStartLine chunk
+            `seq` textChunkEndLine chunk
+            `seq` Text.length (textChunkText chunk)
+            `seq` Text.length (pairAdrItemId pair)
+            `seq` Text.length (pairAdrText pair)
+            `seq` pairScore pair
+            `seq` pairLexicalScore pair
+            `seq` 1
+    forceAux count (ordinal, adr, item) aux =
+      ordinal
+        `seq` Text.length (adrIdText adr)
+        `seq` Text.length item
+        `seq` Text.length (relevantAuxCandidateItem aux)
+        `seq` foldl' (\total term -> Text.length term `seq` total + 1) (0 :: Int) (relevantAuxMatchedTerms aux)
+        `seq` count + forcePassage (relevantAuxPassage aux)
+    forcePassage passage =
+      Text.length (searchPassageId passage)
+        `seq` Text.length (searchPassageDocumentItemId passage)
+        `seq` Text.length (adrIdText (searchPassageAdrId passage))
+        `seq` Text.length (recordIdText (searchPassageCandidateRecordId passage))
+        `seq` searchPassageSectionKind passage
+        `seq` searchPassageOrdinal passage
+        `seq` searchPassageLineStart passage
+        `seq` searchPassageLineEnd passage
+        `seq` Text.length (searchPassageText passage)
+        `seq` searchPassageWeight passage
+        `seq` foldl' (\total path -> Text.length path `seq` total + 1) (0 :: Int) (searchPassageSourcePaths passage)
+        `seq` Text.length (searchPassageIdentifiers passage)
+        `seq` 1
 
 normalizedCentroid :: [DenseVector] -> DenseVector
 normalizedCentroid [] = denseVector []
@@ -2634,16 +2710,40 @@ snapshotTextDiff field before after
 relevantProjectionJson :: RelevantProjection -> JsonValue
 relevantProjectionJson projection =
   object
-    [ ("schema", JsonString (publicSchemaText RelevantPublicV2)),
+    ( [ ("schema", JsonString (publicSchemaText RelevantPublicV2)),
       ("view", JsonString "relevant"),
       ("as_of", JsonString (revisionResolved (relevantProjectionRevision projection))),
       ("file", relevantFileJson (relevantProjectionFile projection)),
       ("retrieval", relevantRetrievalJson (relevantProjectionRetrieval projection)),
       ("results", JsonArray (map relevantResultJson (relevantProjectionResults projection)))
+      ]
+        <> maybe [] (\diagnostics -> [("diagnostics", relevantDiagnosticsJson diagnostics)]) (relevantProjectionDiagnostics projection)
+    )
+
+relevantDiagnosticsJson :: RelevantDiagnostics -> JsonValue
+relevantDiagnosticsJson diagnostics =
+  object
+    [ ("index_revision", JsonString (relevantIndexRevision diagnostics)),
+      ("checkout_head", JsonString (relevantCheckoutHead diagnostics)),
+      ("stale", JsonBool (relevantIndexStale diagnostics)),
+      ("index_preparation", JsonString (relevantIndexPreparation diagnostics)),
+      ("timing_ms", object
+        [ ("prepare_index", scoreJson (relevantPrepareIndexMs diagnostics)),
+          ("retrieve_candidates", maybeJson scoreJson (relevantRetrieveCandidatesMs diagnostics)),
+          ("rank_results", maybeJson scoreJson (relevantRankResultsMs diagnostics))
+        ])
     ]
 
 renderRelevantProjection :: RelevantProjection -> ByteString
 renderRelevantProjection = renderCanonicalJsonBytes . relevantProjectionJson
+
+-- The ranking clock includes materializing every published result field,
+-- including bounded evidence excerpts and conflict resolution metadata.
+-- Rendering here forces the exact projection that CLI and API serialize later.
+forcePublishedRelevantProjection :: RelevantProjection -> IO ()
+forcePublishedRelevantProjection projection = do
+  _ <- evaluate (ByteString.length (renderRelevantProjection projection))
+  pure ()
 
 relevantFileJson :: RelevantFileInfo -> JsonValue
 relevantFileJson info =

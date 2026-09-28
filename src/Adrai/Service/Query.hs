@@ -131,11 +131,13 @@ import Adrai.Query
     SearchRequest,
     SearchResult (..),
     RelevantError,
-    RelevantProjection,
+    RelevantProjection (..),
+    RelevantDiagnostics (..),
+    RelevantTimingHooks (..),
     RelevantRequest (..),
     RelevantSource (..),
     runCurrentSearch,
-    runRelevant,
+    runRelevantWithTimingHooks,
     referenceLookupErrorText,
     resolveAdrReference,
   )
@@ -167,6 +169,7 @@ import Adrai.Types
     repoPathText,
   )
 import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, fromException, throwIO, try)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Int (Int64)
@@ -175,6 +178,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Database.SQLite.Simple (Connection, close, execute_, open)
+import GHC.Clock (getMonotonicTimeNSec)
+import Data.Word (Word64)
 
 -- | Inert observability seam for the query cache boundary.  Production uses
 -- 'defaultQueryExecutionHooks'; tests can prove an exact archive never enters
@@ -459,62 +464,79 @@ runRelevantQueryAtHead repository oid request =
 -- worktree source semantics.
 runRelevantQueryExact :: Repository -> GitOid -> RelevantRequest -> IO (Either RelevantFailure RelevantProjection)
 runRelevantQueryExact repository oid request = do
-  revisionResult <- resolveRepositoryRevision repository (RevisionSpec (gitOidText oid))
-  case revisionResult of
-    Left problem -> pure (Left (RelevantRepositoryFailure (Text.pack (show problem))))
-    Right revision
-      | resolvedCommitOid revision /= oid -> pure (Left (RelevantCompilerFailure "exact archive resolved to an unexpected revision"))
-      | otherwise -> do
-          let requestedRevision = case relevantRequestRevision request of
-                AtRevision requested -> requested
-                WorkingRevision -> "HEAD"
-          cached <- withExactCacheContext defaultQueryExecutionHooks repository revision requestedRevision $ \connection context -> do
-            sourceResult <- readRelevantSource repository revision request
-            case sourceResult of
-              Left problem -> pure (Left problem)
-              Right source -> rankRelevantWith request (exactQuerySnapshot context) source connection (exactQueryMaterialization context)
-          pure (maybe (Left (RelevantCompilerFailure "validated exact archive is unavailable")) id cached)
+  checkoutResult <- captureRelevantCheckoutHead repository
+  case checkoutResult of
+    Left problem -> pure (Left problem)
+    Right checkoutHead -> do
+      revisionResult <- resolveRepositoryRevision repository (RevisionSpec (gitOidText oid))
+      case revisionResult of
+        Left problem -> pure (Left (RelevantRepositoryFailure (Text.pack (show problem))))
+        Right revision
+          | resolvedCommitOid revision /= oid -> pure (Left (RelevantCompilerFailure "exact archive resolved to an unexpected revision"))
+          | otherwise -> do
+              started <- getMonotonicTimeNSec
+              let requestedRevision = case relevantRequestRevision request of
+                    AtRevision requested -> requested
+                    WorkingRevision -> "HEAD"
+              cached <- withExactCacheContext defaultQueryExecutionHooks repository revision requestedRevision $ \connection context -> do
+                sourceResult <- readRelevantSource repository revision request
+                case sourceResult of
+                  Left problem -> pure (Left problem)
+                  Right source -> rankRelevantWith "cache-hit" checkoutHead started request (exactQuerySnapshot context) source connection (exactQueryMaterialization context)
+              pure (maybe (Left (RelevantCompilerFailure "validated exact archive is unavailable")) id cached)
 
 runRelevantQueryAtRequested :: QueryExecutionHooks -> Repository -> RelevantRequest -> Text -> IO (Either RelevantFailure RelevantProjection)
 runRelevantQueryAtRequested hooks repository request requestedRevision = do
-  revisionResult <- resolveRepositoryRevision repository (RevisionSpec requestedRevision)
-  case revisionResult of
-    Left problem -> pure (Left (RelevantRepositoryFailure (Text.pack (show problem))))
-    Right revision -> do
-      cached <- withExactCacheContext hooks repository revision requestedRevision $ \connection context -> do
-        sourceResult <- readRelevantSource repository revision request
-        case sourceResult of
-          Left problem -> pure (Left problem)
-          Right source -> rankRelevantWith request (exactQuerySnapshot context) source connection (exactQueryMaterialization context)
-      case cached of
-        Just result -> pure result
-        Nothing -> do
-          queryColdFallback hooks
-          snapshotResult <- readSnapshotAtResolvedWithHooks hooks repository requestedRevision revision
-          case snapshotResult of
-            Left failure -> pure (Left (relevantSnapshotFailure failure))
-            Right snapshot -> do
-              sourceResult <- readRelevantSource repository revision request
-              case sourceResult of
-                Left problem -> pure (Left problem)
-                Right source -> do
-                  queryColdCompile hooks
-                  captured <- try (bracket (open ":memory:") close (compileAndRank revision snapshot source)) :: IO (Either SomeException (Either RelevantFailure RelevantProjection))
-                  case captured of
-                    Left exception ->
-                      case fromException exception of
-                        Just cancellation -> throwIO (cancellation :: SomeAsyncException)
-                        Nothing -> pure (Left (RelevantCompilerFailure (Text.pack (displayException exception))))
-                    Right result -> pure result
+  checkoutResult <- captureRelevantCheckoutHead repository
+  case checkoutResult of
+    Left problem -> pure (Left problem)
+    Right checkoutHead -> do
+      revisionResult <- resolveRepositoryRevision repository (RevisionSpec requestedRevision)
+      case revisionResult of
+        Left problem -> pure (Left (RelevantRepositoryFailure (Text.pack (show problem))))
+        Right revision -> do
+          started <- getMonotonicTimeNSec
+          cached <- withExactCacheContext hooks repository revision requestedRevision $ \connection context -> do
+            sourceResult <- readRelevantSource repository revision request
+            case sourceResult of
+              Left problem -> pure (Left problem)
+              Right source -> rankRelevantWith "cache-hit" checkoutHead started request (exactQuerySnapshot context) source connection (exactQueryMaterialization context)
+          case cached of
+            Just result -> pure result
+            Nothing -> do
+              queryColdFallback hooks
+              snapshotResult <- readSnapshotAtResolvedWithHooks hooks repository requestedRevision revision
+              case snapshotResult of
+                Left failure -> pure (Left (relevantSnapshotFailure failure))
+                Right snapshot -> do
+                  sourceResult <- readRelevantSource repository revision request
+                  case sourceResult of
+                    Left problem -> pure (Left problem)
+                    Right source -> do
+                      queryColdCompile hooks
+                      captured <- try (bracket (open ":memory:") close (compileAndRank checkoutHead started revision snapshot source)) :: IO (Either SomeException (Either RelevantFailure RelevantProjection))
+                      case captured of
+                        Left exception ->
+                          case fromException exception of
+                            Just cancellation -> throwIO (cancellation :: SomeAsyncException)
+                            Nothing -> pure (Left (RelevantCompilerFailure (Text.pack (displayException exception))))
+                        Right result -> pure result
   where
-    compileAndRank revision snapshot source connection = do
+    compileAndRank checkoutHead started revision snapshot source connection = do
       compiledResult <- coldCompileRepository connection revision
       case compiledResult of
         Left problem -> pure (Left (RelevantCompilerFailure (Text.pack (show problem))))
         Right compiled ->
           case coldCompilerSearchMaterialization compiled of
             Nothing -> pure (Left (RelevantCompilerFailure "compiler produced no search materialization for an integrity-gated snapshot"))
-            Just materialization -> rankRelevantWith request snapshot source connection materialization
+            Just materialization -> rankRelevantWith "cold-fallback" checkoutHead started request snapshot source connection materialization
+
+captureRelevantCheckoutHead :: Repository -> IO (Either RelevantFailure Text)
+captureRelevantCheckoutHead repository = do
+  observed <- resolveRepositoryRevision repository (RevisionSpec "HEAD")
+  pure $ case observed of
+    Left problem -> Left (RelevantRepositoryFailure (Text.pack (show problem)))
+    Right revision -> Right (gitOidText (resolvedCommitOid revision))
 
 readRelevantSource :: Repository -> ResolvedRepositoryRevision -> RelevantRequest -> IO (Either RelevantFailure RelevantSource)
 readRelevantSource repository revision request =
@@ -543,10 +565,34 @@ readRelevantSource repository revision request =
                 relevantSourceBytes = bytes
               }
 
-rankRelevantWith :: RelevantRequest -> ReadSnapshot -> RelevantSource -> Connection -> SearchMaterialization -> IO (Either RelevantFailure RelevantProjection)
-rankRelevantWith request snapshot source connection materialization = do
-  ranked <- runRelevant connection snapshot materialization request source
-  pure (either (Left . RelevantQueryFailure) Right ranked)
+rankRelevantWith :: Text -> Text -> Word64 -> RelevantRequest -> ReadSnapshot -> RelevantSource -> Connection -> SearchMaterialization -> IO (Either RelevantFailure RelevantProjection)
+rankRelevantWith preparation checkoutHead started request snapshot source connection materialization = do
+  preparedAt <- getMonotonicTimeNSec
+  retrievedAt <- newIORef Nothing
+  rankedAt <- newIORef Nothing
+  let timingHooks = RelevantTimingHooks
+        { relevantCandidatesRetrieved = getMonotonicTimeNSec >>= writeIORef retrievedAt . Just,
+          relevantResultsRanked = getMonotonicTimeNSec >>= writeIORef rankedAt . Just
+        }
+  result <- runRelevantWithTimingHooks timingHooks connection snapshot materialization request source
+  retrieved <- readIORef retrievedAt
+  ranked <- readIORef rankedAt
+  let indexRevision = revisionResolved (readSnapshotRevision snapshot)
+      diagnostics = RelevantDiagnostics
+        { relevantIndexRevision = indexRevision,
+          relevantCheckoutHead = checkoutHead,
+          relevantIndexStale = indexRevision /= checkoutHead,
+          relevantIndexPreparation = preparation,
+          relevantPrepareIndexMs = elapsedMilliseconds started preparedAt,
+          relevantRetrieveCandidatesMs = elapsedMilliseconds preparedAt <$> retrieved,
+          relevantRankResultsMs = case (retrieved, ranked) of
+            (Just retrievalEnd, Just rankingEnd) -> Just (elapsedMilliseconds retrievalEnd rankingEnd)
+            _ -> Nothing
+        }
+  pure (either (Left . RelevantQueryFailure) (\projection -> Right projection { relevantProjectionDiagnostics = Just diagnostics }) result)
+
+elapsedMilliseconds :: Word64 -> Word64 -> Double
+elapsedMilliseconds before after = fromIntegral (after - before) / 1000000
 
 -- | Read a fully validated exact archive context without repository fallback.
 -- This narrow inspection seam exists for target-relative parity tests; normal

@@ -23,7 +23,7 @@ import Adrai.Git (Repository, RevisionSpec (..), discoverRepository, gitOidText,
 import Adrai.Integration.CLI hiding (parseCompareResults, parseHistory, parseSearchResults)
 import Adrai.Compiler (materializeCurrentSearch)
 import Adrai.History (CommitPlacementEvidence (..), LineLandingEvidence (..), PlacementEvidence (..), ReadSnapshot (..), RevisionIdentity (..))
-import Adrai.Query (RelevantProjection (..), RelevantRequest (..), SearchProjection (..), defaultRelevantRequest, defaultSearchRequest)
+import Adrai.Query (RelevantDiagnostics (..), RelevantFileInfo (..), RelevantProjection (..), RelevantRequest (..), SearchProjection (..), defaultRelevantRequest, defaultSearchRequest)
 import Adrai.Provenance
   ( GitOid,
     ProvenanceCapsuleInput (..),
@@ -54,6 +54,7 @@ import Adrai.Service.Query
     loadExactQueryContextForTest,
     loadExactQueryContextWithAcquisitionHooksForTest,
     readSnapshotAt,
+    runRelevantQuery,
     runRelevantQueryWithHooks,
     runSearchWithHooks,
   )
@@ -126,8 +127,51 @@ tests =
   withResource createExactQuerySeed removeRepositorySeed $ \getSeed ->
     testGroup "Query integration (history / search / compare)"
       [ testExactCacheQueryHooks getSeed,
+        testRelevantDiagnostics getSeed,
         testExactCacheAcquisitionCancellation getSeed
       ]
+
+testRelevantDiagnostics :: IO (RepositorySeed ExactQuerySeed) -> TestTree
+testRelevantDiagnostics getSeed =
+  testCase "relevant diagnostics bind exact index revision and monotonic phases" $ do
+    seed <- getSeed
+    withPrivateRepositorySeed seed $ \payload repoPath -> do
+      repository <- requireRight "discover diagnostics repository" =<< discoverRepository systemGit repoPath
+      relevantPath <- requireRight "diagnostics source path" (mkRepoPath (T.pack (exactQuerySeedSourceRelativePath payload)))
+      let oldHead = exactQuerySeedMainCommit payload
+          request = defaultRelevantRequest relevantPath
+          inspect label expectedHead expectedIndex expectedStale expectedPreparation result = do
+            projection <- requireRight label result
+            diagnostics <- maybe (assertFailure (label <> " omitted diagnostics") >> fail "unreachable") pure (relevantProjectionDiagnostics projection)
+            relevantCheckoutHead diagnostics @?= expectedHead
+            relevantIndexRevision diagnostics @?= expectedIndex
+            relevantIndexStale diagnostics @?= expectedStale
+            relevantIndexPreparation diagnostics @?= expectedPreparation
+            assertBool (label <> " preparation is nonnegative") (relevantPrepareIndexMs diagnostics >= 0)
+            assertBool (label <> " retrieval is measured") (maybe False (>= 0) (relevantRetrieveCandidatesMs diagnostics))
+            assertBool (label <> " ranking is measured") (maybe False (>= 0) (relevantRankResultsMs diagnostics))
+            pure projection
+      cached <- inspect "fresh exact cache" oldHead oldHead False "cache-hit" =<< runRelevantQuery repository request
+      _ <- gitStdout repoPath ["commit", "--allow-empty", "-m", "advance checkout without changing source"]
+      newHead <- headCommit repoPath
+      assertBool "fixture HEAD advanced" (newHead /= oldHead)
+      historical <- inspect "historical exact cache" newHead oldHead True "cache-hit" =<< runRelevantQuery repository (request { relevantRequestRevision = AtRevision oldHead })
+      relevantProjectionResults historical @?= relevantProjectionResults cached
+      current <- inspect "fresh cold fallback" newHead newHead False "cold-fallback" =<< runRelevantQuery repository request
+      relevantProjectionResults current @?= relevantProjectionResults cached
+      BS.writeFile (repoPath </> exactQuerySeedSourceRelativePath payload) "tiny"
+      empty <- requireRight "empty worktree relevance" =<< runRelevantQuery repository (request { relevantRequestRevision = WorkingRevision })
+      let emptyDiagnostics = relevantProjectionDiagnostics empty
+      relevantFileSource (relevantProjectionFile empty) @?= "worktree"
+      relevantProjectionResults empty @?= []
+      case emptyDiagnostics of
+        Nothing -> assertFailure "empty worktree relevance omitted diagnostics"
+        Just diagnostics -> do
+          relevantIndexRevision diagnostics @?= newHead
+          relevantCheckoutHead diagnostics @?= newHead
+          relevantIndexStale diagnostics @?= False
+          relevantRetrieveCandidatesMs diagnostics @?= Nothing
+          relevantRankResultsMs diagnostics @?= Nothing
 
 data ExactQuerySeed = ExactQuerySeed
   { exactQuerySeedDecisionPath :: Text,
@@ -639,7 +683,11 @@ testExactCacheQueryHooks getSeed =
                     queryColdCompile = modifyIORef' relevantFallbackCounters ("cold" :)
                   }
             relevantFallback <- runRelevantQueryWithHooks relevantFallbackHooks repository (defaultRelevantRequest relevantPath)
-            relevantFallback @?= relevantHit
+            case (relevantFallback, relevantHit) of
+              (Right coldProjection, Right cachedProjection) -> do
+                coldProjection { relevantProjectionDiagnostics = Nothing } @?= cachedProjection { relevantProjectionDiagnostics = Nothing }
+                fmap relevantIndexPreparation (relevantProjectionDiagnostics coldProjection) @?= Just "cold-fallback"
+              _ -> assertFailure (T.unpack label <> " relevance did not produce both cold and cached projections")
             events <- readIORef relevantFallbackCounters
             case events of
               ["cold", "hydrate", "analyze", "raw", "fallback"] -> pure ()

@@ -118,6 +118,7 @@ import Adrai.Query
     SearchProjection (..),
     SearchRequest (..),
     RelevantFileInfo (..),
+    RelevantDiagnostics (..),
     RelevantProjection (..),
     RelevantRequest (..),
     RelevantRetrieval (..),
@@ -1209,6 +1210,7 @@ mutationCliContractTests =
                 , relevantProjectionFile = fileInfo
                 , relevantProjectionRetrieval = retrieval
                 , relevantProjectionResults = []
+                , relevantProjectionDiagnostics = Nothing
                 }
         parseCli ["relevant", "src/query ü.txt"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant defaulted))
         parseCli ["relevant", "src/query ü.txt", "--at", "refs/heads/release", "--include-obsolete", "--limit", "7", "--json"]
@@ -1225,6 +1227,10 @@ mutationCliContractTests =
         renderRelevantOutcome explicit projection
           @?= CliRendered (renderCanonicalJson (relevantProjectionJson projection)) "" ExitSuccess
         assertBool "relevant --json emits the v2 projection" ("\"schema\": \"adrai/relevant/v2\"" `Text.isInfixOf` renderedStdout (renderRelevantOutcome explicit projection))
+        let diagnosed = projection { relevantProjectionDiagnostics = Just (RelevantDiagnostics "0123456789abcdef0123456789abcdef01234567" "1111111111111111111111111111111111111111" True "cache-hit" 1.25 Nothing Nothing) }
+            diagnosedJson = renderedStdout (renderRelevantOutcome explicit diagnosed)
+        assertBool "relevant CLI reports measured freshness without inventing skipped phases"
+          ("\"stale\": true" `Text.isInfixOf` diagnosedJson && "\"prepare_index\": 1.25" `Text.isInfixOf` diagnosedJson && "\"retrieve_candidates\": null" `Text.isInfixOf` diagnosedJson)
         renderRelevantOutcome (explicit {relevantJson = False}) projection
           @?= CliRendered (Text.Encoding.decodeUtf8 (renderRelevantProjection projection)) "" ExitSuccess
         selectedRepo <- newIORef Nothing
