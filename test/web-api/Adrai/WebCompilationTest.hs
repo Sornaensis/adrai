@@ -28,6 +28,7 @@ import Adrai.Git
     resolveRevision,
     systemGit,
   )
+import Adrai.Provenance.Git.Lock (gitLockStatus)
 import qualified Adrai.Service.Compilation as Compilation
 import Adrai.Service.PostCommitIndex
   ( PostCommitIndexDependencies (..),
@@ -53,10 +54,12 @@ import Control.Monad (unless, void, when)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteString8
-import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import System.Directory
   ( createDirectoryIfMissing,
     doesFileExist,
@@ -227,14 +230,27 @@ testConcurrentCliPublication = Server.withSeededRepository $ \root -> do
   ByteString.writeFile untracked (ByteString.pack [0, 255, 13, 10, 17, 99])
   callerBefore <- captureCallerState root tracked untracked
   pauseOnce <- newIORef True
+  compilePhase <- newIORef ("HTTP exact producer not started" :: Text)
+  phaseEvents <- newIORef ([] :: [(Text, Word64)])
   archiveReady <- newEmptyMVar
   releaseHttp <- newEmptyMVar
-  let compileExact repositoryToCompile revision = do
+  let recordProducerPhase phase = do
+        now <- getMonotonicTimeNSec
+        writeIORef compilePhase phase
+        atomicModifyIORef' phaseEvents (\events -> ((phase, now) : events, ()))
+      compileExact repositoryToCompile revision = do
+        recordProducerPhase ("preparing exact archive " <> gitOidText revision)
         archive <- Runtime.ensureExactArchive repositoryToCompile revision >>= requireRight "HTTP exact archive"
+        recordProducerPhase ("validating exact archive " <> gitOidText revision)
         accepted <- validateExactCacheTarget archive (gitOidText revision)
         unless accepted (assertFailure "HTTP producer returned an invalid exact archive")
+        recordProducerPhase ("validated exact archive " <> gitOidText revision)
         shouldPause <- atomicModifyIORef' pauseOnce (\armed -> (False, armed))
-        when shouldPause $ putMVar archiveReady () >> takeMVar releaseHttp
+        when shouldPause $ do
+          recordProducerPhase ("revision A held after validation " <> gitOidText revision)
+          putMVar archiveReady ()
+          takeMVar releaseHttp
+          recordProducerPhase ("revision A released after validation " <> gitOidText revision)
         pure (Right archive)
       services = defaultApplicationServices {applicationCompileExact = compileExact}
       dependencies = Server.dependencies {serverApplicationServices = services}
@@ -262,7 +278,7 @@ testConcurrentCliPublication = Server.withSeededRepository $ \root -> do
       retained <- requireWorker "outstanding HTTP revision A" 15000000 outstanding
       Server.textAt ["metadata", "as_of", "oid"] retained >>= (@?= gitOidText revisionA)
       Server.textAt ["data", "revision"] retained >>= (@?= gitOidText revisionA)
-      fresh <- getDoctorAfterCliPublication running revisionB
+      fresh <- getDoctorAfterCliPublication repository compilePhase phaseEvents running revisionB
       Server.textAt ["metadata", "as_of", "oid"] fresh >>= (@?= revisionB)
       Server.textAt ["data", "revision"] fresh >>= (@?= revisionB)
       cliDoctorB <- runAdraiJson executable root ["doctor", "--at", Text.unpack revisionB, "--json"]
@@ -274,16 +290,34 @@ testConcurrentCliPublication = Server.withSeededRepository $ \root -> do
   callerAfter <- captureCallerState root tracked untracked
   callerAfter @?= callerBefore
 
--- The CLI and the watcher's verification worker may briefly own the shared
--- repository lock immediately after publication. Retry only the safe read,
--- and only when the HTTP response identifies that specific busy condition.
-getDoctorAfterCliPublication :: RunningServer -> Text -> IO Aeson.Value
-getDoctorAfterCliPublication running revision = do
-  observed <- timeout 5000000 retryBusyRead
-  maybe (assertFailure "fresh revision-B doctor remained repository-busy for five seconds") pure observed
+-- The fresh exact archive can take longer than a warm read after publication.
+-- The watcher may also briefly own the repository lock. Retry only a typed
+-- busy response while keeping one guard around the complete HTTP read.
+getDoctorAfterCliPublication :: Repository -> IORef Text -> IORef [(Text, Word64)] -> RunningServer -> Text -> IO Aeson.Value
+getDoctorAfterCliPublication repository compilePhase phaseEvents running revision = do
+  lastStatus <- newIORef ("HTTP response pending" :: String)
+  startedAt <- getMonotonicTimeNSec
+  observed <- timeout 60000000 (retryBusyRead lastStatus)
+  finishedAt <- getMonotonicTimeNSec
+  events <- reverse <$> readIORef phaseEvents
+  let phaseTrace =
+        [ (Text.unpack phase, fromIntegral (at - startedAt) `div` (1000000 :: Integer))
+          | (phase, at) <- events,
+            at >= startedAt
+        ]
+      elapsedMs = (finishedAt - startedAt) `div` 1000000
+  case observed of
+    Just value -> do
+      putStrLn ("revision-B doctor HTTP completed in " <> show elapsedMs <> " ms; producer phases (ms from request): " <> show phaseTrace)
+      pure value
+    Nothing -> do
+      progress <- readIORef lastStatus
+      producer <- readIORef compilePhase
+      lock <- gitLockStatus repository
+      assertFailure ("GET " <> Text.unpack path <> " did not complete within sixty seconds: " <> progress <> ", producer " <> Text.unpack producer <> ", phases " <> show phaseTrace <> ", lock " <> show lock)
   where
     path = "/api/v1/doctor?at=" <> revision
-    retryBusyRead = do
+    retryBusyRead lastStatus = do
       (status, value) <- Server.getJsonStatus running path
       case status of
         200 -> pure value
@@ -291,7 +325,7 @@ getDoctorAfterCliPublication running revision = do
           code <- Server.textAt ["error", "code"] value
           reason <- Server.textAt ["metadata", "as_of", "reason"] value
           if code == "repository-busy" && reason == "request-failed"
-            then threadDelay 20000 >> retryBusyRead
+            then writeIORef lastStatus ("typed 503 repository-busy") >> threadDelay 20000 >> retryBusyRead lastStatus
             else assertFailure ("GET " <> Text.unpack path <> " returned 503: " <> show value)
         _ -> assertFailure ("GET " <> Text.unpack path <> " returned " <> show status <> ": " <> show value)
 

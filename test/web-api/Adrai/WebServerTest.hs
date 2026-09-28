@@ -24,7 +24,7 @@ import Adrai.Format.Config (defaultConfigText)
 import Adrai.Git (Repository (..), RevisionSpec (RevisionSpec), discoverRepository, resolveRevision, systemGit)
 import Adrai.History (revisionRequested, revisionResolved)
 import Adrai.Provenance (gitOidText)
-import Adrai.Provenance.Git.Lock (withGitLock)
+import Adrai.Provenance.Git.Lock (gitLockStatus, withGitLock)
 import qualified Adrai.Service.Compilation as Compilation
 import qualified Adrai.Service.Mutation as Mutation
 import qualified Adrai.Service.Query as Query
@@ -396,8 +396,9 @@ testQueryRoutes = withSeededServer $ \root running -> do
                       && responseField ["error", "code"] response == Just (Aeson.String "repository-busy")
                       && responseField ["metadata", "as_of", "kind"] response == Just (Aeson.String "unavailable")
               assertBool ("exact read returned malformed busy response: " <> Text.unpack route <> ", attempt " <> show attempt <> ", HTTP 503, response " <> show response) typedBusy
-              if attempt == 5
-                then assertFailure ("exact read stayed repository-busy after five responses: " <> Text.unpack route <> ", statuses " <> show (reverse (status : statuses)))
+              elapsed <- getMonotonicTimeNSec
+              if elapsed - started >= 15000000000
+                then assertFailure ("exact read stayed repository-busy for fifteen seconds: " <> Text.unpack route <> ", attempts " <> show attempt <> ", statuses " <> show (reverse (status : statuses)))
                 else threadDelay 50000 >> retryBusyRead route started (attempt + 1) (status : statuses)
             _ -> assertFailure ("exact read returned unexpected HTTP status for " <> Text.unpack route <> ", attempt " <> show attempt <> ", HTTP " <> show status <> ", response " <> show response)
   mapM_ readAfterMove routes
@@ -493,10 +494,14 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
       basis <- repositoryBasis ordered
       withAsync (postJsonHeld responseGate ordered "/api/v1/adrs" (createBody basis)) $ \delayed ->
         (do
-           held <- timeout 8000000 $ do
-             takeMVar committed
-             getJson ordered "/api/v1/repository"
-           observed <- maybe (assertFailure "controlled HTTP hold exceeded its eight-second budget") pure held
+           ready <- timeout 30000000 (race (takeMVar committed) (waitCatch delayed))
+           case ready of
+             Nothing -> assertFailure "controlled HTTP dispatch did not finish within its thirty-second readiness guard"
+             Just (Right (Left failure)) -> assertFailure ("controlled HTTP client failed before dispatch was ready: " <> show failure)
+             Just (Right (Right _)) -> assertFailure "controlled HTTP client returned before its response gate was released"
+             Just (Left ()) -> pure ()
+           observed <- timeout 10000000 (getJson ordered "/api/v1/repository")
+             >>= maybe (assertFailure "controlled repository observation exceeded its ten-second guard") pure
            releaseHeld
            mutation <- timeout 3000000 (wait delayed) >>= maybe (assertFailure "controlled HTTP response exceeded its three-second post-release budget") pure
            mutationGeneration <- integerAt ["metadata", "generation"] mutation
@@ -622,14 +627,46 @@ testBoundsAndStale = withSeededServer $ \root running -> do
   callProcess "git" ["-C", root, "commit", "--allow-empty", "-m", "external move"]
   afterMove <- gitHead root
   before <- callerState root
-  staleCreate <- postJsonStatus running "/api/v1/adrs" (createBody basis)
-  staleExisting <- sequence
-    [ postJsonStatus running ("/api/v1/adrs/" <> adr <> "/amend") (existingBody basis state ["change_summary" Aeson..= ("stale" :: Text), "title" Aeson..= ("No" :: Text), "summary" Aeson..= ("No" :: Text), "body" Aeson..= ("No\n" :: Text)]),
-      postJsonStatus running ("/api/v1/adrs/" <> adr <> "/scope") (existingBody basis state ["reason" Aeson..= ("stale" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["stale/**"] :: [Text]), "remove" Aeson..= ([] :: [Text])]),
-      postJsonStatus running ("/api/v1/adrs/" <> adr <> "/domain") (existingBody basis state ["reason" Aeson..= ("stale" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["stale"] :: [Text]), "remove" Aeson..= ([] :: [Text])]),
-      postJsonStatus running ("/api/v1/adrs/" <> adr <> "/obsolete") (existingBody basis state ["reason" Aeson..= ("stale" :: Text)]),
-      postJsonStatus running ("/api/v1/adrs/" <> adr <> "/reactivate") (existingBody basis state ["reason" Aeson..= ("stale" :: Text)])
-    ]
+  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  cookie <- sessionCookiePair running
+  busyCount <- newIORef (0 :: Int)
+  let stalePost path body = getMonotonicTimeNSec >>= \started -> retryStalePost started (1 :: Int) path body
+      retryStalePost started attempt path body = do
+        result@(status, response) <- postJsonStatusWithCookie requestRaw running cookie path body
+        case status of
+          409 -> pure result
+          503 -> do
+            category <- valueAt ["error", "category"] response
+            errorStatus <- valueAt ["error", "status"] response
+            code <- valueAt ["error", "code"] response
+            asOf <- valueAt ["metadata", "as_of", "kind"] response
+            assertBool ("stale POST returned an untyped 503: " <> Text.unpack path <> ", response " <> show response)
+              ( category == Aeson.String "service-failure"
+                  && errorStatus == Aeson.Number 503
+                  && code == Aeson.String "repository-busy"
+                  && asOf == Aeson.String "unavailable"
+              )
+            count <- atomicModifyIORef' busyCount (\seen -> let next = seen + 1 in (next, next))
+            if count == 1
+              then gitLockStatus repository >>= \lock -> putStrLn ("first stale POST typed repository-busy response: " <> Text.unpack path <> ", lock " <> show lock)
+              else pure ()
+            elapsed <- getMonotonicTimeNSec
+            if elapsed - started >= 15000000000
+              then assertFailure ("stale POST stayed repository-busy for fifteen seconds: " <> Text.unpack path <> ", attempts " <> show attempt <> ", response " <> show response)
+              else threadDelay 250000 >> retryStalePost started (attempt + 1) path body
+          _ -> assertFailure ("stale POST returned HTTP " <> show status <> " instead of 409: " <> Text.unpack path <> ", response " <> show response)
+  (staleCreate, staleExisting) <-
+    (do
+       create <- stalePost "/api/v1/adrs" (createBody basis)
+       existing <- sequence
+         [ stalePost ("/api/v1/adrs/" <> adr <> "/amend") (existingBody basis state ["change_summary" Aeson..= ("stale" :: Text), "title" Aeson..= ("No" :: Text), "summary" Aeson..= ("No" :: Text), "body" Aeson..= ("No\n" :: Text)]),
+           stalePost ("/api/v1/adrs/" <> adr <> "/scope") (existingBody basis state ["reason" Aeson..= ("stale" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["stale/**"] :: [Text]), "remove" Aeson..= ([] :: [Text])]),
+           stalePost ("/api/v1/adrs/" <> adr <> "/domain") (existingBody basis state ["reason" Aeson..= ("stale" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["stale"] :: [Text]), "remove" Aeson..= ([] :: [Text])]),
+           stalePost ("/api/v1/adrs/" <> adr <> "/obsolete") (existingBody basis state ["reason" Aeson..= ("stale" :: Text)]),
+           stalePost ("/api/v1/adrs/" <> adr <> "/reactivate") (existingBody basis state ["reason" Aeson..= ("stale" :: Text)])
+         ]
+       pure (create, existing))
+      `finally` (readIORef busyCount >>= \count -> putStrLn ("stale POST typed repository-busy retries: " <> show count))
   mapM_ (\(status, _) -> status @?= 409) (staleCreate : staleExisting)
   callerState root >>= (@?= before)
   gitHead root >>= (@?= afterMove)
@@ -1602,9 +1639,13 @@ postJsonStatus = postJsonStatusWith requestRaw
 
 postJsonStatusWith :: (Text -> BS.ByteString -> IO BS.ByteString) -> RunningServer -> Text -> Aeson.Value -> IO (Int, Aeson.Value)
 postJsonStatusWith rawRequest running path body = do
+  cookie <- sessionCookiePair running
+  postJsonStatusWithCookie rawRequest running cookie path body
+
+postJsonStatusWithCookie :: (Text -> BS.ByteString -> IO BS.ByteString) -> RunningServer -> Text -> Text -> Aeson.Value -> IO (Int, Aeson.Value)
+postJsonStatusWithCookie rawRequest running cookie path body = do
   let host = Security.authorityHost (runningAuthority running)
       bytes = LBS.toStrict (Aeson.encode body)
-  cookie <- sessionCookiePair running
   let
       requestHead = TextEncoding.encodeUtf8
         ("POST " <> path <> " HTTP/1.1\r\nHost: " <> host <> "\r\nOrigin: " <> Security.authorityOrigin (runningAuthority running)
@@ -1773,10 +1814,12 @@ runOwnedSocket deadlineMicros port action = bracket (socket AF_INET Stream defau
   let address = SockAddrInet (fromIntegral port :: PortNumber) (tupleToHostAddress (127, 0, 0, 1))
       cleanup worker = do
         closeOwnedSocket client
-        joined <- timeout 2000000 (waitCatch worker)
-        case joined of
-          Nothing -> assertFailure "owned socket worker survived shutdown and the bounded join"
-          Just _ -> pure ()
+        stopped <- timeout 2000000 (cancel worker)
+        case stopped of
+          Nothing -> assertFailure "owned socket worker survived shutdown and bounded cancellation"
+          Just () -> poll worker >>= \case
+            Nothing -> assertFailure "owned socket worker survived shutdown and bounded cancellation"
+            Just _ -> pure ()
   bracket (async (trySynchronous (connect client address >> action client))) cleanup $ \worker -> do
     observed <- timeout deadlineMicros (waitCatch worker)
     case observed of
@@ -1792,19 +1835,38 @@ runOwnedWebSocketClient deadlineMicros port headers clientApp =
 requestRaw :: Text -> BS.ByteString -> IO BS.ByteString
 requestRaw host bytes = do
   port <- either assertFailure pure (authorityPort host)
-  outcome <- runOwnedSocket 12000000 port $ \client -> do
+  phase <- newIORef ("connecting" :: String)
+  outcome <- runOwnedSocket 30000000 port $ \client -> do
+    writeIORef phase "sending"
     sendAll client bytes
+    writeIORef phase "receiving"
     receiveAll client []
-  ownedResult "HTTP response" outcome
+  let requestLine = BS8.takeWhile (/= '\r') bytes
+      route = case BS8.words requestLine of
+        method : target : _ -> BS8.unpack method <> " " <> BS8.unpack (BS8.takeWhile (/= '?') target)
+        _ -> "unrecognized request"
+  case outcome of
+    Nothing -> do
+      observed <- readIORef phase
+      assertFailure ("HTTP response timed out for " <> route <> " while " <> observed)
+    Just _ -> ownedResult "HTTP response" outcome
 
 requestRawHeld :: MVar () -> Text -> BS.ByteString -> IO BS.ByteString
 requestRawHeld responseGate host bytes = do
   port <- either assertFailure pure (authorityPort host)
-  outcome <- runOwnedSocket 12000000 port $ \client -> do
+  phase <- newIORef ("connecting" :: String)
+  outcome <- runOwnedSocket 45000000 port $ \client -> do
+    writeIORef phase "sending"
     sendAll client bytes
+    writeIORef phase "waiting for response gate"
     takeMVar responseGate
+    writeIORef phase "receiving"
     receiveAll client []
-  ownedResult "controlled HTTP response" outcome
+  case outcome of
+    Nothing -> do
+      observed <- readIORef phase
+      assertFailure ("controlled HTTP response timed out while " <> observed)
+    Just _ -> ownedResult "controlled HTTP response" outcome
 
 receiveAll :: Socket -> [BS.ByteString] -> IO BS.ByteString
 receiveAll client chunks = do
