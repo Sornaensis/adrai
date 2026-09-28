@@ -1550,27 +1550,70 @@ testCompilationRuntime = withSeededRepository $ \root -> do
     overlapJoined <- newEmptyMVar
     overlapEntered <- newEmptyMVar
     overlapRelease <- newEmptyMVar
+    publicationEntered <- newEmptyMVar
+    overlapOrigin <- getMonotonicTimeNSec
+    overlapPhases <- newIORef ([] :: [String])
+    let recordOverlap phase = do
+          now <- getMonotonicTimeNSec
+          atomicModifyIORef' overlapPhases (\phases -> ((show ((now - overlapOrigin) `div` 1000000) <> "ms " <> phase) : phases, ()))
+        overlapEvidence = do
+          phases <- reverse <$> readIORef overlapPhases
+          headNow <- gitHead overlapRoot
+          pure ("phases=" <> show phases <> ", HEAD=" <> Text.unpack headNow)
+        awaitOverlap label micros signal worker = do
+          outcome <- timeout micros (race (takeMVar signal) (waitCatch worker))
+          case outcome of
+            Just (Left ()) -> recordOverlap (label <> " observed")
+            Just (Right (Left exception)) -> do
+              evidence <- overlapEvidence
+              assertFailure (label <> " request failed before its signal: " <> show exception <> "; " <> evidence)
+            Just (Right (Right _)) -> do
+              evidence <- overlapEvidence
+              assertFailure (label <> " request completed before its signal; " <> evidence)
+            Nothing -> do
+              evidence <- overlapEvidence
+              assertFailure (label <> " signal timed out; " <> evidence)
     let overlapServices = defaultApplicationServices
           { applicationCompileExact = \repositoryToCompile oid -> do
               count <- atomicModifyIORef' overlapStarts (\value -> let next = value + 1 in (next, next))
+              recordOverlap ("physical producer " <> show count <> " entered")
               if count == 1 then putMVar overlapEntered () >> takeMVar overlapRelease else pure ()
+              recordOverlap ("physical producer " <> show count <> " released")
               Runtime.ensureExactArchive repositoryToCompile oid,
-            applicationAfterCompilationJoin = putMVar overlapJoined ()
+            applicationAfterCompilationJoin = recordOverlap "compilation joined" >> putMVar overlapJoined (),
+            applicationBeforeCommitPublication = \_ -> recordOverlap "commit publication entered" >> putMVar publicationEntered ()
           }
         overlapDependencies = dependencies {serverApplicationServices = overlapServices}
     overlapStarted <- withWebServer overlapDependencies overlapRoot (Api.WebOptions Nothing False) $ \running _ -> do
       basis <- repositoryBasis running
-      mutation <- async (postJson running "/api/v1/adrs" (createBody basis))
-      awaitSignal "post-mutation compilation join" overlapJoined mutation
-      awaitSignal "post-mutation producer entry" overlapEntered mutation
-      query <- async (getJson running "/api/v1/doctor")
-      awaitSignal "concurrent query compilation join" overlapJoined query
-      putMVar overlapRelease ()
-      committed <- wait mutation
-      assertCommitted committed
-      doctor <- wait query
-      valueAt ["data"] doctor >>= \value -> assertBool "query joining post-mutation compilation receives its own projection" (value /= Aeson.Null)
-      readIORef overlapStarts >>= (@?= 1)
+      bounded <- timeout 45000000 $ withAsync (postJson running "/api/v1/adrs" (createBody basis)) $ \mutation ->
+        (do
+          recordOverlap "mutation request launched"
+          awaitOverlap "commit publication entry" 30000000 publicationEntered mutation
+          committedHead <- gitHead overlapRoot
+          recordOverlap ("committed HEAD " <> Text.unpack committedHead)
+          awaitOverlap "post-mutation compilation join" 15000000 overlapJoined mutation
+          awaitOverlap "post-mutation producer entry" 15000000 overlapEntered mutation
+          withAsync (getJson running "/api/v1/doctor") $ \query -> do
+            recordOverlap "concurrent doctor request launched"
+            awaitOverlap "concurrent query compilation join" 15000000 overlapJoined query
+            putMVar overlapRelease ()
+            recordOverlap "physical producer released by test"
+            committed <- wait mutation
+            recordOverlap "mutation response received"
+            assertCommitted committed
+            textAt ["data", "commit"] committed >>= (@?= committedHead)
+            valueAt ["data", "indexed"] committed >>= (@?= Aeson.Bool True)
+            textAt ["metadata", "as_of", "oid"] committed >>= (@?= committedHead)
+            doctor <- wait query
+            recordOverlap "concurrent doctor response received"
+            valueAt ["data"] doctor >>= \value -> assertBool "query joining post-mutation compilation receives its own projection" (value /= Aeson.Null)
+            textAt ["metadata", "as_of", "oid"] doctor >>= (@?= committedHead)
+            readIORef overlapStarts >>= (@?= 1)
+        ) `finally` void (tryPutMVar overlapRelease ())
+      case bounded of
+        Just () -> overlapEvidence >>= putStrLn . ("post-mutation compilation overlap: " <>)
+        Nothing -> overlapEvidence >>= assertFailure . ("post-mutation compilation overlap timed out; " <>)
     either (assertFailure . Text.unpack) pure overlapStarted
   withSeededRepository $ \stoppingRoot -> do
     stoppingCompileEntered <- newEmptyMVar
