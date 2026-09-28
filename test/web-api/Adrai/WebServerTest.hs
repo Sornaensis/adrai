@@ -1102,18 +1102,44 @@ testWatchRuntime = withSeededRepository $ \root -> do
     Watch.RepositorySnapshot _ _ -> assertFailure "aggregate directory entries escaped the global 4096-entry observation budget"
   removeDirectoryRecursive entryBudgetDirectory
   Watch.replaceActiveFiles registry client [path] >>= either (assertFailure . Text.unpack) pure
+  retryStarted <- getMonotonicTimeNSec
+  retryPhases <- newIORef []
+  let markRetryPhase phase = do
+        now <- getMonotonicTimeNSec
+        atomicModifyIORef' retryPhases (\entries -> ((now - retryStarted, phase) : entries, ()))
+  retryObserver <- Watch.observerForRegistryWithHandleHook registry bound $ \component ->
+    if component == "seed.txt" then markRetryPhase "scan opened relevant file" else pure ()
   attempts <- newIORef (0 :: Int)
+  firstFailure <- newEmptyMVar
   delivered <- newEmptyMVar
-  watcher <- Watch.watchRepository observer bound $ \event -> do
+  markRetryPhase "starting watcher initial snapshot"
+  watcher <- Watch.watchRepository retryObserver bound $ \event -> do
     attempt <- atomicModifyIORef' attempts (\value -> let next = value + 1 in (next, next))
-    if attempt == 1 then ioError (userError "simulated busy publication") else putMVar delivered event
+    markRetryPhase ("publication attempt " <> show attempt <> " entered")
+    if attempt == 1
+      then (ioError (userError "simulated busy publication") `onException` do
+              markRetryPhase "first publication failed synchronously"
+              putMVar firstFailure ())
+      else putMVar delivered event >> markRetryPhase "later publication delivered"
+  markRetryPhase "watcher initial snapshot completed"
   BS.writeFile (root </> "seed.txt") "coalesced change one"
+  markRetryPhase "first file write completed"
   BS.writeFile (root </> "seed.txt") "coalesced change two"
+  markRetryPhase "second file write completed"
   BS.writeFile (root </> "seed.txt") "coalesced final bytes"
-  retried <- timeout 3000000 (takeMVar delivered)
+  markRetryPhase "final file write completed"
+  firstFailed <- timeout 3000000 (takeMVar firstFailure)
+  markRetryPhase (if maybe False (const True) firstFailed then "first failure observed" else "first-failure deadline elapsed")
+  retried <- case firstFailed of
+    Just () -> timeout 3000000 (takeMVar delivered)
+    Nothing -> pure Nothing
+  markRetryPhase (if maybe False (const True) retried then "delivery received" else "delivery deadline elapsed")
   watcherStopped <- timeout 3000000 (Watch.stopWatching watcher >> Watch.awaitWatcher watcher)
-  assertBool "fact watcher workers stop within the owner bound" (maybe False (const True) watcherStopped)
-  assertBool "periodic verification retries an unacknowledged publication" (maybe False (const True) retried)
+  markRetryPhase (if maybe False (const True) watcherStopped then "watcher stopped" else "watcher stop deadline elapsed")
+  retryPhaseLog <- reverse <$> readIORef retryPhases
+  assertBool ("fact watcher workers stop within the owner bound; phases=" <> show retryPhaseLog) (maybe False (const True) watcherStopped)
+  assertBool ("first publication failed synchronously after the file writes; phases=" <> show retryPhaseLog) (maybe False (const True) firstFailed)
+  assertBool ("periodic verification retries an unacknowledged publication; phases=" <> show retryPhaseLog) (maybe False (const True) retried)
   count <- readIORef attempts
   assertBool "publication was attempted again without another filesystem change" (count >= 2)
   case retried of
