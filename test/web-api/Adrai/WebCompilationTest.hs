@@ -41,8 +41,8 @@ import qualified Adrai.Web.Api as Api
 import Adrai.Web.Application (ApplicationServices (..), defaultApplicationServices)
 import Adrai.Web.Server (RunningServer, ServerDependencies (..), withWebServer)
 import qualified Adrai.WebServerTest as Server
-import Control.Concurrent (MVar, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
-import Control.Concurrent.Async (Async, async, cancel, race, waitAnyCatch, waitCatch, withAsync)
+import Control.Concurrent (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay, tryPutMVar, tryReadMVar)
+import Control.Concurrent.Async (Async, async, cancel, poll, race, waitAnyCatch, waitCatch, withAsync)
 import Control.Exception
   ( SomeAsyncException,
     SomeException,
@@ -149,19 +149,30 @@ testPhysicalCompilerShutdown = Server.withSeededRepository $ \root -> do
   releaseRestream <- newEmptyMVar
   connectionOpened <- newEmptyMVar
   connectionClosed <- newEmptyMVar
+  pausedCompiler <- newEmptyMVar
   candidatesRef <- newIORef []
   clientRef <- newIORef Nothing
+  stagesRef <- newIORef ([] :: [(String, Word64)])
+  startedAt <- getMonotonicTimeNSec
   let cacheDirectory = root </> ".adrai" </> "cache"
       archive = cacheDirectory </> Text.unpack headBefore <> ".sqlite"
       attributionPath = root </> "shutdown-attribution.tsv"
       baseAttribution = defaultAttributionDependencies
+      recordStage stage = do
+        now <- getMonotonicTimeNSec
+        atomicModifyIORef' stagesRef (\stages -> ((stage, now) : stages, ()))
+      stageTrace = do
+        stages <- reverse <$> readIORef stagesRef
+        pure [(stage, (at - startedAt) `div` 1000000) | (stage, at) <- stages]
       writeLine handle line = do
         attributionWriteLine baseAttribution handle line
         when ("\tmanagedsourcerestream\t" `isInfixOf` line) $ do
+          recordStage "managed-source restream entered"
           void (tryPutMVar enteredRestream ())
           takeMVar releaseRestream
       attributionDependencies = baseAttribution {attributionWriteLine = writeLine}
       compileExact repository revision = do
+        recordStage "physical compiler started"
         createDirectoryIfMissing True cacheDirectory
         bracket
           (newFileColdCompileAttributionWith attributionDependencies attributionPath)
@@ -172,15 +183,18 @@ testPhysicalCompilerShutdown = Server.withSeededRepository $ \root -> do
                     base
                       { postCommitOpenTemporary = \directory template -> do
                           created@(path, _) <- postCommitOpenTemporary base directory template
+                          recordStage "candidate created"
                           atomicModifyIORef' candidatesRef (\paths -> (path : paths, ()))
                           pure created,
                         postCommitOpenDatabase = \path -> do
                           connection <- postCommitOpenDatabase base path
+                          recordStage "compiler SQLite opened"
                           void (tryPutMVar connectionOpened ())
                           pure connection,
                         postCommitColdCompile = coldCompileRepositoryWithAttribution attribution,
                         postCommitCloseDatabase = \connection -> do
                           postCommitCloseDatabase base connection
+                          recordStage "compiler SQLite closed"
                           void (tryPutMVar connectionClosed ()),
                         postCommitAttribution = attribution
                       }
@@ -188,18 +202,55 @@ testPhysicalCompilerShutdown = Server.withSeededRepository $ \root -> do
               exactArchiveResult revision archive result
           )
       services = defaultApplicationServices {applicationCompileExact = compileExact}
-      dependencies = Server.dependencies {serverApplicationServices = services}
+      dependencies = Server.dependencies {serverApplicationServices = services, serverReady = const (recordStage "server ready"), serverStopping = recordStage "server stopping"}
       cleanupClient = readIORef clientRef >>= mapM_ (\worker -> cancel worker >> void (waitCatch worker))
   bracket (pure ()) (const cleanupClient) $ \() -> do
-    stopped <- timeout 8000000 $ withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ -> do
-      client <- async (Server.getJson running ("/api/v1/doctor?at=" <> headBefore))
-      writeIORef clientRef (Just client)
-      awaitSignal "managed-source restream" enteredRestream [client]
-      awaitSignal "compiler SQLite open" connectionOpened [client]
-    case stopped of
-      Nothing -> assertFailure "server shutdown exceeded eight seconds with the physical compiler paused"
-      Just (Left problem) -> assertFailure ("server shutdown failed: " <> Text.unpack problem)
-      Just (Right ()) -> pure ()
+    recordStage "server starting"
+    withAsync
+      (do
+          result <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ -> do
+            recordStage "HTTP request starting"
+            client <- async (Server.getJson running ("/api/v1/doctor?at=" <> headBefore))
+            writeIORef clientRef (Just client)
+            awaitSignalFor 20000000 "managed-source restream" enteredRestream [client]
+            recordStage "managed-source restream observed"
+            awaitSignalFor 20000000 "compiler SQLite open" connectionOpened [client]
+            recordStage "compiler SQLite open observed"
+            recordStage "physical compiler paused"
+            void (tryPutMVar pausedCompiler ())
+          recordStage "server returned"
+          pure result
+      )
+      $ \server -> do
+        admission <- timeout 45000000 (race (readMVar pausedCompiler) (waitCatch server))
+        case admission of
+          Just (Left ()) -> pure ()
+          Just (Right (Left exception)) -> rethrowAsyncOrFail "server failed before the compiler paused" exception
+          Just (Right (Right result)) -> do
+            paused <- tryReadMVar pausedCompiler
+            case paused of
+              Just () -> pure ()
+              Nothing -> assertFailure ("server returned before the compiler paused: " <> show result)
+          Nothing -> stageTrace >>= \trace -> assertFailure ("server did not reach the paused compiler within forty-five seconds: stages (ms) " <> show trace)
+        stopped <- timeout 8000000 (waitCatch server)
+        trace <- stageTrace
+        case stopped of
+          Nothing -> do
+            candidates <- readIORef candidatesRef
+            candidateExists <- mapM doesFileExist candidates
+            client <- readIORef clientRef >>= mapM poll
+            assertFailure ("server shutdown exceeded eight seconds after the physical compiler paused: stages (ms) " <> show trace <> ", candidate exists " <> show candidateExists <> ", request worker " <> show (fmap (fmap (either show (const "completed"))) client))
+          Just (Left exception) -> rethrowAsyncOrFail ("server shutdown failed after the physical compiler paused; stages (ms) " <> show trace) exception
+          Just (Right (Left problem)) -> assertFailure ("server shutdown failed: " <> Text.unpack problem <> ", stages (ms) " <> show trace)
+          Just (Right (Right ())) -> do
+            stages <- readIORef stagesRef
+            case (lookup "physical compiler paused" stages, lookup "server stopping" stages, lookup "server returned" stages) of
+              (Just pausedAt, Just stoppingAt, Just returnedAt) ->
+                assertBool
+                  ("server shutdown exceeded eight seconds after the physical compiler paused: stages (ms) " <> show trace)
+                  (pausedAt <= stoppingAt && stoppingAt <= returnedAt && returnedAt - pausedAt <= 8000000000)
+              _ -> assertFailure ("server shutdown did not record its complete lifecycle: stages (ms) " <> show trace)
+            putStrLn ("physical compiler shutdown stages (ms): " <> show trace)
     awaitMVar "compiler SQLite close" 5000000 connectionClosed
     readIORef clientRef >>= \case
       Nothing -> assertFailure "the outstanding compilation request was not recorded"
@@ -372,13 +423,16 @@ assertOwnedSqliteAbsent candidate =
     [candidate, candidate <> "-journal", candidate <> "-shm", candidate <> "-wal"]
 
 awaitSignal :: String -> MVar () -> [Async value] -> IO ()
-awaitSignal label signal workers = do
-  observed <- timeout 5000000 (race (takeMVar signal) (waitAnyCatch workers))
+awaitSignal = awaitSignalFor 5000000
+
+awaitSignalFor :: Int -> String -> MVar () -> [Async value] -> IO ()
+awaitSignalFor microseconds label signal workers = do
+  observed <- timeout microseconds (race (takeMVar signal) (waitAnyCatch workers))
   case observed of
     Just (Left ()) -> pure ()
     Just (Right (_, Left exception)) -> rethrowAsyncOrFail (label <> " worker failed before the signal") exception
     Just (Right (_, Right _)) -> assertFailure (label <> " worker completed before the signal")
-    Nothing -> assertFailure (label <> " signal timed out after five seconds")
+    Nothing -> assertFailure (label <> " signal timed out after " <> show (microseconds `div` 1000000) <> " seconds")
 
 awaitMVar :: String -> Int -> MVar () -> IO ()
 awaitMVar label microseconds signal =
