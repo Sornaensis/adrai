@@ -910,10 +910,20 @@ testEventRuntime = withSeededServer $ \root running -> do
                   then pure ()
                   else loop (remaining - 1)
   port <- either assertFailure pure (authorityPort (Security.authorityHost authority))
+  sessionStarted <- getMonotonicTimeNSec
+  sessionPhase <- newIORef ("connecting or awaiting upgrade" :: String)
+  sessionMilestones <- newIORef [("connecting or awaiting upgrade", 0 :: Word64)]
+  let markSession label = do
+        now <- getMonotonicTimeNSec
+        writeIORef sessionPhase label
+        atomicModifyIORef' sessionMilestones (\events -> ((label, (now - sessionStarted) `div` 1000000) : events, ()))
   session <- runOwnedWebSocketClient 20000000 port headers $ \connection -> do
+      markSession "upgrade admitted; sending authentication"
       WS.sendTextData connection authenticate
+      markSession "authentication sent; awaiting initial resync"
       initial <- timeout initialResyncGuardMicros (WS.receiveData connection :: IO LBS.ByteString)
       frame <- maybe (assertFailure "authenticated socket did not receive its initial resync") pure initial
+      markSession "initial resync received"
       assertInitialFullResync "initial authenticated socket" frame
       WS.sendTextData connection (Aeson.encode (Aeson.object ["type" Aeson..= ("active-files" :: Text), "paths" Aeson..= (["seed.txt"] :: [Text])]))
       leaseAdded <- timeout 3000000 (WS.receiveData connection :: IO LBS.ByteString)
@@ -929,9 +939,19 @@ testEventRuntime = withSeededServer $ \root running -> do
       assertBool "active-files removal publishes a relevant-interest transition" ("relevant-worktree-file" `BS.isInfixOf` LBS.toStrict leaseRemovedFrame)
       awaitConfigWithoutRelevant "replace-set removes the old relevant lease" connection
       WS.sendTextData connection authenticate
+      markSession "repeated authentication sent; awaiting invalid-control close"
       closed <- timeout 2000000 (trySynchronous (WS.receiveDataMessage connection))
       assertBool "repeated authentication closes with the invalid-control rejection" (expectedClose "invalid or idle control stream" closed)
-  assertBool ("authenticated websocket session terminates within its owner bound: " <> show session) (maybe False (either (const False) (const True)) session)
+  sessionEnded <- getMonotonicTimeNSec
+  initialSessionPhase <- readIORef sessionPhase
+  milestones <- reverse <$> readIORef sessionMilestones
+  let sessionEvidence = "phase=" <> initialSessionPhase
+        <> "; elapsed-ms=" <> show ((sessionEnded - sessionStarted) `div` 1000000)
+        <> "; milestones(ms)=" <> show milestones
+        <> "; outcome=" <> describeWebSocketClientOutcome session
+        <> "; owned-client cleanup completed"
+  putStrLn ("p7-03-events: initial session " <> sessionEvidence)
+  assertBool ("authenticated websocket session terminates within its owner bound: " <> sessionEvidence) (maybe False (either (const False) (const True)) session)
   rejected <- runOwnedWebSocketClient 5000000 port
     [ ("Origin", "http://example.invalid"),
       ("Authorization", TextEncoding.encodeUtf8 ("Bearer " <> token))
