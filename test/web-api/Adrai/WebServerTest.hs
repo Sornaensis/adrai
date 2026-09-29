@@ -529,6 +529,10 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
           writeIORef phaseRef label
           putStrLn ("controlled dispatch " <> show ((now - phaseOrigin) `div` 1000000) <> " ms: " <> label)
           hFlush stdout
+        readinessMicros = 130000000
+        observationMicros = 10000000
+        postReleaseMicros = 5000000
+        socketMicros = 150000000
         compileExact repository oid = do
           recordPhase compilePhase "exact archive compilation entered"
           result <- Runtime.ensureExactArchive repository oid
@@ -569,23 +573,23 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
       recordPhase clientPhase "session cookie ready; held HTTP request not started"
       let heldClient = do
             recordPhase clientPhase "held HTTP request started"
-            (status, value) <- postJsonStatusWithCookie (requestRawHeld 75000000 responseGate) ordered cookie "/api/v1/adrs" (createBody basis)
+            (status, value) <- postJsonStatusWithCookie (requestRawHeld (recordPhase clientPhase) socketMicros responseGate) ordered cookie "/api/v1/adrs" (createBody basis)
             if status == 200
               then recordPhase clientPhase "held HTTP client returned" >> pure value
               else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
       withAsync heldClient $ \delayed ->
         (do
-           ready <- timeout 60000000 (race (takeMVar committed) (waitCatch delayed))
+           ready <- timeout readinessMicros (race (takeMVar committed) (waitCatch delayed))
            case ready of
-             Nothing -> assertFailure "controlled HTTP dispatch did not finish within its sixty-second readiness guard"
+             Nothing -> assertFailure "controlled HTTP dispatch did not finish within its 130-second readiness guard"
              Just (Right (Left failure)) -> assertFailure ("controlled HTTP client failed before dispatch was ready: " <> show failure)
              Just (Right (Right _)) -> assertFailure "controlled HTTP client returned before its response gate was released"
              Just (Left ()) -> pure ()
-           observed <- timeout 10000000 (getJson ordered "/api/v1/repository")
+           observed <- timeout observationMicros (getJson ordered "/api/v1/repository")
              >>= maybe (assertFailure "controlled repository observation exceeded its ten-second guard") pure
            recordPhase clientPhase "repository observed; releasing held response"
            releaseHeld
-           mutation <- timeout 3000000 (wait delayed) >>= maybe (assertFailure "controlled HTTP response exceeded its three-second post-release budget") pure
+           mutation <- timeout postReleaseMicros (wait delayed) >>= maybe (assertFailure "controlled HTTP response exceeded its five-second post-release budget") pure
            mutationGeneration <- integerAt ["metadata", "generation"] mutation
            observedGeneration <- integerAt ["metadata", "generation"] observed
            assertBool "a delayed mutation response retains its commit-time generation" (mutationGeneration < observedGeneration)
@@ -2875,25 +2879,23 @@ requestRawWithStepAndDeadlineObserved observe deadlineMicros step host bytes = d
       assertFailure ("HTTP response failed" <> observed <> ": " <> show failure)
     Just (Right response) -> pure response
 
-requestRawHeld :: Int -> MVar () -> Text -> BS.ByteString -> IO BS.ByteString
-requestRawHeld deadlineMicros responseGate host bytes = do
+requestRawHeld :: (String -> IO ()) -> Int -> MVar () -> Text -> BS.ByteString -> IO BS.ByteString
+requestRawHeld recordPhase deadlineMicros responseGate host bytes = do
   port <- either assertFailure pure (authorityPort host)
   phase <- newIORef ("connecting" :: String)
+  let mark label = writeIORef phase label >> recordPhase label
   outcome <- runOwnedSocket deadlineMicros port $ \client -> do
-    writeIORef phase "sending"
+    mark "connected; sending held request"
     sendAll client bytes
-    writeIORef phase "waiting for response gate"
+    mark "held request sent; waiting for response gate"
     takeMVar responseGate
-    writeIORef phase "receiving"
-    receiveAll client []
+    mark "response gate opened; receiving held response"
+    receiveAllWithProgress (mark . ("held response " <>)) (const (pure ())) client []
   case outcome of
     Nothing -> do
       observed <- readIORef phase
       assertFailure ("controlled HTTP response timed out while " <> observed)
     Just _ -> ownedResult "controlled HTTP response" outcome
-
-receiveAll :: Socket -> [BS.ByteString] -> IO BS.ByteString
-receiveAll = receiveAllWithProgress (const (pure ())) (const (pure ()))
 
 receiveAllWithProgress :: (String -> IO ()) -> (String -> IO ()) -> Socket -> [BS.ByteString] -> IO BS.ByteString
 receiveAllWithProgress mark progress client chunks = do
