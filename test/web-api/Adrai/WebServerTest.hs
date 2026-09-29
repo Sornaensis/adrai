@@ -1645,6 +1645,7 @@ testCompilationRuntime = withSeededRepository $ \root -> do
           Just (Right (Left exception)) -> assertFailure (label <> " request failed before its signal: " <> show exception)
           Just (Right (Right _)) -> assertFailure (label <> " request completed before its signal")
           Nothing -> assertFailure (label <> " signal timed out")
+  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
   started <- withWebServer injected root (Api.WebOptions Nothing False) $ \running _ -> do
     headBefore <- gitHead root
     let coldArchive = root </> ".adrai" </> "cache" </> Text.unpack headBefore <> ".sqlite"
@@ -1662,11 +1663,57 @@ testCompilationRuntime = withSeededRepository $ \root -> do
     valueAt ["data"] search >>= \value -> assertBool "search returned its distinct projection" (value /= Aeson.Null)
     readIORef starts >>= (@?= 1)
     doesFileExist coldArchive >>= assertBool "the elected producer created the exact archive consumed by both routes"
+    phaseOrigin <- getMonotonicTimeNSec
     callProcess "git" ["-C", root, "commit", "--allow-empty", "-m", "second exact revision"]
-    _ <- getJson running "/api/v1/doctor"
+    secondHead <- gitHead root
+    commitFinished <- getMonotonicTimeNSec
+    lastBusy <- newIORef "no busy response"
+    let route = "/api/v1/doctor"
+        retryDoctor attempt = do
+          (status, response) <- getJsonStatus running route
+          case status of
+            200 -> do
+              if attempt > 1 then do
+                now <- getMonotonicTimeNSec
+                lock <- gitLockStatus repository
+                previous <- readIORef lastBusy
+                putStrLn ("second-revision doctor recovered after " <> show attempt <> " attempts, "
+                  <> show ((now - phaseOrigin) `div` 1000000) <> " ms after commit start, lock " <> show lock
+                  <> "; prior busy " <> previous)
+              else pure ()
+              pure response
+            503 -> do
+              let field keys value = case (keys, value) of
+                    ([], _) -> Just value
+                    (key : rest, Aeson.Object fields) -> KeyMap.lookup key fields >>= field rest
+                    _ -> Nothing
+                  typedBusy =
+                    field ["error", "category"] response == Just (Aeson.String "service-failure")
+                      && field ["error", "status"] response == Just (Aeson.Number 503)
+                      && field ["error", "code"] response == Just (Aeson.String "repository-busy")
+                      && field ["metadata", "as_of", "kind"] response == Just (Aeson.String "unavailable")
+                      && field ["metadata", "as_of", "reason"] response == Just (Aeson.String "request-failed")
+              assertBool ("second-revision doctor returned malformed HTTP 503: " <> show response) typedBusy
+              now <- getMonotonicTimeNSec
+              lock <- gitLockStatus repository
+              let evidence = "attempt " <> show attempt <> ", " <> show ((now - phaseOrigin) `div` 1000000)
+                    <> " ms after commit start, " <> show ((now - commitFinished) `div` 1000000)
+                    <> " ms after commit completed, response " <> show response <> ", lock " <> show lock
+              writeIORef lastBusy evidence
+              if attempt == 1 then putStrLn ("second-revision doctor transient busy: " <> evidence) else pure ()
+              threadDelay 50000
+              retryDoctor (attempt + 1)
+            _ -> assertFailure ("second-revision doctor returned HTTP " <> show status <> ": " <> show response)
+    secondDoctor <- timeout 30000000 (retryDoctor (1 :: Int))
+    secondDoctorResponse <- case secondDoctor of
+      Just response -> pure response
+      Nothing -> do
+        evidence <- readIORef lastBusy
+        lock <- gitLockStatus repository
+        assertFailure ("second-revision doctor did not succeed within thirty seconds at " <> Text.unpack secondHead <> ": " <> evidence <> ", final lock " <> show lock)
+    textAt ["metadata", "as_of", "oid"] secondDoctorResponse >>= (@?= secondHead)
     readIORef starts >>= (@?= 2)
   either (assertFailure . Text.unpack) pure started
-  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
   revision <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
   detachedCoordinator <- Compilation.newCompilationCoordinator
   detachedEntered <- newEmptyMVar
