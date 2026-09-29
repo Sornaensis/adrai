@@ -40,7 +40,7 @@ import qualified Adrai.Web.Watch as Watch
 import Control.Concurrent (MVar, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.Async (Async, async, cancel, poll, race, wait, waitCatch, withAsync)
 import Control.Exception (SomeAsyncException, SomeException, bracket, bracketOnError, finally, fromException, onException, throwIO, try)
-import Control.Monad (forM, forM_, void)
+import Control.Monad (forM, forM_, void, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
@@ -1158,9 +1158,13 @@ testWatchRuntime = withSeededRepository $ \root -> do
   let markRetryPhase phase = do
         now <- getMonotonicTimeNSec
         atomicModifyIORef' retryPhases (\entries -> ((now - retryStarted, phase) : entries, ()))
-  retryObserver <- Watch.observerForRegistryWithHandleHook registry bound $ \component ->
-    if component == "seed.txt" then markRetryPhase "scan opened relevant file" else pure ()
   attempts <- newIORef (0 :: Int)
+  retryScanOpened <- newEmptyMVar
+  retryObserver <- Watch.observerForRegistryWithHandleHook registry bound $ \component ->
+    when (component == "seed.txt") $ do
+      markRetryPhase "scan opened relevant file"
+      count <- readIORef attempts
+      when (count >= 1) (void (tryPutMVar retryScanOpened ()))
   firstFailure <- newEmptyMVar
   delivered <- newEmptyMVar
   markRetryPhase "starting watcher initial snapshot"
@@ -1181,15 +1185,24 @@ testWatchRuntime = withSeededRepository $ \root -> do
   markRetryPhase "final file write completed"
   firstFailed <- timeout 3000000 (takeMVar firstFailure)
   markRetryPhase (if maybe False (const True) firstFailed then "first failure observed" else "first-failure deadline elapsed")
-  retried <- case firstFailed of
+  -- A periodic scan resolves Git state and traverses managed paths before opening the relevant file.
+  -- Bound that scan separately from publication after the first synchronous failure.
+  rescanned <- case firstFailed of
+    Just () -> timeout 6000000 (takeMVar retryScanOpened)
+    Nothing -> pure Nothing
+  markRetryPhase (if maybe False (const True) rescanned then "retry scan opened relevant file" else "retry scan deadline elapsed")
+  retried <- case rescanned of
     Just () -> timeout 3000000 (takeMVar delivered)
     Nothing -> pure Nothing
   markRetryPhase (if maybe False (const True) retried then "delivery received" else "delivery deadline elapsed")
   watcherStopped <- timeout 3000000 (Watch.stopWatching watcher >> Watch.awaitWatcher watcher)
   markRetryPhase (if maybe False (const True) watcherStopped then "watcher stopped" else "watcher stop deadline elapsed")
   retryPhaseLog <- reverse <$> readIORef retryPhases
+  putStrLn ("p7-03-watch: unacknowledged retry phase trace (ms) " <>
+    show [((at `div` 1000000), phase) | (at, phase) <- retryPhaseLog])
   assertBool ("fact watcher workers stop within the owner bound; phases=" <> show retryPhaseLog) (maybe False (const True) watcherStopped)
   assertBool ("first publication failed synchronously after the file writes; phases=" <> show retryPhaseLog) (maybe False (const True) firstFailed)
+  assertBool ("periodic verification rescans an unacknowledged publication; phases=" <> show retryPhaseLog) (maybe False (const True) rescanned)
   assertBool ("periodic verification retries an unacknowledged publication; phases=" <> show retryPhaseLog) (maybe False (const True) retried)
   count <- readIORef attempts
   assertBool "publication was attempted again without another filesystem change" (count >= 2)
