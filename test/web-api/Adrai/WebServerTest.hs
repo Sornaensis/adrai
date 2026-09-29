@@ -1287,16 +1287,57 @@ testWatchRuntime = withSeededRepository $ \root -> do
         _ -> assertFailure "coalesced-hint snapshots failed"
     Just (Watch.RepositoryObservationFailure _ failure) -> assertFailure ("coalesced hints ended in observation failure: " <> show failure)
     Nothing -> pure ()
+  terminalStarted <- getMonotonicTimeNSec
+  terminalPhases <- newIORef []
+  let markTerminalPhase phase = do
+        now <- getMonotonicTimeNSec
+        atomicModifyIORef' terminalPhases (\entries -> ((now - terminalStarted, phase) : entries, ()))
+  terminalScanArmed <- newIORef False
+  terminalScanOpened <- newEmptyMVar
+  terminalObserver <- Watch.observerForRegistryWithHandleHook registry bound $ \component ->
+    when (component == "seed.txt") $ do
+      armed <- readIORef terminalScanArmed
+      when armed $ do
+        markTerminalPhase "scan opened relevant file"
+        void (tryPutMVar terminalScanOpened ())
   terminalAttempts <- newIORef (0 :: Int)
-  terminalWatcher <- Watch.watchRepository observer bound $ \_ -> do
-    atomicModifyIORef' terminalAttempts (\value -> (value + 1, ()))
-    throwIO Events.GenerationExhausted
+  terminalPublished <- newEmptyMVar
+  markTerminalPhase "starting watcher initial snapshot"
+  terminalWatcher <- Watch.watchRepository terminalObserver bound $ \event -> do
+    attempt <- atomicModifyIORef' terminalAttempts (\value -> let next = value + 1 in (next, next))
+    markTerminalPhase ("publication attempt " <> show attempt <> " entered")
+    throwIO Events.GenerationExhausted `onException` do
+      markTerminalPhase "typed terminal publication failure thrown"
+      void (tryPutMVar terminalPublished event)
+  markTerminalPhase "watcher initial snapshot completed"
   (`finally` do
       Watch.stopWatching terminalWatcher
       Watch.awaitWatcher terminalWatcher) $ do
+    writeIORef terminalScanArmed True
     BS.writeFile (root </> "seed.txt") "terminal generation changes the active relevant fact"
-    terminalStop <- timeout 3000000 (Watch.awaitWatcher terminalWatcher)
-    assertBool "terminal publication ends verifier and native backend without external shutdown" (maybe False (const True) terminalStop)
+    markTerminalPhase "terminal file write completed"
+    terminalScan <- timeout 6000000 (takeMVar terminalScanOpened)
+    markTerminalPhase (if maybe False (const True) terminalScan then "terminal scan opened relevant file" else "terminal scan deadline elapsed")
+    terminalEvent <- case terminalScan of
+      Just () -> timeout 3000000 (takeMVar terminalPublished)
+      Nothing -> pure Nothing
+    markTerminalPhase (if maybe False (const True) terminalEvent then "typed terminal callback observed" else "terminal callback deadline elapsed")
+    terminalStop <- case terminalEvent of
+      Just _ -> timeout 3000000 (Watch.awaitWatcher terminalWatcher)
+      Nothing -> pure Nothing
+    markTerminalPhase (if maybe False (const True) terminalStop then "verifier and native backend joined" else "watcher join deadline elapsed")
+    terminalPhaseLog <- reverse <$> readIORef terminalPhases
+    terminalAttemptCount <- readIORef terminalAttempts
+    putStrLn ("p7-03-watch: terminal phase trace (ms) " <>
+      show [((at `div` 1000000), phase) | (at, phase) <- terminalPhaseLog] <>
+      "; attempts=" <> show terminalAttemptCount)
+    assertBool ("terminal verification scans the changed relevant file; phases=" <> show terminalPhaseLog) (maybe False (const True) terminalScan)
+    case terminalEvent of
+      Just (Watch.RepositoryFactsChanged _ _ invalidations) ->
+        assertBool ("terminal publication carries the relevant fact change; phases=" <> show terminalPhaseLog) (Events.RelevantWorktreeFileChanged `elem` invalidations)
+      Just event -> assertFailure ("terminal publication did not carry changed facts: " <> show event <> "; phases=" <> show terminalPhaseLog)
+      Nothing -> assertFailure ("terminal publication callback did not enter; phases=" <> show terminalPhaseLog)
+    assertBool ("terminal publication ends verifier and native backend without external shutdown; phases=" <> show terminalPhaseLog) (maybe False (const True) terminalStop)
     threadDelay 350000
     readIORef terminalAttempts >>= (@?= 1)
   Watch.unregisterActiveClient registry client
