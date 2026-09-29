@@ -378,6 +378,7 @@ completeMutation compilation compileExact afterCompilationJoin fallbackGeneratio
 
 transactionApiError :: TransactionError -> Api.ApiError
 transactionApiError problem = case problem of
+  Stage2AcquireLockHeld _ -> Api.ApiError Api.ServiceFailure 503 "repository-busy" "repository is temporarily busy"
   Stage2AcquireLock message -> Api.ApiError Api.ServiceFailure 503 "repository-lock-unavailable" message
   Stage3ValidateState message
     | any (`Text.isInfixOf` message) staleMarkers -> Api.staleStateFailure message

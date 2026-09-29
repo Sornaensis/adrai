@@ -839,7 +839,25 @@ testBoundsAndStale = withSeededServer $ \root running -> do
   repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
   cookie <- sessionCookiePair running
   busyCount <- newIORef (0 :: Int)
-  let stalePost path body = getMonotonicTimeNSec >>= \started -> retryStalePost started (1 :: Int) path body
+  let heldStalePost remaining = do
+        attempt <- try @GitLockError $ withGitLock repository $ do
+          held <- gitLockStatus repository
+          case held of
+            Left (LockHeld _ _) -> pure ()
+            other -> assertFailure ("stale POST fixture did not hold the Git lock: " <> show other)
+          (status, response) <- postJsonStatusWithCookie requestRaw running cookie "/api/v1/adrs" (createBody basis)
+          status @?= 503
+          valueAt ["error", "category"] response >>= (@?= Aeson.String "service-failure")
+          valueAt ["error", "status"] response >>= (@?= Aeson.Number 503)
+          valueAt ["error", "code"] response >>= (@?= Aeson.String "repository-busy")
+          valueAt ["error", "message"] response >>= (@?= Aeson.String "repository is temporarily busy")
+          valueAt ["metadata", "as_of", "kind"] response >>= (@?= Aeson.String "unavailable")
+          putStrLn ("held Git lock produced typed stale POST repository-busy: " <> show held)
+        case attempt of
+          Left (LockHeld _ _) | remaining > (0 :: Int) -> threadDelay 20000 >> heldStalePost (remaining - 1)
+          Left failure -> throwIO failure
+          Right () -> pure ()
+      stalePost path body = getMonotonicTimeNSec >>= \started -> retryStalePost started (1 :: Int) path body
       retryStalePost started attempt path body = do
         result@(status, response) <- postJsonStatusWithCookie requestRaw running cookie path body
         case status of
@@ -848,11 +866,13 @@ testBoundsAndStale = withSeededServer $ \root running -> do
             category <- valueAt ["error", "category"] response
             errorStatus <- valueAt ["error", "status"] response
             code <- valueAt ["error", "code"] response
+            message <- valueAt ["error", "message"] response
             asOf <- valueAt ["metadata", "as_of", "kind"] response
             assertBool ("stale POST returned an untyped 503: " <> Text.unpack path <> ", response " <> show response)
               ( category == Aeson.String "service-failure"
                   && errorStatus == Aeson.Number 503
                   && code == Aeson.String "repository-busy"
+                  && message == Aeson.String "repository is temporarily busy"
                   && asOf == Aeson.String "unavailable"
               )
             count <- atomicModifyIORef' busyCount (\seen -> let next = seen + 1 in (next, next))
@@ -864,6 +884,7 @@ testBoundsAndStale = withSeededServer $ \root running -> do
               then assertFailure ("stale POST stayed repository-busy for fifteen seconds: " <> Text.unpack path <> ", attempts " <> show attempt <> ", response " <> show response)
               else threadDelay 250000 >> retryStalePost started (attempt + 1) path body
           _ -> assertFailure ("stale POST returned HTTP " <> show status <> " instead of 409: " <> Text.unpack path <> ", response " <> show response)
+  heldStalePost 250
   (staleCreate, staleExisting) <-
     (do
        create <- stalePost "/api/v1/adrs" (createBody basis)

@@ -79,7 +79,8 @@ import Adrai.Provenance
     provenanceObjectIdText,
   )
 import Adrai.Provenance.Git.Lock
-  ( withGitLock,
+  ( GitLockError (LockHeld),
+    withGitLock,
   )
 import Adrai.ManagedPath
   ( ManagedPathError (..),
@@ -150,6 +151,8 @@ data TransactionError
       -- ^ Stage 1: worktree root missing (bare repo)
   | Stage2AcquireLock Text
       -- ^ Stage 2: lock acquisition failed
+  | Stage2AcquireLockHeld Text
+      -- ^ Stage 2: another owner holds the mutation lock
   | Stage3ValidateState Text
       -- ^ Stage 3: state validation failed
   | Stage4GenerateFiles Text
@@ -166,9 +169,36 @@ data TransactionError
       -- ^ Rollback after failure could not clean up
   | TransactionAborted Text
       -- ^ Transaction aborted before completion
-  deriving (Eq, Show)
+  deriving (Eq)
+
+-- Keep the existing CLI error text for a held lock while retaining its typed
+-- cause for callers that need to distinguish contention from lock failures.
+instance Show TransactionError where
+  showsPrec precedence problem =
+    let showError name message =
+          showParen (precedence > 10) (showString name . showChar ' ' . showsPrec 11 message)
+     in case problem of
+          Stage1ResolveRepo message -> showError "Stage1ResolveRepo" message
+          Stage2AcquireLock message -> showError "Stage2AcquireLock" message
+          Stage2AcquireLockHeld message -> showError "Stage2AcquireLock" message
+          Stage3ValidateState message -> showError "Stage3ValidateState" message
+          Stage4GenerateFiles message -> showError "Stage4GenerateFiles" message
+          Stage5ValidateGenerated message -> showError "Stage5ValidateGenerated" message
+          Stage6CreateTemporaryIndex message -> showError "Stage6CreateTemporaryIndex" message
+          Stage7CommitTree message -> showError "Stage7CommitTree" message
+          Stage8UpdateRef message -> showError "Stage8UpdateRef" message
+          RollbackFailed message -> showError "RollbackFailed" message
+          TransactionAborted message -> showError "TransactionAborted" message
 
 instance Exception TransactionError
+
+stage2LockFailure :: SomeException -> TransactionError
+stage2LockFailure failure =
+  case fromException failure :: Maybe GitLockError of
+    Just (LockHeld _ _) -> Stage2AcquireLockHeld message
+    _ -> Stage2AcquireLock message
+  where
+    message = T.pack (show failure)
 
 -- | Result of a successful transaction.
 data TransactionResult = TransactionResult
@@ -1227,7 +1257,7 @@ commitAppendOnlyOperationMaybeCheckedWithHooks dependencies hooks expectedBasis 
                 Just result -> return (Right result)
                 Nothing -> case fromException err of
                   Just txErr -> return (Left txErr)
-                  Nothing -> return (Left (Stage2AcquireLock (T.pack (show err))))
+                  Nothing -> return (Left (stage2LockFailure err))
         Right result -> return (Right result)
 
 runAppendOnlyCas :: Repository -> GitRef -> GitOid -> GitOid -> String -> IO (Either TransactionError ())
@@ -1523,7 +1553,7 @@ commitBootstrapFilesAfterBackup dependencies repository config@TransactionConfig
                     Just txErr -> do
                       recoverBootstrapFailure txErr
                     Nothing -> do
-                      recoverBootstrapFailure (Stage2AcquireLock (T.pack (show err)))
+                      recoverBootstrapFailure (stage2LockFailure err)
         Right result -> return (Right result)
       where
         recoverBootstrapFailure original = do
