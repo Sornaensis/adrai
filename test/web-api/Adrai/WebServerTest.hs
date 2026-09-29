@@ -1720,6 +1720,16 @@ testWatchRuntime = withSeededRepository $ \root -> do
   lockPhases <- newIORef ([] :: [(Word64, String)])
   lockRetryScanArmed <- newIORef False
   lockRetryScanOpened <- newEmptyMVar
+  terminalOrigin <- getMonotonicTimeNSec
+  terminalPhase <- newIORef False
+  runtimeTerminalPhases <- newIORef ([] :: [(Word64, String)])
+  runtimeTerminalScanOpened <- newEmptyMVar
+  terminalCallback <- newEmptyMVar
+  let recordTerminalPhase phase = do
+        active <- readIORef terminalPhase
+        when active $ do
+          at <- getMonotonicTimeNSec
+          atomicModifyIORef' runtimeTerminalPhases (\phases -> (take 32 ((at, phase) : phases), ()))
   let recordLockPhase phase = do
         active <- readIORef lockPhase
         if active then do
@@ -1727,6 +1737,10 @@ testWatchRuntime = withSeededRepository $ \root -> do
           atomicModifyIORef' lockPhases (\phases -> ((at, phase) : phases, ()))
         else pure ()
   let afterRuntimeHandle component = do
+        when (component == "watch.md") $ do
+          recordTerminalPhase "verified managed decision handle opened"
+          active <- readIORef terminalPhase
+          when active (void (tryPutMVar runtimeTerminalScanOpened ()))
         tracingRetries <- readIORef supersedeTraceRetries
         if tracingRetries && (component == "index" || component == "architecture")
           then recordSupersedePhase ("post-epoch scan opened " <> component)
@@ -1765,9 +1779,13 @@ testWatchRuntime = withSeededRepository $ \root -> do
     tracingRetries <- readIORef supersedeTraceRetries
     if tracingRetries then recordSupersedePhase "publication callback entered" else pure ()
     recordLockPhase "publication callback entered"
+    recordTerminalPhase "publication callback entered"
     outcome <- try @SomeException (publishWatcherEvent runtime event)
     if tracingRetries then recordSupersedePhase ("publication callback returned " <> either show (const "published") outcome) else pure ()
     recordLockPhase ("publication callback returned " <> either show (const "published") outcome)
+    recordTerminalPhase ("publication callback returned " <> either show (const "published") outcome)
+    activeTerminal <- readIORef terminalPhase
+    when activeTerminal (void (tryPutMVar terminalCallback (event, outcome)))
     atomicModifyIORef' publishAttempts (\observed -> ((either show (const "published") outcome : observed), ()))
     case outcome of
       Left failure -> case fromException failure of
@@ -1940,7 +1958,6 @@ testWatchRuntime = withSeededRepository $ \root -> do
     threadDelay 750000
     readIORef publishAttempts >>= (@?= [])
     putStrLn "p7-03-watch: lock retry complete"
-    Events.setEventGenerationForTest (applicationEventCoordinator runtime) maxBound
     terminalLockAcquired <- newEmptyMVar
     releaseTerminalLock <- newEmptyMVar
     let acquireTerminalLock remaining = do
@@ -1957,9 +1974,42 @@ testWatchRuntime = withSeededRepository $ \root -> do
       case held of
         Just (Left ()) -> pure ()
         other -> assertFailure ("terminal watcher test never held the Git lock: " <> show other)
+      ownerStatus <- gitLockStatus repository
+      case ownerStatus of
+        Left (LockHeld _ _) -> pure ()
+        other -> assertFailure ("terminal Git lock was not held by its live owner: " <> show other)
+      writeIORef terminalPhase True
+      recordTerminalPhase "Git lock owner confirmed"
+      Events.setEventGenerationForTest (applicationEventCoordinator runtime) maxBound
+      recordTerminalPhase "generation set to maxBound under Git lock"
       BS.writeFile managedDecision "terminal generation while Git lock remains held"
-      terminalStop <- timeout 3000000 (Watch.awaitWatcher runtimeWatcher)
-      assertBool "terminal watcher finishes and joins its native backend before Git unlock" (maybe False (const True) terminalStop)
+      recordTerminalPhase "managed decision write completed under Git lock"
+      scanned <- timeout 6000000 (takeMVar runtimeTerminalScanOpened)
+      recordTerminalPhase (if maybe False (const True) scanned then "managed decision scan opened" else "managed decision scan deadline elapsed")
+      callback <- case scanned of
+        Just () -> timeout 3000000 (takeMVar terminalCallback)
+        Nothing -> pure Nothing
+      recordTerminalPhase (if maybe False (const True) callback then "publication callback observed" else "publication callback deadline elapsed")
+      terminalStop <- case callback of
+        Just _ -> timeout 3000000 (Watch.awaitWatcher runtimeWatcher)
+        Nothing -> pure Nothing
+      recordTerminalPhase (if maybe False (const True) terminalStop then "verifier and native backend joined" else "watcher join deadline elapsed")
+      phases <- reverse <$> readIORef runtimeTerminalPhases
+      let terminalTrace = show [((at - terminalOrigin) `div` 1000000, phase) | (at, phase) <- phases]
+      putStrLn ("p7-03-watch: terminal phase trace (ms) " <> terminalTrace)
+      assertBool ("terminal watcher scanned the changed managed file before Git unlock; phases=" <> terminalTrace) (maybe False (const True) scanned)
+      case callback of
+        Just (Watch.RepositoryFactsChanged _ _ invalidations, Left failure) -> do
+          assertBool ("terminal callback carries the managed change; phases=" <> terminalTrace)
+            (Events.ManagedSourceChanged `elem` invalidations)
+          assertBool ("terminal callback threw GenerationExhausted; failure=" <> show failure <> "; phases=" <> terminalTrace)
+            (maybe False (const True) (fromException failure :: Maybe Events.GenerationExhausted))
+        Just (_, Right ()) -> assertFailure ("terminal callback unexpectedly published; phases=" <> terminalTrace)
+        Just (event, Left failure) -> assertFailure ("terminal callback observed another event or failure; event=" <> show event <> "; failure=" <> show failure <> "; phases=" <> terminalTrace)
+        Nothing -> assertFailure ("terminal publication callback did not finish; phases=" <> terminalTrace)
+      assertBool ("terminal watcher finishes and joins its native backend before Git unlock; phases=" <> terminalTrace) (maybe False (const True) terminalStop)
+      terminalOwner <- poll terminalLockOwner
+      assertBool ("terminal Git lock owner remains live through watcher join; phases=" <> terminalTrace) (maybe True (const False) terminalOwner)
       readIORef publishAttempts >>= assertBool "typed terminal failure replaces Git-lock retry" . any (Text.isInfixOf "GenerationExhausted" . Text.pack)
       Events.readSubscriberEvent subscriber >>= \case
         Events.SubscriberGenerationExhausted -> pure ()
