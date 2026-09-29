@@ -739,6 +739,8 @@ testEventRuntime = withSeededServer $ \root running -> do
           ("Authorization", TextEncoding.encodeUtf8 ("Bearer " <> token))
         ]
       authenticate = Aeson.encode (Aeson.object ["type" Aeson..= ("authenticate" :: Text), "credential" Aeson..= token])
+      -- Subscription may use two bounded snapshots before the five-second initial send.
+      initialResyncGuardMicros = 10000000
       awaitConfigWithoutRelevant label connection = loop (5 :: Int)
         where
           loop remaining
@@ -755,9 +757,9 @@ testEventRuntime = withSeededServer $ \root running -> do
   port <- either assertFailure pure (authorityPort (Security.authorityHost authority))
   session <- runOwnedWebSocketClient 20000000 port headers $ \connection -> do
       WS.sendTextData connection authenticate
-      initial <- timeout 2000000 (WS.receiveData connection :: IO LBS.ByteString)
+      initial <- timeout initialResyncGuardMicros (WS.receiveData connection :: IO LBS.ByteString)
       frame <- maybe (assertFailure "authenticated socket did not receive its initial resync") pure initial
-      assertBool "initial socket frame is a versioned invalidation" ("\"type\":\"repository-invalidated\"" `BS.isInfixOf` LBS.toStrict frame)
+      assertInitialFullResync "initial authenticated socket" frame
       WS.sendTextData connection (Aeson.encode (Aeson.object ["type" Aeson..= ("active-files" :: Text), "paths" Aeson..= (["seed.txt"] :: [Text])]))
       leaseAdded <- timeout 3000000 (WS.receiveData connection :: IO LBS.ByteString)
       leaseAddedFrame <- maybe (assertFailure "active-files addition did not publish its interest transition") pure leaseAdded
@@ -792,23 +794,57 @@ testEventRuntime = withSeededServer $ \root running -> do
       result <- timeout 2000000 (trySynchronous (WS.receiveDataMessage connection))
       assertBool "wrong websocket frame credential receives the authentication-rejected close" (expectedClose "authentication rejected" result)
   assertBool "wrong websocket credential session remains bounded" (maybe False (either (const False) (const True)) wrongFrame)
-  binaryFrame <- runOwnedWebSocketClient 5000000 port headers $ \connection -> do
+  binaryPhase <- newIORef ("connecting or awaiting upgrade" :: String)
+  binaryFrame <- runOwnedWebSocketClient 15000000 port headers $ \connection -> do
+      writeIORef binaryPhase "sending authentication"
       WS.sendTextData connection authenticate
-      _ <- WS.receiveDataMessage connection
+      writeIORef binaryPhase "awaiting initial resync"
+      initial <- timeout initialResyncGuardMicros (trySynchronous (WS.receiveData connection :: IO LBS.ByteString))
+      case initial of
+        Nothing -> do
+          writeIORef binaryPhase "initial resync receive timed out after ten seconds"
+          assertFailure "binary-control session did not receive its initial resync within the bounded subscription and send window"
+        Just (Left failure) -> do
+          let detail = "initial resync receive failed: " <> describeWebSocketClientFailure failure
+          writeIORef binaryPhase detail
+          assertFailure detail
+        Just (Right frame) -> do
+          writeIORef binaryPhase "checking full initial resync"
+          assertInitialFullResync "binary-control session" frame
+      writeIORef binaryPhase "sending binary control"
       WS.sendBinaryData connection ("binary-control" :: BS.ByteString)
+      writeIORef binaryPhase "awaiting invalid-control close"
       result <- timeout 2000000 (trySynchronous (WS.receiveDataMessage connection))
       assertBool "binary post-auth control receives the invalid-control close" (expectedClose "invalid or idle control stream" result)
-  assertBool "binary websocket control session remains bounded" (maybe False (either (const False) (const True)) binaryFrame)
+  binaryStage <- readIORef binaryPhase
+  assertBool ("binary websocket control session remains bounded while " <> binaryStage <> ": " <> describeWebSocketClientOutcome binaryFrame)
+    (maybe False (either (const False) (const True)) binaryFrame)
   putStrLn "p7-03-events: negative sessions complete"
+  reconnectPhase <- newIORef ("connecting or awaiting upgrade" :: String)
   reconnect <- runOwnedWebSocketClient 20000000 port headers $ \connection -> do
       putStrLn "p7-03-events: reconnect admitted"
+      writeIORef reconnectPhase "sending authentication"
       WS.sendTextData connection authenticate
-      frame <- timeout 2000000 (WS.receiveDataMessage connection)
-      assertBool "a reconnect receives a fresh initial resync after prior lease cleanup" (maybe False (const True) frame)
+      writeIORef reconnectPhase "awaiting initial resync"
+      received <- timeout initialResyncGuardMicros (trySynchronous (WS.receiveData connection :: IO LBS.ByteString))
+      case received of
+        Nothing -> do
+          writeIORef reconnectPhase "initial resync receive timed out after ten seconds"
+          assertFailure "a reconnect did not receive its fresh initial resync within the bounded subscription and send window"
+        Just (Left failure) -> do
+          let detail = "initial resync receive failed: " <> describeWebSocketClientFailure failure
+          writeIORef reconnectPhase detail
+          assertFailure detail
+        Just (Right frame) -> do
+          writeIORef reconnectPhase "checking full initial resync"
+          assertInitialFullResync "reconnect after invalid-session cleanup" frame
       putStrLn "p7-03-events: reconnect initial received"
+      writeIORef reconnectPhase "sending close"
       WS.sendClose connection ("test complete" :: Text)
       putStrLn "p7-03-events: reconnect close sent"
-  assertBool "reconnect completed after invalid-session cleanup" (maybe False (either (const False) (const True)) reconnect)
+  reconnectStage <- readIORef reconnectPhase
+  assertBool ("reconnect completed after invalid-session cleanup while " <> reconnectStage <> ": " <> describeWebSocketClientOutcome reconnect)
+    (maybe False (either (const False) (const True)) reconnect)
   putStrLn "p7-03-events: reconnect cleanup complete"
   nonGet <- requestPrefix (Security.authorityHost authority)
     ("POST /api/v1/events HTTP/1.1\r\nHost: " <> Security.authorityHost authority
@@ -849,7 +885,7 @@ testEventRuntime = withSeededServer $ \root running -> do
               writeIORef phase "awaiting initial resync"
               received <- timeout 10000000 (WS.receiveData connection :: IO LBS.ByteString)
               initialFrame <- maybe (assertFailure "new authenticated client did not receive its initial resync within its bounded server subscription and send window") pure received
-              assertBool "a new client authenticates after all timed-out slots are released" ("repository-invalidated" `BS.isInfixOf` LBS.toStrict initialFrame)
+              assertInitialFullResync "authenticated client after pending-capacity release" initialFrame
               writeIORef phase "sending close"
               WS.sendClose connection ("cap recovery complete" :: Text)
               writeIORef phase "closed"
@@ -940,7 +976,7 @@ verifySlowNetworkSubscriber root = do
         received <- timeout 10000000 (WS.receiveData connection :: IO LBS.ByteString)
         initial <- maybe (assertFailure "the fresh authenticated subscriber did not receive its initial resync within the bounded snapshot and send window") pure received
         markFresh "checking initial resync"
-        assertBool "another live subscriber receives its own resync after the slow peer closes" ("repository-invalidated" `BS.isInfixOf` LBS.toStrict initial)
+        assertInitialFullResync "fresh subscriber after slow peer closes" initial
         markFresh "sending close"
         WS.sendClose connection ("slow-peer recovery complete" :: Text)
         markFresh "close sent"
@@ -2277,6 +2313,47 @@ expectedHandshakeStatus expected = \case
     Just (WS.MalformedResponse response _) -> WS.responseCode response == expected
     _ -> False
   _ -> False
+
+assertInitialFullResync :: String -> LBS.ByteString -> IO ()
+assertInitialFullResync label bytes = do
+  envelope <- either (const (assertFailure (label <> ": invalid event JSON"))) pure
+    (Aeson.eitherDecode bytes :: Either String Aeson.Value)
+  schema <- textAt ["schema"] envelope
+  schema @?= Events.eventsSchema
+  generation <- integerAt ["generation"] envelope
+  assertBool (label <> ": initial generation must be positive") (generation > 0)
+  asOfKind <- textAt ["as_of", "kind"] envelope
+  case asOfKind of
+    "commit" -> do
+      oid <- textAt ["as_of", "oid"] envelope
+      assertBool (label <> ": commit as_of needs an OID") (not (Text.null oid))
+    "unavailable" -> do
+      reason <- textAt ["as_of", "reason"] envelope
+      assertBool (label <> ": unavailable as_of needs a reason") (not (Text.null reason))
+    _ -> assertFailure (label <> ": invalid as_of kind")
+  let full = Events.eventEnvelopeJson
+        (Events.EventEnvelope 1 (Events.EventAsOfUnavailable "expected")
+          (Events.RepositoryInvalidated [minBound .. maxBound]))
+  expectedEvent <- valueAt ["event"] full
+  actualEvent <- valueAt ["event"] envelope
+  assertBool (label <> ": initial event must invalidate every fact") (actualEvent == expectedEvent)
+
+describeWebSocketClientOutcome :: Maybe (Either SomeException value) -> String
+describeWebSocketClientOutcome = \case
+  Nothing -> "owned client deadline expired"
+  Just (Left failure) -> describeWebSocketClientFailure failure
+  Just (Right _) -> "completed"
+
+describeWebSocketClientFailure :: SomeException -> String
+describeWebSocketClientFailure failure = case fromException failure :: Maybe WS.HandshakeException of
+  Just (WS.RequestRejected _ response) -> "upgrade rejected with HTTP " <> show (WS.responseCode response)
+  Just (WS.MalformedResponse response _) -> "malformed upgrade response with HTTP " <> show (WS.responseCode response)
+  _ -> case fromException failure :: Maybe WS.ConnectionException of
+    Just (WS.CloseRequest code _) -> "server close frame with code " <> show code
+    Just WS.ConnectionClosed -> "connection closed without a close frame"
+    _ -> case fromException failure :: Maybe IOError of
+      Just networkFailure -> "socket I/O failure: " <> show networkFailure
+      Nothing -> "client callback exception"
 
 requestPrefix :: Text -> Text -> IO BS.ByteString
 requestPrefix host bytes = do
