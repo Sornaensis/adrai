@@ -74,16 +74,19 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LazyByteString
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (intercalate)
 import Data.Maybe (mapMaybe)
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextEncodingError
+import GHC.Clock (getMonotonicTimeNSec)
 import qualified Network.HTTP.Types as Http
 import qualified Network.HTTP.Types.Header as Header
 import System.Timeout (timeout)
+import System.IO (hPutStrLn, stderr)
 import Network.Wai
   ( Application,
     Request,
@@ -498,61 +501,101 @@ ensureCompiled coordinator compileExact afterJoin repository oid = do
     Right result -> pure result
 
 subscribeApplicationEvents :: ApplicationRuntime -> (Api.Repo -> IO Watch.RepositorySnapshot) -> IO (Either Text Events.EventSubscriber)
-subscribeApplicationEvents runtime takeSnapshot = attempt (2 :: Int)
+subscribeApplicationEvents runtime takeSnapshot = newIORef [] >>= \diagnostics -> attempt diagnostics (2 :: Int)
   where
     coordinator = applicationCoordinator runtime
     bound = applicationRepo runtime
     registry = applicationActiveFiles runtime
-    attempt remaining = do
+    record diagnostics started attemptNumber phase = do
+      now <- getMonotonicTimeNSec
+      modifyIORef' diagnostics (("attempt=" <> show attemptNumber <> " +" <> show ((now - started) `div` 1000000) <> "ms " <> phase) :)
+    report diagnostics outcome = do
+      phases <- reverse <$> readIORef diagnostics
+      _ <- trySynchronous (hPutStrLn stderr ("adrai: websocket subscription " <> intercalate "; " phases <> "; " <> outcome))
+      pure ()
+    finish diagnostics result = do
+      report diagnostics $ case result of
+        Left "generation-exhausted" -> "final=generation-exhausted close=generation-exhausted"
+        Left _ -> "final=unavailable close=snapshot-unavailable"
+        Right _ -> "final=ready close=none"
+      pure result
+    attempt diagnostics remaining = do
+      started <- getMonotonicTimeNSec
+      phaseRef <- newIORef ("start" :: String)
+      let attemptNumber = 3 - remaining
+          note phase = writeIORef phaseRef phase >> record diagnostics started attemptNumber phase
+      note "start"
       terminal <- Events.isGenerationExhausted coordinator
-      if terminal then pure (Left "generation-exhausted") else do
+      if terminal then note "generation-exhausted" >> finish diagnostics (Left "generation-exhausted") else do
         before <- Events.readEventGeneration coordinator
         -- The observer's bounded filesystem scan must never hold the Git lock.
+        note "scan-start"
         sampled <- timeout 2000000 (takeSnapshot bound)
         case sampled of
-          Nothing -> retry remaining
+          Nothing -> note "scan-timeout" >> retry diagnostics remaining
           Just snapshot -> do
+            note "scan-complete"
             provisional <- newIORef Nothing
             let discardProvisional = do
                   owned <- readIORef provisional
                   maybe (pure ()) (Events.unregisterSubscriber coordinator) owned
+                  note (if maybe False (const True) owned then "registration-disposed-on-exception" else "no-registration-to-dispose")
+            note "git-lock-wait"
             captured <- trySynchronous $ (withGitLock (Api.repoRepository bound) $ do
+              note "git-lock-acquired"
               current <- Events.readEventGeneration coordinator
               epochMatches <- atomically (Watch.observationEpochMatches registry (snapshotEpoch snapshot))
-              if current == maxBound then pure (Left "generation-exhausted")
+              note ("pre-register generation-matches=" <> show (current == before) <> " epoch-matches=" <> show epochMatches)
+              if current == maxBound then note "generation-exhausted" >> pure (Left "generation-exhausted")
               else if current /= before || not epochMatches then pure (Right Nothing)
               else do
-                asOf <- initialAsOf snapshot
+                asOf <- initialAsOf note snapshot
                 case asOf of
                   Nothing -> pure (Right Nothing)
                   Just initial -> mask $ \_ -> do
+                    note "registration-start"
                     registered <- Events.registerSubscriberWithInitial coordinator initial
                     case registered of
-                      Left problem -> pure (Left problem)
+                      Left problem -> note "registration-rejected" >> pure (Left problem)
                       Right subscriber -> do
                         writeIORef provisional (Just subscriber)
+                        note "registration-created"
                         after <- Events.readEventGeneration coordinator
                         epochStillMatches <- atomically (Watch.observationEpochMatches registry (snapshotEpoch snapshot))
                         let coherent = after == current + 1 && epochStillMatches
+                        note ("post-register generation-matches=" <> show (after == current + 1) <> " epoch-matches=" <> show epochStillMatches)
                         if coherent
                           then pure (Right (Just subscriber))
                           else do
                             Events.unregisterSubscriber coordinator subscriber
                             writeIORef provisional Nothing
+                            note "registration-disposed-after-incoherence"
                             pure (Right Nothing)) `onException` discardProvisional
             case captured of
-              Right (Right (Just subscriber)) -> pure (Right subscriber)
-              Right (Right Nothing) -> retry remaining
-              Right (Left problem) -> terminalOr (Left problem)
-              Left _ -> retry remaining
-    retry remaining
-      | remaining > 1 = attempt (remaining - 1)
-      | otherwise = terminalOr (Left "repository snapshot changed during subscription")
+              Right (Right (Just subscriber)) -> do
+                note "subscription-ready"
+                if remaining < 2 then report diagnostics "final=ready close=none" else pure ()
+                pure (Right subscriber)
+              Right (Right Nothing) -> note "incoherent-snapshot" >> retry diagnostics remaining
+              Right (Left problem) -> note "subscription-rejected" >> terminalOr diagnostics (Left problem)
+              Left failure -> do
+                phase <- readIORef phaseRef
+                note ("synchronous-exception class=" <> exceptionClass failure <> " phase=" <> phase)
+                retry diagnostics remaining
+    retry diagnostics remaining
+      | remaining > 1 = attempt diagnostics (remaining - 1)
+      | otherwise = terminalOr diagnostics (Left "repository snapshot changed during subscription")
     snapshotEpoch (Watch.RepositorySnapshot epoch _) = epoch
     snapshotEpoch (Watch.RepositorySnapshotFailed epoch _) = epoch
-    initialAsOf (Watch.RepositorySnapshotFailed _ _) = pure (Just (Events.EventAsOfUnavailable "repository-observation-failed"))
-    initialAsOf (Watch.RepositorySnapshot _ facts) = do
+    initialAsOf :: (String -> IO ()) -> Watch.RepositorySnapshot -> IO (Maybe Events.EventAsOf)
+    initialAsOf note (Watch.RepositorySnapshotFailed _ _) = note "observer-snapshot-failed" >> pure (Just (Events.EventAsOfUnavailable "repository-observation-failed"))
+    initialAsOf note (Watch.RepositorySnapshot _ facts) = do
+      note "basis-read-start"
       basis <- observeRepositoryBasis bound
+      note $ case basis of
+        Left _ -> "basis-read-failed"
+        Right observed -> "basis-read-complete head-matches=" <> show (Watch.factsHead facts == Just (Api.basisHead observed))
+          <> " head-state-matches=" <> show (Watch.factsHeadState facts == Just (basisHeadState observed))
       pure $ case basis of
         Right observed
           | Watch.factsHead facts == Just (Api.basisHead observed)
@@ -562,9 +605,14 @@ subscribeApplicationEvents runtime takeSnapshot = attempt (2 :: Int)
     basisHeadState observed = case Api.basisHeadRef observed of
       Api.AttachedHead ref -> GitHeadAttached ref
       Api.DetachedHead -> GitHeadDetached
-    terminalOr fallback = do
+    exceptionClass failure = case fromException failure :: Maybe GitLockError of
+      Just _ -> "git-lock"
+      Nothing -> case fromException failure :: Maybe Events.GenerationExhausted of
+        Just _ -> "generation-exhausted"
+        Nothing -> "other-synchronous"
+    terminalOr diagnostics fallback = do
       terminal <- Events.isGenerationExhausted coordinator
-      pure (if terminal then Left "generation-exhausted" else fallback)
+      finish diagnostics (if terminal then Left "generation-exhausted" else fallback)
 
 publishWatcherEvent :: ApplicationRuntime -> Watch.RepositoryEvent -> IO ()
 publishWatcherEvent runtime event = case event of
