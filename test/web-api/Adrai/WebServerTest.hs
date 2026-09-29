@@ -2662,9 +2662,53 @@ openRawSlowSubscriber authority token = bracketOnError (socket AF_INET Stream de
   admitRawPendingPeer client authority token
   let authenticate = LBS.toStrict (Aeson.encode (Aeson.object ["type" Aeson..= ("authenticate" :: Text), "credential" Aeson..= token]))
   sendAll client (maskedFrame True 1 authenticate)
-  initial <- recv client 4096
-  assertBool "slow raw subscriber receives its initial versioned resync before it stops reading" ("repository-invalidated" `BS.isInfixOf` initial)
+  initial <- timeout 10000000 (readRawInitialText client)
+  payload <- maybe (assertFailure "slow raw subscriber timed out reading its first complete resync message") pure initial
+  assertInitialFullResync "slow raw subscriber" (LBS.fromStrict payload)
   pure client
+
+readRawInitialText :: Socket -> IO BS.ByteString
+readRawInitialText client = readFrame True 0 []
+  where
+    maxPayload = 256 * 1024 :: Int
+    maxFrames = 64 :: Int
+
+    readExact count = go count []
+      where
+        go remaining chunks
+          | remaining == 0 = pure (BS.concat (reverse chunks))
+          | otherwise = do
+              chunk <- recv client (min remaining 4096)
+              if BS.null chunk
+                then assertFailure "slow raw subscriber reached EOF before its first complete resync message"
+                else go (remaining - BS.length chunk) (chunk : chunks)
+
+    readFrame first total chunks = do
+      when (length chunks >= maxFrames) (assertFailure "slow raw subscriber's first message exceeded the frame bound")
+      header <- readExact 2
+      let flags = BS.index header 0
+          lengthByte = BS.index header 1
+          finished = flags .&. 0x80 /= 0
+          opcode = flags .&. 0x0f
+          shortLength = lengthByte .&. 0x7f
+      when (flags .&. 0x70 /= 0) (assertFailure "slow raw subscriber received a frame with reserved bits")
+      when (lengthByte .&. 0x80 /= 0) (assertFailure "slow raw subscriber received a masked server frame")
+      when (opcode /= if first then 1 else 0) (assertFailure "slow raw subscriber's first message had an unexpected frame type")
+      extraLength <- case shortLength of
+        126 -> readExact 2
+        127 -> readExact 8
+        _ -> pure BS.empty
+      let payloadLength = if BS.null extraLength
+            then fromIntegral shortLength
+            else BS.foldl' (\size byte -> size * 256 + fromIntegral byte) (0 :: Integer) extraLength
+      when (shortLength == 126 && payloadLength < 126) (assertFailure "slow raw subscriber received a nonminimal extended length")
+      when (shortLength == 127 && payloadLength < 65536) (assertFailure "slow raw subscriber received a nonminimal extended length")
+      when (payloadLength > fromIntegral (maxPayload - total)) (assertFailure "slow raw subscriber's first message exceeded the payload bound")
+      payload <- readExact (fromIntegral payloadLength)
+      let next = payload : chunks
+      if finished
+        then pure (BS.concat (reverse next))
+        else readFrame False (total + fromIntegral payloadLength) next
 
 maskedFrame :: Bool -> Word8 -> BS.ByteString -> BS.ByteString
 maskedFrame finished opcode payload =
