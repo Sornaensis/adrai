@@ -1370,6 +1370,7 @@ testWatchRuntime = withSeededRepository $ \root -> do
   supersedeEnabled <- newIORef False
   supersedeOpened <- newEmptyMVar
   supersedeRelease <- newEmptyMVar
+  supersedeTraceRetries <- newIORef False
   supersedeOrigin <- getMonotonicTimeNSec
   supersedePhases <- newIORef ([] :: [(Word64, String)])
   let recordSupersedePhase phase = do
@@ -1384,6 +1385,10 @@ testWatchRuntime = withSeededRepository $ \root -> do
           atomicModifyIORef' lockPhases (\phases -> ((at, phase) : phases, ()))
         else pure ()
   let afterRuntimeHandle component = do
+        tracingRetries <- readIORef supersedeTraceRetries
+        if tracingRetries && (component == "index" || component == "architecture")
+          then recordSupersedePhase ("post-epoch scan opened " <> component)
+          else pure ()
         if component == "architecture" then recordLockPhase "verified architecture handle opened" else pure ()
         start <- atomicModifyIORef' supersedeScanEnabled $ \enabled ->
           let fire = enabled && component == "index"
@@ -1410,9 +1415,11 @@ testWatchRuntime = withSeededRepository $ \root -> do
   publishAttempts <- newIORef ([] :: [String])
   lockRejections <- newEmptyMVar
   runtimeWatcher <- Watch.watchRepository runtimeObserver bound $ \event -> do
+    tracingRetries <- readIORef supersedeTraceRetries
+    if tracingRetries then recordSupersedePhase "publication callback entered" else pure ()
     recordLockPhase "publication callback entered"
     outcome <- try @SomeException (publishWatcherEvent runtime event)
-    recordSupersedePhase ("publication callback returned " <> either show (const "published") outcome)
+    if tracingRetries then recordSupersedePhase ("publication callback returned " <> either show (const "published") outcome) else pure ()
     recordLockPhase ("publication callback returned " <> either show (const "published") outcome)
     atomicModifyIORef' publishAttempts (\observed -> ((either show (const "published") outcome : observed), ()))
     case outcome of
@@ -1423,47 +1430,71 @@ testWatchRuntime = withSeededRepository $ \root -> do
         _ -> pure ()
       Right () -> pure ()
     either throwIO pure outcome
+  let reportSupersedeFailure = do
+        phases <- reverse <$> readIORef supersedePhases
+        callbackAttempts <- reverse <$> readIORef publishAttempts
+        watcherAwait <- timeout 100000 (Watch.awaitWatcher runtimeWatcher)
+        activeFiles <- Watch.activeFileUnion (applicationActiveFileRegistry runtime)
+        currentSnapshot <- timeout 3000000 $ do
+          diagnosticObserver <- Watch.observerForRegistry (applicationActiveFileRegistry runtime) bound
+          Watch.repositorySnapshot diagnosticObserver bound
+        let snapshotStatus = case currentSnapshot of
+              Nothing -> "timed out"
+              Just (Watch.RepositorySnapshot diagnosticEpoch facts) ->
+                "epoch=" <> show diagnosticEpoch <> ", managed_identity=" <> show (Watch.factsManagedSourceIdentity facts)
+              Just (Watch.RepositorySnapshotFailed diagnosticEpoch failure) ->
+                "epoch=" <> show diagnosticEpoch <> ", failure=" <> show failure
+        putStrLn ("p7-03-watch: epoch failure evidence; phases_ms="
+          <> show [((at - supersedeOrigin) `div` 1000000, phase) | (at, phase) <- phases]
+          <> "; callback_attempts=" <> show callbackAttempts
+          <> "; watcher_await=" <> maybe "pending" (const "returned") watcherAwait
+          <> "; active_files=" <> show activeFiles
+          <> "; independent_snapshot=" <> snapshotStatus)
   (`finally` do
       stoppedRuntimeWatcher <- timeout 3000000 (Watch.stopWatching runtimeWatcher >> Watch.awaitWatcher runtimeWatcher)
       Events.unregisterSubscriber (applicationEventCoordinator runtime) subscriber
       Watch.unregisterActiveClient (applicationActiveFileRegistry runtime) runtimeClient
       stopApplicationRuntime runtime
       case stoppedRuntimeWatcher of Nothing -> ioError (userError "runtime watcher cleanup timed out"); Just () -> pure ()) $ do
-    supersedeBaseline <- Watch.repositorySnapshot observer bound >>= managedIdentityOf
-    recordSupersedePhase "baseline managed identity captured"
-    writeIORef supersedeScanEnabled True
-    scanStarted <- timeout 15000000 (takeMVar supersedeScanStarted)
-    phasesAtStart <- reverse <$> readIORef supersedePhases
-    assertBool ("runtime scan captured the pre-write epoch; phases=" <> show [((at - supersedeOrigin) `div` 1000000, phase) | (at, phase) <- phasesAtStart]) (maybe False (const True) scanStarted)
-    BS.writeFile managedDecision "managed scan captured before interest epoch advance"
-    recordSupersedePhase "managed file write completed"
-    supersedeChanged <- Watch.repositorySnapshot observer bound >>= managedIdentityOf
-    assertBool "the single managed write changes the observed source identity" (supersedeChanged /= supersedeBaseline)
-    recordSupersedePhase "changed managed identity verified"
-    writeIORef supersedeEnabled True
-    putMVar supersedeScanContinue ()
-    supersedeReached <- timeout 15000000 (takeMVar supersedeOpened)
-    phasesAtBarrier <- reverse <$> readIORef supersedePhases
-    assertBool ("runtime scan reached the deterministic pre-publication epoch barrier; phases=" <> show [((at - supersedeOrigin) `div` 1000000, phase) | (at, phase) <- phasesAtBarrier]) (maybe False (const True) supersedeReached)
-    Watch.replaceActiveFiles (applicationActiveFileRegistry runtime) runtimeClient [secondPath] >>= either (assertFailure . Text.unpack) pure
-    recordSupersedePhase "active-file epoch advanced"
-    putMVar supersedeRelease ()
-    supersedeRecovered <- timeout 4000000 (Events.readSubscriberEvent subscriber)
-    supersedeGeneration <- case supersedeRecovered of
-      Just (Events.SubscriberEvent envelope) -> do
-        expectedOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
-        Events.eventAsOf envelope @?= Events.EventAt expectedOid
-        case Events.eventPayload envelope of
-          Events.RepositoryInvalidated invalidations -> assertBool "superseded scan is retried to the persistent managed fact" (Events.ManagedSourceChanged `elem` invalidations)
-          _ -> assertFailure "superseded scan retry emitted an observation failure"
-        pure (Events.eventGeneration envelope)
-      Just Events.SubscriberOverflow -> assertFailure "superseded scan retry overflowed its subscriber"
-      Just Events.SubscriberGenerationExhausted -> assertFailure "superseded scan retry exhausted its generation"
-      Nothing -> assertFailure "superseded scan was not retried after the active-file epoch advanced"
-    recordSupersedePhase "subscriber observed coherent retry"
-    readIORef publishAttempts >>= assertBool "the stale scan was explicitly rejected before a later retry published" . any (Text.isInfixOf "superseded" . Text.toLower . Text.pack)
-    phasesAfterRetry <- reverse <$> readIORef supersedePhases
-    putStrLn ("p7-03-watch: epoch phase trace (ms) " <> show [((at - supersedeOrigin) `div` 1000000, phase) | (at, phase) <- phasesAfterRetry])
+    supersedeGeneration <- (do
+        supersedeBaseline <- Watch.repositorySnapshot observer bound >>= managedIdentityOf
+        recordSupersedePhase "baseline managed identity captured"
+        writeIORef supersedeScanEnabled True
+        scanStarted <- timeout 15000000 (takeMVar supersedeScanStarted)
+        phasesAtStart <- reverse <$> readIORef supersedePhases
+        assertBool ("runtime scan captured the pre-write epoch; phases=" <> show [((at - supersedeOrigin) `div` 1000000, phase) | (at, phase) <- phasesAtStart]) (maybe False (const True) scanStarted)
+        BS.writeFile managedDecision "managed scan captured before interest epoch advance"
+        recordSupersedePhase "managed file write completed"
+        supersedeChanged <- Watch.repositorySnapshot observer bound >>= managedIdentityOf
+        assertBool "the single managed write changes the observed source identity" (supersedeChanged /= supersedeBaseline)
+        recordSupersedePhase "changed managed identity verified"
+        writeIORef supersedeEnabled True
+        putMVar supersedeScanContinue ()
+        supersedeReached <- timeout 15000000 (takeMVar supersedeOpened)
+        phasesAtBarrier <- reverse <$> readIORef supersedePhases
+        assertBool ("runtime scan reached the deterministic pre-publication epoch barrier; phases=" <> show [((at - supersedeOrigin) `div` 1000000, phase) | (at, phase) <- phasesAtBarrier]) (maybe False (const True) supersedeReached)
+        Watch.replaceActiveFiles (applicationActiveFileRegistry runtime) runtimeClient [secondPath] >>= either (assertFailure . Text.unpack) pure
+        recordSupersedePhase "active-file epoch advanced"
+        writeIORef supersedeTraceRetries True
+        putMVar supersedeRelease ()
+        supersedeRecovered <- timeout 15000000 (Events.readSubscriberEvent subscriber)
+        generation <- case supersedeRecovered of
+          Just (Events.SubscriberEvent envelope) -> do
+            expectedOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
+            Events.eventAsOf envelope @?= Events.EventAt expectedOid
+            case Events.eventPayload envelope of
+              Events.RepositoryInvalidated invalidations -> assertBool "superseded scan is retried to the persistent managed fact" (Events.ManagedSourceChanged `elem` invalidations)
+              _ -> assertFailure "superseded scan retry emitted an observation failure"
+            pure (Events.eventGeneration envelope)
+          Just Events.SubscriberOverflow -> assertFailure "superseded scan retry overflowed its subscriber"
+          Just Events.SubscriberGenerationExhausted -> assertFailure "superseded scan retry exhausted its generation"
+          Nothing -> assertFailure "superseded scan was not retried after the active-file epoch advanced"
+        recordSupersedePhase "subscriber observed coherent retry"
+        readIORef publishAttempts >>= assertBool "the stale scan was explicitly rejected before a later retry published" . any (Text.isInfixOf "superseded" . Text.toLower . Text.pack)
+        phasesAfterRetry <- reverse <$> readIORef supersedePhases
+        putStrLn ("p7-03-watch: epoch phase trace (ms) " <> show [((at - supersedeOrigin) `div` 1000000, phase) | (at, phase) <- phasesAfterRetry])
+        writeIORef supersedeTraceRetries False
+        pure generation) `onException` reportSupersedeFailure
     writeIORef publishAttempts []
     lockAcquired <- newEmptyMVar
     releaseLock <- newEmptyMVar
