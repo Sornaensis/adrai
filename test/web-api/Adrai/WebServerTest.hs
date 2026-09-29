@@ -1571,7 +1571,13 @@ testWatchRuntime = withSeededRepository $ \root -> do
     linkedRepository <- discoverRepository systemGit linkedRoot >>= either (assertFailure . show) pure
     linkedBound <- either (assertFailure . show) pure (Api.validateRepositoryBinding (Right linkedRepository))
     linkedRegistry <- Watch.newActiveFileRegistry
-    linkedObserver <- Watch.observerForRegistry linkedRegistry linkedBound
+    linkedOrigin <- getMonotonicTimeNSec
+    linkedPhases <- newIORef ([] :: [(Word64, String)])
+    let markLinked phase = do
+          at <- getMonotonicTimeNSec
+          atomicModifyIORef' linkedPhases (\phases -> ((at, phase) : phases, ()))
+    linkedObserver <- Watch.observerForRegistryWithHandleHook linkedRegistry linkedBound $ \component ->
+      if component == "refs" then markLinked "common refs opened" else pure ()
     linkedBefore <- Watch.repositorySnapshot linkedObserver linkedBound
     case linkedBefore of
       Watch.RepositorySnapshot _ facts -> assertBool "linked-worktree snapshot retains detached HEAD and shared common metadata" (Watch.factsHead facts /= Nothing && Watch.factsHeadState facts /= Nothing)
@@ -1594,21 +1600,45 @@ testWatchRuntime = withSeededRepository $ \root -> do
       _ -> assertFailure "linked private-metadata observation failed"
     removeFile linkedMetadata
     sharedPeriodic <- newEmptyMVar
+    markLinked "watcher start began"
     linkedWatcher <- Watch.watchRepository linkedObserver linkedBound $ \event -> do
+      markLinked (case event of
+        Watch.RepositoryFactsChanged _ _ invalidations -> "callback " <> show invalidations
+        other -> "callback " <> show other)
       _ <- tryPutMVar sharedPeriodic event
       pure ()
+    markLinked "watcher start returned"
     (`finally` do
         Watch.stopWatching linkedWatcher
-        _ <- timeout 3000000 (Watch.awaitWatcher linkedWatcher)
+        stopped <- timeout 3000000 (Watch.awaitWatcher linkedWatcher)
         sharedExists <- doesFileExist linkedCommonRef
-        if sharedExists then removeFile linkedCommonRef else pure ()) $ do
+        if sharedExists then removeFile linkedCommonRef else pure ()
+        assertBool "linked watcher workers stop within the owner bound" (maybe False (const True) stopped)) $ do
+      markLinked "common ref write began"
       BS.writeFile linkedCommonRef (TextEncoding.encodeUtf8 (headForFacts <> "\n"))
-      periodic <- timeout 3000000 (takeMVar sharedPeriodic)
+      markLinked "common ref write returned"
+      periodic <- timeout 3000000 (race (takeMVar sharedPeriodic) (Watch.awaitWatcher linkedWatcher))
       case periodic of
-        Just (Watch.RepositoryFactsChanged _ _ invalidations) ->
+        Just (Left (Watch.RepositoryFactsChanged _ _ invalidations)) ->
           assertBool "periodic verification detects shared metadata outside the linked worktree watch root" (Events.CommonReferencesChanged `elem` invalidations)
-        Just other -> assertFailure ("linked periodic observation returned " <> show other)
-        Nothing -> assertFailure "linked periodic common-reference change was not delivered"
+        Just (Left other) -> assertFailure ("linked periodic observation returned " <> show other)
+        Just (Right ()) -> do
+          phases <- reverse <$> readIORef linkedPhases
+          assertFailure ("linked watcher ended before periodic common-reference delivery; phases(ms)="
+            <> show [((at - linkedOrigin) `div` 1000000, phase) | (at, phase) <- phases])
+        Nothing -> do
+          phases <- reverse <$> readIORef linkedPhases
+          observed <- timeout 3000000 (Watch.repositorySnapshot linkedObserver linkedBound)
+          let change = case (linkedRestored, observed) of
+                (Watch.RepositorySnapshot _ baselineFacts, Just (Watch.RepositorySnapshot _ observedFacts)) -> show (Watch.diffRepositoryFacts baselineFacts observedFacts)
+                (_, Just other) -> show other
+                (_, Nothing) -> "direct snapshot timed out"
+          assertFailure ("linked periodic common-reference change was not delivered; phases(ms)="
+            <> show [((at - linkedOrigin) `div` 1000000, phase) | (at, phase) <- phases]
+            <> "; direct change=" <> change)
+      phases <- reverse <$> readIORef linkedPhases
+      putStrLn ("p7-03-watch: linked periodic phase trace (ms) "
+        <> show [((at - linkedOrigin) `div` 1000000, phase) | (at, phase) <- phases])
   let backendOfflineRoot = root <> "-backend-offline"
   backendRecovered <- newEmptyMVar
   renameDirectory root backendOfflineRoot
