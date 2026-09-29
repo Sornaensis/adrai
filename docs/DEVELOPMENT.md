@@ -9,7 +9,7 @@ artifact-binding workflow. The complete gate executes every registered test
 in the ordinary, cache-selection, stress, and benchmark-registration
 components, enables the stress cases with `--run-stress`, and includes the
 named reliability repeats, fixture setup, and owned-descendant cleanup within
-one aggregate 600-second deadline. A timeout, omitted test, or surviving
+one aggregate 1,800-second deadline. A timeout, omitted test, or surviving
 descendant fails the gate.
 
 Compilation is a separate, consistently configured pedantic build of all

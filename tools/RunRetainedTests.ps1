@@ -1614,14 +1614,14 @@ switch -CaseSensitive ($Mode) {
 try {
     if ($DeadlineSeconds -eq 0) {
         $DeadlineSeconds = switch ($Mode) {
-            'Complete' { 600 }
+            'Complete' { 1800 }
             'List' { 60 }
             'Focused' { 300 }
             'SelfCheck' { 45 }
             'Build' { 1200 }
         }
     }
-    if (($Mode -eq 'Complete' -and $DeadlineSeconds -gt 600) -or
+    if (($Mode -eq 'Complete' -and $DeadlineSeconds -gt 1800) -or
         ($Mode -eq 'List' -and $DeadlineSeconds -gt 60) -or
         ($Mode -eq 'Focused' -and $DeadlineSeconds -gt 300)) {
         throw "DeadlineSeconds exceeds the maximum for mode '$Mode'."

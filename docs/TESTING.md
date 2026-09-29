@@ -109,7 +109,7 @@ complement with the other anchored ordinary groups.
 
 ## Running the gate
 
-Complete mode uses one monotonic 600-second deadline and one coordinator with
+Complete mode uses one monotonic 1,800-second deadline and one coordinator with
 at most three active owned test roots. Every root is still an isolated
 `TASTY_NUM_THREADS=1`, `GHCRTS=-N1` process with its own Job Object; retained
 concurrency inside an individual test remains unchanged. The timer starts before
@@ -190,7 +190,14 @@ Censored and unstarted jobs retain unknown positive work. Each changed snapshot
 requires its own Complete result; static removal and process counts are not
 seconds or evidence of a guaranteed fit.
 
-The current gate has one shared 600-second deadline. It includes the four
+The current gate has one shared 1,800-second deadline. An uncensored copied
+runner completed the 949-execution queue in 1,326.03 seconds on the current
+test snapshot, including stress, `Krace`, and the reliability repeat. The copy
+changed only the two Complete deadline limits to 2,400 seconds; its owned Job
+Object helper was byte identical. The 1,800-second guard leaves about 474
+seconds beyond that one observed run, including the existing 10-second cleanup
+reserve. It is a finite liveness guard, not a product latency target or a
+guarantee for another checkout or host. The gate includes the four
 full-component listings, fifteen selected-partition listings, 17 normal FIFO jobs
 with at most three active, the actual stress opt-in, the exclusive genuine race
 and repeat, setup, type loading, hashing, validation, descendant cleanup, and
