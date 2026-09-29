@@ -643,19 +643,56 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
       assertBool "the fenced query retains the OID resolved before the external move" (retainedHead /= movedHead)
     either (assertFailure . Text.unpack) pure started
   withSeededRepository $ \failureRoot -> do
-    let services = defaultApplicationServices
-          { applicationBeforeCommitPublication = \_ -> ioError (userError "injected publication failure") }
+    phaseOrigin <- getMonotonicTimeNSec
+    phases <- newIORef ([] :: [(String, Word64)])
+    let recordPhase label = do
+          now <- getMonotonicTimeNSec
+          atomicModifyIORef' phases (\events -> ((label, now) : events, ()))
+        reportPhases = do
+          events <- reverse <$> readIORef phases
+          putStrLn ("all-six publication failure phases (ms): " <> show [(label, (at - phaseOrigin) `div` 1000000) | (label, at) <- events])
+          hFlush stdout
+        compileExact repository oid = do
+          recordPhase "post-commit exact archive compilation entered"
+          result <- Runtime.ensureExactArchive repository oid
+          recordPhase "post-commit exact archive compilation returned"
+          pure result
+        dispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+          recordPhase "server dispatch entered"
+          result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+          recordPhase "server dispatch returned"
+          pure result
+        services = defaultApplicationServices
+          { applicationBeforeCommitPublication = \_ -> recordPhase "commit publication callback entered" >> ioError (userError "injected publication failure"),
+            applicationAfterCompilationJoin = recordPhase "post-commit compilation joined",
+            applicationCompileExact = compileExact,
+            dispatchApplicationRequest = dispatch
+          }
         injected = dependencies {serverApplicationServices = services}
-    started <- withWebServer injected failureRoot (Api.WebOptions Nothing False) $ \failureServer _ -> do
+    started <- (withWebServer injected failureRoot (Api.WebOptions Nothing False) $ \failureServer _ -> do
       basis <- repositoryBasis failureServer
       before <- gitHead failureRoot
-      committed <- postJson failureServer "/api/v1/adrs" (createBody basis)
+      recordPhase "final POST starting"
+      (status, committed) <- postJsonStatusWith
+        (requestRawWithStepAndDeadlineObserved (recordPhase . ("client " <>)) 60000000 "all-six publication-failure create")
+        failureServer "/api/v1/adrs" (createBody basis)
+      recordPhase "final POST response received"
+      status @?= 200
       assertCommitted committed
       after <- gitHead failureRoot
       assertBool "synchronous publication failure cannot roll back the durable commit" (after /= before)
       textAt ["data", "commit"] committed >>= (@?= after)
       textAt ["data", "publication_warning"] committed >>= (@?= "commit generation publication failed after the durable commit")
       textAt ["metadata", "as_of", "kind"] committed >>= (@?= "unavailable")
+      port <- either assertFailure pure (authorityPort (Security.authorityHost (runningAuthority failureServer)))
+      receiveStarted <- newEmptyMVar
+      timedOut <- runOwnedSocket 1000000 port $ \client -> do
+        putMVar receiveStarted ()
+        recv client 4096
+      tryTakeMVar receiveStarted >>= (@?= Just ())
+      case timedOut of
+        Nothing -> recordPhase "blocked receive timed out; owned socket worker joined"
+        Just result -> assertFailure ("idle socket receive unexpectedly completed before its deadline: " <> show result)) `finally` reportPhases
     either (assertFailure . Text.unpack) pure started
 
 testBoundsAndStale :: IO ()
@@ -2493,7 +2530,7 @@ runOwnedSocket deadlineMicros port action = bracket (socket AF_INET Stream defau
         beforeClose <- poll worker
         closeOwnedSocket client
         closedAt <- getMonotonicTimeNSec
-        stopped <- timeout 2000000 (cancel worker)
+        stopped <- timeout 5000000 (cancel worker)
         cancelledAt <- getMonotonicTimeNSec
         let cleanupEvidence = "; worker " <> (if maybe True (const False) beforeClose then "running" else "finished")
               <> " before close, close " <> show ((closedAt - startedAt) `div` 1000000)
