@@ -597,27 +597,117 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
   withSeededRepository $ \lockedRoot -> do
     reached <- newEmptyMVar
     release <- newEmptyMVar
-    let services = defaultApplicationServices
-          { applicationBeforeCommitPublication = \_ -> putMVar reached () >> takeMVar release }
+    lockedRepository <- discoverRepository systemGit lockedRoot >>= either (assertFailure . show) pure
+    phaseOrigin <- getMonotonicTimeNSec
+    phases <- newIORef ([] :: [(String, Word64)])
+    let recordPhase label = do
+          now <- getMonotonicTimeNSec
+          atomicModifyIORef' phases (\events -> ((label, now) : events, ()))
+        reportPhases = do
+          events <- reverse <$> readIORef phases
+          putStrLn ("external-advance publication phases (ms): " <> show [(label, (at - phaseOrigin) `div` 1000000) | (label, at) <- events])
+          hFlush stdout
+        reportFailure delayed = do
+          reportPhases
+          lock <- gitLockStatus lockedRepository
+          client <- poll delayed
+          let clientStatus = case client of
+                Nothing -> "running"
+                Just (Left failure) -> "failed: " <> show failure
+                Just (Right _) -> "returned"
+          putStrLn ("external-advance failure: client " <> clientStatus <> "; Git lock " <> show lock)
+          hFlush stdout
+        releaseHeld = void (tryPutMVar release ())
+        externalCommit = bracket
+          (createProcess (proc "git" ["-C", lockedRoot, "commit", "--allow-empty", "-m", "external move during commit publication"]))
+          (\(_, _, _, processHandle) -> do
+            processState <- getProcessExitCode processHandle
+            case processState of
+              Just _ -> pure ()
+              Nothing -> do
+                terminateProcess processHandle
+                reaped <- timeout 5000000 (waitForProcess processHandle)
+                assertBool "external-advance Git child survived bounded termination" (maybe False (const True) reaped))
+          (\(_, _, _, processHandle) -> do
+            completed <- timeout 20000000 (waitForProcess processHandle)
+            case completed of
+              Nothing -> assertFailure "external-advance Git commit exceeded twenty seconds"
+              Just ExitSuccess -> pure ()
+              Just code -> assertFailure ("external-advance Git commit failed: " <> show code))
+        compileExact repository oid = do
+          recordPhase "post-commit exact archive compilation entered"
+          result <- Runtime.ensureExactArchive repository oid
+          recordPhase "post-commit exact archive compilation returned"
+          pure result
+        dispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+          recordPhase "create dispatch entered"
+          result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+          recordPhase "create dispatch returned"
+          pure result
+        beforePublication _ = do
+          recordPhase "commit publication callback entered"
+          putMVar reached ()
+          takeMVar release
+          recordPhase "commit publication callback released"
+        services = defaultApplicationServices
+          { applicationBeforeCommitPublication = beforePublication,
+            applicationAfterCompilationJoin = recordPhase "post-commit compilation joined",
+            applicationCompileExact = compileExact,
+            dispatchApplicationRequest = dispatch
+          }
         injected = dependencies {serverApplicationServices = services}
     started <- withWebServer injected lockedRoot (Api.WebOptions Nothing False) $ \locked _ -> do
       basis <- repositoryBasis locked
-      delayed <- async (postJson locked "/api/v1/adrs" (createBody basis))
-      takeMVar reached
-      (busyStatus, busy) <- getJsonStatus locked "/api/v1/repository"
-      busyStatus @?= 503
-      textAt ["metadata", "as_of", "kind"] busy >>= (@?= "unavailable")
-      callProcess "git" ["-C", lockedRoot, "commit", "--allow-empty", "-m", "external move during commit publication"]
-      externalHead <- gitHead lockedRoot
-      putMVar release ()
-      mutation <- wait delayed
-      assertCommitted mutation
-      mutationOid <- textAt ["metadata", "as_of", "oid"] mutation
-      assertBool "the mutation retains its own committed OID after an external advance" (mutationOid /= externalHead)
-      retry <- getJson locked "/api/v1/repository"
-      mutationGeneration <- integerAt ["metadata", "generation"] mutation
-      retryGeneration <- integerAt ["metadata", "generation"] retry
-      assertBool "the observation after lock release has a later generation" (retryGeneration > mutationGeneration)
+      cookie <- sessionCookiePair locked
+      let delayedClient = do
+            recordPhase "create POST client started"
+            (status, value) <- postJsonStatusWithCookie
+              (requestRawWithStepAndDeadlineObserved (recordPhase . ("client " <>)) 135000000 "external-advance create")
+              locked cookie "/api/v1/adrs" (createBody basis)
+            recordPhase "create POST response received"
+            if status == 200
+              then pure value
+              else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
+      withAsync delayedClient $ \delayed -> do
+        completed <- timeout 150000000 $ (do
+          ready <- timeout 30000000 (race (takeMVar reached) (waitCatch delayed))
+          case ready of
+            Nothing -> assertFailure "external-advance commit publication callback did not enter within thirty seconds"
+            Just (Right (Left failure)) -> assertFailure ("external-advance POST failed before callback entry: " <> show failure)
+            Just (Right (Right _)) -> assertFailure "external-advance POST returned before callback entry"
+            Just (Left ()) -> pure ()
+          recordPhase "repository busy observation started"
+          (busyStatus, busy) <- timeout 10000000 (getJsonStatus locked "/api/v1/repository")
+            >>= maybe (assertFailure "external-advance repository busy observation exceeded ten seconds") pure
+          recordPhase "repository busy observation returned"
+          busyStatus @?= 503
+          textAt ["metadata", "as_of", "kind"] busy >>= (@?= "unavailable")
+          recordPhase "external Git commit started"
+          externalCommit
+          recordPhase "external Git commit returned"
+          externalHead <- timeout 10000000 (gitHead lockedRoot)
+            >>= maybe (assertFailure "external-advance HEAD lookup exceeded ten seconds") pure
+          recordPhase "external HEAD resolved"
+          releaseHeld
+          recordPhase "callback release signaled"
+          result <- timeout 60000000 (waitCatch delayed)
+          mutation <- case result of
+            Nothing -> assertFailure "external-advance POST did not finish within its sixty-second post-release guard"
+            Just (Left failure) -> assertFailure ("external-advance POST failed after callback release: " <> show failure)
+            Just (Right response) -> pure response
+          assertCommitted mutation
+          mutationOid <- textAt ["metadata", "as_of", "oid"] mutation
+          assertBool "the mutation retains its own committed OID after an external advance" (mutationOid /= externalHead)
+          retry <- timeout 10000000 (getJson locked "/api/v1/repository")
+            >>= maybe (assertFailure "external-advance later repository observation exceeded ten seconds") pure
+          mutationGeneration <- integerAt ["metadata", "generation"] mutation
+          retryGeneration <- integerAt ["metadata", "generation"] retry
+          assertBool "the observation after lock release has a later generation" (retryGeneration > mutationGeneration)
+          reportPhases
+          ) `onException` reportFailure delayed `finally` releaseHeld
+        case completed of
+          Nothing -> assertFailure "external-advance fixture exceeded its 150-second whole-operation guard"
+          Just () -> pure ()
     either (assertFailure . Text.unpack) pure started
   withSeededRepository $ \queryRoot -> do
     armed <- newIORef False
