@@ -1606,7 +1606,7 @@ testWatchRuntime = withSeededRepository $ \root -> do
     linkedPhases <- newIORef ([] :: [(Word64, String)])
     let markLinked phase = do
           at <- getMonotonicTimeNSec
-          atomicModifyIORef' linkedPhases (\phases -> ((at, phase) : phases, ()))
+          atomicModifyIORef' linkedPhases (\phases -> (take 64 ((at, phase) : phases), ()))
     linkedObserver <- Watch.observerForRegistryWithHandleHook linkedRegistry linkedBound $ \component ->
       if component == "refs" then markLinked "common refs opened" else pure ()
     linkedBefore <- Watch.repositorySnapshot linkedObserver linkedBound
@@ -1632,12 +1632,18 @@ testWatchRuntime = withSeededRepository $ \root -> do
     removeFile linkedMetadata
     sharedPeriodic <- newEmptyMVar
     markLinked "watcher start began"
-    linkedWatcher <- Watch.watchRepository linkedObserver linkedBound $ \event -> do
-      markLinked (case event of
-        Watch.RepositoryFactsChanged _ _ invalidations -> "callback " <> show invalidations
-        other -> "callback " <> show other)
-      _ <- tryPutMVar sharedPeriodic event
-      pure ()
+    linkedWatcher <- Watch.watchRepository linkedObserver linkedBound $ \event ->
+      case event of
+        Watch.RepositoryFactsChanged _ _ invalidations -> do
+          markLinked ("callback " <> show invalidations)
+          if Events.CommonReferencesChanged `elem` invalidations
+            then do
+              selected <- tryPutMVar sharedPeriodic event
+              markLinked (if selected then "exact callback selected" else "duplicate exact callback ignored")
+            else markLinked "incidental callback ignored"
+        other -> do
+          markLinked ("callback " <> show other)
+          markLinked "incidental callback ignored"
     markLinked "watcher start returned"
     (`finally` do
         Watch.stopWatching linkedWatcher
@@ -1645,12 +1651,17 @@ testWatchRuntime = withSeededRepository $ \root -> do
         sharedExists <- doesFileExist linkedCommonRef
         if sharedExists then removeFile linkedCommonRef else pure ()
         assertBool "linked watcher workers stop within the owner bound" (maybe False (const True) stopped)) $ do
+      linkedBaseline <- Watch.repositorySnapshot linkedObserver linkedBound
+      case linkedBaseline of
+        Watch.RepositorySnapshot _ _ -> markLinked "pre-write baseline captured"
+        Watch.RepositorySnapshotFailed _ failure -> assertFailure ("linked pre-write baseline failed: " <> show failure)
       markLinked "common ref write began"
       BS.writeFile linkedCommonRef (TextEncoding.encodeUtf8 (headForFacts <> "\n"))
       markLinked "common ref write returned"
       periodic <- timeout 3000000 (race (takeMVar sharedPeriodic) (Watch.awaitWatcher linkedWatcher))
       case periodic of
-        Just (Left (Watch.RepositoryFactsChanged _ _ invalidations)) ->
+        Just (Left (Watch.RepositoryFactsChanged _ _ invalidations)) -> do
+          markLinked ("selected callback consumed " <> show invalidations)
           assertBool "periodic verification detects shared metadata outside the linked worktree watch root" (Events.CommonReferencesChanged `elem` invalidations)
         Just (Left other) -> assertFailure ("linked periodic observation returned " <> show other)
         Just (Right ()) -> do
@@ -1658,9 +1669,12 @@ testWatchRuntime = withSeededRepository $ \root -> do
           assertFailure ("linked watcher ended before periodic common-reference delivery; phases(ms)="
             <> show [((at - linkedOrigin) `div` 1000000, phase) | (at, phase) <- phases])
         Nothing -> do
-          phases <- reverse <$> readIORef linkedPhases
+          markLinked "exact callback wait timed out while watcher remained live"
           observed <- timeout 3000000 (Watch.repositorySnapshot linkedObserver linkedBound)
-          let change = case (linkedRestored, observed) of
+          lateExact <- tryTakeMVar sharedPeriodic
+          markLinked (if maybe False (const True) lateExact then "exact callback available after deadline" else "no exact callback available after deadline")
+          phases <- reverse <$> readIORef linkedPhases
+          let change = case (linkedBaseline, observed) of
                 (Watch.RepositorySnapshot _ baselineFacts, Just (Watch.RepositorySnapshot _ observedFacts)) -> show (Watch.diffRepositoryFacts baselineFacts observedFacts)
                 (_, Just other) -> show other
                 (_, Nothing) -> "direct snapshot timed out"
