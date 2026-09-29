@@ -10,6 +10,8 @@ module Adrai.WebServerTest
     dependencies,
     withSeededRepository,
     getJson,
+    getJsonLabeled,
+    getJsonLabeledObserved,
     getJsonStatus,
     valueAt,
     textAt,
@@ -66,7 +68,7 @@ import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (CreateProcess (..), StdStream (CreatePipe), callProcess, createProcess, proc, readCreateProcessWithExitCode, readProcess, shell, terminateProcess, waitForProcess)
 import System.Exit (ExitCode (ExitSuccess))
-import System.IO (hGetLine)
+import System.IO (hGetLine, hFlush, stdout)
 import Numeric (readHex)
 import Data.Word (Word8, Word64)
 import Database.SQLite.Simple (Only (..))
@@ -432,7 +434,20 @@ testMutationRoutes :: IO ()
 testMutationRoutes = withSeededRepository $ \root -> do
   blockNextArchive <- newIORef False
   blockedArchive <- newIORef Nothing
+  lastPhase <- newIORef ("server not started" :: String)
+  fixtureRepository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  phaseOrigin <- getMonotonicTimeNSec
+  let recordPhase label = do
+        now <- getMonotonicTimeNSec
+        writeIORef lastPhase label
+        putStrLn ("all-six server " <> show ((now - phaseOrigin) `div` 1000000) <> " ms: " <> label)
+        hFlush stdout
+      onFailure = do
+        phase <- readIORef lastPhase
+        lock <- gitLockStatus fixtureRepository
+        putStrLn ("all-six failure; last server phase " <> phase <> ", Git lock " <> show lock)
   let compileExact repository oid = do
+        recordPhase "exact archive compilation entered"
         shouldBlock <- atomicModifyIORef' blockNextArchive (\armed -> (False, armed))
         if shouldBlock then do
           let archive = root </> ".adrai" </> "cache" </> Text.unpack (gitOidText oid) <> ".sqlite"
@@ -440,17 +455,32 @@ testMutationRoutes = withSeededRepository $ \root -> do
           createDirectory archive
           writeIORef blockedArchive (Just archive)
         else pure ()
-        Runtime.ensureExactArchive repository oid
-      services = defaultApplicationServices {applicationCompileExact = compileExact}
+        result <- Runtime.ensureExactArchive repository oid
+        recordPhase "exact archive compilation returned"
+        pure result
+      dispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+        let operation = case requestValue of
+              Api.ApiCreateRequest _ _ -> "create"
+              Api.ApiAmendRequest _ -> "amend"
+              Api.ApiScopeRequest _ -> "scope"
+              Api.ApiDomainRequest _ -> "domain"
+              Api.ApiObsoleteRequest _ -> "obsolete"
+              Api.ApiReactivateRequest _ -> "reactivate"
+              _ -> "read"
+        recordPhase ("dispatch entered " <> operation)
+        result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+        recordPhase ("dispatch returned " <> operation)
+        pure result
+      services = defaultApplicationServices {applicationCompileExact = compileExact, dispatchApplicationRequest = dispatch}
       injected = dependencies {serverApplicationServices = services}
   started <- withWebServer injected root (Api.WebOptions Nothing False) $ \running _ ->
-    testMutationRoutesOnServer root running blockNextArchive blockedArchive
+    testMutationRoutesOnServer root running blockNextArchive blockedArchive `onException` onFailure
   either (assertFailure . Text.unpack) pure started
 
 testMutationRoutesOnServer :: FilePath -> RunningServer -> IORef Bool -> IORef (Maybe FilePath) -> IO ()
 testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
   basis0 <- repositoryBasis running
-  created <- postJson running "/api/v1/adrs" (createBody basis0)
+  created <- postJsonLabeled 60000000 "all-six create" running "/api/v1/adrs" (createBody basis0)
   adr <- textAt ["data", "adr"] created
   assertCommitted created
   initiallyShown <- getJson running ("/api/v1/adrs/" <> adr)
@@ -591,7 +621,7 @@ testBoundsAndStale = withSeededServer $ \root running -> do
   huge <- bearerRequest running ("GET /app.css?" <> Text.replicate 5000 "x") []
   assertBool "encoded query bound applies to assets" ("HTTP/1.1 413" `BS.isPrefixOf` huge)
   basis0 <- repositoryBasis running
-  created <- postJson running "/api/v1/adrs" (createBody basis0)
+  created <- postJsonLabeled 60000000 "bounds create" running "/api/v1/adrs" (createBody basis0)
   adr <- textAt ["data", "adr"] created
   shown <- getJson running ("/api/v1/adrs/" <> adr)
   state <- valueAt ["data", "state_token"] shown
@@ -1884,6 +1914,7 @@ testCompilationRuntime = withSeededRepository $ \root -> do
   wait namespaceSecond >>= (@?= Right (Compilation.CompiledArtifact revision "second.sqlite"))
   Compilation.stopCompilationCoordinator namespaceCoordinator
   withSeededRepository $ \overlapRoot -> do
+    overlapRepository <- discoverRepository systemGit overlapRoot >>= either (assertFailure . show) pure
     overlapStarts <- newIORef (0 :: Int)
     overlapJoined <- newEmptyMVar
     overlapEntered <- newEmptyMVar
@@ -1897,7 +1928,8 @@ testCompilationRuntime = withSeededRepository $ \root -> do
         overlapEvidence = do
           phases <- reverse <$> readIORef overlapPhases
           headNow <- gitHead overlapRoot
-          pure ("phases=" <> show phases <> ", HEAD=" <> Text.unpack headNow)
+          lock <- gitLockStatus overlapRepository
+          pure ("phases=" <> show phases <> ", HEAD=" <> Text.unpack headNow <> ", Git lock " <> show lock)
         awaitOverlap label micros signal worker = do
           outcome <- timeout micros (race (takeMVar signal) (waitCatch worker))
           case outcome of
@@ -1924,7 +1956,7 @@ testCompilationRuntime = withSeededRepository $ \root -> do
         overlapDependencies = dependencies {serverApplicationServices = overlapServices}
     overlapStarted <- withWebServer overlapDependencies overlapRoot (Api.WebOptions Nothing False) $ \running _ -> do
       basis <- repositoryBasis running
-      bounded <- timeout 45000000 $ withAsync (postJson running "/api/v1/adrs" (createBody basis)) $ \mutation ->
+      bounded <- timeout 45000000 $ withAsync (postJsonLabeled 40000000 "one-flight overlap create" running "/api/v1/adrs" (createBody basis)) $ \mutation ->
         (do
           recordOverlap "mutation request launched"
           awaitOverlap "commit publication entry" 30000000 publicationEntered mutation
@@ -1948,7 +1980,8 @@ testCompilationRuntime = withSeededRepository $ \root -> do
             valueAt ["data"] doctor >>= \value -> assertBool "query joining post-mutation compilation receives its own projection" (value /= Aeson.Null)
             textAt ["metadata", "as_of", "oid"] doctor >>= (@?= committedHead)
             readIORef overlapStarts >>= (@?= 1)
-        ) `finally` void (tryPutMVar overlapRelease ())
+        ) `onException` (overlapEvidence >>= putStrLn . ("post-mutation compilation overlap failed: " <>))
+          `finally` void (tryPutMVar overlapRelease ())
       case bounded of
         Just () -> overlapEvidence >>= putStrLn . ("post-mutation compilation overlap: " <>)
         Nothing -> overlapEvidence >>= assertFailure . ("post-mutation compilation overlap timed out; " <>)
@@ -2093,26 +2126,39 @@ mutateExisting running adr operation fields = do
   basis <- repositoryBasis running
   shown <- getJson running ("/api/v1/adrs/" <> adr)
   state <- valueAt ["data", "state_token"] shown
-  postJson running ("/api/v1/adrs/" <> adr <> "/" <> operation) $ Aeson.object
+  postJsonLabeled 60000000 ("all-six " <> Text.unpack operation) running ("/api/v1/adrs/" <> adr <> "/" <> operation) $ Aeson.object
     ([ "repository_state" Aeson..= basis,
        "state_token" Aeson..= state,
        "actor" Aeson..= actorValue
      ] <> fields)
 
 getJson :: RunningServer -> Text -> IO Aeson.Value
-getJson running path = do
-  (status, value) <- getJsonStatus running path
+getJson = getJsonLabeled "GET"
+
+getJsonLabeled :: String -> RunningServer -> Text -> IO Aeson.Value
+getJsonLabeled = getJsonLabeledObserved 30000000 (const (pure ()))
+
+getJsonLabeledObserved :: Int -> (String -> IO ()) -> String -> RunningServer -> Text -> IO Aeson.Value
+getJsonLabeledObserved deadlineMicros observe label running path = do
+  (status, value) <- getJsonStatusWith (requestRawWithStepAndDeadlineObserved observe deadlineMicros label) running path
   if status == 200 then pure value else assertFailure ("GET " <> Text.unpack path <> " returned " <> show status <> ": " <> show value)
 
 getJsonStatus :: RunningServer -> Text -> IO (Int, Aeson.Value)
-getJsonStatus running path = do
-  response <- bearerRequest running ("GET " <> path) []
+getJsonStatus = getJsonStatusWith requestRaw
+
+getJsonStatusWith :: (Text -> BS.ByteString -> IO BS.ByteString) -> RunningServer -> Text -> IO (Int, Aeson.Value)
+getJsonStatusWith rawRequest running path = do
+  response <- bearerRequestWith rawRequest running ("GET " <> path) []
   status <- responseStatus response
   value <- decodeBody response
   pure (status, value)
 
 postJson :: RunningServer -> Text -> Aeson.Value -> IO Aeson.Value
 postJson running path body = postJsonStatus running path body >>= \(status, value) ->
+  if status == 200 then pure value else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
+
+postJsonLabeled :: Int -> String -> RunningServer -> Text -> Aeson.Value -> IO Aeson.Value
+postJsonLabeled deadlineMicros label running path body = postJsonStatusWith (requestRawWithStepAndDeadline deadlineMicros label) running path body >>= \(status, value) ->
   if status == 200 then pure value else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
 
 postJsonHeld :: MVar () -> RunningServer -> Text -> Aeson.Value -> IO Aeson.Value
@@ -2276,11 +2322,14 @@ maskedFrame finished opcode payload =
    in header <> mask <> masked
 
 bearerRequest :: RunningServer -> Text -> [(Text, Text)] -> IO BS.ByteString
-bearerRequest running requestLine extra =
+bearerRequest = bearerRequestWith requestRaw
+
+bearerRequestWith :: (Text -> BS.ByteString -> IO BS.ByteString) -> RunningServer -> Text -> [(Text, Text)] -> IO BS.ByteString
+bearerRequestWith rawRequest running requestLine extra =
   let host = Security.authorityHost (runningAuthority running)
       token = bootstrapToken running
       headers = Text.concat [name <> ": " <> value <> "\r\n" | (name, value) <- extra]
-   in request host (requestLine <> " HTTP/1.1\r\nHost: " <> host <> "\r\nAuthorization: Bearer " <> token <> "\r\n" <> headers <> "Connection: close\r\n\r\n")
+   in rawRequest host (TextEncoding.encodeUtf8 (requestLine <> " HTTP/1.1\r\nHost: " <> host <> "\r\nAuthorization: Bearer " <> token <> "\r\n" <> headers <> "Connection: close\r\n\r\n"))
 
 bootstrapToken :: RunningServer -> Text
 bootstrapToken = Text.drop (Text.length "token=") . snd . Text.breakOn "token=" . runningBootstrapUrl
@@ -2298,12 +2347,19 @@ runOwnedSocket :: Int -> Int -> (Socket -> IO value) -> IO (Maybe (Either SomeEx
 runOwnedSocket deadlineMicros port action = bracket (socket AF_INET Stream defaultProtocol) closeOwnedSocket $ \client -> do
   let address = SockAddrInet (fromIntegral port :: PortNumber) (tupleToHostAddress (127, 0, 0, 1))
       cleanup worker = do
+        startedAt <- getMonotonicTimeNSec
+        beforeClose <- poll worker
         closeOwnedSocket client
+        closedAt <- getMonotonicTimeNSec
         stopped <- timeout 2000000 (cancel worker)
+        cancelledAt <- getMonotonicTimeNSec
+        let cleanupEvidence = "; worker " <> (if maybe True (const False) beforeClose then "running" else "finished")
+              <> " before close, close " <> show ((closedAt - startedAt) `div` 1000000)
+              <> " ms, cancellation " <> show ((cancelledAt - closedAt) `div` 1000000) <> " ms"
         case stopped of
-          Nothing -> assertFailure "owned socket worker survived shutdown and bounded cancellation"
+          Nothing -> assertFailure ("owned socket worker survived shutdown and bounded cancellation" <> cleanupEvidence)
           Just () -> poll worker >>= \case
-            Nothing -> assertFailure "owned socket worker survived shutdown and bounded cancellation"
+            Nothing -> assertFailure ("owned socket worker survived shutdown and bounded cancellation" <> cleanupEvidence)
             Just _ -> pure ()
   bracket (async (trySynchronous (connect client address >> action client))) cleanup $ \worker -> do
     observed <- timeout deadlineMicros (waitCatch worker)
@@ -2318,25 +2374,55 @@ runOwnedWebSocketClient deadlineMicros port headers clientApp =
     WS.runClientWithSocket client ("127.0.0.1:" <> show port) "/api/v1/events" WS.defaultConnectionOptions headers clientApp
 
 requestRaw :: Text -> BS.ByteString -> IO BS.ByteString
-requestRaw host bytes = do
+requestRaw = requestRawWithStep "unlabeled"
+
+requestRawWithStep :: String -> Text -> BS.ByteString -> IO BS.ByteString
+requestRawWithStep = requestRawWithStepAndDeadline 30000000
+
+requestRawWithStepAndDeadline :: Int -> String -> Text -> BS.ByteString -> IO BS.ByteString
+requestRawWithStepAndDeadline = requestRawWithStepAndDeadlineObserved (const (pure ()))
+
+requestRawWithStepAndDeadlineObserved :: (String -> IO ()) -> Int -> String -> Text -> BS.ByteString -> IO BS.ByteString
+requestRawWithStepAndDeadlineObserved observe deadlineMicros step host bytes = do
   port <- either assertFailure pure (authorityPort host)
   let requestLine = BS8.takeWhile (/= '\r') bytes
       route = case BS8.words requestLine of
         method : target : _ -> BS8.unpack method <> " " <> BS8.unpack (BS8.takeWhile (/= '?') target)
         _ -> "unrecognized request"
+  startedAt <- getMonotonicTimeNSec
   phase <- newIORef ("connecting" :: String)
-  outcome <- runOwnedSocket 30000000 port $ \client -> do
-    writeIORef phase "sending"
+  milestones <- newIORef [("connecting", startedAt)]
+  let mark label = do
+        now <- getMonotonicTimeNSec
+        writeIORef phase label
+        atomicModifyIORef' milestones (\events -> ((label, now) : events, ()))
+        observe label
+      progress label = writeIORef phase label >> observe label
+      evidence = do
+        current <- readIORef phase
+        events <- reverse <$> readIORef milestones
+        now <- getMonotonicTimeNSec
+        let elapsed = (now - startedAt) `div` 1000000
+            trace = [(label, (at - startedAt) `div` 1000000) | (label, at) <- events]
+        pure (" for " <> route <> " [" <> step <> "] after " <> show elapsed <> " ms; phase " <> current <> "; milestones(ms) " <> show trace)
+  observe "connecting"
+  attempted <- trySynchronous $ runOwnedSocket deadlineMicros port $ \client -> do
+    mark "connected; sending request"
     sendAll client bytes
-    writeIORef phase "receiving"
-    receiveAll client []
+    mark "request sent; awaiting first response byte"
+    receiveAllWithProgress mark progress client []
+  outcome <- case attempted of
+    Left failure -> do
+      observed <- evidence
+      assertFailure ("HTTP owned socket failed" <> observed <> ": " <> show failure)
+    Right value -> pure value
   case outcome of
     Nothing -> do
-      observed <- readIORef phase
-      assertFailure ("HTTP response timed out for " <> route <> " while " <> observed)
+      observed <- evidence
+      assertFailure ("HTTP response timed out" <> observed)
     Just (Left failure) -> do
-      observed <- readIORef phase
-      assertFailure ("HTTP response failed for " <> route <> " while " <> observed <> ": " <> show failure)
+      observed <- evidence
+      assertFailure ("HTTP response failed" <> observed <> ": " <> show failure)
     Just (Right response) -> pure response
 
 requestRawHeld :: MVar () -> Text -> BS.ByteString -> IO BS.ByteString
@@ -2357,13 +2443,35 @@ requestRawHeld responseGate host bytes = do
     Just _ -> ownedResult "controlled HTTP response" outcome
 
 receiveAll :: Socket -> [BS.ByteString] -> IO BS.ByteString
-receiveAll client chunks = do
+receiveAll = receiveAllWithProgress (const (pure ())) (const (pure ()))
+
+receiveAllWithProgress :: (String -> IO ()) -> (String -> IO ()) -> Socket -> [BS.ByteString] -> IO BS.ByteString
+receiveAllWithProgress mark progress client chunks = do
   let accumulated = BS.concat (reverse chunks)
-  if httpResponseComplete accumulated then pure accumulated else do
-    received <- try @SomeException (recv client 4096)
+  if httpResponseComplete accumulated then mark "declared response complete" >> pure accumulated else do
+    received <- trySynchronous (recv client 4096)
     case received of
       Left exception -> if BS.null accumulated then throwIO exception else assertFailure ("HTTP response ended before its declared body: " <> show exception)
-      Right chunk -> if BS.null chunk then pure accumulated else receiveAll client (chunk : chunks)
+      Right chunk -> if BS.null chunk
+        then mark "response EOF" >> pure accumulated
+        else do
+          let next = accumulated <> chunk
+              (_, oldSuffix) = BS.breakSubstring "\r\n\r\n" accumulated
+              (headers, suffix) = BS.breakSubstring "\r\n\r\n" next
+          when (BS.null accumulated) (mark "first response byte received")
+          if BS.null oldSuffix && not (BS.null suffix)
+            then mark "response headers complete"
+            else pure ()
+          if BS.null suffix
+            then progress ("receiving headers: " <> show (BS.length next) <> " bytes")
+            else do
+              let bodyBytes = BS.length (BS.drop 4 suffix)
+                  lengths = [count | line <- BS8.lines headers,
+                    "Content-Length:" `BS.isPrefixOf` line,
+                    Just (count, _) <- [BS8.readInt (BS8.dropWhile (== ' ') (BS.drop (BS.length "Content-Length:") line))]]
+              progress ("receiving body: " <> show bodyBytes <> " bytes" <>
+                case lengths of [count] -> " of " <> show count; _ -> " (chunked or EOF framed)")
+          receiveAllWithProgress mark progress client (chunk : chunks)
 
 httpResponseComplete :: BS.ByteString -> Bool
 httpResponseComplete response =

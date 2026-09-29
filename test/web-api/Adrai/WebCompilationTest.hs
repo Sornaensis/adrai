@@ -48,6 +48,7 @@ import Control.Exception
     SomeException,
     bracket,
     fromException,
+    onException,
     throwIO,
   )
 import Control.Monad (unless, void, when)
@@ -283,6 +284,7 @@ testConcurrentCliPublication = Server.withSeededRepository $ \root -> do
   pauseOnce <- newIORef True
   compilePhase <- newIORef ("HTTP exact producer not started" :: Text)
   phaseEvents <- newIORef ([] :: [(Text, Word64)])
+  clientPhase <- newIORef ("HTTP client not launched" :: String)
   archiveReady <- newEmptyMVar
   releaseHttp <- newEmptyMVar
   let recordProducerPhase phase = do
@@ -305,28 +307,45 @@ testConcurrentCliPublication = Server.withSeededRepository $ \root -> do
         pure (Right archive)
       services = defaultApplicationServices {applicationCompileExact = compileExact}
       dependencies = Server.dependencies {serverApplicationServices = services}
+  -- The HTTP producer waits through two CLI commands. Bound that hold to 60s;
+  -- the 80s socket guard then covers the existing 15s post-release check and
+  -- leaves 5s for scheduling and cancellation.
   started <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ ->
-    withAsync (Server.getJson running ("/api/v1/doctor?at=" <> gitOidText revisionA)) $ \outstanding -> do
-      awaitSignal "validated HTTP archive A" archiveReady [outstanding]
-      cliDoctorA <- runAdraiJson executable root ["doctor", "--at", Text.unpack (gitOidText revisionA), "--json"]
-      Server.textAt ["revision"] cliDoctorA >>= (@?= gitOidText revisionA)
-      created <-
-        runAdraiJson executable root
-          [ "create",
-            "--title", "Concurrent CLI publication",
-            "--summary", "Publish revision B while HTTP retains revision A.",
-            "--body", "## Decision\nKeep exact web compilation responses revision-bound.\n",
-            "--actor", "llm:web-compilation-test",
-            "--model", "fixture-model",
-            "--domain", "runtime.web",
-            "--applies-to", "seed.txt",
-            "--json"
-          ]
-      revisionB <- Server.textAt ["commit"] created
-      assertBool "the CLI mutation advances to revision B" (revisionB /= gitOidText revisionA)
-      Server.gitHead root >>= (@?= revisionB)
+    withAsync (Server.getJsonLabeledObserved 80000000 (writeIORef clientPhase) "outstanding revision-A doctor" running ("/api/v1/doctor?at=" <> gitOidText revisionA)) $ \outstanding -> do
+      held <- timeout 60000000 $ do
+        awaitSignal "validated HTTP archive A" archiveReady [outstanding]
+        cliDoctorA <- runAdraiJson executable root ["doctor", "--at", Text.unpack (gitOidText revisionA), "--json"]
+        Server.textAt ["revision"] cliDoctorA >>= (@?= gitOidText revisionA)
+        created <-
+          runAdraiJson executable root
+            [ "create",
+              "--title", "Concurrent CLI publication",
+              "--summary", "Publish revision B while HTTP retains revision A.",
+              "--body", "## Decision\nKeep exact web compilation responses revision-bound.\n",
+              "--actor", "llm:web-compilation-test",
+              "--model", "fixture-model",
+              "--domain", "runtime.web",
+              "--applies-to", "seed.txt",
+              "--json"
+            ]
+        revisionB <- Server.textAt ["commit"] created
+        assertBool "the CLI mutation advances to revision B" (revisionB /= gitOidText revisionA)
+        Server.gitHead root >>= (@?= revisionB)
+        pure revisionB
+      revisionB <- case held of
+        Just revision -> pure revision
+        Nothing -> do
+          client <- readIORef clientPhase
+          phases <- reverse <$> readIORef phaseEvents
+          lock <- gitLockStatus repository
+          void (tryPutMVar releaseHttp ())
+          assertFailure ("revision-A HTTP hold/CLI phase exceeded 60s; client phase " <> client <> ", producer phases " <> show phases <> ", lock " <> show lock)
       putMVar releaseHttp ()
-      retained <- requireWorker "outstanding HTTP revision A" 15000000 outstanding
+      retained <- requireWorker "outstanding HTTP revision A" 15000000 outstanding `onException` (do
+        phases <- reverse <$> readIORef phaseEvents
+        client <- readIORef clientPhase
+        lock <- gitLockStatus repository
+        putStrLn ("outstanding HTTP revision A failed; client phase " <> client <> ", producer phases " <> show phases <> ", lock " <> show lock))
       Server.textAt ["metadata", "as_of", "oid"] retained >>= (@?= gitOidText revisionA)
       Server.textAt ["data", "revision"] retained >>= (@?= gitOidText revisionA)
       fresh <- getDoctorAfterCliPublication repository compilePhase phaseEvents running revisionB
