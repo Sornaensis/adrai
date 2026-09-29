@@ -1616,14 +1616,14 @@ try {
         $DeadlineSeconds = switch ($Mode) {
             'Complete' { 1800 }
             'List' { 60 }
-            'Focused' { 300 }
+            'Focused' { 600 }
             'SelfCheck' { 45 }
             'Build' { 1200 }
         }
     }
     if (($Mode -eq 'Complete' -and $DeadlineSeconds -gt 1800) -or
         ($Mode -eq 'List' -and $DeadlineSeconds -gt 60) -or
-        ($Mode -eq 'Focused' -and $DeadlineSeconds -gt 300)) {
+        ($Mode -eq 'Focused' -and $DeadlineSeconds -gt 600)) {
         throw "DeadlineSeconds exceeds the maximum for mode '$Mode'."
     }
     if ($CleanupReserveSeconds -ge $DeadlineSeconds) { throw 'CleanupReserveSeconds must be smaller than DeadlineSeconds.' }
