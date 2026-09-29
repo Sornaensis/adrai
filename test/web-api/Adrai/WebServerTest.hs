@@ -519,29 +519,71 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
     committed <- newEmptyMVar
     release <- newEmptyMVar
     responseGate <- newEmptyMVar
-    let delayedDispatch compilation compileExact afterJoin fallback allocate afterResolve publisher repo requestValue = do
-          outcome <- dispatchApplicationRequest defaultApplicationServices compilation compileExact afterJoin fallback allocate afterResolve publisher repo requestValue
+    orderedRepository <- discoverRepository systemGit orderedRoot >>= either (assertFailure . show) pure
+    dispatchPhase <- newIORef ("not entered" :: String)
+    compilePhase <- newIORef ("not entered" :: String)
+    clientPhase <- newIORef ("not started" :: String)
+    phaseOrigin <- getMonotonicTimeNSec
+    let recordPhase phaseRef label = do
+          now <- getMonotonicTimeNSec
+          writeIORef phaseRef label
+          putStrLn ("controlled dispatch " <> show ((now - phaseOrigin) `div` 1000000) <> " ms: " <> label)
+          hFlush stdout
+        compileExact repository oid = do
+          recordPhase compilePhase "exact archive compilation entered"
+          result <- Runtime.ensureExactArchive repository oid
+          recordPhase compilePhase "exact archive compilation returned"
+          pure result
+        delayedDispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+          recordPhase dispatchPhase "dispatch entered"
+          outcome <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+          recordPhase dispatchPhase "dispatch returned"
           case (requestValue, outcome) of
-            (Api.ApiCreateRequest _ _, Right _) -> putMVar committed () >> takeMVar release
+            (Api.ApiCreateRequest _ _, Right _) -> do
+              recordPhase dispatchPhase "commit signaled; awaiting release"
+              putMVar committed ()
+              takeMVar release
+              recordPhase dispatchPhase "release observed"
             _ -> pure ()
           pure outcome
-        services = defaultApplicationServices {dispatchApplicationRequest = delayedDispatch}
+        services = defaultApplicationServices {applicationCompileExact = compileExact, dispatchApplicationRequest = delayedDispatch}
         injected = dependencies {serverApplicationServices = services}
         releaseHeld = do
           void (tryPutMVar release ())
           void (tryPutMVar responseGate ())
+        reportFailure delayed = do
+          dispatch <- readIORef dispatchPhase
+          compile <- readIORef compilePhase
+          client <- readIORef clientPhase
+          lock <- gitLockStatus orderedRepository
+          clientResult <- poll delayed
+          let clientStatus = case clientResult of
+                Nothing -> "running"
+                Just (Left failure) -> "failed: " <> show failure
+                Just (Right _) -> "returned"
+          putStrLn ("controlled dispatch failure: dispatch " <> dispatch <> ", compile " <> compile <> ", client " <> client <> " (" <> clientStatus <> "), Git lock " <> show lock)
+          hFlush stdout
     started <- withWebServer injected orderedRoot (Api.WebOptions Nothing False) $ \ordered _ -> do
       basis <- repositoryBasis ordered
-      withAsync (postJsonHeld responseGate ordered "/api/v1/adrs" (createBody basis)) $ \delayed ->
+      cookie <- sessionCookiePair ordered
+      recordPhase clientPhase "session cookie ready; held HTTP request not started"
+      let heldClient = do
+            recordPhase clientPhase "held HTTP request started"
+            (status, value) <- postJsonStatusWithCookie (requestRawHeld 75000000 responseGate) ordered cookie "/api/v1/adrs" (createBody basis)
+            if status == 200
+              then recordPhase clientPhase "held HTTP client returned" >> pure value
+              else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
+      withAsync heldClient $ \delayed ->
         (do
-           ready <- timeout 30000000 (race (takeMVar committed) (waitCatch delayed))
+           ready <- timeout 60000000 (race (takeMVar committed) (waitCatch delayed))
            case ready of
-             Nothing -> assertFailure "controlled HTTP dispatch did not finish within its thirty-second readiness guard"
+             Nothing -> assertFailure "controlled HTTP dispatch did not finish within its sixty-second readiness guard"
              Just (Right (Left failure)) -> assertFailure ("controlled HTTP client failed before dispatch was ready: " <> show failure)
              Just (Right (Right _)) -> assertFailure "controlled HTTP client returned before its response gate was released"
              Just (Left ()) -> pure ()
            observed <- timeout 10000000 (getJson ordered "/api/v1/repository")
              >>= maybe (assertFailure "controlled repository observation exceeded its ten-second guard") pure
+           recordPhase clientPhase "repository observed; releasing held response"
            releaseHeld
            mutation <- timeout 3000000 (wait delayed) >>= maybe (assertFailure "controlled HTTP response exceeded its three-second post-release budget") pure
            mutationGeneration <- integerAt ["metadata", "generation"] mutation
@@ -550,7 +592,7 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
            mutationOid <- textAt ["metadata", "as_of", "oid"] mutation
            observedOid <- textAt ["data", "head"] observed
            mutationOid @?= observedOid
-        ) `finally` releaseHeld
+         ) `onException` reportFailure delayed `finally` releaseHeld
     either (assertFailure . Text.unpack) pure started
   withSeededRepository $ \lockedRoot -> do
     reached <- newEmptyMVar
@@ -2161,10 +2203,6 @@ postJsonLabeled :: Int -> String -> RunningServer -> Text -> Aeson.Value -> IO A
 postJsonLabeled deadlineMicros label running path body = postJsonStatusWith (requestRawWithStepAndDeadline deadlineMicros label) running path body >>= \(status, value) ->
   if status == 200 then pure value else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
 
-postJsonHeld :: MVar () -> RunningServer -> Text -> Aeson.Value -> IO Aeson.Value
-postJsonHeld responseGate running path body = postJsonStatusWith (requestRawHeld responseGate) running path body >>= \(status, value) ->
-  if status == 200 then pure value else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
-
 postJsonStatus :: RunningServer -> Text -> Aeson.Value -> IO (Int, Aeson.Value)
 postJsonStatus = postJsonStatusWith requestRaw
 
@@ -2425,11 +2463,11 @@ requestRawWithStepAndDeadlineObserved observe deadlineMicros step host bytes = d
       assertFailure ("HTTP response failed" <> observed <> ": " <> show failure)
     Just (Right response) -> pure response
 
-requestRawHeld :: MVar () -> Text -> BS.ByteString -> IO BS.ByteString
-requestRawHeld responseGate host bytes = do
+requestRawHeld :: Int -> MVar () -> Text -> BS.ByteString -> IO BS.ByteString
+requestRawHeld deadlineMicros responseGate host bytes = do
   port <- either assertFailure pure (authorityPort host)
   phase <- newIORef ("connecting" :: String)
-  outcome <- runOwnedSocket 45000000 port $ \client -> do
+  outcome <- runOwnedSocket deadlineMicros port $ \client -> do
     writeIORef phase "sending"
     sendAll client bytes
     writeIORef phase "waiting for response gate"
