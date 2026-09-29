@@ -2054,45 +2054,80 @@ testCompilationRuntime = withSeededRepository $ \root -> do
             Nothing -> do
               evidence <- overlapEvidence
               assertFailure (label <> " signal timed out; " <> evidence)
-    let overlapServices = defaultApplicationServices
+    let originalDispatch = dispatchApplicationRequest defaultApplicationServices
+        tracedDispatch coordinator compileForDispatch afterJoin fallback allocate afterResolution publish bound apiRequest = do
+          let route = case apiRequest of
+                Api.ApiCreateRequest _ _ -> "mutation"
+                Api.ApiDoctorRequest _ -> "doctor"
+                _ -> "other"
+          recordOverlap (route <> " server dispatch entered")
+          result <- originalDispatch coordinator compileForDispatch afterJoin fallback allocate afterResolution publish bound apiRequest
+            `onException` recordOverlap (route <> " server dispatch failed or cancelled")
+          recordOverlap (route <> " server dispatch completed")
+          pure result
+        overlapServices = defaultApplicationServices
           { applicationCompileExact = \repositoryToCompile oid -> do
               count <- atomicModifyIORef' overlapStarts (\value -> let next = value + 1 in (next, next))
               recordOverlap ("physical producer " <> show count <> " entered")
               if count == 1 then putMVar overlapEntered () >> takeMVar overlapRelease else pure ()
-              recordOverlap ("physical producer " <> show count <> " released")
-              Runtime.ensureExactArchive repositoryToCompile oid,
+              recordOverlap ("physical producer " <> show count <> " release observed; exact archive entered")
+              archive <- Runtime.ensureExactArchiveWithColdPathObserver
+                (recordOverlap ("physical producer " <> show count <> " cold archive compilation entered")) repositoryToCompile oid
+                `onException` recordOverlap ("physical producer " <> show count <> " exact archive failed or cancelled")
+              recordOverlap ("physical producer " <> show count <> " exact archive completed " <> either (const "with error") (const "successfully") archive)
+              pure archive,
+            dispatchApplicationRequest = tracedDispatch,
             applicationAfterCompilationJoin = recordOverlap "compilation joined" >> putMVar overlapJoined (),
             applicationBeforeCommitPublication = \_ -> recordOverlap "commit publication entered" >> putMVar publicationEntered ()
           }
         overlapDependencies = dependencies {serverApplicationServices = overlapServices}
-    overlapStarted <- withWebServer overlapDependencies overlapRoot (Api.WebOptions Nothing False) $ \running _ -> do
+    overlapStarted <- withWebServer overlapDependencies overlapRoot (Api.WebOptions Nothing False) $ \running serverWorker -> do
+      let observeWorker label worker = poll worker >>= \case
+            Nothing -> recordOverlap (label <> " running")
+            Just (Left _) -> recordOverlap (label <> " failed or cancelled")
+            Just (Right _) -> recordOverlap (label <> " completed")
       basis <- repositoryBasis running
-      bounded <- timeout 45000000 $ withAsync (postJsonLabeled 40000000 "one-flight overlap create" running "/api/v1/adrs" (createBody basis)) $ \mutation ->
-        (do
+      let createOverlap = postJsonStatusWith
+            (requestRawWithStepAndDeadlineObserved (recordOverlap . ("mutation HTTP " <>)) 145000000 "one-flight overlap create")
+            running "/api/v1/adrs" (createBody basis) >>= \(status, value) ->
+              if status == 200 then pure value else assertFailure ("POST returned HTTP " <> show status <> ": " <> show value)
+      bounded <- timeout 150000000 $ withAsync createOverlap $ \mutation ->
+        ((do
           recordOverlap "mutation request launched"
           awaitOverlap "commit publication entry" 30000000 publicationEntered mutation
-          committedHead <- gitHead overlapRoot
+          committedHead <- timeout 10000000 (gitHead overlapRoot) >>= \case
+            Just value -> pure value
+            Nothing -> assertFailure "committed HEAD lookup timed out after publication"
           recordOverlap ("committed HEAD " <> Text.unpack committedHead)
           awaitOverlap "post-mutation compilation join" 15000000 overlapJoined mutation
           awaitOverlap "post-mutation producer entry" 15000000 overlapEntered mutation
-          withAsync (getJson running "/api/v1/doctor") $ \query -> do
-            recordOverlap "concurrent doctor request launched"
-            awaitOverlap "concurrent query compilation join" 15000000 overlapJoined query
-            putMVar overlapRelease ()
-            recordOverlap "physical producer released by test"
-            committed <- wait mutation
-            recordOverlap "mutation response received"
-            assertCommitted committed
-            textAt ["data", "commit"] committed >>= (@?= committedHead)
-            valueAt ["data", "indexed"] committed >>= (@?= Aeson.Bool True)
-            textAt ["metadata", "as_of", "oid"] committed >>= (@?= committedHead)
-            doctor <- wait query
-            recordOverlap "concurrent doctor response received"
-            valueAt ["data"] doctor >>= \value -> assertBool "query joining post-mutation compilation receives its own projection" (value /= Aeson.Null)
-            textAt ["metadata", "as_of", "oid"] doctor >>= (@?= committedHead)
-            readIORef overlapStarts >>= (@?= 1)
-        ) `onException` (overlapEvidence >>= putStrLn . ("post-mutation compilation overlap failed: " <>))
-          `finally` void (tryPutMVar overlapRelease ())
+          withAsync (getJsonLabeledObserved 70000000 (recordOverlap . ("doctor HTTP " <>)) "one-flight overlap doctor" running "/api/v1/doctor") $ \query ->
+            (do
+               recordOverlap "concurrent doctor request launched"
+               awaitOverlap "concurrent query compilation join" 15000000 overlapJoined query
+               putMVar overlapRelease ()
+               recordOverlap "physical producer released by test"
+               committedOutcome <- timeout 45000000 (wait mutation)
+               committed <- case committedOutcome of
+                 Just value -> pure value
+                 Nothing -> overlapEvidence >>= assertFailure . ("mutation response did not complete within forty-five seconds after producer release; " <>)
+               recordOverlap "mutation response received"
+               assertCommitted committed
+               textAt ["data", "commit"] committed >>= (@?= committedHead)
+               valueAt ["data", "indexed"] committed >>= (@?= Aeson.Bool True)
+               textAt ["metadata", "as_of", "oid"] committed >>= (@?= committedHead)
+               doctor <- wait query
+               recordOverlap "concurrent doctor response received"
+               valueAt ["data"] doctor >>= \value -> assertBool "query joining post-mutation compilation receives its own projection" (value /= Aeson.Null)
+               textAt ["metadata", "as_of", "oid"] doctor >>= (@?= committedHead)
+               readIORef overlapStarts >>= (@?= 1)
+            ) `onException` do
+              observeWorker "doctor client" query
+        ) `onException` do
+          observeWorker "mutation client" mutation
+          observeWorker "server" serverWorker
+          overlapEvidence >>= putStrLn . ("post-mutation compilation overlap failed: " <>)
+        ) `finally` void (tryPutMVar overlapRelease ())
       case bounded of
         Just () -> overlapEvidence >>= putStrLn . ("post-mutation compilation overlap: " <>)
         Nothing -> overlapEvidence >>= assertFailure . ("post-mutation compilation overlap timed out; " <>)
