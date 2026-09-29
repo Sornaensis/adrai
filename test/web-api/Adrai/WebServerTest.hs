@@ -2196,21 +2196,24 @@ runOwnedWebSocketClient deadlineMicros port headers clientApp =
 requestRaw :: Text -> BS.ByteString -> IO BS.ByteString
 requestRaw host bytes = do
   port <- either assertFailure pure (authorityPort host)
+  let requestLine = BS8.takeWhile (/= '\r') bytes
+      route = case BS8.words requestLine of
+        method : target : _ -> BS8.unpack method <> " " <> BS8.unpack (BS8.takeWhile (/= '?') target)
+        _ -> "unrecognized request"
   phase <- newIORef ("connecting" :: String)
   outcome <- runOwnedSocket 30000000 port $ \client -> do
     writeIORef phase "sending"
     sendAll client bytes
     writeIORef phase "receiving"
     receiveAll client []
-  let requestLine = BS8.takeWhile (/= '\r') bytes
-      route = case BS8.words requestLine of
-        method : target : _ -> BS8.unpack method <> " " <> BS8.unpack (BS8.takeWhile (/= '?') target)
-        _ -> "unrecognized request"
   case outcome of
     Nothing -> do
       observed <- readIORef phase
       assertFailure ("HTTP response timed out for " <> route <> " while " <> observed)
-    Just _ -> ownedResult "HTTP response" outcome
+    Just (Left failure) -> do
+      observed <- readIORef phase
+      assertFailure ("HTTP response failed for " <> route <> " while " <> observed <> ": " <> show failure)
+    Just (Right response) -> pure response
 
 requestRawHeld :: MVar () -> Text -> BS.ByteString -> IO BS.ByteString
 requestRawHeld responseGate host bytes = do
