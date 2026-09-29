@@ -66,9 +66,9 @@ import System.Directory (Permissions (writable), copyFile, createDirectory, crea
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process (CreateProcess (..), StdStream (CreatePipe), callProcess, createProcess, proc, readCreateProcessWithExitCode, readProcess, shell, terminateProcess, waitForProcess)
+import System.Process (CreateProcess (..), StdStream (CreatePipe, Inherit), callProcess, createProcess, getProcessExitCode, proc, readCreateProcessWithExitCode, readProcess, shell, terminateProcess, waitForProcess)
 import System.Exit (ExitCode (ExitSuccess))
-import System.IO (hGetLine, hFlush, stdout)
+import System.IO (hClose, hGetLine, hFlush, stdout)
 import Numeric (readHex)
 import Data.Word (Word8, Word64)
 import Database.SQLite.Simple (Only (..))
@@ -825,19 +825,65 @@ assertBuiltRejected executable cwdPath arguments = do
 
 exerciseBuiltWeb :: FilePath -> FilePath -> IO ()
 exerciseBuiltWeb executable root = do
-  let config = (proc executable ["web", "--no-open"]) {cwd = Just root, std_out = CreatePipe, std_err = CreatePipe}
-  (_, output, _, processHandle) <- createProcess config
-  handle <- maybe (assertFailure "web stdout pipe missing") pure output
-  ready <- timeout 5000000 (hGetLine handle)
-  line <- maybe (terminateProcess processHandle >> waitForProcess processHandle >> assertFailure "built web command readiness timed out") pure ready
-  let url = Text.pack (drop 19 line)
-      host = Text.takeWhile (/= '/') (Text.drop (Text.length "http://") url)
-      token = Text.drop (Text.length "token=") (snd (Text.breakOn "token=" url))
-  response <- request host ("GET /api/v1/repository HTTP/1.1\r\nHost: " <> host <> "\r\nAuthorization: Bearer " <> token <> "\r\nConnection: close\r\n\r\n")
-  assertBool "built executable serves a request" ("HTTP/1.1 200" `BS.isPrefixOf` response)
-  terminateProcess processHandle
-  _ <- waitForProcess processHandle
-  pure ()
+  startedAt <- getMonotonicTimeNSec
+  phaseRef <- newIORef ("launching child" :: String)
+  let config = (proc executable ["web", "--no-open"]) {cwd = Just root, std_out = CreatePipe, std_err = Inherit}
+      cleanup (_, output, _, processHandle) =
+        (do state <- getProcessExitCode processHandle
+            case state of
+              Nothing -> do
+                terminated <- trySynchronous (terminateProcess processHandle)
+                case terminated of
+                  Left failure -> putStrLn ("built web termination reported " <> show failure)
+                  Right () -> pure ()
+              Just _ -> pure ()
+            stopped <- timeout 10000000 (waitForProcess processHandle)
+            case stopped of
+              Just _ -> pure ()
+              Nothing -> do
+                current <- readIORef phaseRef
+                now <- getMonotonicTimeNSec
+                exit <- getProcessExitCode processHandle
+                assertFailure ("built web cleanup wait timed out in " <> root <> " after " <> show (elapsedMs now)
+                  <> " ms; phase " <> current <> "; child " <> maybe "running" show exit))
+          `finally` maybe (pure ()) hClose output
+      elapsedMs now = (now - startedAt) `div` 1000000
+  bracket (createProcess config) cleanup $ \(_, output, _, processHandle) -> do
+    let diagnosis phase = do
+          now <- getMonotonicTimeNSec
+          state <- getProcessExitCode processHandle
+          pure ("built web " <> phase <> " in " <> root <> " after " <> show (elapsedMs now)
+            <> " ms; child " <> maybe "running" show state)
+        failWith context = do
+          message <- diagnosis context
+          writeIORef phaseRef message
+          assertFailure message
+    handle <- maybe (failWith "stdout pipe missing") pure output
+    putStrLn ("built web launched in " <> root)
+    hFlush stdout
+    writeIORef phaseRef "awaiting readiness line"
+    observed <- trySynchronous (timeout 30000000 (hGetLine handle))
+    line <- case observed of
+      Left failure -> failWith ("readiness read failed: " <> show failure)
+      Right Nothing -> failWith "readiness timed out"
+      Right (Just readyLine) -> pure readyLine
+    url <- maybe (failWith "returned an invalid readiness line") pure
+      (Text.stripPrefix "ADRAI web ready at " (Text.pack line))
+    let host = Text.takeWhile (/= '/') (Text.drop (Text.length "http://") url)
+        token = Text.drop (Text.length "token=") (snd (Text.breakOn "token=" url))
+    if not ("http://" `Text.isPrefixOf` url && not (Text.null host) && not (Text.null token))
+      then failWith "returned an invalid bootstrap URL"
+      else pure ()
+    readyAt <- getMonotonicTimeNSec
+    putStrLn ("built web ready in " <> root <> " after " <> show (elapsedMs readyAt) <> " ms")
+    hFlush stdout
+    writeIORef phaseRef "requesting authenticated repository"
+    attempted <- trySynchronous $ requestRawWithStep "built web authenticated repository" host
+      (TextEncoding.encodeUtf8 ("GET /api/v1/repository HTTP/1.1\r\nHost: " <> host <> "\r\nAuthorization: Bearer " <> token <> "\r\nConnection: close\r\n\r\n"))
+    response <- either (\failure -> failWith ("authenticated request failed: " <> show failure)) pure attempted
+    if "HTTP/1.1 200" `BS.isPrefixOf` response
+      then writeIORef phaseRef "authenticated repository returned HTTP 200"
+      else failWith "authenticated request returned non-200"
 
 testEventRuntime :: IO ()
 testEventRuntime = withSeededServer $ \root running -> do
