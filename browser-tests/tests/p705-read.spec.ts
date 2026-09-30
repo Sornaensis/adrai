@@ -43,6 +43,18 @@ test('B01 bootstrap, reload and new tab keep secrets out and snapshots readable'
   test.setTimeout(45_000);
   await withP705Server({ scenarioId: 'B01', seed: 'main' }, async fixture => {
     const context = await browser.newContext();
+    const started = Date.now();
+    let phase = 'bootstrap';
+    let navigation = 0;
+    const requests: Array<{ navigation: number; phase: string; elapsed_ms: number; path: string; status?: number; code?: string; as_of?: string; head?: string }> = [];
+    const sockets: Array<{ navigation: number; phase: string; elapsed_ms: number; sent?: string; schema?: string; generation?: string; as_of?: string; kind?: string; facts?: string[] }> = [];
+    const responseReads: Promise<void>[] = [];
+    const requestNavigations = new WeakMap<object, number>();
+    const safeOid = (value: unknown) => typeof value === 'string' && oid.test(value) ? value : undefined;
+    const safeCode = (value: unknown) => typeof value === 'string' && /^[a-z0-9-]{1,64}$/.test(value) ? value : undefined;
+    const recordRequest = (fact: (typeof requests)[number]) => { if (requests.length < 64) requests.push(fact); };
+    const recordSocket = (fact: (typeof sockets)[number]) => { if (sockets.length < 64) sockets.push(fact); };
+    let actionFailed = false;
     try {
       const page = await context.newPage();
       const token = new URL(fixture.bootstrapUrl).searchParams.get('token');
@@ -51,18 +63,57 @@ test('B01 bootstrap, reload and new tab keep secrets out and snapshots readable'
       const pageErrors: string[] = [];
       let authenticatedEvents = 0;
       page.on('request', request => {
-        if (['/app.js', '/app.css'].includes(new URL(request.url()).pathname)) assetPageUrls.push(page.url());
+        const path = new URL(request.url()).pathname;
+        if (['/app.js', '/app.css'].includes(path)) assetPageUrls.push(page.url());
+        if (path === '/api/v1/repository' || path === '/api/v1/search') {
+          requestNavigations.set(request, navigation);
+          recordRequest({ navigation, phase: 'request', elapsed_ms: Date.now() - started, path });
+        }
+      });
+      page.on('requestfailed', request => {
+        const path = new URL(request.url()).pathname;
+        if (path === '/api/v1/repository' || path === '/api/v1/search') {
+          recordRequest({ navigation: requestNavigations.get(request) ?? navigation, phase: 'request-failed', elapsed_ms: Date.now() - started, path });
+        }
+      });
+      page.on('response', response => {
+        const path = new URL(response.url()).pathname;
+        if (path !== '/api/v1/repository' && path !== '/api/v1/search') return;
+        const fact: (typeof requests)[number] = { navigation: requestNavigations.get(response.request()) ?? navigation, phase: 'response', elapsed_ms: Date.now() - started, path, status: response.status() };
+        recordRequest(fact);
+        if (responseReads.length < 64) responseReads.push(response.json().then(body => {
+          fact.code = safeCode(body.error?.code);
+          fact.as_of = safeOid(body.metadata?.as_of?.oid);
+          if (path === '/api/v1/repository') fact.head = safeOid(body.data?.head);
+        }).catch(() => { fact.code = 'unreadable'; }));
       });
       page.on('pageerror', error => pageErrors.push(error.message));
       page.on('websocket', socket => {
+        const socketNavigation = navigation;
+        recordSocket({ navigation: socketNavigation, phase: 'created', elapsed_ms: Date.now() - started });
+        socket.on('framesent', frame => {
+          try {
+            const body = JSON.parse(frame.payload.toString());
+            recordSocket({ navigation: socketNavigation, phase: 'sent', elapsed_ms: Date.now() - started,
+              sent: body.type === 'authenticate' || body.type === 'active-files' ? body.type : 'other' });
+          } catch { recordSocket({ navigation: socketNavigation, phase: 'sent-unreadable', elapsed_ms: Date.now() - started }); }
+        });
         socket.on('framereceived', frame => {
           try {
             const body = JSON.parse(frame.payload.toString());
+            recordSocket({ navigation: socketNavigation, phase: 'received', elapsed_ms: Date.now() - started,
+              schema: body.schema === 'adrai/events/v1' ? body.schema : 'other',
+              generation: typeof body.generation === 'string' && /^\d{1,20}$/.test(body.generation) ? body.generation : undefined,
+              as_of: safeOid(body.as_of?.oid), kind: safeCode(body.event?.type),
+              facts: Array.isArray(body.event?.facts) ? body.event.facts.slice(0, 32).map(safeCode).filter((fact: string | undefined): fact is string => !!fact) : undefined });
             if (body.schema === 'adrai/events/v1') authenticatedEvents += 1;
-          } catch { /* A non-JSON frame is not authenticated event evidence. */ }
+          } catch { recordSocket({ navigation: socketNavigation, phase: 'received-unreadable', elapsed_ms: Date.now() - started }); }
         });
+        socket.on('close', () => recordSocket({ navigation: socketNavigation, phase: 'closed', elapsed_ms: Date.now() - started }));
+        socket.on('socketerror', () => recordSocket({ navigation: socketNavigation, phase: 'error', elapsed_ms: Date.now() - started }));
       });
       await openExplorer(page, fixture);
+      phase = 'initial-visible';
       await expect(page.locator('#context-pane')).toBeVisible();
       await expect(page.locator('#inspector-pane')).toBeVisible();
       await expect(page.locator('#actions-pane')).toBeVisible();
@@ -80,26 +131,68 @@ test('B01 bootstrap, reload and new tab keep secrets out and snapshots readable'
 
       let reloadSockets = 0;
       page.on('websocket', () => { reloadSockets += 1; });
+      phase = 'reload';
+      navigation += 1;
       await page.reload();
       await expect(page.getByText(/Read-only session\. Reopen the process bootstrap URL/)).toBeVisible();
       await expect(page.locator('.masthead')).toContainText(`HEAD ${fixture.head}`);
+      phase = 'reload-visible';
       await expect(page.getByRole('button', { name: 'Submit create' })).toBeDisabled();
       await page.waitForTimeout(750);
       expect(reloadSockets).toBe(0);
       expect(page.url()).toBe(`${fixture.origin}/`);
 
       const newTab = await context.newPage();
+      phase = 'new-tab';
+      navigation += 1;
       let newTabSockets = 0;
       newTab.on('websocket', () => { newTabSockets += 1; });
+      newTab.on('request', request => {
+        const path = new URL(request.url()).pathname;
+        if (path === '/api/v1/repository' || path === '/api/v1/search') {
+          recordRequest({ navigation: 2, phase: 'request', elapsed_ms: Date.now() - started, path });
+        }
+      });
+      newTab.on('requestfailed', request => {
+        const path = new URL(request.url()).pathname;
+        if (path === '/api/v1/repository' || path === '/api/v1/search') {
+          recordRequest({ navigation: 2, phase: 'request-failed', elapsed_ms: Date.now() - started, path });
+        }
+      });
+      newTab.on('response', response => {
+        const path = new URL(response.url()).pathname;
+        if (path !== '/api/v1/repository' && path !== '/api/v1/search') return;
+        const fact: (typeof requests)[number] = { navigation: 2, phase: 'response', elapsed_ms: Date.now() - started, path, status: response.status() };
+        recordRequest(fact);
+        if (responseReads.length < 64) responseReads.push(response.json().then(body => {
+          fact.code = safeCode(body.error?.code);
+          fact.as_of = safeOid(body.metadata?.as_of?.oid);
+          if (path === '/api/v1/repository') fact.head = safeOid(body.data?.head);
+        }).catch(() => { fact.code = 'unreadable'; }));
+      });
       await newTab.goto(fixture.origin);
       await expect(newTab.getByText(/Read-only session\. Reopen the process bootstrap URL/)).toBeVisible();
       await expect(newTab.locator('.masthead')).toContainText(`HEAD ${fixture.head}`);
+      phase = 'new-tab-visible';
       await newTab.waitForTimeout(750);
       expect(newTabSockets).toBe(0);
       expect(await newTab.locator('body').innerText()).not.toContain(token!);
       await fixture.assertSentinels();
+    } catch (error) {
+      actionFailed = true;
+      throw error;
     } finally {
-      await context.close();
+      try {
+        await Promise.race([Promise.allSettled(responseReads), new Promise(resolve => setTimeout(resolve, 500))]);
+        if (process.env.P705_EVIDENCE_DIR) writeFileSync(join(process.env.P705_EVIDENCE_DIR, 'b01-safe-diagnostic.json'), JSON.stringify({
+          phase, elapsed_ms: Date.now() - started, authenticated_events: sockets.filter(event => event.phase === 'received' && event.schema === 'adrai/events/v1').length,
+          requests, sockets,
+        }));
+      } catch (error) {
+        if (!actionFailed) throw error;
+      } finally {
+        await context.close();
+      }
     }
   });
 });
