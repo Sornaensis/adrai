@@ -99,6 +99,11 @@ $record = [ordered]@{
     execution_ids = @()
     execution_status = $null
     execution_cases = @()
+    progress_events = @()
+    progress_completed_cases = @()
+    progress_last_phase = $null
+    progress_truncated = $false
+    progress_verified = $false
     safe_facts = @()
     browser_pin = $null
     asset_inputs_verified = $false
@@ -314,6 +319,60 @@ finally {
         }
         catch { Add-SafeError 'execution-read-error' }
     }
+    $progress = [Collections.Generic.List[object]]::new()
+    foreach ($journal in @(@('reporter-progress.ndjson', 'reporter'), @('fixture-progress.ndjson', 'fixture'))) {
+        $journalPath = Join-Path $evidenceDirectory $journal[0]
+        if (-not (Test-Path -LiteralPath $journalPath)) { continue }
+        try {
+            $raw = [IO.File]::ReadAllText($journalPath, [Text.Encoding]::UTF8)
+            if ($raw.Length -gt 65536) { throw 'Progress journal exceeds bound.' }
+            $lines = $raw -split "`n"
+            if (-not $raw.EndsWith("`n")) { $record.progress_truncated = $true }
+            $completeCount = $lines.Count - 1
+            for ($index = 0; $index -lt $completeCount; $index++) {
+                if ($lines[$index].Length -gt 256) { throw 'Progress entry exceeds bound.' }
+                $event = $lines[$index].TrimEnd("`r") | ConvertFrom-Json
+                $status = $null
+                if ($event.PSObject.Properties.Name -contains 'status') { $status = $event.status }
+                if ($event.schema -ne 'adrai/p705-progress/v1' -or $event.source -ne $journal[1] -or
+                    $event.id -notin $record.inventory_ids -or $event.at_ms -isnot [long] -or
+                    ($event.seq -isnot [int] -and $event.seq -isnot [long]) -or
+                    $event.seq -lt 1 -or $event.seq -gt 256 -or
+                    $event.at_ms -lt 1577836800000 -or $event.at_ms -gt ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 60000)) {
+                    throw 'Invalid progress entry.'
+                }
+                $allowed = if ($journal[1] -eq 'reporter') { @('started', 'ended') } else {
+                    @('fixture-start', 'git-seeded', 'adrai-initialized', 'decisions-seeded', 'bulk-seeded',
+                      'sentinels-ready', 'web-started', 'web-ready', 'preflight-ready', 'action-started',
+                      'action-ended', 'teardown-started', 'teardown-ended')
+                }
+                if ($event.phase -notin $allowed -or ($null -ne $status -and
+                    ($event.phase -ne 'ended' -or $status -notin @('passed', 'failed', 'timedOut', 'skipped', 'interrupted')))) {
+                    throw 'Invalid progress phase or status.'
+                }
+                $progress.Add([pscustomobject]@{ id = [string]$event.id; source = [string]$event.source;
+                    phase = [string]$event.phase; at_ms = [long]$event.at_ms;
+                    seq = [long]$event.seq; status = $status })
+                if ($progress.Count -gt 256) { throw 'Progress event count exceeds bound.' }
+            }
+        }
+        catch { Add-SafeError 'progress-read-error' }
+    }
+    if ($progress.Count -gt 0) {
+        $ordered = @($progress | Sort-Object at_ms, source, seq)
+        $first = $ordered[0].at_ms
+        $previous = $first
+        $record.progress_events = @($ordered | ForEach-Object {
+            $event = [ordered]@{ id = $_.id; source = $_.source; phase = $_.phase;
+                elapsed_ms = [Math]::Max(0, [long]($_.at_ms - $first));
+                since_previous_ms = [Math]::Max(0, [long]($_.at_ms - $previous)); status = $_.status }
+            $previous = $_.at_ms
+            $event
+        })
+        $record.progress_completed_cases = @($record.progress_events | Where-Object { $_.source -eq 'reporter' -and $_.phase -eq 'ended' } |
+            ForEach-Object { [ordered]@{ id = $_.id; status = $_.status } })
+        $record.progress_last_phase = $record.progress_events[-1]
+    }
     $listenerMarker = Join-Path $ownedTemporary 'listener.json'
     if (Test-Path -LiteralPath $listenerMarker) {
         try { $record.listener_port = [int]((Get-Content -LiteralPath $listenerMarker -Raw | ConvertFrom-Json).port) }
@@ -356,8 +415,24 @@ finally {
                 $case.expected_status -ne 'passed' -or $case.retry -ne 0) { $executionPassed = $false; break }
         }
     }
+    $progressPassed = -not $record.progress_truncated -and $record.progress_completed_cases.Count -eq $expected.Count
+    if ($progressPassed) {
+        foreach ($entry in $expected) {
+            $id = $entry.id
+            $fixtureRuns = if ($id -eq 'B04') { 2 } else { 1 }
+            if (@($record.progress_events | Where-Object { $_.id -eq $id -and $_.source -eq 'reporter' -and $_.phase -eq 'started' }).Count -ne 1 -or
+                @($record.progress_completed_cases | Where-Object { $_.id -eq $id -and $_.status -eq 'passed' }).Count -ne 1 -or
+                @($record.progress_events | Where-Object { $_.id -eq $id -and $_.source -eq 'fixture' -and $_.phase -eq 'fixture-start' }).Count -ne $fixtureRuns -or
+                @($record.progress_events | Where-Object { $_.id -eq $id -and $_.source -eq 'fixture' -and $_.phase -eq 'action-ended' }).Count -ne $fixtureRuns -or
+                @($record.progress_events | Where-Object { $_.id -eq $id -and $_.source -eq 'fixture' -and $_.phase -eq 'teardown-ended' }).Count -ne $fixtureRuns) {
+                $progressPassed = $false
+                break
+            }
+        }
+    }
+    $record.progress_verified = $progressPassed
     $record.elapsed_ms = [int]$clock.ElapsedMilliseconds
-    $normalPassed = $Probe -eq 'normal' -and $record.root_exit_code -eq 0 -and $record.job_empty_before_cleanup -eq $true -and $record.discovery_ids.Count -eq 15 -and $executionPassed -and -not $record.timed_out -and -not $record.error
+    $normalPassed = $Probe -eq 'normal' -and $record.root_exit_code -eq 0 -and $record.job_empty_before_cleanup -eq $true -and $record.discovery_ids.Count -eq 15 -and $executionPassed -and $progressPassed -and -not $record.timed_out -and -not $record.error
     $timeoutPassed = $Probe -eq 'timeout' -and $record.timed_out -and $record.job_empty_before_cleanup -eq $false
     $earlyPassed = $Probe -in @('early-success', 'early-error', 'finalization-timeout') -and $record.root_exit_code -eq $(if ($Probe -eq 'early-error') { 17 } else { 0 }) -and $record.job_empty_before_cleanup -eq $false
     $spawnPassed = $Probe -eq 'spawn-failure' -and $record.launch_attempted -and $null -eq $root -and $record.launch_failure_type -eq 'Win32Exception' -and $record.launch_failure_native_error -eq 2 -and $record.job_active_before_cleanup -eq 0

@@ -1,4 +1,4 @@
-const { writeFileSync } = require('node:fs');
+const { appendFileSync, renameSync, writeFileSync } = require('node:fs');
 const { join, basename } = require('node:path');
 
 const knownSpecs = new Set(['p705-read.spec.ts', 'p705-mutations.spec.ts', 'p705-live.spec.ts']);
@@ -36,7 +36,21 @@ class P705Reporter {
     this.facts = [];
     this.streams = new Map();
     this.globalErrors = 0;
+    this.progressCount = 0;
   }
+
+  progress(test, phase, status) {
+    const id = /^B(0[1-9]|1[0-5]) /.exec(test.title)?.[0].trim();
+    const directory = process.env.P705_EVIDENCE_DIR;
+    if (!id || !directory || this.progressCount >= 32) return;
+    const entry = { schema: 'adrai/p705-progress/v1', source: 'reporter', id, phase,
+      at_ms: Date.now(), seq: this.progressCount + 1 };
+    if (['passed', 'failed', 'timedOut', 'skipped', 'interrupted'].includes(status)) entry.status = status;
+    appendFileSync(join(directory, 'reporter-progress.ndjson'), `${JSON.stringify(entry)}\n`, 'utf8');
+    this.progressCount += 1;
+  }
+
+  onTestBegin(test) { this.progress(test, 'started'); }
 
   onStdOut(chunk, test) {
     this.acceptSafeLines(chunk, test?.id ?? 'global');
@@ -67,6 +81,7 @@ class P705Reporter {
   }
 
   onTestEnd(test, result) {
+    this.progress(test, 'ended', result.status);
     const match = /^B(0[1-9]|1[0-5]) /.exec(test.title);
     this.cases.push({
       id: match?.[0].trim() ?? null,
@@ -83,13 +98,15 @@ class P705Reporter {
   onEnd(result) {
     const directory = process.env.P705_EVIDENCE_DIR;
     if (!directory) throw new Error('P7-05 reporter requires owned evidence directory');
-    writeFileSync(join(directory, 'execution.json'), JSON.stringify({
+    const receipt = JSON.stringify({
       schema: 'adrai/p705-browser-execution/v1',
       status: result.status,
       global_errors: this.globalErrors,
       cases: this.cases,
       safe_facts: this.facts,
-    }), { encoding: 'utf8', flag: 'wx' });
+    });
+    writeFileSync(join(directory, 'execution.json.tmp'), receipt, { encoding: 'utf8', flag: 'wx' });
+    renameSync(join(directory, 'execution.json.tmp'), join(directory, 'execution.json'));
   }
 
   printsToStdio() { return false; }

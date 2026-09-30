@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { expect, type Page, type Response } from '@playwright/test';
@@ -37,6 +37,20 @@ export interface P705Fixture {
 const oidPattern = /^[a-f0-9]{40}$/;
 const actor = 'human:browser-fixture';
 const sourceFile = 'src/feature.ts';
+
+type FixturePhase = 'fixture-start' | 'git-seeded' | 'adrai-initialized' | 'decisions-seeded' |
+  'bulk-seeded' | 'sentinels-ready' | 'web-started' | 'web-ready' | 'preflight-ready' |
+  'action-started' | 'action-ended' | 'teardown-started' | 'teardown-ended';
+let fixtureProgressSequence = 0;
+
+function recordFixturePhase(id: string, phase: FixturePhase): void {
+  const directory = process.env.P705_EVIDENCE_DIR;
+  if (!directory) throw new Error('P7-05 fixture requires owned evidence directory');
+  appendFileSync(join(directory, 'fixture-progress.ndjson'), `${JSON.stringify({
+    schema: 'adrai/p705-progress/v1', source: 'fixture', id, phase,
+    at_ms: Date.now(), seq: ++fixtureProgressSequence,
+  })}\n`, 'utf8');
+}
 
 async function stopOwned(child: ChildProcessWithoutNullStreams): Promise<void> {
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
@@ -260,6 +274,7 @@ export async function withP705Server<T>(options: { scenarioId: string; seed: See
   let server: ChildProcessWithoutNullStreams | undefined;
   let lockChild: ChildProcessWithoutNullStreams | undefined;
   try {
+    recordFixturePhase(options.scenarioId, 'fixture-start');
     await checked('git', ['init', '--initial-branch=main'], mainRepository);
     await checked('git', ['config', 'user.name', 'ADRAI browser fixture'], mainRepository);
     await checked('git', ['config', 'user.email', 'browser-fixture@example.invalid'], mainRepository);
@@ -268,7 +283,9 @@ export async function withP705Server<T>(options: { scenarioId: string; seed: See
     writeFileSync(join(mainRepository, 'seed.txt'), 'P7-05 real browser fixture\n');
     await checked('git', ['add', '--', sourceFile, 'seed.txt'], mainRepository);
     await checked('git', ['commit', '-m', 'seed browser source'], mainRepository);
+    recordFixturePhase(options.scenarioId, 'git-seeded');
     await checked(adraiExe, ['init'], mainRepository, 40_000);
+    recordFixturePhase(options.scenarioId, 'adrai-initialized');
     const primaryFields = { title: 'Seeded browser decision', summary: 'A checked repository fixture', body: 'Use the real repository fixture.\n' };
     const primaryCreated = await createDecision(adraiExe, mainRepository, primaryFields.title, primaryFields.summary, primaryFields.body);
     let baseHead = primaryCreated.commit;
@@ -281,6 +298,7 @@ export async function withP705Server<T>(options: { scenarioId: string; seed: See
     const secondaryFields = { title: 'Secondary browser decision', summary: 'A later checked decision', body: 'Use the later decision.\n' };
     const secondaryCreated = await createDecision(adraiExe, repository, secondaryFields.title, secondaryFields.summary, secondaryFields.body);
     let head = secondaryCreated.commit;
+    recordFixturePhase(options.scenarioId, 'decisions-seeded');
     if (options.seed === 'paging') {
       const emitter = process.env.P705_WINDOW_FIXTURE_EXE;
       if (!emitter || !existsSync(emitter)) throw new Error('paging seed requires the exact built window fixture executable');
@@ -326,6 +344,7 @@ export async function withP705Server<T>(options: { scenarioId: string; seed: See
       head = conflictSeed.head;
       console.log(`P705_CONFLICT_SEED_MS=${Date.now() - conflictSeedStarted}`);
     }
+    recordFixturePhase(options.scenarioId, 'bulk-seeded');
     for (const decision of Object.values(decisions)) {
       if (decision && 'at' in decision) decision.at = head;
     }
@@ -340,6 +359,7 @@ export async function withP705Server<T>(options: { scenarioId: string; seed: See
     writeFileSync(join(repository, sentinels.untracked.path), sentinels.untracked.bytes);
     const initialStage = await checked('git', ['ls-files', '-s', '--', sentinels.staged.path], repository);
     const initialStagedStatus = await checked('git', ['status', '--porcelain', '--', sentinels.staged.path], repository);
+    recordFixturePhase(options.scenarioId, 'sentinels-ready');
     expect(initialStagedStatus).toBe(`A  ${sentinels.staged.path}`);
     expect(await checked('git', ['ls-tree', '--name-only', 'HEAD', '--', sentinels.staged.path], repository)).toBe('');
     const assertSentinels = async () => {
@@ -478,8 +498,10 @@ export async function withP705Server<T>(options: { scenarioId: string; seed: See
     };
     const serverStarted = Date.now();
     server = spawn(adraiExe, ['web', '--no-open'], { cwd: repository, stdio: 'pipe', windowsHide: true });
+    recordFixturePhase(options.scenarioId, 'web-started');
     console.log(`P705_WEB_SERVER_PID=${server.pid}`);
     const bootstrapUrl = await waitForReady(server);
+    recordFixturePhase(options.scenarioId, 'web-ready');
     if (conflictSeed) console.log(`P705_CONFLICT_SERVER_READY_MS=${Date.now() - serverStarted}`);
     const origin = new URL(bootstrapUrl).origin;
     console.log(`P705_ORIGIN=${origin}`);
@@ -532,8 +554,13 @@ export async function withP705Server<T>(options: { scenarioId: string; seed: See
       },
     };
     await assertSentinels();
-    return await action(fixture);
+    recordFixturePhase(options.scenarioId, 'preflight-ready');
+    recordFixturePhase(options.scenarioId, 'action-started');
+    const result = await action(fixture);
+    recordFixturePhase(options.scenarioId, 'action-ended');
+    return result;
   } finally {
+    try { recordFixturePhase(options.scenarioId, 'teardown-started'); } catch { /* Preserve owned cleanup. */ }
     try {
       if (lockChild) await stopOwned(lockChild);
       if (server) await stopOwned(server);
@@ -541,6 +568,7 @@ export async function withP705Server<T>(options: { scenarioId: string; seed: See
       assertWithinOwnedRoot(temporary);
       assertNoReparseEntries(temporary);
       rmSync(temporary, { recursive: true, force: true });
+      try { recordFixturePhase(options.scenarioId, 'teardown-ended'); } catch { /* Preserve owned cleanup. */ }
     }
   }
 }
