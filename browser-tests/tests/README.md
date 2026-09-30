@@ -33,6 +33,18 @@ product latency targets. The runner verifies child exit, listener closure, and
 removal of the owned temporary root on every result. A failed assertion remains
 a failed result even when ownership cleanup succeeds.
 
+The result also records bounded startup events from the supervisor, owned
+wrapper, and reporter. Fixed phase and input labels identify inventory, hash,
+pin, asset, launch, discovery, CLI, and reporter boundaries without retaining
+raw errors or credentials. `startup_verified` requires complete discovery,
+CLI exit, reporter initialization, and first-test evidence; fixture progress
+separately identifies real fixture execution. Missing, malformed, truncated,
+or out-of-order startup journals fail the run. Reporter error markers and its
+bounded final error count must agree with the execution receipt; malformed counts
+are rejected before inclusion in the result. Missing final execution evidence
+alone does not prove that no test began. Early input failures retain a nonzero
+receipt with a safe failure category and independent cleanup results.
+
 Do not log the process bootstrap URL, cookie, rendered page content, mutation
 body, or raw server error message. Browser diagnostics record only request
 method/path, status, exact revision OID, ADR ID, and typed error code.

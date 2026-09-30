@@ -71,6 +71,99 @@ function Add-SafeError([string] $code) {
     $record.error = (@($record.error, $code) | Where-Object { $_ }) -join ';'
 }
 
+function Get-SafeFailureCategory([Exception] $exception) {
+    for ($depth = 0; $null -ne $exception -and $depth -lt 4; $depth++) {
+        if ($exception -is [UnauthorizedAccessException] -or $exception -is [Security.SecurityException]) { return 'access-denied' }
+        if ($exception -is [IO.FileNotFoundException] -or $exception -is [IO.DirectoryNotFoundException] -or
+            $exception -is [Management.Automation.ItemNotFoundException]) { return 'missing-input' }
+        if ($exception -is [ArgumentException] -or $exception -is [NotSupportedException] -or
+            $exception -is [FormatException]) { return 'invalid-input' }
+        if ($exception -is [IO.IOException]) { return 'io-error' }
+        $exception = $exception.InnerException
+    }
+    return 'other'
+}
+
+# Labels are fixed; no exception text, paths, commands, or credentials are retained.
+function Set-RunnerPhase([string] $phase, [string] $inputLabel = 'none') {
+    if ($phase -notin $supervisorPhases -or $inputLabel -notin $inputLabels -or $supervisorEvents.Count -ge 96) {
+        throw 'Invalid supervisor phase.'
+    }
+    $script:runnerPhase = $phase
+    $script:runnerInput = $inputLabel
+    $supervisorEvents.Add([pscustomobject]@{ schema = 'adrai/p705-startup/v1'; source = 'supervisor';
+        seq = $supervisorEvents.Count + 1; phase = $phase; input = $inputLabel; code = 'none';
+        at_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); exit_code = $null })
+}
+
+function Read-StartupJournal([string] $path, [string] $source, [string[]] $phases) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Missing startup journal.' }
+    if ((Get-Item -LiteralPath $path).Length -gt 16384) { throw 'Startup journal exceeds byte bound.' }
+    $raw = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+    if (-not $raw.EndsWith("`n")) { throw 'Truncated startup journal.' }
+    $events = [Collections.Generic.List[object]]::new()
+    $previousTime = 0L
+    $previousPhase = -1
+    $globalErrorSeen = $false
+    foreach ($line in @($raw -split "`n" | Where-Object { $_.Length -gt 0 })) {
+        if ($line.Length -gt 512 -or $events.Count -ge 32) { throw 'Startup entry exceeds bound.' }
+        $event = $line.TrimEnd("`r") | ConvertFrom-Json
+        if ((($event.PSObject.Properties.Name | Sort-Object) -join ',') -ne 'at_ms,code,error_count,exit_code,input,phase,schema,seq,source' -or
+            $event.schema -ne 'adrai/p705-startup/v1' -or $event.source -ne $source -or
+            ($event.seq -isnot [long] -and $event.seq -isnot [int]) -or $event.seq -ne $events.Count + 1 -or
+            $event.at_ms -isnot [long] -or $event.at_ms -lt 1577836800000 -or
+            $event.at_ms -lt $previousTime -or $event.at_ms -gt ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 60000) -or
+            $event.input -ne 'none' -or $event.phase -notin $phases -or
+            $event.code -notin @('none', 'access-denied', 'missing-input', 'invalid-input', 'io-error', 'other', 'nonzero', 'global-error')) {
+            throw 'Invalid startup event.'
+        }
+        $phaseIndex = [Array]::IndexOf($phases, [string]$event.phase)
+        if ($event.phase -eq 'global-error') {
+            if ($globalErrorSeen -or $events.Count -eq 0 -or $previousPhase -ge [Array]::IndexOf($phases, 'end')) {
+                throw 'Duplicate or post-end reporter error.'
+            }
+            $globalErrorSeen = $true
+        } elseif ($phaseIndex -le $previousPhase -or ($events.Count -eq 0 -and $phaseIndex -ne 0)) {
+            throw 'Invalid startup ordering.'
+        }
+        if ($source -eq 'reporter' -and $event.phase -eq 'end') {
+            if (($event.error_count -isnot [int] -and $event.error_count -isnot [long]) -or
+                $event.error_count -lt 0 -or $event.error_count -gt 1024) { throw 'Invalid reporter error count.' }
+        } elseif ($null -ne $event.error_count) { throw 'Unexpected reporter error count.' }
+        if ($null -ne $event.exit_code -and
+            ($event.phase -notin @('discovery-exited', 'cli-exited') -or ($event.exit_code -isnot [long] -and $event.exit_code -isnot [int]) -or
+             $event.exit_code -lt -2147483648 -or $event.exit_code -gt 4294967295)) { throw 'Invalid startup exit code.' }
+        if ($event.phase -in @('discovery-exited', 'cli-exited') -and
+            ($null -eq $event.exit_code -or $event.code -ne $(if ($event.exit_code -eq 0) { 'none' } else { 'nonzero' }))) {
+            throw 'Missing startup exit code.'
+        }
+        if ($event.phase -eq 'wrapper-error') {
+            if ($event.code -in @('none', 'nonzero', 'global-error')) { throw 'Invalid wrapper failure category.' }
+        } elseif ($event.phase -eq 'global-error') {
+            if ($event.code -ne 'global-error') { throw 'Invalid reporter error category.' }
+        } elseif ($event.phase -notin @('discovery-exited', 'cli-exited') -and $event.code -ne 'none') {
+            throw 'Unexpected startup category.'
+        }
+        $events.Add($event)
+        $previousTime = $event.at_ms
+        if ($event.phase -ne 'global-error') { $previousPhase = $phaseIndex }
+    }
+    if ($events.Count -eq 0) { throw 'Empty startup journal.' }
+    return $events.ToArray()
+}
+
+$supervisorPhases = @('evidence-setup', 'inventory-read', 'inventory-parse', 'inventory-validate',
+    'adrai-normalize', 'adrai-exists', 'window-derive', 'window-normalize', 'window-exists',
+    'input-hash', 'window-hash', 'pins', 'browser-hash', 'assets', 'asset-gate',
+    'job-prepare', 'wrapper-prepare', 'launch', 'root-wait', 'root-exit',
+    'cleanup', 'startup-read', 'receipts-read', 'listener-check', 'temporary-remove', 'finalization')
+$inputLabels = @('none', 'helper', 'supervisor', 'probe', 'reporter', 'inventory',
+    'read_spec', 'mutation_spec', 'live_spec', 'server_fixture', 'playwright_config',
+    'package_yaml', 'generated_cabal', 'window_fixture_main', 'window_documents',
+    'app_bundle', 'asset_provenance', 'adrai_executable', 'window_fixture_executable', 'chromium')
+$supervisorEvents = [Collections.Generic.List[object]]::new()
+$runnerPhase = 'evidence-setup'
+$runnerInput = 'none'
 $record = [ordered]@{
     scenario = $Scenario
     probe = $Probe
@@ -104,6 +197,10 @@ $record = [ordered]@{
     progress_last_phase = $null
     progress_truncated = $false
     progress_verified = $false
+    startup_events = @()
+    startup_verified = $false
+    startup_failure = $null
+    execution_global_errors = $null
     safe_facts = @()
     browser_pin = $null
     asset_inputs_verified = $false
@@ -112,22 +209,43 @@ $record = [ordered]@{
 }
 $job = $null
 $root = $null
+$inventory = $null
+$inventoryValidated = $false
+$ownedTemporaryCreated = $false
+$startupComplete = $false
 
 try {
+    Set-RunnerPhase 'evidence-setup'
     [IO.Directory]::CreateDirectory($evidenceDirectory) | Out-Null
     [IO.Directory]::CreateDirectory($ownedTemporary) | Out-Null
-    $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
-    $record.inventory_ids = @($inventory.browser | ForEach-Object { $_.id })
-    if ($record.inventory_ids.Count -ne 15 -or (@($record.inventory_ids | Sort-Object -Unique)).Count -ne 15) { throw 'P7-05 scenario inventory must have exactly 15 distinct IDs.' }
-    if ([string]::IsNullOrWhiteSpace($AdraiExe)) { throw 'ADRAI_EXE or -AdraiExe is required.' }
+    $ownedTemporaryCreated = $true
+    Set-RunnerPhase 'inventory-read'
+    $inventoryRaw = Get-Content -LiteralPath $inventoryPath -Raw
+    Set-RunnerPhase 'inventory-parse'
+    $inventory = $inventoryRaw | ConvertFrom-Json
+    Set-RunnerPhase 'inventory-validate'
+    $candidateIds = @($inventory.browser | ForEach-Object { $_.id })
+    if ($candidateIds.Count -ne 15 -or (@($candidateIds | Sort-Object -Unique)).Count -ne 15) { throw 'P7-05 scenario inventory must have exactly 15 distinct IDs.' }
+    if ($inventory.schema -ne 'adrai/browser-scenarios/v1' -or
+        (($candidateIds | Sort-Object) -join ',') -ne 'B01,B02,B03,B04,B05,B06,B07,B08,B09,B10,B11,B12,B13,B14,B15') {
+        throw 'Invalid scenario inventory.'
+    }
+    $record.inventory_ids = $candidateIds
+    $inventoryValidated = $true
+    Set-RunnerPhase 'adrai-normalize'
+    if ([string]::IsNullOrWhiteSpace($AdraiExe)) { throw [ArgumentException]::new('Required executable input is absent.') }
     $adraiExe = [IO.Path]::GetFullPath($AdraiExe)
-    if (-not (Test-Path -LiteralPath $adraiExe -PathType Leaf)) { throw 'ADRAI_EXE must identify the fresh built executable.' }
+    Set-RunnerPhase 'adrai-exists'
+    if (-not (Test-Path -LiteralPath $adraiExe -PathType Leaf)) { throw [IO.FileNotFoundException]::new('Required executable input is missing.') }
     if ([string]::IsNullOrWhiteSpace($WindowFixtureExe)) {
+        Set-RunnerPhase 'window-derive'
         $buildDirectory = Split-Path -Parent (Split-Path -Parent $adraiExe)
         $WindowFixtureExe = Join-Path $buildDirectory 'adrai-window-fixture\adrai-window-fixture.exe'
     }
+    Set-RunnerPhase 'window-normalize'
     $windowFixtureExe = [IO.Path]::GetFullPath($WindowFixtureExe)
-    if ($Scenario -in @('all', 'B03', 'B05', 'B12') -and -not (Test-Path -LiteralPath $windowFixtureExe -PathType Leaf)) { throw 'P7-05 paging and conflict scenarios require the exact built fixture executable.' }
+    Set-RunnerPhase 'window-exists'
+    if ($Scenario -in @('all', 'B03', 'B05', 'B12') -and -not (Test-Path -LiteralPath $windowFixtureExe -PathType Leaf)) { throw [IO.FileNotFoundException]::new('Required fixture input is missing.') }
     foreach ($pair in @(
         @('helper', $helperPath), @('supervisor', $PSCommandPath),
         @('probe', $probePath), @('reporter', $reporterPath), @('inventory', $inventoryPath),
@@ -144,11 +262,14 @@ try {
         @('asset_provenance', (Join-Path $repositoryRoot 'web\dist\provenance.json')),
         @('adrai_executable', $adraiExe)
     )) {
+        Set-RunnerPhase 'input-hash' ([string]$pair[0])
         $record.hashes[$pair[0]] = (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    Set-RunnerPhase 'window-hash' 'window_fixture_executable'
     if (Test-Path -LiteralPath $windowFixtureExe -PathType Leaf) {
         $record.hashes['window_fixture_executable'] = (Get-FileHash -LiteralPath $windowFixtureExe -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    Set-RunnerPhase 'pins'
     $installedPlaywright = Get-Content -Raw -LiteralPath (Join-Path $browserRoot 'node_modules\@playwright\test\package.json') | ConvertFrom-Json
     $installedPlaywrightRuntime = Get-Content -Raw -LiteralPath (Join-Path $browserRoot 'node_modules\playwright\package.json') | ConvertFrom-Json
     $installedPlaywrightCore = Get-Content -Raw -LiteralPath (Join-Path $browserRoot 'node_modules\playwright-core\package.json') | ConvertFrom-Json
@@ -162,6 +283,7 @@ try {
     $browserCache = Join-Path $env:LOCALAPPDATA 'ms-playwright'
     $chromiumExe = Join-Path $browserCache 'chromium_headless_shell-1228\chrome-headless-shell-win64\chrome-headless-shell.exe'
     if (-not (Test-Path -LiteralPath $chromiumExe -PathType Leaf)) { throw 'Pinned Chromium headless executable is missing.' }
+    Set-RunnerPhase 'browser-hash' 'chromium'
     $record.browser_pin = [ordered]@{
         playwright = [string]$installedPlaywright.version
         playwright_runtime = [string]$installedPlaywrightRuntime.version
@@ -170,6 +292,7 @@ try {
         chromium_version = [string]$chromium[0].browserVersion
         executable_sha256 = (Get-FileHash -LiteralPath $chromiumExe -Algorithm SHA256).Hash.ToLowerInvariant()
     }
+    Set-RunnerPhase 'assets'
     $assetRoot = Join-Path $repositoryRoot 'web'
     $assetReceipt = Get-Content -Raw -LiteralPath (Join-Path $assetRoot 'dist\provenance.json') | ConvertFrom-Json
     [object[]]$assetInputs = @($assetReceipt.inputs.PSObject.Properties)
@@ -189,6 +312,7 @@ try {
     $appHash = (Get-FileHash -LiteralPath (Join-Path $assetRoot 'dist\app.js') -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($appHash -ne [string]$assetReceipt.output.'dist/app.js') { throw 'Asset provenance output differs from the current bundle.' }
     $record.asset_inputs_verified = $true
+    Set-RunnerPhase 'asset-gate'
     if ($Scenario -eq 'all' -and [string]::IsNullOrWhiteSpace($AssetGateReceipt)) { throw 'Final browser aggregate requires a persisted G01 asset gate receipt.' }
     if (-not [string]::IsNullOrWhiteSpace($AssetGateReceipt)) {
         $gatePath = [IO.Path]::GetFullPath($AssetGateReceipt)
@@ -201,15 +325,31 @@ try {
         }
         $record.asset_gate = [ordered]@{ verified = $true; receipt_sha256 = (Get-FileHash -LiteralPath $gatePath -Algorithm SHA256).Hash.ToLowerInvariant() }
     }
+    Set-RunnerPhase 'job-prepare'
     Add-Type -Path $helperPath
     $job = [Adrai.RetainedTests.OwnedJob]::new()
     $node = (Get-Command node -ErrorAction Stop).Source
+    Set-RunnerPhase 'wrapper-prepare'
     $ownedScript = @'
 param([string] $NodePath, [string] $CliPath, [string] $InventoryPath, [string] $Scenario, [string] $EvidenceDirectory)
 $ErrorActionPreference = 'Stop'
+$startupSequence = 0
+function Write-Startup([string] $phase, [string] $code = 'none', $exitCode = $null) {
+    $script:startupSequence++
+    if ($startupSequence -gt 8 -or $phase -notin @('wrapper-started', 'discovery-started', 'discovery-exited', 'discovery-verified', 'cli-started', 'cli-exited', 'wrapper-error') -or
+        $code -notin @('none', 'nonzero', 'access-denied', 'missing-input', 'invalid-input', 'io-error', 'other')) { throw 'Invalid wrapper evidence.' }
+    $entry = [ordered]@{ schema = 'adrai/p705-startup/v1'; source = 'wrapper'; seq = $startupSequence;
+        phase = $phase; input = 'none'; code = $code; at_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); exit_code = $exitCode; error_count = $null }
+    [IO.File]::AppendAllText((Join-Path $EvidenceDirectory 'wrapper-startup.ndjson'),
+        ((ConvertTo-Json -InputObject $entry -Compress) + "`n"), [Text.Encoding]::UTF8)
+}
+Write-Startup 'wrapper-started'
+try {
 $specs = @('tests/p705-read.spec.ts', 'tests/p705-mutations.spec.ts', 'tests/p705-live.spec.ts')
 $inventory = Get-Content -LiteralPath $InventoryPath -Raw | ConvertFrom-Json
+Write-Startup 'discovery-started'
 $listed = & $NodePath $CliPath test $specs --list --config playwright.config.ts 2>&1
+Write-Startup 'discovery-exited' $(if ($LASTEXITCODE -eq 0) { 'none' } else { 'nonzero' }) $LASTEXITCODE
 if ($LASTEXITCODE -ne 0) { throw 'Playwright discovery failed before execution.' }
 $lines = @($listed | ForEach-Object { [string] $_ })
 $found = @($lines | Where-Object { $_ -match '\bB(0[1-9]|1[0-5])\b' } | ForEach-Object { [regex]::Match($_, '\bB(0[1-9]|1[0-5])\b').Value })
@@ -224,10 +364,28 @@ foreach ($entry in $inventory.browser) {
 }
 Write-Output "P705_DISCOVERY_IDS=$($found -join ',')"
 [IO.File]::WriteAllText((Join-Path $EvidenceDirectory 'discovery.json'), (ConvertTo-Json -InputObject ([ordered]@{ ids = $found; names = @($inventory.browser | ForEach-Object { $_.name }); spec_count = 3 }) -Depth 5), [Text.Encoding]::UTF8)
+Write-Startup 'discovery-verified'
 $arguments = @('test') + $specs + @('--config', 'playwright.config.ts', '--workers=1', '--retries=0', '--reporter=./support/p705-reporter.cjs', '--output', (Join-Path $env:P705_OWNED_TEMP_ROOT 'playwright'))
 if ($Scenario -ne 'all') { $arguments += @('--grep', "$Scenario ") }
+Write-Startup 'cli-started'
 & $NodePath $CliPath @arguments
-exit $LASTEXITCODE
+$cliExitCode = $LASTEXITCODE
+Write-Startup 'cli-exited' $(if ($cliExitCode -eq 0) { 'none' } else { 'nonzero' }) $cliExitCode
+exit $cliExitCode
+}
+catch {
+    $exception = $_.Exception
+    $kind = 'other'
+    for ($depth = 0; $null -ne $exception -and $depth -lt 4; $depth++) {
+        if ($exception -is [UnauthorizedAccessException]) { $kind = 'access-denied'; break }
+        if ($exception -is [IO.FileNotFoundException] -or $exception -is [Management.Automation.CommandNotFoundException]) { $kind = 'missing-input'; break }
+        if ($exception -is [ArgumentException] -or $exception -is [FormatException]) { $kind = 'invalid-input'; break }
+        if ($exception -is [IO.IOException]) { $kind = 'io-error'; break }
+        $exception = $exception.InnerException
+    }
+    try { Write-Startup 'wrapper-error' $kind } catch { }
+    exit 1
+}
 '@
     [IO.File]::WriteAllText($ownedScriptPath, $ownedScript, [Text.Encoding]::UTF8)
     $executable = if ($Probe -eq 'spawn-failure') { Join-Path $PSScriptRoot 'missing-p705-owned-probe.exe' } elseif ($Probe -eq 'normal') { (Get-Command powershell.exe -ErrorAction Stop).Source } else { $node }
@@ -250,6 +408,7 @@ exit $LASTEXITCODE
     $launchCleanup = [Math]::Min(5000, (Get-WaitBudget 10000))
     if ($launchCleanup -le 0) { throw 'No launch cleanup budget remains.' }
     try {
+        Set-RunnerPhase 'launch'
         $record.launch_attempted = $true
         $root = $job.Launch($executable, $arguments, $browserRoot, $environment, $stdoutPath, $stderrPath, $launchCleanup)
     }
@@ -267,8 +426,10 @@ exit $LASTEXITCODE
     $record.root_pid = $root.ProcessId
     $rootBudget = if ($Probe -eq 'timeout') { [Math]::Min(1500, (Get-WaitBudget 60000)) } else { Get-WaitBudget 60000 }
     if ($rootBudget -le 0) { throw 'No root wait budget remains.' }
+    Set-RunnerPhase 'root-wait'
     $record.root_exited = $root.WaitForExit($rootBudget)
     if ($record.root_exited) {
+        Set-RunnerPhase 'root-exit'
         $record.root_exit_code = $root.GetExitCode()
         $record.job_empty_before_cleanup = $job.WaitForEmpty([Math]::Min(3000, (Get-WaitBudget 5000)))
     } else {
@@ -277,9 +438,13 @@ exit $LASTEXITCODE
     }
 }
 catch {
+    $record.startup_failure = [ordered]@{ source = 'supervisor'; phase = $runnerPhase;
+        input = $runnerInput; code = (Get-SafeFailureCategory $_.Exception) }
     Add-SafeError 'runner-error'
 }
 finally {
+    try {
+    Set-RunnerPhase 'cleanup'
     if ($null -ne $job) {
         try {
             $record.job_active_before_cleanup = $job.ActiveProcessCount()
@@ -301,6 +466,30 @@ finally {
             Add-SafeError 'root-cleanup-error'
         }
     }
+    Set-RunnerPhase 'startup-read'
+    $startup = [Collections.Generic.List[object]]::new()
+    if ($Probe -eq 'normal' -and $null -ne $root) {
+        foreach ($journal in @(
+            @('wrapper-startup.ndjson', 'wrapper', @('wrapper-started', 'discovery-started', 'discovery-exited', 'discovery-verified', 'cli-started', 'cli-exited', 'wrapper-error')),
+            @('reporter-startup.ndjson', 'reporter', @('initialized', 'begin', 'first-test', 'global-error', 'end'))
+        )) {
+            try {
+                foreach ($event in @(Read-StartupJournal (Join-Path $evidenceDirectory $journal[0]) $journal[1] $journal[2])) { $startup.Add($event) }
+            } catch { Add-SafeError 'startup-read-error' }
+        }
+        $wrapper = @($startup | Where-Object { $_.source -eq 'wrapper' })
+        $reporter = @($startup | Where-Object { $_.source -eq 'reporter' })
+        $startupComplete = ((($wrapper | ForEach-Object { $_.phase }) -join ',') -eq 'wrapper-started,discovery-started,discovery-exited,discovery-verified,cli-started,cli-exited') -and
+            (@($wrapper | Where-Object { $_.phase -eq 'discovery-exited' -and $_.exit_code -eq 0 }).Count -eq 1) -and
+            (@($reporter | Where-Object { $_.phase -eq 'initialized' }).Count -eq 1) -and
+            (@($reporter | Where-Object { $_.phase -eq 'begin' }).Count -eq 1) -and
+            (@($reporter | Where-Object { $_.phase -eq 'first-test' }).Count -eq 1) -and
+            (@($reporter | Where-Object { $_.phase -eq 'end' }).Count -eq 1) -and
+            (@($wrapper | Where-Object { $_.phase -eq 'cli-exited' -and $_.exit_code -eq $record.root_exit_code }).Count -eq 1)
+        if (-not $startupComplete) { Add-SafeError 'startup-incomplete' }
+    }
+    $record.startup_events = $startup.ToArray()
+    Set-RunnerPhase 'receipts-read'
     $discoveryPath = Join-Path $evidenceDirectory 'discovery.json'
     if (Test-Path -LiteralPath $discoveryPath) {
         try { $record.discovery_ids = @((Get-Content -LiteralPath $discoveryPath -Raw | ConvertFrom-Json).ids) }
@@ -315,9 +504,23 @@ finally {
             $record.execution_cases = [object[]]@($execution.cases | Where-Object { $null -ne $_ })
             $record.execution_ids = [string[]]@($record.execution_cases | ForEach-Object { $_.id })
             $record.safe_facts = @($execution.safe_facts)
+            if (($execution.global_errors -isnot [int] -and $execution.global_errors -isnot [long]) -or
+                $execution.global_errors -lt 0 -or $execution.global_errors -gt 1024) {
+                throw 'Invalid execution global error count.'
+            }
+            $record.execution_global_errors = [long]$execution.global_errors
             if ($execution.global_errors -ne 0) { throw 'P7-05 reporter recorded global errors.' }
         }
         catch { Add-SafeError 'execution-read-error' }
+    }
+    if ($Probe -eq 'normal' -and $null -ne $root) {
+        $reporterEnd = @($startup | Where-Object { $_.source -eq 'reporter' -and $_.phase -eq 'end' })
+        $reporterErrors = @($startup | Where-Object { $_.source -eq 'reporter' -and $_.phase -eq 'global-error' })
+        # A single first-error marker may cover several errors; end carries their exact count.
+        $record.startup_verified = $startupComplete -and $null -ne $record.execution_global_errors -and
+            $reporterEnd.Count -eq 1 -and $reporterEnd[0].error_count -eq $record.execution_global_errors -and
+            $reporterErrors.Count -eq $(if ($record.execution_global_errors -gt 0) { 1 } else { 0 })
+        if ($startupComplete -and -not $record.startup_verified) { Add-SafeError 'startup-execution-mismatch' }
     }
     $progress = [Collections.Generic.List[object]]::new()
     foreach ($journal in @(@('reporter-progress.ndjson', 'reporter'), @('fixture-progress.ndjson', 'fixture'))) {
@@ -373,17 +576,20 @@ finally {
             ForEach-Object { [ordered]@{ id = $_.id; status = $_.status } })
         $record.progress_last_phase = $record.progress_events[-1]
     }
+    Set-RunnerPhase 'listener-check'
     $listenerMarker = Join-Path $ownedTemporary 'listener.json'
     if (Test-Path -LiteralPath $listenerMarker) {
         try { $record.listener_port = [int]((Get-Content -LiteralPath $listenerMarker -Raw | ConvertFrom-Json).port) }
         catch { Add-SafeError 'listener-read-error' }
     }
     if ($null -ne $record.listener_port -and $record.job_empty_after_cleanup) {
-        $record.listener_closed = Test-ListenerClosed $record.listener_port
+        try { $record.listener_closed = Test-ListenerClosed $record.listener_port }
+        catch { Add-SafeError 'listener-check-error' }
     }
     $record.cleanup_verified = $record.job_empty_after_cleanup -and ($null -eq $root -or $record.root_exited) -and ($record.launch_failure_cleanup_verified -ne $false)
-    if ($null -ne $root) { $root.Dispose() }
-    if ($null -ne $job) { $job.Dispose() }
+    if ($null -ne $root) { try { $root.Dispose() } catch { Add-SafeError 'root-dispose-error' } }
+    if ($null -ne $job) { try { $job.Dispose() } catch { Add-SafeError 'job-dispose-error' } }
+    Set-RunnerPhase 'temporary-remove'
     if ($record.cleanup_verified) {
         try {
             $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
@@ -391,9 +597,11 @@ finally {
             if (-not $target.StartsWith($tempRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or -not ([IO.Path]::GetFileName($target)).StartsWith('adrai-p705-owned-', [StringComparison]::Ordinal)) {
                 throw "Refusing to remove unexpected browser temporary root: $target"
             }
+            if ($ownedTemporaryCreated) {
             if (([IO.File]::GetAttributes($target) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Owned browser temporary root is a reparse point.' }
             Assert-NoReparseEntries $target
             Remove-Item -LiteralPath $target -Recurse -Force
+            }
             $record.owned_temporary_removed = -not (Test-Path -LiteralPath $target)
         }
         catch {
@@ -401,8 +609,10 @@ finally {
         }
     }
     [object[]]$expected = @()
-    if ($Scenario -eq 'all') { $expected = [object[]]@($inventory.browser) }
-    else { $expected = [object[]]@($inventory.browser | Where-Object { $_.id -eq $Scenario }) }
+    if ($inventoryValidated) {
+        if ($Scenario -eq 'all') { $expected = [object[]]@($inventory.browser) }
+        else { $expected = [object[]]@($inventory.browser | Where-Object { $_.id -eq $Scenario }) }
+    }
     [object[]]$executedCases = @($record.execution_cases | Where-Object { $null -ne $_ })
     [string[]]$executedIds = @($executedCases | ForEach-Object { $_.id })
     $executionPassed = $record.execution_status -eq 'passed' -and $executedCases.Count -eq $expected.Count -and
@@ -432,13 +642,21 @@ finally {
     }
     $record.progress_verified = $progressPassed
     $record.elapsed_ms = [int]$clock.ElapsedMilliseconds
-    $normalPassed = $Probe -eq 'normal' -and $record.root_exit_code -eq 0 -and $record.job_empty_before_cleanup -eq $true -and $record.discovery_ids.Count -eq 15 -and $executionPassed -and $progressPassed -and -not $record.timed_out -and -not $record.error
+    $normalPassed = $Probe -eq 'normal' -and $record.root_exit_code -eq 0 -and $record.job_empty_before_cleanup -eq $true -and $record.discovery_ids.Count -eq 15 -and $record.startup_verified -and $executionPassed -and $progressPassed -and -not $record.timed_out -and -not $record.error
     $timeoutPassed = $Probe -eq 'timeout' -and $record.timed_out -and $record.job_empty_before_cleanup -eq $false
     $earlyPassed = $Probe -in @('early-success', 'early-error', 'finalization-timeout') -and $record.root_exit_code -eq $(if ($Probe -eq 'early-error') { 17 } else { 0 }) -and $record.job_empty_before_cleanup -eq $false
     $spawnPassed = $Probe -eq 'spawn-failure' -and $record.launch_attempted -and $null -eq $root -and $record.launch_failure_type -eq 'Win32Exception' -and $record.launch_failure_native_error -eq 2 -and $record.job_active_before_cleanup -eq 0
     $needsListener = $Probe -ne 'spawn-failure'
     $record.exit_code = if (($normalPassed -or $timeoutPassed -or $earlyPassed -or $spawnPassed) -and $record.cleanup_verified -and $record.owned_temporary_removed -and (-not $needsListener -or $record.listener_closed) -and $record.elapsed_ms -le $deadlineMilliseconds) { 0 } else { 1 }
+    }
+    catch {
+        Add-SafeError 'finalization-error'
+        $record.exit_code = 1
+    }
+    finally {
     try {
+        Set-RunnerPhase 'finalization'
+        $record.startup_events = @(@($supervisorEvents.ToArray()) + @($record.startup_events) | Sort-Object at_ms, source, seq)
         $finalizationDeadline = $deadlineMilliseconds
         if ($Probe -eq 'finalization-timeout') {
             $finalizationDeadline = [int]$clock.ElapsedMilliseconds + 5
@@ -460,7 +678,8 @@ finally {
     }
     catch {
         $record.exit_code = 1
-        Write-Error 'P7-05 evidence finalization failed.'
+        [Console]::Error.WriteLine('P7-05 evidence finalization failed.')
+    }
     }
 }
 

@@ -37,7 +37,24 @@ class P705Reporter {
     this.streams = new Map();
     this.globalErrors = 0;
     this.progressCount = 0;
+    this.startupCount = 0;
+    this.firstTestStarted = false;
+    this.startup('initialized');
   }
+
+  startup(phase, code = 'none', errorCount = null) {
+    const directory = process.env.P705_EVIDENCE_DIR;
+    if (!directory || this.startupCount >= 5 ||
+        !['initialized', 'begin', 'first-test', 'global-error', 'end'].includes(phase) ||
+        !['none', 'global-error'].includes(code) ||
+        (phase === 'end' ? !Number.isInteger(errorCount) || errorCount < 0 || errorCount > 1024 : errorCount !== null)) throw new Error('Invalid P7-05 reporter startup evidence');
+    appendFileSync(join(directory, 'reporter-startup.ndjson'), `${JSON.stringify({
+      schema: 'adrai/p705-startup/v1', source: 'reporter', seq: ++this.startupCount,
+      phase, input: 'none', code, at_ms: Date.now(), exit_code: null, error_count: errorCount,
+    })}\n`, 'utf8');
+  }
+
+  onBegin() { this.startup('begin'); }
 
   progress(test, phase, status) {
     const id = /^B(0[1-9]|1[0-5]) /.exec(test.title)?.[0].trim();
@@ -50,7 +67,13 @@ class P705Reporter {
     this.progressCount += 1;
   }
 
-  onTestBegin(test) { this.progress(test, 'started'); }
+  onTestBegin(test) {
+    if (!this.firstTestStarted) {
+      this.startup('first-test');
+      this.firstTestStarted = true;
+    }
+    this.progress(test, 'started');
+  }
 
   onStdOut(chunk, test) {
     this.acceptSafeLines(chunk, test?.id ?? 'global');
@@ -77,6 +100,7 @@ class P705Reporter {
   }
 
   onError() {
+    if (this.globalErrors === 0) this.startup('global-error', 'global-error');
     this.globalErrors += 1;
   }
 
@@ -96,6 +120,7 @@ class P705Reporter {
   }
 
   onEnd(result) {
+    this.startup('end', 'none', this.globalErrors);
     const directory = process.env.P705_EVIDENCE_DIR;
     if (!directory) throw new Error('P7-05 reporter requires owned evidence directory');
     const receipt = JSON.stringify({
