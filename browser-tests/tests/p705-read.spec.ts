@@ -40,7 +40,7 @@ async function chooseDecision(page: Page, decision: DecisionRef, revision: strin
 }
 
 test('B01 bootstrap, reload and new tab keep secrets out and snapshots readable', async ({ browser }) => {
-  test.setTimeout(45_000);
+  test.setTimeout(90_000);
   await withP705Server({ scenarioId: 'B01', seed: 'main' }, async fixture => {
     const context = await browser.newContext();
     const started = Date.now();

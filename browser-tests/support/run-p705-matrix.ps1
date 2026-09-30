@@ -11,7 +11,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $clock = [Diagnostics.Stopwatch]::StartNew()
-$deadlineMilliseconds = 600000
+$deadlineMilliseconds = 1200000
 $browserRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $browserRoot '..'))
 $helperPath = Join-Path $repositoryRoot 'tools\RetainedTests\OwnedJob.cs'

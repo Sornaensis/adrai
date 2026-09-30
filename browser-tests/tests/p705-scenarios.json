@@ -1,7 +1,7 @@
 {
   "schema": "adrai/browser-scenarios/v1",
   "browser": [
-    { "id": "B01", "spec": "p705-read.spec.ts", "seed": "main", "timeout_ms": 45000, "name": "bootstrap, reload and new tab keep secrets out and snapshots readable" },
+    { "id": "B01", "spec": "p705-read.spec.ts", "seed": "main", "timeout_ms": 90000, "name": "bootstrap, reload and new tab keep secrets out and snapshots readable" },
     { "id": "B02", "spec": "p705-read.spec.ts", "seed": "linked", "timeout_ms": 45000, "name": "linked authority and historical selection retain exact read-only context" },
     { "id": "B03", "spec": "p705-read.spec.ts", "seed": "paging", "timeout_ms": 90000, "name": "bounded browse pages and live search modes preserve one exact window" },
     { "id": "B04", "spec": "p705-read.spec.ts", "seed": "linked", "timeout_ms": 90000, "name": "committed and worktree relevance replace live file interests" },

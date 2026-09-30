@@ -288,7 +288,11 @@ browser aggregate. Supply that receipt and both fresh executable paths to
 asset evidence. It discovers all 15 B cases before execution, uses one pinned
 Playwright 1.61.1 worker with Chromium headless shell revision 1228 and no
 retries, and keeps discovery, fixture generation, browser assertions, evidence,
-and cleanup within a 600-second budget with 60 seconds reserved for cleanup.
+and cleanup within a 1,200-second deadline with 60 seconds reserved for cleanup
+and finalization. B01 has a 90-second case cap; all 15 declared case caps sum
+to 1,035 seconds, leaving 105 seconds for discovery and runner overhead within
+the 1,140-second work budget. These finite bounds are test liveness guards, not
+product latency targets.
 Each case owns a temporary real repository and server. The runner records
 exact source, bundle, provenance, browser, and executable hashes with process,
 listener, and temporary-root cleanup results. A01/A02 are named retained

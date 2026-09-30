@@ -24,11 +24,14 @@ Use `-Scenario B01` through `B15` for a focused diagnostic. The runner discovers
 all 15 cases even for a focused run, forces one worker and zero retries, and
 requires a persisted fresh G01 asset verification receipt and records exact
 source, asset, browser headless shell, and executable hashes in a unique temporary
-`result.json`. It gives the aggregate at most 600 seconds including discovery,
-fixture setup, browser work, and cleanup, reserving 60 seconds for owned-job
-cleanup. It verifies child exit, listener closure, and removal of the owned
-temporary root on every result. A failed assertion remains a failed result even
-when ownership cleanup succeeds.
+`result.json`. B01 has a 90-second case cap. The aggregate has a 1,200-second
+deadline including discovery, fixture setup, browser work, and cleanup; 60
+seconds remain reserved for owned-job cleanup and finalization. The 15 declared
+case caps sum to 1,035 seconds, leaving 105 seconds of the 1,140-second work
+budget for discovery and runner overhead. These are finite liveness guards, not
+product latency targets. The runner verifies child exit, listener closure, and
+removal of the owned temporary root on every result. A failed assertion remains
+a failed result even when ownership cleanup succeeds.
 
 Do not log the process bootstrap URL, cookie, rendered page content, mutation
 body, or raw server error message. Browser diagnostics record only request
