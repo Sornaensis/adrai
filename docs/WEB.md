@@ -3,6 +3,14 @@
 `adrai web` starts the repository-bound Haskell HTTP and WebSocket service and
 serves its embedded Elm explorer from locally embedded assets.
 
+The real-server P7-05 browser suite uses one finite timer per case for real
+repository initialization, both CLI decision creates, browser assertions, and
+teardown. Its fifteen caps total 6,660 seconds; the aggregate adds exactly
+75 seconds for discovery/runner overhead and 60 seconds for owned cleanup,
+giving 6,795 seconds. These operational liveness guards are not product latency
+targets. See the [phase/workflow accounting](../browser-tests/tests/README.md#whole-case-liveness-accounting)
+and [supported testing command](TESTING.md) for the guard assumptions and receipts.
+
 ## Repository binding and routes
 
 The process starts in the current worktree and binds permanently to its

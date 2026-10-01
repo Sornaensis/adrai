@@ -40,7 +40,7 @@ async function chooseDecision(page: Page, decision: DecisionRef, revision: strin
 }
 
 test('B01 bootstrap, reload and new tab keep secrets out and snapshots readable', async ({ browser }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(530_000);
   await withP705Server({ scenarioId: 'B01', seed: 'main' }, async fixture => {
     const context = await browser.newContext();
     const started = Date.now();
@@ -527,7 +527,7 @@ test('B01 bootstrap, reload and new tab keep secrets out and snapshots readable'
 });
 
 test('B02 linked authority and historical selection retain exact read-only context', async ({ browser }) => {
-  test.setTimeout(45_000);
+  test.setTimeout(310_000);
   await withP705Server({ scenarioId: 'B02', seed: 'linked' }, async fixture => {
     expect(fixture.linkedRepository).toBeTruthy();
     expect(fixture.repository).toBe(fixture.linkedRepository);
@@ -566,7 +566,7 @@ test('B02 linked authority and historical selection retain exact read-only conte
 });
 
 test('B03 bounded browse pages and live search modes preserve one exact window', async ({ browser }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(530_000);
   await withP705Server({ scenarioId: 'B03', seed: 'paging' }, async fixture => {
     const context = await browser.newContext();
     try {
@@ -708,7 +708,7 @@ test('B03 bounded browse pages and live search modes preserve one exact window',
 });
 
 test('B04 committed and worktree relevance replace live file interests', async ({ browser }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(720_000);
   for (const seed of ['main', 'linked'] as const) {
     await withP705Server({ scenarioId: 'B04', seed }, async fixture => {
       const context = await browser.newContext();
@@ -798,7 +798,7 @@ test('B04 committed and worktree relevance replace live file interests', async (
 });
 
 test('B05 primary inspection, conflict candidates and read navigation stay accessible', async ({ browser }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(650_000);
   await withP705Server({ scenarioId: 'B05', seed: 'conflicts' }, async fixture => {
     const context = await browser.newContext();
     try {

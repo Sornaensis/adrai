@@ -138,7 +138,7 @@ async function selectDecision(page: Page, decision: DecisionRef, head: string): 
   throw new Error(`ADR ${decision.adr} did not enter the exact ${head} result window`);
 }
 
-test.setTimeout(90_000);
+test.setTimeout(380_000);
 
 test('B13 dirty draft survives real external ADR change and explicit review', async ({ browser }) => {
   await withP705Server({ scenarioId: 'B13', seed: 'main' }, async (fixture: P705Fixture) => {
@@ -359,6 +359,7 @@ test('B14 real delayed reads and committed responses preserve current context an
 });
 
 test('B15 real socket reconnect, interests, busy reads and observation failure recover', async ({ browser }) => {
+  test.setTimeout(440_000);
   await withP705Server({ scenarioId: 'B15', seed: 'main' }, async (fixture: P705Fixture) => {
     const context = await browser.newContext();
     try {

@@ -10,7 +10,7 @@ type Json = Record<string, any>;
 type Action = 'create' | 'amend' | 'scope' | 'domain' | 'obsolete' | 'reactivate';
 
 const oid = /^[a-f0-9]{40}$/;
-test.setTimeout(45_000);
+test.setTimeout(290_000);
 
 async function inBrowser<T>(browser: Browser, fixture: P705Fixture, run: (page: Page) => Promise<T>): Promise<T> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -281,6 +281,7 @@ test('B10 checked obsolete changes the reviewed status', async ({ browser }) => 
 });
 
 test('B11 checked reactivate changes the reviewed obsolete status', async ({ browser }) => {
+  test.setTimeout(380_000);
   await withP705Server({ scenarioId: 'B11', seed: 'main' }, async (fixture) => inBrowser(browser, fixture, async (page) => {
     const decision = fixture.decisions.primary;
     const initial = await reviewExisting(page, fixture, decision, fixture.head);
@@ -305,7 +306,7 @@ test('B11 checked reactivate changes the reviewed obsolete status', async ({ bro
 });
 
 test('B12 simultaneous conflict candidates require explicit axis reconciliation', async ({ browser }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(890_000);
   await withP705Server({ scenarioId: 'B12', seed: 'conflicts' }, async (fixture) => inBrowser(browser, fixture, async (page) => {
     const postedRoutes: string[] = [];
     page.on('request', (request) => {
