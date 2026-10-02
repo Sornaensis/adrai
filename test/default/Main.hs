@@ -20,6 +20,7 @@ import qualified Adrai.CacheIntegrationTest
 import qualified Adrai.MutationE2ETest
 import qualified Adrai.EnvironmentTest
 import qualified Adrai.CliContractTest
+import qualified Adrai.ExplorerTest
 import qualified Adrai.CoverageLedgerAudit
 import qualified Adrai.CoverageLedgerAuditTest
 import qualified Adrai.CoverageLedgerTest
@@ -561,7 +562,8 @@ tests =
           ],
       testGroup
           "P4-06"
-          [ Adrai.CliContractTest.tests
+          [ Adrai.CliContractTest.tests,
+            Adrai.ExplorerTest.tests
           ],
       testGroup
           "P4-07"

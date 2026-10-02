@@ -1594,29 +1594,37 @@ mutationCliContractTests =
             assertBool "create example" ("--actor human:alice" `T.isInfixOf` renderedStdout rendered)
           Right _ -> assertFailure "create help unexpectedly parsed as command"
         let output = T.unlines renderHelp
-        assertBool "read limitation" ("placeholders" `T.isInfixOf` output)
-        for_ ["adrai show ADR_ID", "adrai search QUERY", "adrai history ADR_ID", "adrai create --help", "adrai amend --help"] $ \command ->
-          assertBool ("missing executable command: " <> T.unpack command) (command `T.isInfixOf` output)
-        assertBool "accepted view syntax" ("view ADR_ID [collapsed|exploded]" `T.isInfixOf` output)
-        assertBool "status syntax" ("status ADR_ID active|obsolete" `T.isInfixOf` output)
-        assertBool "editing limitation" ("Terminal create and amend input is unavailable" `T.isInfixOf` output)
-        let malformed = ["show", "show bad-id", "view bad-id exploded", "history bad-id", "create --title X --body Y", "amend", ":view collapsed", ":mode fts", "filter domain", "status bad-id retired"]
+        assertBool "actual read commands" (T.isInfixOf "selected immutable revision" output)
+        for_ ["search QUERY", "show ADR_ID", "history [ADR_ID]", "create {", "amend ADR_ID {", ":refresh"] $ \command ->
+          assertBool ("missing explorer command: " <> T.unpack command) (T.isInfixOf command output)
+        assertBool "accepted view syntax" (T.isInfixOf "view ADR_ID [collapsed|exploded]" output)
+        assertBool "status syntax" (T.isInfixOf "status ADR_ID active|obsolete" output)
+        let malformed = ["show", "show bad-id", "view bad-id exploded", "history bad-id", "create --title X --body Y", "amend", ":view unknown", ":mode unknown", "filter domain", "status bad-id retired", "create {\"body\":\"x\",\"unknown\":true}", "amend A0123456789ABCDEFGHJKMNPQRS {\"body\":\"x\"}"]
         for_ malformed $ \input ->
           case Explorer.parseCommand input of
-            Explorer.InvalidCommand hint -> assertBool (T.unpack input) (":help" `T.isInfixOf` hint)
+            Explorer.InvalidCommand hint -> assertBool (T.unpack input) (T.isInfixOf ":help" hint)
             other -> assertFailure (T.unpack input <> " parsed as " <> show other)
         Explorer.parseCommand ":help" @?= Explorer.HelpCommand
         Explorer.parseCommand "database choices" @?= Explorer.SearchCommand "database choices"
         Explorer.parseCommand "search database choices" @?= Explorer.SearchCommand "database choices"
-        case Explorer.parseCommand "show A0123456789ABCDEFGHJKMNPQRS" of
-          Explorer.ShowCommand _ -> pure ()
-          other -> assertFailure ("show parsed as " <> show other)
-        for_ ["create Example", "amend A0123456789ABCDEFGHJKMNPQRS Title Body"] $ \input ->
-          case Explorer.parseCommand input of
-            Explorer.InvalidCommand hint -> do
-              assertBool "no false commit claim" ("no Git commit" `T.isInfixOf` hint)
-              assertBool "working edit route" ("adrai web" `T.isInfixOf` hint)
-            other -> assertFailure (T.unpack input <> " parsed as " <> show other)
+        Explorer.parseCommand ":view EXPLODED" @?= Explorer.SetViewCommand Explorer.ExplodedView
+        Explorer.parseCommand ":mode fts" @?= Explorer.SetModeCommand Explorer.FtsOnly
+        Explorer.parseCommand "filter obsolete on" @?= Explorer.SetObsoleteCommand True
+        Explorer.parseCommand ":file clear" @?= Explorer.SetFilePathCommand Nothing
+        Explorer.parseCommand ":file docs/two  spaces.hs" @?= Explorer.SetFilePathCommand (Just (requireRight (mkRepoPath "docs/two  spaces.hs")))
+        Explorer.parseCommand "filter file docs/two  spaces.hs" @?= Explorer.SetFilePathCommand (Just (requireRight (mkRepoPath "docs/two  spaces.hs")))
+        Explorer.parseCommand ":refresh" @?= Explorer.RefreshCommand
+        case Explorer.parseCommand "view A0123456789ABCDEFGHJKMNPQRS ExPlOdEd" of
+          Explorer.ViewCommand _ Explorer.ExplodedView -> pure ()
+          other -> assertFailure ("view parsed as " <> show other)
+        case Explorer.parseCommand "create {\"title\":\"Example\",\"summary\":\"Summary\",\"body\":\"one\\r\\ntwo\",\"domains\":[\"platform\"],\"applies_to\":[\"src/**\"]}" of
+          Explorer.CreateCommand draft -> Explorer.draftBody draft @?= "one\ntwo\n"
+          other -> assertFailure ("create parsed as " <> show other)
+        case Explorer.parseCommand "amend A0123456789ABCDEFGHJKMNPQRS {\"body\":\"new\",\"change_summary\":\"why\"}" of
+          Explorer.AmendCommand _ draft -> do
+            Explorer.draftTitle draft @?= ""
+            Explorer.draftChangeSummary draft @?= "why"
+          other -> assertFailure ("amend parsed as " <> show other)
         for_ ["status A0123456789ABCDEFGHJKMNPQRS obsolete", ":status A0123456789ABCDEFGHJKMNPQRS active"] $ \input ->
           case Explorer.parseCommand input of
             Explorer.StatusCommand adr status -> do

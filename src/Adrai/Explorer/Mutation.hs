@@ -1,319 +1,54 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE StrictData #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
-
--- | Explorer mutations: connect 'ExplorerCommand' to the mutation service.
---
--- This module bridges the explorer command interface with
--- 'Adrai.Service.Mutation' functions, ensuring mutations run inside the
--- 8-stage transaction lock and report results back to the user.
---
--- The "exit gate" pattern: after a successful mutation the explorer shows
--- a summary and terminates (or offers to continue in REPL mode).
-
-module Adrai.Explorer.Mutation
-  ( MutationResult (..),
-    runMutation,
-    defaultManagedPaths,
-  )
-where
-
-import Adrai.Explorer.Types (ExplorerCommand (..), ExplorerSession (..))
-import Adrai.Git
-  ( Repository (..),
-    repositoryWorktreeRoot,
-    GitOid (..),
-    discoverRepository,
-    systemGit,
-  )
-import Data.Either (fromRight)
-import Adrai.Types
-  ( AdrId,
-    RecordId,
-    ConnectionId,
-    RepoPath (..),
-    ProvenanceInputs (..),
-    ManagedPaths,
-    mkManagedPaths,
-    mkAdrId,
-    mkRecordId,
-  )
-import Adrai.Domain
-  ( Domain,
-  )
+-- | Checked explorer writes consume the session's reviewed basis and ADR token.
+module Adrai.Explorer.Mutation (MutationResult (..), runMutation) where
+import Adrai.Explorer.Types
+import Adrai.Git (GitOid, discoverRepository, systemGit)
 import Adrai.Service.Mutation
-  ( CreateResult (..),
-    createAdrCommand,
-    AmendResult (..),
-    amendAdmCommand,
-    ObsoleteResult (..),
-    obsoleteCommand,
-    ReactivateResult (..),
-    reactivateCommand,
-  )
-import qualified Data.Text as T
+import Adrai.Types (AdrId, RecordId, RepoPath, ProvenanceInputs (..))
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 
--- | Result of a mutation executed through the explorer.
---
--- Carries the operation outcome so the terminal can display a summary
--- and decide whether to exit cleanly (exit gate).
 data MutationResult
-  = CreateMutationResult
-      { resultOperationId  :: String,
-        resultAdrId        :: AdrId,
-        resultRecordId     :: RecordId,
-        resultCommitOid    :: GitOid,
-        resultCreatedPaths :: [RepoPath]
-      }
-  | AmendMutationResult
-      { resultOperationId  :: String,
-        resultAdrId        :: AdrId,
-        resultRecordId     :: RecordId,
-        resultCommitOid    :: GitOid,
-        resultUpdatedPath  :: RepoPath
-      }
-  | ObsoleteMutationResult
-      { resultOperationId  :: String,
-        resultAdrId        :: AdrId,
-        resultConnectionId :: ConnectionId,
-        resultCommitOid    :: GitOid,
-        resultNewPath      :: RepoPath
-      }
-  | ReactivateMutationResult
-      { resultOperationId  :: String,
-        resultAdrId        :: AdrId,
-        resultConnectionId :: ConnectionId,
-        resultCommitOid    :: GitOid,
-        resultNewPath      :: RepoPath
-      }
-  | ScopeMutationResult
-      { resultOperationId  :: String,
-        resultAdrId        :: AdrId,
-        resultConnectionId :: ConnectionId,
-        resultCommitOid    :: GitOid,
-        resultNewPath      :: RepoPath
-      }
-  | DomainMutationResult
-      { resultOperationId  :: String,
-        resultAdrId        :: AdrId,
-        resultConnectionId :: ConnectionId,
-        resultCommitOid    :: GitOid,
-        resultNewPath      :: RepoPath
-      }
-  | MutationError
-      { resultError :: Text
-      } deriving (Show)
+  = MutationResult
+      { resultKind :: Text, resultOperationId :: String, resultAdrId :: AdrId,
+        resultRecordId :: Maybe RecordId, resultCommitOid :: GitOid,
+        resultCreatedPaths :: [RepoPath], resultWarnings :: [Text] }
+  | MutationError { resultError :: Text }
+  deriving (Show)
 
--- | Default managed paths for the explorer (matching the library default).
---
--- The paths are chosen so they cannot overlap, avoiding the
--- 'ManagedPathsViolation'.
-defaultManagedPaths :: ManagedPaths
-defaultManagedPaths =
-  case mkManagedPaths
-    (RepoPath "architecture/adrai/decisions")
-    (RepoPath "architecture/adrai/connections")
-  of
-    Right mp -> mp
-    Left _   -> error "defaultManagedPaths: paths should not overlap"
-
--- | Run an 'ExplorerCommand' that performs a mutation.
---
--- The function:
--- 1. Opens the repository at the session's repo path.
--- 2. Dispatches the appropriate mutation service function.
--- 3. Returns a 'MutationResult' with success/failure information.
---
--- The lock acquisition and release are handled internally by the
--- underlying 'Adrai.Service.Mutation' functions via
--- 'Adrai.Provenance.Git.Lock.withGitLock'.
-runMutation ::
-  ExplorerSession ->  -- ^ Session (provides repo path and actor)
-  ExplorerCommand ->  -- ^ Mutation command to execute
-  IO MutationResult
-runMutation session cmd =
-  case cmd of
-    CreateCommand title body domains -> do
-      repo <- openRepository (sessionRepo session)
-      case repo of
-        Left err -> pure (MutationError ("open repository: " <> err))
-        Right repository -> do
-          result <- executeCreate repository session title body domains
-          pure result
-
-    AmendCommand adr title body -> do
-      repo <- openRepository (sessionRepo session)
-      case repo of
-        Left err -> pure (MutationError ("open repository: " <> err))
-        Right repository -> do
-          result <- executeAmend repository session adr title body
-          pure result
-
-    StatusCommand adr newStatus -> do
-      repo <- openRepository (sessionRepo session)
-      case repo of
-        Left err -> pure (MutationError ("open repository: " <> err))
-        Right repository -> do
-          result <- executeStatus repository session adr newStatus
-          pure result
-
-    _ -> pure (MutationError "not a mutation command")
-
--- ---------------------------------------------------------------------------
--- Repository open
--- ---------------------------------------------------------------------------
-
--- | Discover a Git repository at the given path.
-openRepository :: FilePath -> IO (Either Text Repository)
-openRepository path = do
-  result <- discoverRepository systemGit path
-  pure $ case result of
-    Left err -> Left ("cannot open repository: " <> T.pack (show err))
-    Right repo ->
-      case repositoryWorktreeRoot repo of
-        Nothing -> Left "not a valid worktree repository"
-        Just _  -> Right repo
-
--- ---------------------------------------------------------------------------
--- Create
--- ---------------------------------------------------------------------------
-
--- | Execute a create mutation via the mutation service.
-executeCreate ::
-  Repository ->
-  ExplorerSession ->
-  Text ->
-  Text ->
-  [Domain] ->
-  IO MutationResult
-executeCreate repository session title body domains = do
-  let actor = sessionActor session
-      managedPaths = defaultManagedPaths
-      adrId  = fromRight (error "invalid ADR ID") (mkAdrId "A00000000000000000000000000")
-      recordId = fromRight (error "invalid record ID") (mkRecordId "R00000000000000000000000000")
-  result <-
-    createAdrCommand
-      repository
-      managedPaths
-      actor
-      adrId
-      recordId
-      title
-      body
-      body
-      domains
-      []
-      Nothing
-      Nothing
-      Nothing
-  case result of
-    Left txErr ->
-      pure (MutationError ("create: " <> T.pack (show txErr)))
-    Right createRes ->
-      pure (CreateMutationResult
-        { resultOperationId  = createOperationId createRes,
-          resultAdrId        = createAdrId createRes,
-          resultRecordId     = createRecordId createRes,
-          resultCommitOid    = createCommitOid createRes,
-          resultCreatedPaths = createCreatedPaths createRes
-        })
-
--- ---------------------------------------------------------------------------
--- Amend
--- ---------------------------------------------------------------------------
-
-executeAmend ::
-  Repository ->
-  ExplorerSession ->
-  AdrId ->
-  Text ->
-  Text ->
-  IO MutationResult
-executeAmend repository session adr newTitle newBody = do
-  let actor = sessionActor session
-      managedPaths = defaultManagedPaths
-      recordId = fromRight (error "invalid record ID") (mkRecordId "R00000000000000000000000000")
-      inputs = ProvenanceInputs Nothing Nothing Nothing
-  result <-
-    amendAdmCommand
-      repository
-      managedPaths
-      actor
-      adr
-      recordId
-      newTitle
-      newBody
-      newBody
-      inputs
-  case result of
-    Left txErr ->
-      pure (MutationError ("amend: " <> T.pack (show txErr)))
-    Right amendRes ->
-      pure (AmendMutationResult
-        { resultOperationId  = amendOperationId amendRes,
-          resultAdrId        = amendAdrId amendRes,
-          resultRecordId     = amendRecordId amendRes,
-          resultCommitOid    = amendCommitOid amendRes,
-          resultUpdatedPath  = amendUpdatedPath amendRes
-        })
-
--- ---------------------------------------------------------------------------
--- Status (obsolete / reactivate)
--- ---------------------------------------------------------------------------
-
-executeStatus ::
-  Repository ->
-  ExplorerSession ->
-  AdrId ->
-  Text ->
-  IO MutationResult
-executeStatus repository session adr newStatus = do
-  let actor = sessionActor session
-      managedPaths = defaultManagedPaths
-      recordId = fromRight (error "invalid record ID") (mkRecordId "R00000000000000000000000000")
-      inputs = ProvenanceInputs Nothing Nothing Nothing
-  case T.toLower newStatus of
-    "obsolete" -> do
-      result <-
-        obsoleteCommand
-          repository
-          managedPaths
-          actor
-          adr
-          recordId
-          inputs
-      case result of
-        Left txErr ->
-          pure (MutationError ("obsolete: " <> T.pack (show txErr)))
-        Right obsRes ->
-          pure (ObsoleteMutationResult
-            { resultOperationId  = obsoleteOperationId obsRes,
-              resultAdrId        = obsoleteAdrId obsRes,
-              resultConnectionId = obsoleteConnectionId obsRes,
-              resultCommitOid    = obsoleteCommitOid obsRes,
-              resultNewPath      = obsoleteNewPath obsRes
-            })
-    "active" -> do
-      result <-
-        reactivateCommand
-          repository
-          managedPaths
-          actor
-          adr
-          recordId
-          inputs
-      case result of
-        Left txErr ->
-          pure (MutationError ("reactivate: " <> T.pack (show txErr)))
-        Right reactRes ->
-          pure (ReactivateMutationResult
-            { resultOperationId  = reactivateOperationId reactRes,
-              resultAdrId        = reactivateAdrId reactRes,
-              resultConnectionId = reactivateConnectionId reactRes,
-              resultCommitOid    = reactivateCommitOid reactRes,
-              resultNewPath      = reactivateNewPath reactRes
-            })
-    _ ->
-      pure (MutationError ("unknown status: " <> newStatus))
+runMutation :: ExplorerSession -> ExplorerCommand -> IO MutationResult
+runMutation session _ | sessionRevision session /= "HEAD" =
+  pure (MutationError "Selected revisions are read-only. Use :revision HEAD, then view the ADR again.")
+runMutation session command = case (sessionBasis session, sessionManagedPaths session) of
+  (Just basis, Just paths) -> do
+    opened <- discoverRepository systemGit (sessionRepo session)
+    case opened of
+      Left problem -> pure (MutationError (T.pack (show problem)))
+      Right repository -> execute basis paths repository
+  _ -> pure (MutationError "No reviewed repository basis. Use :refresh or :revision HEAD.")
+  where
+    actor = sessionActor session
+    inputs = ProvenanceInputs Nothing Nothing Nothing
+    viewed adr action = case Map.lookup adr (sessionViewedStates session) of
+      Nothing -> pure (MutationError "View this ADR with show/view before editing it; use :refresh to adopt changed HEAD.")
+      Just token -> action token
+    execute basis paths repository = case command of
+      CreateCommand MutationDraft{..} -> do
+        result <- createAdrCommandAutoChecked basis repository paths actor draftTitle draftSummary draftBody draftDomains draftScopes Nothing Nothing Nothing
+        pure $ either failure (\r -> MutationResult "created" (createOperationId r) (createAdrId r) (Just (createRecordId r)) (createCommitOid r) (createCreatedPaths r) (warnings (createIndexUpdated r) (createPublicationError r))) result
+      AmendCommand adr MutationDraft{..} -> viewed adr $ \token -> do
+        result <- amendCurrentAdrCommandChecked basis repository actor adr (Just token) draftChangeSummary draftTitle draftSummary draftBody inputs
+        pure $ either failure (\r -> MutationResult "amended" (amendOperationId r) (amendAdrId r) (Just (amendRecordId r)) (amendCommitOid r) (amendCreatedPaths r) (warnings (amendIndexUpdated r) (amendPublicationError r))) result
+      StatusCommand adr "obsolete" -> viewed adr $ \token -> do
+        result <- obsoleteCommandChecked basis repository paths actor adr (ObsoleteRequest (Just token) "Marked obsolete in terminal explorer" False Nothing) inputs
+        pure $ either failure (\r -> MutationResult "marked obsolete" (obsoleteOperationId r) (obsoleteAdrId r) Nothing (obsoleteCommitOid r) (obsoleteCreatedPaths r) (warnings (obsoleteIndexUpdated r) (obsoletePublicationError r))) result
+      StatusCommand adr "active" -> viewed adr $ \token -> do
+        result <- reactivateCommandChecked basis repository paths actor adr (ReactivateRequest (Just token) "Reactivated in terminal explorer" False) inputs
+        pure $ either failure (\r -> MutationResult "reactivated" (reactivateOperationId r) (reactivateAdrId r) Nothing (reactivateCommitOid r) (reactivateCreatedPaths r) (warnings (reactivateIndexUpdated r) (reactivatePublicationError r))) result
+      _ -> pure (MutationError "Not a supported mutation command")
+    failure problem = MutationError (T.pack (show problem))
+    warnings indexUpdated publication =
+      ["Commit succeeded, but the caller's Git index was not updated." | not indexUpdated]
+      <> maybe [] (\message -> ["Commit succeeded; publication warning: " <> message]) publication

@@ -170,7 +170,7 @@ terminalWidth = pure 100
 -- Flags like (conflict) or (obsolete) are appended when present.
 renderSearchResult :: Int -> SearchResult -> Text
 renderSearchResult index result =
-  let id_ = T.take 12 (adrIdText (searchResultAdr result))
+  let id_ = adrIdText (searchResultAdr result)
       title = searchResultTitle result
       score = searchResultScore result
       flags = buildFlags result
@@ -224,7 +224,7 @@ renderCollapsed proj =
       issues     = collapsedIssues proj
       resolution = collapsedResolution proj
   in  [ ansiCyan (ansiBold title) ]
-     ++ [ ansiBold ("ADR " <> T.take 12 adr <> "  status=" <> statusText status) ]
+     ++ [ ansiBold ("ADR " <> adr <> "  status=" <> statusText status) ]
      ++ conflictLine resolution
      ++ [ "record: " <> maybe "-" recordIdText (collapsedRecord proj) ]
      ++ [ "domains: " <> statusOr "-" (T.intercalate ", " domains) ]
@@ -312,7 +312,7 @@ renderLineage :: ExplodedProjection -> [Text]
 renderLineage proj =
   let adr  = adrIdText (explodedAdr proj)
       ops  = explodedOperations proj
-  in  [ ansiCyan (ansiBold ("LINEAGE " <> T.take 12 adr)) ]
+  in  [ ansiCyan (ansiBold ("LINEAGE " <> adr)) ]
      ++ [ "state " <> ansiBlue (T.take 16 (stateTokenText (explodedStateToken proj))) ]
      ++ conflictLine proj
      ++ [""]
@@ -394,9 +394,9 @@ renderLineage proj =
 -- | Render conflict resolution information.
 renderConflict :: Text -> [ResolutionEntry] -> [Text]
 renderConflict adr conflicts
-  | null conflicts = [ ansiGreen ("No conflicts for " <> T.take 12 adr) ]
+  | null conflicts = [ ansiGreen ("No conflicts for " <> adr) ]
   | otherwise =
-      [ ansiCyan (ansiBold ("CONFLICTS: " <> T.take 12 adr)) ]
+      [ ansiCyan (ansiBold ("CONFLICTS: " <> adr)) ]
       ++ [""]
       ++ concat (map renderConflictsEntry conflicts)
 
@@ -436,7 +436,7 @@ renderHistoryOp :: HistoryOperation -> Text
 renderHistoryOp op =
   ansiGreen (T.pack (show (historyOperationClaimedAt op)))
     <> "  "
-    <> ansiBlue (T.take 12 (adrIdText (historyOperationAdr op)))
+    <> ansiBlue (adrIdText (historyOperationAdr op))
     <> "  "
     <> (historyOperationLabel op)
     <> "  "
@@ -455,23 +455,19 @@ renderHistoryOp op =
 renderHelp :: [Text]
 renderHelp =
   [ ansiCyan (ansiBold "ADRAI Terminal Explorer")
-  , ""
-  , "This terminal explorer currently prints placeholders for read commands."
-  , "At the shell for real data: adrai show ADR_ID, adrai search QUERY,"
-  , "adrai history ADR_ID, or adrai web (from the worktree)."
-  , "Start in an existing Git repository: adrai init, then adrai create --help."
-  , ""
-  , ansiBold "Explorer commands:"
-  , "  " <> ansiCyan ":help" <> "                           Show this help (help also works)"
-  , "  " <> ansiCyan "search QUERY" <> "                    Placeholder search; bare text also parses as search"
-  , "  " <> ansiCyan "show ADR_ID" <> "                     Placeholder ADR detail"
-  , "  " <> ansiCyan "view ADR_ID [collapsed|exploded]" <> "  Placeholder ADR view"
-  , "  " <> ansiCyan "history [ADR_ID]" <> "                Placeholder operation history"
-  , "  " <> ansiCyan "conflicts" <> "                       Placeholder conflict list"
-  , ""
-  , ansiBold "Editing:"
-  , "  " <> ansiCyan "status ADR_ID active|obsolete" <> "  Commit a status change; exit on success"
-  , "  Terminal create and amend input is unavailable."
-  , "  At the shell use adrai create --help, adrai amend --help, or adrai web."
-  , ansiBold "Exit: " <> ansiCyan "exit" <> " / " <> ansiCyan "quit" <> " / " <> ansiCyan ":q"
+  , "Read commands use the selected immutable revision; reads make no Git commit."
+  , "search QUERY (or bare text) | show ADR_ID | view ADR_ID [collapsed|exploded]"
+  , "history [ADR_ID] | conflicts"
+  , ":view collapsed|exploded | :mode fts|vector|hybrid | :obsolete on|off"
+  , ":file PATH|clear | filter file PATH|clear | filter obsolete on|off"
+  , ":actor human|llm|service:ID | :revision REF | :refresh"
+  , "Create: create {\"title\":\"Title\",\"summary\":\"Summary\",\"body\":\"Decision\\n\",\"domains\":[],\"applies_to\":[]}"
+  , "Amend: amend ADR_ID {\"body\":\"New decision\\n\",\"change_summary\":\"Why\"}"
+  , "Amend also accepts title and summary; omitted fields inherit current values."
+  , "status ADR_ID active|obsolete"
+  , "View an ADR before amend/status. Writes check the viewed HEAD/ref and state."
+  , "After external changes use :refresh (or :revision HEAD), then view again."
+  , "Selected revisions are read-only even when they equal HEAD; :refresh adopts HEAD."
+  , "A successful mutation exits; errors leave the session open."
+  , ":help | help | exit | quit | :q"
   ]

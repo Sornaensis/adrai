@@ -692,6 +692,8 @@
         "ADRAI.P4-05.DocumentCache.loadCachedCapsule.Returns Nothing for non-existent DB",
         "ADRAI.P4-05.DocumentCache.CachedDocument.CachedDocument shows correctly",
         "ADRAI.P4-05.DocumentCache.CachedDocument.CachedDocument equality works",
+        "ADRAI.P4-06.terminal explorer.real reads controls and generated checked writes use configured roots",
+        "ADRAI.P4-06.terminal explorer.stale and selected revisions reject writes until explicit HEAD refresh",
         "ADRAI.P4-06.cli-contracts.compileResultJson.emits all 17 keys sorted alphabetically",
         "ADRAI.P4-06.cli-contracts.compileResultJson.database field is a string",
         "ADRAI.P4-06.cli-contracts.compileResultJson.numeric fields are Aeson.Number (not string)",

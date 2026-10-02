@@ -465,7 +465,7 @@ parser =
    <|> subparser
         ( Opt.commandGroup "Interfaces:"
      <> Opt.command "web" (commandInfo (CmdWeb <$> webParser) "open the browser explorer (run in its worktree; no --repo)")
-     <> Opt.command "explore" (commandInfo (pure CmdExplore) "open the terminal explorer (read commands currently show placeholders)")
+     <> Opt.command "explore" (commandInfo (pure CmdExplore) "open the terminal explorer for revision-local reads and checked edits")
         )
     )
 

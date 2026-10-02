@@ -892,6 +892,8 @@
         "ADRAI.P3-06.P3-06 reusable search vector corpus.relevance cold-built and repeated reused paths are exactly equal",
         "ADRAI.P3-06.P3-06 reusable search vector corpus.changed materialization is rejected before retrieval",
         "ADRAI.P3-06.P3-06 reusable search vector corpus.different relevance sources leave the corpus unchanged",
+        "ADRAI.P4-06.terminal explorer.real reads controls and generated checked writes use configured roots",
+        "ADRAI.P4-06.terminal explorer.stale and selected revisions reject writes until explicit HEAD refresh",
         "ADRAI.P4-06.cli-contracts.compileResultJson.emits all 17 keys sorted alphabetically",
         "ADRAI.P4-06.cli-contracts.compileResultJson.database field is a string",
         "ADRAI.P4-06.cli-contracts.compileResultJson.numeric fields are Aeson.Number (not string)",
