@@ -143,17 +143,17 @@ instance Aeson.FromJSON CoverageRow where
       <*> value .:? "translationNote"
 
 data Evidence = Evidence
-  { evidenceCommand :: Text.Text,
+  { evidenceSelector :: Text.Text,
     evidenceFixture :: Text.Text,
-    evidenceResult :: Text.Text
+    evidenceSourceCoverage :: Text.Text
   }
 
 instance Aeson.FromJSON Evidence where
   parseJSON = Aeson.withObject "coverage evidence" $ \value ->
     Evidence
-      <$> (fromMaybe "" <$> value .:? "command")
+      <$> (fromMaybe "" <$> value .:? "selector")
       <*> (fromMaybe "" <$> value .:? "fixture")
-      <*> (fromMaybe "" <$> value .:? "result")
+      <*> (fromMaybe "" <$> value .:? "sourceCoverage")
 
 auditLedgerAt :: FilePath -> IO (Either Text.Text LedgerAudit)
 auditLedgerAt root = do
@@ -319,63 +319,41 @@ targetExistenceGaps root (category, row)
 
 evidenceProblems :: Evidence -> [Text.Text]
 evidenceProblems evidence =
-  [ "missing-evidence-command" | not (substantive (evidenceCommand evidence)) ]
-    <> ["invalid-evidence-command" | substantive (evidenceCommand evidence) && not (validEvidenceCommand (evidenceCommand evidence))]
+  [ "missing-evidence-selector" | not (substantive (evidenceSelector evidence)) ]
+    <> ["invalid-evidence-selector" | substantive (evidenceSelector evidence) && not (validEvidenceSelector (evidenceSelector evidence))]
     <> ["missing-evidence-fixture" | not (substantive (evidenceFixture evidence))]
-    <> ["missing-evidence-result" | not (substantive (evidenceResult evidence))]
+    <> ["missing-evidence-source-coverage" | not (substantive (evidenceSourceCoverage evidence))]
 
--- | The ledger records commands that can be executed without accidentally
--- constructing the intentionally expensive stress fixtures.  Ordinary-suite
--- commands need only target @adrai-test@ or the isolated cache-selection
--- component; a stress target must pass the
--- opt-in through Stack's test-arguments option.
-validEvidenceCommand :: Text.Text -> Bool
-validEvidenceCommand command =
+-- | Declarative component/source-label selection, never a shell invocation.
+-- The canonical runner separately verifies registrations and supplies the actual argv.
+validEvidenceSelector :: Text.Text -> Bool
+validEvidenceSelector command =
   case shellWords command of
-    Just ("stack" : "test" : "adrai:adrai-test" : _) -> True
-    Just ("stack" : "test" : "adrai:adrai-cache-selection-test" : _) -> True
-    Just ("stack" : "test" : "adrai:adrai-stress-test" : arguments) -> hasStressOptIn arguments
+    Just ("ordinary" : arguments) -> validSelection arguments
+    Just ("cache-selection" : arguments) -> validSelection arguments
+    Just ("stress" : arguments) -> validStressSelection arguments
     _ -> False
 
--- | The outer command and the value passed to Stack are distinct command
--- lines.  Parse both rather than looking for a substring: @--run-stress=1@,
--- @prefix--run-stress@, or a token hidden behind an unmatched quote are not
--- the explicit sentinel accepted by the stress executable.
-hasStressOptIn :: [Text.Text] -> Bool
-hasStressOptIn arguments =
-  maybe False ("--run-stress" `elem`) (decodeStressTestArguments arguments)
+validSelection :: [Text.Text] -> Bool
+validSelection arguments =
+  case arguments of
+    ["--source-test-label", name] -> substantive name
+    _ -> False
 
--- | Decode the exact argument vector delivered to the isolated stress
--- executable by a documented ledger command.  Keeping this separate from the
--- boolean validation makes quoting regressions observable: the PowerShell
--- safe command must deliver the focused pattern as one argv element.
+validStressSelection :: [Text.Text] -> Bool
+validStressSelection arguments =
+  length (filter (== "--run-stress") arguments) == 1
+    && validSelection (filter (/= "--run-stress") arguments)
+
+-- | Preserve the exact metadata argv, including quoted test names.
 decodeStressCommandArguments :: Text.Text -> Maybe [Text.Text]
 decodeStressCommandArguments command = do
   commandWords <- shellWords command
   case commandWords of
-    "stack" : "test" : "adrai:adrai-stress-test" : arguments -> decodeStressTestArguments arguments
+    "stress" : arguments | validStressSelection arguments -> Just arguments
     _ -> Nothing
 
-decodeStressTestArguments :: [Text.Text] -> Maybe [Text.Text]
-decodeStressTestArguments arguments = exactlyOneTestArguments arguments >>= shellWords
-
-exactlyOneTestArguments :: [Text.Text] -> Maybe Text.Text
-exactlyOneTestArguments = go Nothing
-  where
-    go found [] = found
-    go found ("--test-arguments" : value : remaining) = add found value remaining
-    go _ ["--test-arguments"] = Nothing
-    go found (argument : remaining)
-      | "--test-arguments=" `Text.isPrefixOf` argument =
-          add found (Text.drop (Text.length "--test-arguments=") argument) remaining
-      | otherwise = go found remaining
-
-    add Nothing value remaining = go (Just value) remaining
-    add (Just _) _ _ = Nothing
-
--- | A compact shell-word parser for the documented Stack command contract.
--- It supports the single and double quotes used by ledger evidence, preserves
--- ordinary Windows path separators, and rejects unmatched quotes.
+-- An independent word parser preserves quoted names and rejects unmatched quotes.
 shellWords :: Text.Text -> Maybe [Text.Text]
 shellWords = fmap (map Text.pack) . go [] [] Nothing False . Text.unpack
   where

@@ -2,7 +2,9 @@
 
 The test-support modules own deterministic logical fixture data. Their repository generator is identified as `adrai-fixture-splitmix64/v1` and uses seed `260729`. Its SplitMix64 sequence is a Haskell contract; it does not claim byte-for-byte parity with Python's random-number generator.
 
-Generators return pure logical plans and declarative corpora. They do not create repositories, call Git, or invoke ADRAI services. Later integration and E2E suites will provide Git and service interpreters that materialize these plans through the public Haskell implementation.
+Generators return pure logical plans and declarative corpora. They do not create repositories, call Git, or invoke ADRAI services. Integration and E2E support materializes selected plans through Git and the
+public Haskell services. A logical fixture shape is not a claim that the complete
+shape runs in the retained acceptance suite.
 
 Four fixtures have intentionally different jobs:
 

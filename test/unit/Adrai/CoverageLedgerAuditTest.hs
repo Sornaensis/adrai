@@ -90,20 +90,20 @@ testMissingTarget :: IO ()
 testMissingTarget = assertValidationGap MissingTarget "missing-haskell-test-target"
 
 testOmittedEvidenceCommand, testOmittedEvidenceFixture, testOmittedEvidenceResult :: IO ()
-testOmittedEvidenceCommand = assertValidationGap OmittedEvidenceCommand "missing-evidence-command"
+testOmittedEvidenceCommand = assertValidationGap OmittedEvidenceCommand "missing-evidence-selector"
 testOmittedEvidenceFixture = assertValidationGap OmittedEvidenceFixture "missing-evidence-fixture"
-testOmittedEvidenceResult = assertValidationGap OmittedEvidenceResult "missing-evidence-result"
+testOmittedEvidenceResult = assertValidationGap OmittedEvidenceResult "missing-evidence-source-coverage"
 
 testEmptyEvidenceCommand, testEmptyEvidenceFixture, testEmptyEvidenceResult :: IO ()
-testEmptyEvidenceCommand = assertValidationGap EmptyEvidenceCommand "missing-evidence-command"
+testEmptyEvidenceCommand = assertValidationGap EmptyEvidenceCommand "missing-evidence-selector"
 testEmptyEvidenceFixture = assertValidationGap EmptyEvidenceFixture "missing-evidence-fixture"
-testEmptyEvidenceResult = assertValidationGap EmptyEvidenceResult "missing-evidence-result"
+testEmptyEvidenceResult = assertValidationGap EmptyEvidenceResult "missing-evidence-source-coverage"
 
 testInvalidEvidenceCommand :: IO ()
 testInvalidEvidenceCommand = do
-  assertValidationGap InvalidEvidenceCommand "invalid-evidence-command"
-  assertAccepted "stack test adrai:adrai-cache-selection-test --test-arguments='--pattern=fixture'"
-  assertValidationGap (StressEvidenceCommand "stack test adrai:unapproved-test --test-arguments='--pattern=fixture'") "invalid-evidence-command"
+  assertValidationGap InvalidEvidenceCommand "invalid-evidence-selector"
+  assertAccepted "cache-selection --source-test-label fixture"
+  assertValidationGap (StressEvidenceCommand "stack test adrai:unapproved-test --test-arguments='--pattern=fixture'") "invalid-evidence-selector"
   where
     assertAccepted command =
       withFrozenLedger (StressEvidenceCommand command) $ \root -> do
@@ -113,7 +113,7 @@ testInvalidEvidenceCommand = do
           Right audit -> assertBool "cache-selection evidence command should be accepted" (Audit.auditIsClosed audit)
 
 testBareStressEvidenceCommand :: IO ()
-testBareStressEvidenceCommand = assertValidationGap BareStressEvidenceCommand "invalid-evidence-command"
+testBareStressEvidenceCommand = assertValidationGap BareStressEvidenceCommand "invalid-evidence-selector"
 
 testExplicitStressEvidenceCommand :: IO ()
 testExplicitStressEvidenceCommand =
@@ -135,20 +135,20 @@ testStressEvidenceCommandSyntax = do
           Left problem -> assertFailure (Text.unpack problem)
           Right audit -> assertBool ("valid stress command rejected: " <> command) (Audit.auditIsClosed audit)
     assertRejected command =
-      assertValidationGap (StressEvidenceCommand command) "invalid-evidence-command"
+      assertValidationGap (StressEvidenceCommand command) "invalid-evidence-selector"
     validCommands =
-      [ "stack test adrai:adrai-stress-test --test-arguments \"--run-stress --pattern=focused\"",
-        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress --pattern=focused\"",
+      [ "stress --run-stress --source-test-label focused",
+        "stress --source-test-label focused --run-stress",
         powershellStressCommand
       ]
     invalidCommands =
-      [ "stack test adrai:adrai-stress-test",
-        "stack test adrai:adrai-stress-test --test-arguments",
-        "stack test adrai:adrai-stress-test --test-arguments=--run-stress --test-arguments=--pattern=focused",
-        "stack test adrai:adrai-stress-test --test-arguments=--run-stress=true",
-        "stack test adrai:adrai-stress-test --test-arguments=prefix--run-stress",
-        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress",
-        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress \\\"unterminated\""
+      [ "stress --source-test-label focused",
+        "stress --run-stress",
+        "stress --run-stress --run-stress --source-test-label focused",
+        "stress --run-stress=true --source-test-label focused",
+        "stress prefix--run-stress --source-test-label focused",
+        "stress --run-stress --source-test-label \"unterminated",
+        "stress --run-stress --source-test-label focused --extra"
       ]
 
 testPowerShellStressEvidenceArgv :: IO ()
@@ -156,8 +156,8 @@ testPowerShellStressEvidenceArgv =
   Audit.decodeStressCommandArguments (Text.pack powershellStressCommand)
     @?= Just
       [ "--run-stress",
-        "-p",
-        "/compact repository stress/"
+        "--source-test-label",
+        "ADRAI stress.P6-06G compact repository stress.32-commit repository with 16 ADR operations and a two-parent merge"
       ]
 
 testCommittedLedgerRuntimeAudit :: IO ()
@@ -173,13 +173,13 @@ testCommittedLargeStressEvidence :: IO ()
 testCommittedLargeStressEvidence = do
   evidence <- ByteString.readFile ("test" </> "coverage" </> "ledger" </> "v1" </> "large-stress.json")
   result <- Audit.auditLedgerAt ("test" </> "coverage" </> "ledger" </> "v1")
-  assertBool "the committed large-stress ledger row must name the isolated stress suite" (ByteString.pack "adrai:adrai-stress-test" `ByteString.isInfixOf` evidence)
+  assertBool "the committed large-stress ledger row must name the isolated stress suite" (ByteString.pack "stress --run-stress" `ByteString.isInfixOf` evidence)
   assertBool "the committed large-stress ledger row must carry the exact opt-in" (ByteString.pack "--run-stress" `ByteString.isInfixOf` evidence)
   assertBool "the committed large-stress ledger row must select its compact stress contract" (ByteString.pack "compact repository stress" `ByteString.isInfixOf` evidence)
-  assertBool "the committed large-stress ledger row must use PowerShell-safe single outer quotes" (ByteString.pack "--test-arguments='--run-stress -p" `ByteString.isInfixOf` evidence)
+  assertBool "the committed large-stress ledger row must carry an source-label selector" (ByteString.pack "--source-test-label" `ByteString.isInfixOf` evidence)
   case result of
     Left problem -> assertFailure (Text.unpack problem)
-    Right audit -> assertBool "the committed stress command must survive audit parsing" (not ("invalid-evidence-command" `Text.isInfixOf` Audit.renderAuditReport audit))
+    Right audit -> assertBool "the committed stress command must survive audit parsing" (not ("invalid-evidence-selector" `Text.isInfixOf` Audit.renderAuditReport audit))
 
 testRequireClosed :: IO ()
 testRequireClosed =
@@ -291,20 +291,20 @@ rowJson mutation categoryIndex rowIndex =
       | firstRow && mutation == MissingTarget = "test/unit/Adrai/MissingCoverageLedgerTarget.hs"
       | otherwise = "test/unit/Adrai/CoverageLedgerAuditTest.hs"
     evidence
-      | firstRow && mutation == OmittedEvidenceCommand = "{\"fixture\":\"synthetic fixture\",\"result\":\"synthetic result\"}"
-      | firstRow && mutation == OmittedEvidenceFixture = "{\"command\":\"stack test adrai:adrai-test --test-arguments=--pattern=coverage-ledger\",\"result\":\"synthetic result\"}"
-      | firstRow && mutation == OmittedEvidenceResult = "{\"command\":\"stack test adrai:adrai-test --test-arguments=--pattern=coverage-ledger\",\"fixture\":\"synthetic fixture\"}"
-      | firstRow && mutation == EmptyEvidenceCommand = evidenceWith "" "synthetic fixture" "synthetic result"
-      | firstRow && mutation == EmptyEvidenceFixture = evidenceWith "stack test adrai:adrai-test --test-arguments=--pattern=coverage-ledger" "" "synthetic result"
-      | firstRow && mutation == EmptyEvidenceResult = evidenceWith "stack test adrai:adrai-test --test-arguments=--pattern=coverage-ledger" "synthetic fixture" ""
-      | firstRow && mutation == InvalidEvidenceCommand = evidenceWith "cabal test" "synthetic fixture" "synthetic result"
-      | firstRow, StressEvidenceCommand command <- mutation = evidenceWith command "synthetic fixture" "synthetic result"
-      | firstRow && mutation == BareStressEvidenceCommand = evidenceWith "stack test adrai:adrai-stress-test --test-arguments=--pattern=coverage-ledger" "synthetic fixture" "synthetic result"
-      | firstRow && mutation == ExplicitStressEvidenceCommand = evidenceWith "stack test adrai:adrai-stress-test --test-arguments=--run-stress" "synthetic fixture" "synthetic result"
-      | otherwise = evidenceWith "stack test adrai:adrai-test --test-arguments=--pattern=coverage-ledger" "synthetic fixture" "synthetic result"
+      | firstRow && mutation == OmittedEvidenceCommand = "{\"fixture\":\"synthetic fixture\",\"sourceCoverage\":\"synthetic source contract\"}"
+      | firstRow && mutation == OmittedEvidenceFixture = "{\"selector\":\"ordinary --source-test-label coverage-ledger\",\"sourceCoverage\":\"synthetic source contract\"}"
+      | firstRow && mutation == OmittedEvidenceResult = "{\"selector\":\"ordinary --source-test-label coverage-ledger\",\"fixture\":\"synthetic fixture\"}"
+      | firstRow && mutation == EmptyEvidenceCommand = evidenceWith "" "synthetic fixture" "synthetic source contract"
+      | firstRow && mutation == EmptyEvidenceFixture = evidenceWith "ordinary --source-test-label coverage-ledger" "" "synthetic source contract"
+      | firstRow && mutation == EmptyEvidenceResult = evidenceWith "ordinary --source-test-label coverage-ledger" "synthetic fixture" ""
+      | firstRow && mutation == InvalidEvidenceCommand = evidenceWith "cabal test" "synthetic fixture" "synthetic source contract"
+      | firstRow, StressEvidenceCommand command <- mutation = evidenceWith command "synthetic fixture" "synthetic source contract"
+      | firstRow && mutation == BareStressEvidenceCommand = evidenceWith "stress --source-test-label coverage-ledger" "synthetic fixture" "synthetic source contract"
+      | firstRow && mutation == ExplicitStressEvidenceCommand = evidenceWith "stress --run-stress --source-test-label coverage-ledger" "synthetic fixture" "synthetic source contract"
+      | otherwise = evidenceWith "ordinary --source-test-label coverage-ledger" "synthetic fixture" "synthetic source contract"
 
     evidenceWith command fixture result =
-      "{\"command\":\"" <> escapeJson command <> "\",\"fixture\":\"" <> escapeJson fixture <> "\",\"result\":\"" <> escapeJson result <> "\"}"
+      "{\"selector\":\"" <> escapeJson command <> "\",\"fixture\":\"" <> escapeJson fixture <> "\",\"sourceCoverage\":\"" <> escapeJson result <> "\"}"
 
     escapeJson = concatMap escapeCharacter
     escapeCharacter '\\' = "\\\\"
@@ -323,4 +323,4 @@ frozenCategories =
 
 powershellStressCommand :: String
 powershellStressCommand =
-  "stack test adrai:adrai-stress-test --test-arguments='--run-stress -p \"/compact repository stress/\"'"
+  "stress --run-stress --source-test-label 'ADRAI stress.P6-06G compact repository stress.32-commit repository with 16 ADR operations and a two-parent merge'"

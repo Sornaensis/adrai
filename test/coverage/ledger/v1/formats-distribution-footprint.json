@@ -1,4 +1,4 @@
-﻿{
+{
     "schema":  "adrai/coverage-ledger-category/v1",
     "category":  "formats-distribution-footprint",
     "expectedCount":  16,
@@ -18,9 +18,9 @@
                      "phaseOwner":  "P2",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"all internal source cache and public contracts remain version one\"",
+                                      "selector": "ordinary --source-test-label \"all internal source cache and public contracts remain version one\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_format_contract.py:22-30",
-                                      "result":  "ADRAI_1_Source/tests/test_format_contract.py:22-30 | test/unit/Adrai/FormatFoundationTest.hs:84-100 | test/golden/Adrai/GoldenFixturesTest.hs:288-305 | test/fixtures/contracts/v1/versions.json:1-11"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_format_contract.py:22-30 | test/unit/Adrai/FormatFoundationTest.hs:84-100 | test/golden/Adrai/GoldenFixturesTest.hs:288-305 | test/fixtures/contracts/v1/versions.json:1-11"
                                   }
                  },
                  {
@@ -33,9 +33,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"default configuration has exact committed bytes and typed v1 values\"",
+                                      "selector": "ordinary --source-test-label \"default configuration has exact committed bytes and typed v1 values\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_format_contract.py:37-45",
-                                      "result":  "ADRAI_1_Source/tests/test_format_contract.py:37-45 | test/golden/Adrai/GoldenFixturesTest.hs:45-49 | test/golden/Adrai/GoldenFixturesTest.hs:401-413 | test/unit/Adrai/TypesTest.hs:119-134"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_format_contract.py:37-45 | test/golden/Adrai/GoldenFixturesTest.hs:45-49 | test/golden/Adrai/GoldenFixturesTest.hs:401-413 | test/unit/Adrai/TypesTest.hs:119-134"
                                   }
                  },
                  {
@@ -48,9 +48,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"configuration parser rejects unsupported top level tables\"",
+                                      "selector": "ordinary --source-test-label \"configuration parser rejects unsupported top level tables\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_format_contract.py:47-52",
-                                      "result":  "ADRAI_1_Source/tests/test_format_contract.py:47-52 | test/unit/Adrai/ConfigFormatTest.hs:71-87 | test/property/Adrai/FormatProperties.hs:107-108 | test/property/Adrai/FormatProperties.hs:134-135"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_format_contract.py:47-52 | test/unit/Adrai/ConfigFormatTest.hs:71-87 | test/property/Adrai/FormatProperties.hs:107-108 | test/property/Adrai/FormatProperties.hs:134-135"
                                   }
                  },
                  {
@@ -63,9 +63,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"configuration parser rejects unknown path and logical line fields\"",
+                                      "selector": "ordinary --source-test-label \"configuration parser rejects unknown path and logical line fields\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_format_contract.py:54-66",
-                                      "result":  "ADRAI_1_Source/tests/test_format_contract.py:54-66 | test/unit/Adrai/ConfigFormatTest.hs:77-85 | test/property/Adrai/FormatProperties.hs:109-112 | test/property/Adrai/FormatProperties.hs:136-139"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_format_contract.py:54-66 | test/unit/Adrai/ConfigFormatTest.hs:77-85 | test/property/Adrai/FormatProperties.hs:109-112 | test/property/Adrai/FormatProperties.hs:136-139"
                                   }
                  },
                  {
@@ -78,9 +78,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"configuration schema and managed roots are strict\"",
+                                      "selector": "ordinary --source-test-label \"configuration schema and managed roots are strict\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_format_contract.py:68-84",
-                                      "result":  "ADRAI_1_Source/tests/test_format_contract.py:68-84 | test/unit/Adrai/TypesTest.hs:119-145 | test/unit/Adrai/FormatFoundationTest.hs:84-92 | test/unit/Adrai/ConfigFormatTest.hs:72-98"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_format_contract.py:68-84 | test/unit/Adrai/TypesTest.hs:119-145 | test/unit/Adrai/FormatFoundationTest.hs:84-92 | test/unit/Adrai/ConfigFormatTest.hs:72-98"
                                   }
                  },
                  {
@@ -93,9 +93,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"managed document parser accepts only exact v1 record schemas\"",
+                                      "selector": "ordinary --source-test-label \"managed document parser accepts only exact v1 record schemas\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_format_contract.py:102-109",
-                                      "result":  "ADRAI_1_Source/tests/test_format_contract.py:102-109 | test/unit/Adrai/FormatFoundationTest.hs:90-92 | test/fixtures/contracts/v1/documents/parse-cases.json:48-54 | test/property/Adrai/FormatProperties.hs:113-116 | test/property/Adrai/FormatProperties.hs:140-141"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_format_contract.py:102-109 | test/unit/Adrai/FormatFoundationTest.hs:90-92 | test/fixtures/contracts/v1/documents/parse-cases.json:48-54 | test/property/Adrai/FormatProperties.hs:113-116 | test/property/Adrai/FormatProperties.hs:140-141"
                                   }
                  },
                  {
@@ -108,9 +108,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"decision parser rejects unknown front matter and capsule fields\"",
+                                      "selector": "ordinary --source-test-label \"decision parser rejects unknown front matter and capsule fields\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_format_contract.py:111-127",
-                                      "result":  "ADRAI_1_Source/tests/test_format_contract.py:111-127 | test/fixtures/contracts/v1/documents/parse-cases.json:62-68 | test/golden/Adrai/GoldenFixturesTest.hs:228-238 | test/unit/Adrai/ManagedDocumentFormatTest.hs:116-190 | test/property/Adrai/FormatProperties.hs:117-118 | test/property/Adrai/FormatProperties.hs:125-126 | test/property/Adrai/FormatProperties.hs:142-143 | test/property/Adrai/FormatProperties.hs:150-151"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_format_contract.py:111-127 | test/fixtures/contracts/v1/documents/parse-cases.json:62-68 | test/golden/Adrai/GoldenFixturesTest.hs:228-238 | test/unit/Adrai/ManagedDocumentFormatTest.hs:116-190 | test/property/Adrai/FormatProperties.hs:117-118 | test/property/Adrai/FormatProperties.hs:125-126 | test/property/Adrai/FormatProperties.hs:142-143 | test/property/Adrai/FormatProperties.hs:150-151"
                                   }
                  },
                  {
@@ -123,9 +123,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"connection parser rejects unknown relations and relation fields\"",
+                                      "selector": "ordinary --source-test-label \"connection parser rejects unknown relations and relation fields\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_format_contract.py:129-145",
-                                      "result":  "ADRAI_1_Source/tests/test_format_contract.py:129-145 | test/unit/Adrai/ManagedDocumentFormatTest.hs:86-100 | test/property/Adrai/FormatProperties.hs:119-122 | test/property/Adrai/FormatProperties.hs:144-147"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_format_contract.py:129-145 | test/unit/Adrai/ManagedDocumentFormatTest.hs:86-100 | test/property/Adrai/FormatProperties.hs:119-122 | test/property/Adrai/FormatProperties.hs:144-147"
                                   }
                  },
                  {
@@ -138,9 +138,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"provenance capsule version tool and actor shapes are strict\"",
+                                      "selector": "ordinary --source-test-label \"provenance capsule version tool and actor shapes are strict\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_format_contract.py:147-159",
-                                      "result":  "ADRAI_1_Source/tests/test_format_contract.py:147-159 | test/fixtures/contracts/v1/documents/parse-cases.json:10-31 | test/unit/Adrai/ProvenanceFormatTest.hs:147-168 | test/property/Adrai/FormatProperties.hs:127-132 | test/property/Adrai/FormatProperties.hs:152-157"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_format_contract.py:147-159 | test/fixtures/contracts/v1/documents/parse-cases.json:10-31 | test/unit/Adrai/ProvenanceFormatTest.hs:147-168 | test/property/Adrai/FormatProperties.hs:127-132 | test/property/Adrai/FormatProperties.hs:152-157"
                                   }
                  },
                  {
@@ -153,9 +153,9 @@
                      "phaseOwner":  "P7",
                      "state":  "not-applicable",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"native package metadata replaces Python project metadata\"",
+                                      "selector": "ordinary --source-test-label \"native package metadata replaces Python project metadata\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_distribution_cli.py:16-27",
-                                      "result":  "ADRAI_1_Source/tests/test_distribution_cli.py:16-27 | package.yaml:1-7 | package.yaml:36-41"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_distribution_cli.py:16-27 | package.yaml:1-7 | package.yaml:36-41"
                                   },
                      "translationNote":  "Python-only pyproject keys, classifiers, requires-python, and empty runtime dependencies do not exist in the native distribution; P7 verifies the corresponding package version and adrai executable metadata instead."
                  },
@@ -169,9 +169,9 @@
                      "phaseOwner":  "P7",
                      "state":  "installed-haskell-equivalent",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"installed native executable exposes command help and version\"",
+                                      "selector": "ordinary --source-test-label \"installed native executable exposes command help and version\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_distribution_cli.py:29-52",
-                                      "result":  "ADRAI_1_Source/tests/test_distribution_cli.py:29-52 | app/Main.hs:1-6 | package.yaml:36-41 | test/fixtures/contracts/v1/cli/commands.json:1-6"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_distribution_cli.py:29-52 | app/Main.hs:1-6 | package.yaml:36-41 | test/fixtures/contracts/v1/cli/commands.json:1-6"
                                   },
                      "translationNote":  "The Python -m adrai_core entrypoint is replaced by the installed native adrai executable; its --help and --version behavior is the Haskell parity surface."
                  },
@@ -185,9 +185,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /init/&&/create/&&/CLI/&&/contracts/ -j 1'",
+                                      "selector": "ordinary --source-test-label \"P6-02M CLI exposes one option-free explorer and rejects removed commands\"",
                                       "fixture":  "CliContractTest.mutationCliContractTests case 'explore is the one option-free public terminal command' accepts only explore with global --repo and rejects positional arguments, options, trust, vectors, and migrate.",
-                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; init/create CLI contracts ALL 49 PASS in 0.03s"
+                                      "sourceCoverage": "Source contract: The public command inventory contains one option-free explorer and rejects removed trust, vectors, and migrate commands. Target: test/unit/Adrai/CliContractTest.hs (P6-02M CLI exposes one option-free explorer and rejects removed commands)."
                                   }
                  },
                  {
@@ -200,9 +200,9 @@
                      "phaseOwner":  "P7",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"installed CLI round trip supports repository paths with spaces and Unicode\"",
+                                      "selector": "ordinary --source-test-label \"installed CLI round trip supports repository paths with spaces and Unicode\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_distribution_cli.py:79-131",
-                                      "result":  "ADRAI_1_Source/tests/test_distribution_cli.py:79-131 | test/property/Adrai/TypesProperties.hs:22-69 | test/unit/Adrai/TypesTest.hs:76-77"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_distribution_cli.py:79-131 | test/property/Adrai/TypesProperties.hs:22-69 | test/unit/Adrai/TypesTest.hs:76-77"
                                   }
                  },
                  {
@@ -215,9 +215,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"P6-02A\" -j 1'",
+                                      "selector": "ordinary --source-test-label \"P6-02A init commits shared config but not local cache\"",
                                       "fixture":  "test/integration/Adrai/MutationE2ETest.hs::p602aInitUnborn inspects the real init commit tree, exact .adrai.toml/.gitattributes/.gitignore bytes, and .adrai/index.sqlite; ADRAI_EXE names the executable under test.",
-                                      "result":  "Commit 19798ef; reviewed focused P6-02A validation passed 19/19, committing only shared bootstrap configuration and ignore attributes while index.sqlite exists only as untracked local cache state."
+                                      "sourceCoverage": "Source contract: Repository initialization commits only shared configuration and ignore attributes while local cache configuration and generated cache files remain untracked. Target: test/integration/Adrai/MutationE2ETest.hs (P6-02A init commits shared config but not local cache)."
                                   }
                  },
                  {
@@ -230,9 +230,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"semantic operations commit only their immutable managed records\"",
+                                      "selector": "ordinary --source-test-label \"semantic operations commit only their immutable managed records\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_committed_footprint.py:30-50",
-                                      "result":  "ADRAI_1_Source/tests/test_committed_footprint.py:30-50 | ADRAI_1_Source/tests/test_committed_footprint.py:79-164"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_committed_footprint.py:30-50 | ADRAI_1_Source/tests/test_committed_footprint.py:79-164"
                                   }
                  },
                  {
@@ -245,9 +245,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"every managed file embeds a canonical compact JSON capsule\"",
+                                      "selector": "ordinary --source-test-label \"every managed file embeds a canonical compact JSON capsule\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_committed_footprint.py:166-177",
-                                      "result":  "ADRAI_1_Source/tests/test_committed_footprint.py:166-177 | test/fixtures/contracts/v1/documents/parse-cases.json:10-31 | test/golden/Adrai/GoldenFixturesTest.hs:50-55 | test/golden/Adrai/GoldenFixturesTest.hs:431-445"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_committed_footprint.py:166-177 | test/fixtures/contracts/v1/documents/parse-cases.json:10-31 | test/golden/Adrai/GoldenFixturesTest.hs:50-55 | test/golden/Adrai/GoldenFixturesTest.hs:431-445"
                                   }
                  }
              ]

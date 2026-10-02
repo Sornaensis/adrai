@@ -98,7 +98,8 @@ operation and actual commit even if a later read or event has a newer stamp.
 
 Malformed input maps to 400 (or 405 for a known route with the wrong method),
 authentication to 401, origin/Host admission to 403, missing routes/resources
-to 404, and stale state or semantic/CAS conflicts to 409. Unexpected shared
+to 404, oversized query strings or request bodies to 413, and stale state or
+semantic/CAS conflicts to 409. Unexpected shared
 service failures map to 500. Runtime adapters preserve the existing CLI JSON
 payload and committed post-index-warning outcome; they do not turn a durable
 commit into failure because disposable indexing failed.

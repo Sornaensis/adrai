@@ -191,18 +191,18 @@ instance Aeson.FromJSON CoverageRow where
       <*> value .:? "translationNote"
 
 data Evidence = Evidence
-  { evidenceCommand :: Text,
+  { evidenceSelector :: Text,
     evidenceFixture :: Text,
-    evidenceResult :: Text
+    evidenceSourceCoverage :: Text
   }
   deriving (Eq, Show)
 
 instance Aeson.FromJSON Evidence where
   parseJSON = Aeson.withObject "coverage evidence" $ \value ->
     Evidence
-      <$> value .: "command"
+      <$> value .: "selector"
       <*> value .: "fixture"
-      <*> value .: "result"
+      <*> value .: "sourceCoverage"
 
 testManifestIdentity :: Assertion
 testManifestIdentity = do
@@ -304,46 +304,43 @@ testEvidence = do
   (_, _, fragments) <- loadLedger
   forM_ (allRows fragments) $ \row -> do
     let evidence = rowEvidence row
-    assertSubstantive "evidence command" (evidenceCommand evidence)
+    assertSubstantive "evidence command" (evidenceSelector evidence)
     assertSubstantive "evidence fixture" (evidenceFixture evidence)
-    assertSubstantive "evidence result" (evidenceResult evidence)
+    assertSubstantive "source coverage" (evidenceSourceCoverage evidence)
     assertBool
-      "evidence command must invoke a valid Haskell test suite command"
-      (validEvidenceCommand (evidenceCommand evidence))
+      "coverage selector must name an approved component and source-test label"
+      (validEvidenceSelector (evidenceSelector evidence))
 
-validEvidenceCommand :: Text -> Bool
-validEvidenceCommand command =
+-- | Declarative component/source-label selection, never a shell invocation.
+-- The canonical runner separately verifies registrations and supplies the actual argv.
+validEvidenceSelector :: Text -> Bool
+validEvidenceSelector command =
   case shellWords command of
-    Just ("stack" : "test" : "adrai:adrai-test" : _) -> True
-    Just ("stack" : "test" : "adrai:adrai-cache-selection-test" : _) -> True
-    Just ("stack" : "test" : "adrai:adrai-stress-test" : arguments) -> hasStressOptIn arguments
+    Just ("ordinary" : arguments) -> validSelection arguments
+    Just ("cache-selection" : arguments) -> validSelection arguments
+    Just ("stress" : arguments) -> validStressSelection arguments
     _ -> False
 
--- Deliberately independent from CoverageLedgerAudit: the golden verifier is
--- the second line of defence for the frozen ledger contract.
-hasStressOptIn :: [Text] -> Bool
-hasStressOptIn arguments =
-  case exactlyOneTestArguments arguments of
-    Nothing -> False
-    Just testArguments ->
-      case shellWords testArguments of
-        Nothing -> False
-        Just innerArguments -> "--run-stress" `elem` innerArguments
+validSelection :: [Text] -> Bool
+validSelection arguments =
+  case arguments of
+    ["--source-test-label", name] -> (not . T.null . T.strip) name
+    _ -> False
 
-exactlyOneTestArguments :: [Text] -> Maybe Text
-exactlyOneTestArguments = go Nothing
-  where
-    go found [] = found
-    go found ("--test-arguments" : value : remaining) = add found value remaining
-    go _ ["--test-arguments"] = Nothing
-    go found (argument : remaining)
-      | "--test-arguments=" `T.isPrefixOf` argument =
-          add found (T.drop (T.length "--test-arguments=") argument) remaining
-      | otherwise = go found remaining
+validStressSelection :: [Text] -> Bool
+validStressSelection arguments =
+  length (filter (== "--run-stress") arguments) == 1
+    && validSelection (filter (/= "--run-stress") arguments)
 
-    add Nothing value remaining = go (Just value) remaining
-    add (Just _) _ _ = Nothing
+-- | Preserve the exact metadata argv, including quoted test names.
+decodeStressCommandArguments :: Text -> Maybe [Text]
+decodeStressCommandArguments command = do
+  commandWords <- shellWords command
+  case commandWords of
+    "stress" : arguments | validStressSelection arguments -> Just arguments
+    _ -> Nothing
 
+-- An independent word parser preserves quoted names and rejects unmatched quotes.
 shellWords :: Text -> Maybe [Text]
 shellWords = fmap (map T.pack) . go [] [] Nothing False . T.unpack
   where
@@ -375,23 +372,24 @@ shellWords = fmap (map T.pack) . go [] [] Nothing False . T.unpack
 
 testStressEvidenceOptIn :: Assertion
 testStressEvidenceOptIn = do
-  assertBool "cache-selection evidence command was rejected" (validEvidenceCommand cacheSelectionCommand)
-  assertBool "unsupported component evidence command was accepted" (not (validEvidenceCommand unsupportedComponentCommand))
-  mapM_ (assertBool "valid stress evidence command was rejected" . validEvidenceCommand) validCommands
-  mapM_ (assertBool "ambiguous stress evidence command was accepted" . not . validEvidenceCommand) invalidCommands
+  assertBool "cache-selection evidence command was rejected" (validEvidenceSelector cacheSelectionCommand)
+  assertBool "unsupported component evidence command was accepted" (not (validEvidenceSelector unsupportedComponentCommand))
+  mapM_ (assertBool "valid stress evidence command was rejected" . validEvidenceSelector) validCommands
+  mapM_ (assertBool "ambiguous stress evidence command was accepted" . not . validEvidenceSelector) invalidCommands
   where
     validCommands =
-      [ "stack test adrai:adrai-stress-test --test-arguments \"--run-stress --pattern=focused\"",
-        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress --pattern=focused\"",
+      [ "stress --run-stress --source-test-label focused",
+        "stress --source-test-label focused --run-stress",
         powershellStressCommand
       ]
     invalidCommands =
-      [ "stack test adrai:adrai-stress-test",
-        "stack test adrai:adrai-stress-test --test-arguments=--run-stress --test-arguments=--pattern=focused",
-        "stack test adrai:adrai-stress-test --test-arguments=--run-stress=true",
-        "stack test adrai:adrai-stress-test --test-arguments=prefix--run-stress",
-        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress",
-        "stack test adrai:adrai-stress-test --test-arguments=\"--run-stress \\\"unterminated\""
+      [ "stress --source-test-label focused",
+        "stress --run-stress",
+        "stress --run-stress --run-stress --source-test-label focused",
+        "stress --run-stress=true --source-test-label focused",
+        "stress prefix--run-stress --source-test-label focused",
+        "stress --run-stress --source-test-label \"unterminated",
+        "stress --run-stress --source-test-label focused --extra"
       ]
 
 testPowerShellStressEvidenceArgv :: Assertion
@@ -399,18 +397,9 @@ testPowerShellStressEvidenceArgv =
   decodeStressCommandArguments powershellStressCommand
     @?= Just
       [ "--run-stress",
-        "--pattern=12,000-commit repository with 2,000 ADR operations"
+        "--source-test-label",
+        "ADRAI stress.P6-06G compact repository stress.32-commit repository with 16 ADR operations and a two-parent merge"
       ]
-
-decodeStressCommandArguments :: Text -> Maybe [Text]
-decodeStressCommandArguments command = do
-  commandWords <- shellWords command
-  case commandWords of
-    "stack" : "test" : "adrai:adrai-stress-test" : arguments -> decodeStressTestArguments arguments
-    _ -> Nothing
-
-decodeStressTestArguments :: [Text] -> Maybe [Text]
-decodeStressTestArguments arguments = exactlyOneTestArguments arguments >>= shellWords
 
 testTranslationStates :: Assertion
 testTranslationStates = do
@@ -598,12 +587,11 @@ exactDynamicGenerators =
 
 powershellStressCommand :: Text
 powershellStressCommand =
-  "stack test adrai:adrai-stress-test --test-arguments='--run-stress --pattern=\"12,000-commit repository with 2,000 ADR operations\"'"
+  "stress --run-stress --source-test-label 'ADRAI stress.P6-06G compact repository stress.32-commit repository with 16 ADR operations and a two-parent merge'"
 
 cacheSelectionCommand :: Text
 cacheSelectionCommand =
-  "stack test adrai:adrai-cache-selection-test --test-arguments='--pattern=\"production cache selection.exact CLI reports immutable archive reuse\"'"
+  "cache-selection --source-test-label 'production cache selection.exact CLI reports immutable archive reuse'"
 
 unsupportedComponentCommand :: Text
-unsupportedComponentCommand =
-  "stack test adrai:unapproved-test --test-arguments='--pattern=fixture'"
+unsupportedComponentCommand = "unapproved --source-test-label fixture"

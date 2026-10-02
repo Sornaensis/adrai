@@ -14,8 +14,11 @@ benchmark samples:
 stack build adrai:bench:adrai-bench
 stack bench adrai:bench:adrai-bench --ba "--list"
 stack bench adrai:bench:adrai-bench --ba "--help"
-stack test adrai:adrai-benchmark-registration-test
 ```
+
+Select each exact registered leaf with `tools/RunRetainedTests.ps1 -Mode Focused -Component adrai-benchmark-registration-test`
+and `-TestName`, using the manifest and executable parameters in
+[Testing](../docs/TESTING.md).
 
 `adrai-benchmark-registration-test` is a fast source-level Tasty guard. It
 checks the benchmark component registration, the six stable Criterion names,
@@ -25,29 +28,40 @@ sample, and it deliberately has no time, allocation, or heap threshold.
 
 ## One-run artifact capture
 
-Run one selected workload at a time. The following commands use a
+Run one selected workload at a time. After the component build, set
+`benchmark_exe` to the absolute benchmark artifact under the repository's
+Stack `--dist-dir` (Windows: `build/adrai-bench/adrai-bench.exe`). The sample
+invocation runs that artifact directly with ordinary argument boundaries;
+Stack/Cabal benchmark working-directory and string forwarding rules do not route
+its output. The following commands use a
 POSIX-compatible interactive shell (including Git Bash on Windows); they are
 commands to type, not a repository script.
 
 ```sh
-run_dir=".adrai/benchmarks/20260820T120000Z-current-search-warm"
-mkdir -p "$run_dir"
+# Start in the repository root; set TMPDIR to an external OS temporary directory.
+repo_root="$(pwd)"
+benchmark_exe="/absolute/path/to/adrai-bench.exe"
+run_dir="$(mktemp -d "${TMPDIR:?set an external OS temporary directory}/adrai-bench.XXXXXX")"
 stack --version | tee "$run_dir/stack-version.txt"
 stack ghc -- --numeric-version | tee "$run_dir/compiler-version.txt"
 stack path --compiler-exe | tee "$run_dir/compiler-path.txt"
 stack path --snapshot-pkg-db | tee "$run_dir/snapshot-pkg-db.txt"
 cp stack.yaml stack.yaml.lock "$run_dir/"
-stack bench adrai:bench:adrai-bench --ba "--match prefix adrai/search/current-warm-2000-adr --json $run_dir/criterion.json --csv $run_dir/criterion.csv" \
-  2>&1 | tee "$run_dir/stack-bench.log"
+(cd "$run_dir" && "$benchmark_exe" --match prefix adrai/search/current-warm-2000-adr --json criterion.json --csv criterion.csv \
+  2>&1 | tee "$run_dir/stack-bench.log")
 ```
+
+The runtime subshell changes to the quoted external directory. Relative Criterion
+and RTS output names therefore stay inside that directory, including when its
+path contains spaces.
 
 Use a fresh, caller-owned `run_dir` per invocation. `criterion.json`,
 `criterion.csv`, Stack's identity files, `stack.yaml`, `stack.yaml.lock`, and
 its combined command log all belong to that one directory; do not combine
 outputs from separate invocations. The copied configuration and lock file,
 effective snapshot package database, and actual GHC version are the evidence
-for resolver/compiler comparisons. The `.adrai/` directory is ignored, so
-machine-specific reports are never committed.
+for resolver/compiler comparisons. The run directory must be outside the repository under OS Temp; machine-specific
+reports are never committed.
 
 `STACK_ROOT` must be writable, and Stack invocations must be serialized. A
 shared Stack root has a single Pantry writer lock, so concurrent Stack work can
@@ -76,7 +90,7 @@ block or invalidate a run.
 
 ## Native artifact contract
 
-The caller chooses a new ignored directory under `.adrai/benchmarks/`; no
+The caller chooses a fresh external OS Temp directory; no
 PowerShell script creates or interprets native benchmark artifacts. Criterion
 creates `criterion.json` and `criterion.csv` from the `--json` and `--csv`
 arguments. GHC RTS creates the `.prof`, `.hp`, and `.eventlog` profiling files
@@ -88,8 +102,7 @@ runs, or use PowerShell's legacy `performance.json`/`performance.csv` format
 as a native baseline. A valid timing artifact is the matching Criterion
 JSON/CSV pair for one exact benchmark selection. A valid profiling artifact is
 the selected workload's raw RTS output plus the profile command log and copied
-Stack identity/configuration files. All of these live below `.adrai/`, which is
-ignored by Git.
+Stack identity/configuration files. All of these live below the caller-owned external run directory.
 
 | Artifact | Native producer | Format and use |
 | --- | --- | --- |
@@ -104,8 +117,8 @@ time/heap acceptance threshold around them.
 
 ## Legacy profile mapping
 
-The former PowerShell measurement profiles were retired after native Criterion
-JSON/CSV and selected-workload Stack profiling artifacts were verified. They
+The former PowerShell measurement profiles are retired; native Criterion and
+selected-workload Stack profiling provide the current workflow. They
 were not native benchmarks; the table records the historical migration boundary
 so no archived report is mistaken for a Criterion comparison.
 
@@ -144,7 +157,7 @@ performs a major GC, then fully forces exactly one production
 before and after that action. Setup still appears in a whole-process cost-centre
 report, but the driver log and markers make the setup/action boundary explicit;
 the action is never inside Criterion calibration or a sample loop. Ordinary
-`stack bench` remains the only source of timing JSON/CSV.
+Criterion benchmark execution is the source of timing JSON/CSV.
 
 The default `--workload current-warm-2000-adr` invocation deliberately keeps
 that single-action contract. For action-isolation evidence, run the optional
@@ -169,8 +182,8 @@ its environment, and the profile driver receives the same fixture-ready state
 before its major GC and `action-start` marker.
 
 ```sh
-profile_dir=".adrai/benchmarks/20260820T121000Z-current-search-warm-profile"
-mkdir -p "$profile_dir"
+profile_dir="$(mktemp -d "${TMPDIR:?set an external OS temporary directory}/adrai-profile.XXXXXX")"
+repo_root="$(pwd)"
 stack --version | tee "$profile_dir/stack-version.txt"
 stack ghc -- --numeric-version | tee "$profile_dir/compiler-version.txt"
 stack path --compiler-exe | tee "$profile_dir/compiler-path.txt"
@@ -190,8 +203,8 @@ report destination under the caller-owned profile directory.
 ```sh
 stack build --profile adrai:exe:adrai-profile \
   2>&1 | tee "$profile_dir/stack-profile-build.log"
-stack exec --profile adrai-profile -- --workload current-warm-2000-adr +RTS -N1 -p -po$profile_dir/current-warm -RTS \
-  2>&1 | tee "$profile_dir/profile-driver.log"
+(cd "$profile_dir" && stack --stack-yaml "$repo_root/stack.yaml" exec --profile adrai-profile -- --workload current-warm-2000-adr +RTS -N1 -p -pocurrent-warm -RTS \
+  2>&1 | tee "$profile_dir/profile-driver.log")
 ```
 
 The profile-enabled driver writes `$profile_dir/current-warm.prof`. It contains
@@ -211,8 +224,8 @@ the matching `fixture-control-N-*` spans. These are attribution artifacts, not
 Criterion samples.
 
 ```sh
-isolation_dir=".adrai/benchmarks/20260821T120000Z-current-search-warm-isolation-profile"
-mkdir -p "$isolation_dir"
+isolation_dir="$(mktemp -d "${TMPDIR:?set an external OS temporary directory}/adrai-profile.XXXXXX")"
+repo_root="$(pwd)"
 stack --version | tee "$isolation_dir/stack-version.txt"
 stack ghc -- --numeric-version | tee "$isolation_dir/compiler-version.txt"
 stack path --compiler-exe | tee "$isolation_dir/compiler-path.txt"
@@ -220,10 +233,10 @@ stack path --snapshot-pkg-db | tee "$isolation_dir/snapshot-pkg-db.txt"
 cp stack.yaml stack.yaml.lock "$isolation_dir/"
 stack build --profile adrai:exe:adrai-profile \
   2>&1 | tee "$isolation_dir/stack-profile-build.log"
-stack exec --profile adrai-profile -- --workload current-warm-2000-adr --mode action-batch --iterations 8 +RTS -N1 -p -hc -i0.02 -l -po$isolation_dir/action-batch -ol$isolation_dir/action-batch.eventlog -RTS \
-  2>&1 | tee "$isolation_dir/action-batch.log"
-stack exec --profile adrai-profile -- --workload current-warm-2000-adr --mode fixture-control --iterations 8 +RTS -N1 -p -hc -i0.02 -l -po$isolation_dir/fixture-control -ol$isolation_dir/fixture-control.eventlog -RTS \
-  2>&1 | tee "$isolation_dir/fixture-control.log"
+(cd "$isolation_dir" && stack --stack-yaml "$repo_root/stack.yaml" exec --profile adrai-profile -- --workload current-warm-2000-adr --mode action-batch --iterations 8 +RTS -N1 -p -hc -i0.02 -l -poaction-batch -olaction-batch.eventlog -RTS \
+  2>&1 | tee "$isolation_dir/action-batch.log")
+(cd "$isolation_dir" && stack --stack-yaml "$repo_root/stack.yaml" exec --profile adrai-profile -- --workload current-warm-2000-adr --mode fixture-control --iterations 8 +RTS -N1 -p -hc -i0.02 -l -pofixture-control -olfixture-control.eventlog -RTS \
+  2>&1 | tee "$isolation_dir/fixture-control.log")
 ```
 
 The paired run must produce non-empty `action-batch.prof`, `action-batch.hp`,
@@ -249,7 +262,8 @@ arguments between pairs. `sha256sum` records the exact profile executable used
 for each action/control pair; accept the set only when all three hashes match.
 
 ```sh
-evidence_root=".adrai/benchmarks/20260821T120000Z-current-search-warm-evid-02"
+evidence_root="$(mktemp -d "${TMPDIR:?set an external OS temporary directory}/adrai-profile.XXXXXX")"
+repo_root="$(pwd)"
 iterations=8
 
 for pair in 01 02 03; do
@@ -266,10 +280,10 @@ for pair in 01 02 03; do
     | tee "$pair_dir/adrai-profile-path.txt"
   profile_exe="$(cat "$pair_dir/adrai-profile-path.txt")"
   sha256sum "$profile_exe" | tee "$pair_dir/adrai-profile.sha256"
-  stack exec --profile adrai-profile -- --workload current-warm-2000-adr --mode action-batch --iterations "$iterations" +RTS -N1 -p -hc -i0.02 -l -po"$pair_dir/action-batch" -ol"$pair_dir/action-batch.eventlog" -RTS \
-    2>&1 | tee "$pair_dir/action-batch.log"
-  stack exec --profile adrai-profile -- --workload current-warm-2000-adr --mode fixture-control --iterations "$iterations" +RTS -N1 -p -hc -i0.02 -l -po"$pair_dir/fixture-control" -ol"$pair_dir/fixture-control.eventlog" -RTS \
-    2>&1 | tee "$pair_dir/fixture-control.log"
+  (cd "$pair_dir" && stack --stack-yaml "$repo_root/stack.yaml" exec --profile adrai-profile -- --workload current-warm-2000-adr --mode action-batch --iterations "$iterations" +RTS -N1 -p -hc -i0.02 -l -poaction-batch -olaction-batch.eventlog -RTS \
+    2>&1 | tee "$pair_dir/action-batch.log")
+  (cd "$pair_dir" && stack --stack-yaml "$repo_root/stack.yaml" exec --profile adrai-profile -- --workload current-warm-2000-adr --mode fixture-control --iterations "$iterations" +RTS -N1 -p -hc -i0.02 -l -pofixture-control -olfixture-control.eventlog -RTS \
+    2>&1 | tee "$pair_dir/fixture-control.log")
 done
 ```
 
@@ -283,8 +297,8 @@ collect a new same-condition three-pair set; do not average, subtract, or
 otherwise combine mismatched pairs.
 
 ```sh
-profile_dir=".adrai/benchmarks/20260820T122000Z-current-search-warm-heap-profile"
-mkdir -p "$profile_dir"
+profile_dir="$(mktemp -d "${TMPDIR:?set an external OS temporary directory}/adrai-profile.XXXXXX")"
+repo_root="$(pwd)"
 stack --version | tee "$profile_dir/stack-version.txt"
 stack ghc -- --numeric-version | tee "$profile_dir/compiler-version.txt"
 stack path --compiler-exe | tee "$profile_dir/compiler-path.txt"
@@ -295,8 +309,8 @@ cp stack.yaml stack.yaml.lock "$profile_dir/"
 ```sh
 stack build --profile adrai:exe:adrai-profile \
   2>&1 | tee "$profile_dir/stack-heap-profile-build.log"
-stack exec --profile adrai-profile -- --workload current-warm-2000-adr +RTS -N1 -p -hc -i0.02 -l -po$profile_dir/current-warm-heap -ol$profile_dir/current-warm-heap.eventlog -RTS \
-  2>&1 | tee "$profile_dir/profile-driver.log"
+(cd "$profile_dir" && stack --stack-yaml "$repo_root/stack.yaml" exec --profile adrai-profile -- --workload current-warm-2000-adr +RTS -N1 -p -hc -i0.02 -l -pocurrent-warm-heap -olcurrent-warm-heap.eventlog -RTS \
+  2>&1 | tee "$profile_dir/profile-driver.log")
 ```
 
 That command writes these raw artifacts in the stated directory:
@@ -331,8 +345,8 @@ If the relevant GHC tools are installed, render copies beside the raw files;
 keep the raw files as the source evidence:
 
 ```sh
-hp2ps "$profile_dir/current-warm-heap.hp"
-eventlog2html "$profile_dir/current-warm-heap.eventlog"
+(cd "$profile_dir" && hp2ps current-warm-heap.hp)
+(cd "$profile_dir" && eventlog2html current-warm-heap.eventlog)
 ```
 
 `hp2ps` renders the legacy `.hp` data to PostScript. `eventlog2html` renders
@@ -344,7 +358,7 @@ raw eventlog. Absence of either optional renderer does not invalidate the raw
 Keep a completed profiling directory intact while it supports an investigation:
 the raw reports, eventlog, copied Stack configuration, identity files, and
 logs are the minimum evidence required to reproduce an attribution. The
-repository ignores `.adrai/`; never commit those machine-specific raw or
+run directories stay outside the repository; never commit those machine-specific raw or
 rendered artifacts. Delete the entire caller-owned run directory only after
 its conclusions have been recorded elsewhere. Do not keep profiles that
 combine different workloads, resolver/compiler identities, or RTS capability

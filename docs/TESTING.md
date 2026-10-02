@@ -17,6 +17,8 @@ Builds and test execution use separate deadlines. Build mode compiles every
 component with pedantic checks while disabling test and benchmark execution:
 
 ```powershell
+$evidenceRoot = Join-Path ([IO.Path]::GetTempPath()) ("adrai-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $evidenceRoot | Out-Null
 .\tools\RunRetainedTests.ps1 `
   -Mode Build `
   -RepositoryRoot D:\Projects\adrai `
@@ -26,7 +28,7 @@ component with pedantic checks while disabling test and benchmark execution:
   -CacheSelectionTestExe C:\path\to\adrai-cache-selection-test.exe `
   -StressTestExe C:\path\to\adrai-stress-test.exe `
   -BenchmarkRegistrationTestExe C:\path\to\adrai-benchmark-registration-test.exe `
-  -BuildManifestPath C:\temp\adrai-build-manifest.json
+  -BuildManifestPath "$evidenceRoot\build-manifest.json"
 ```
 
 All executable paths must be absolute and must resolve to the corresponding
@@ -123,7 +125,8 @@ descendant teardown, evidence finalization, and cleanup verification:
   -Mode Complete `
   -RepositoryRoot D:\Projects\adrai `
   -LedgerPath D:\Projects\adrai\test\coverage\retained-suite.json `
-  -BuildManifestPath C:\temp\adrai-build-manifest.json `
+  -OrdinaryPartitionsPath D:\Projects\adrai\test\coverage\ordinary-partitions.json `
+  -BuildManifestPath "$evidenceRoot\build-manifest.json" `
   -AdraiExe C:\path\to\adrai.exe `
   -OrdinaryTestExe C:\path\to\adrai-test.exe `
   -CacheSelectionTestExe C:\path\to\adrai-cache-selection-test.exe `
@@ -133,8 +136,7 @@ descendant teardown, evidence finalization, and cleanup verification:
 
 The queue has seventeen normal jobs in this exact order: `O`, `Rest`, `Q`, `N`,
 `R`, `T`, `Env`, `A`, `CompilerSearch`, `K`, `MutationE2E`, `D`, cache-selection,
-`C`, stress, `E`, and benchmark-registration. The two longest measured jobs start
-in the initial three-root wave. `Krace` and the unchanged
+`C`, stress, `E`, and benchmark-registration. The initial wave follows this source-defined order. `Krace` and the unchanged
 named reliability repeat are the final two exclusive jobs. Each exclusive job
 is a barrier: the coordinator drains active jobs before launching it and does
 not launch another job until its complete descendant tree exits. Cache, stress
@@ -145,82 +147,21 @@ multiset from the verified partitions, retained components, and expanded repeat
 counts and requires exact equality with the configured queue before dispatch.
 Quoted command lines are checked against the Windows 32,767-character limit.
 
-The current source ledger declares 905 unique ordinary tests, 9 cache-selection
-tests, 28 stress tests, and 6 benchmark-registration tests: 948 unique
-registrations. The explicit competing-target repeat makes 949 planned
+The current source ledger declares 907 unique ordinary tests, 9 cache-selection
+tests, 28 stress tests, and 6 benchmark-registration tests: 950 unique
+registrations. The explicit competing-target repeat makes 951 planned
 executions. These source counts require a fresh runner List before they are
 verified; only Complete establishes actual execution. The runner does not
 hardcode these totals. A fresh matching build must list every
 actual registration and prove exact equality before dispatch.
-The P7-05 source ledger declared 893 ordinary, 936 unique, and 937 planned
-executions after adding seven exact-archive and initial-resync leaves to the
-P7-04 ledger of 886 ordinary, 929 unique, and 930 planned executions.
+The current Complete gate has one shared 1,800-second deadline, including
+listing, setup, dispatch, and owned-descendant cleanup. It is a finite liveness
+guard, not a product latency target or a promise about another checkout or host.
+Only a complete run on a frozen build and matching ledgers establishes execution;
+a timeout or unfinished suffix remains incomplete.
 
-The Round8 2026-09-07 snapshot baseline is historical diagnostic evidence for
-that frozen input set. It is not an elapsed-time forecast for another snapshot:
-
-| Job | Current tests | Round8 2026-09-07 snapshot baseline |
-| --- | ---: | --- |
-| `Q` | 3 | Completed in 125.203237 seconds. |
-| `N` | 70 | The former 77-test job completed in 197.706567 seconds. |
-| `R` | 98 | The former 111-test job completed in 494.973748 seconds. |
-| `T` | 48 | Completed in 220.011431 seconds. |
-| `Env` | 2 | Completed in 75.019434 seconds. |
-| `A` | 23 | Completed in 120.079787 seconds. |
-| `CompilerSearch` | 7 | Completed in 46.302814 seconds. |
-| `K` | 9 | The former 13-test job completed in 165.228843 seconds. |
-| `O` | 35 | The former 43-test job was censored at 193.192355 seconds. |
-| `MutationE2E` | 7 | Censored at 90.343516 seconds. |
-| `D` | 2 | The former 3-test job was censored at 29.257487 seconds. |
-| `cache` | 9 | Unstarted. |
-| `C` | 4 | Unstarted. |
-| `Rest` | 594 | Unstarted. |
-| `stress` | 28 | Unstarted; the gate still requires actual `--run-stress`. |
-| `E` | 2 | Unstarted. |
-| `registration` | 6 | Unstarted. |
-| `Krace` | 1 | Unstarted. |
-| `repeat-001-001` | 1 | Unstarted. |
-
-The Round8 baseline stopped incomplete at 590.032027 seconds without an observed
-functional failure. All 30 invocation cleanups and scheduler cleanup passed,
-with no orphan, input drift, or registry residue. Its result is
-`C:/Users/Sornaensis/AppData/Local/Temp/adrai-retained-complete-round8-20260907T183433935Z/result.json`
-(SHA-256 `492C90EE69F0096AAA5D1BA0767EDF1F06738A24D9ACD14852BF3C52082C7C47`).
-Censored and unstarted jobs retain unknown positive work. Each changed snapshot
-requires its own Complete result; static removal and process counts are not
-seconds or evidence of a guaranteed fit.
-
-The current gate has one shared 1,800-second deadline. An uncensored copied
-runner completed the 949-execution queue in 1,326.03 seconds on the current
-test snapshot, including stress, `Krace`, and the reliability repeat. The copy
-changed only the two Complete deadline limits to 2,400 seconds; its owned Job
-Object helper was byte identical. The 1,800-second guard leaves about 474
-seconds beyond that one observed run, including the existing 10-second cleanup
-reserve. It is a finite liveness guard, not a product latency target or a
-guarantee for another checkout or host. The gate includes the four
-full-component listings, fifteen selected-partition listings, 17 normal FIFO jobs
-with at most three active, the actual stress opt-in, the exclusive genuine race
-and repeat, setup, type loading, hashing, validation, descendant cleanup, and
-dispatch overhead.
-Only a complete run on one frozen build and matching ledgers can establish the
-current queue time; timeout or an unfinished suffix remains incomplete.
-
-The round-nine changed-functional matrix has four exact ordinary leaves:
-
-- `ADRAI.P4-02.Repository snapshots.nonblob config is rejected`.
-- `ADRAI.P4-07.Cache integration (P4-07).v3 exact archive rejects missing or mismatched target placement coverage`.
-- `ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.public commands preserve a staged binary and return canonical exits`.
-- `ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads`.
-
-The cache carrier also checks private old-schema eligibility rejection. Deleted
-N, R, and overlay cases add no focused repetitions, and unchanged race, stress,
-and query cases are not repeated.
-Every selected run remains an exact ledger leaf through Focused mode with a
-600-second default and maximum deadline; a focused result is leaf evidence, not
-a whole-job measurement. One loaded run of the composite all-six HTTP mutation
-leaf took just over 300 seconds, so the finite guard leaves room for variation
-and the runner's cleanup reserve. This is a test liveness guard, not a product
-latency target.
+Focused mode selects one exact registered leaf with a 600-second maximum
+liveness guard. It is leaf evidence, not whole-job or aggregate acceptance.
 
 Exclusive scheduling controls observed load; it does not change the lock timeout
 or serialize the competing-target test's two real CLI children. Each `Krace` or
@@ -253,7 +194,8 @@ Tasty selector:
   -Component adrai-test -TestName 'exact Tasty test path' `
   -RepositoryRoot D:\Projects\adrai `
   -LedgerPath D:\Projects\adrai\test\coverage\retained-suite.json `
-  -BuildManifestPath C:\temp\adrai-build-manifest.json `
+  -OrdinaryPartitionsPath D:\Projects\adrai\test\coverage\ordinary-partitions.json `
+  -BuildManifestPath "$evidenceRoot\build-manifest.json" `
   -AdraiExe C:\path\to\adrai.exe `
   -OrdinaryTestExe C:\path\to\adrai-test.exe `
   -CacheSelectionTestExe C:\path\to\adrai-cache-selection-test.exe `
@@ -261,6 +203,10 @@ Tasty selector:
   -BenchmarkRegistrationTestExe C:\path\to\adrai-benchmark-registration-test.exe
 ```
 
+All logs, manifests, fixture workspaces, and profiling output belong in fresh
+OS temporary directories outside the repository. Set process-local TEMP/TMP to
+an external OS temporary directory before running native tests. Keep the single
+standard root .stack-work for compilation and preserve product runtime caches.
 Each run writes JSON evidence and separate stdout/stderr files under a new
 temporary directory unless `-EvidenceDirectory` supplies another path outside
 the repository. Evidence records artifact hashes, exact arguments, process IDs,

@@ -109,8 +109,6 @@ Workflow accounting preserves the existing assertion, request, and retry limits:
 - B13's real CLI amendment has 40 seconds; two selections permit six 5-second
   Search attempts each; refresh has 5 seconds and invalidation has 12. HEAD,
   sentinels, and UI work share the remainder of its 180-second workflow allowance.
-  A completed historical workflow took 85.549 seconds, supporting that allocation
-  without establishing a maximum.
 - B14 retains held-old-read/newer-query ordering, both real committed mutations,
   two 12-second response/invalidation waits, Search selection, 5-second refresh,
   HEAD/sentinel checks, and the 3-second lost-response observation. Its policy
@@ -120,10 +118,7 @@ Workflow accounting preserves the existing assertion, request, and retry limits:
   of its 240-second workflow allowance. Lock readiness retains 5 seconds and
   child stop retains 8 seconds.
 
-A prior setup reached browser action at 88.982 seconds after successful init and
-both real creates. This confirms that the old 45/90-second case caps could censor
-request evidence; it does not select a new cap or establish an inner performance
-cause. Source counts and the labelled assumptions above determine the policy.
+Source counts and the labelled assumptions above determine the legacy policy.
 Per-fixture teardown allocates 20 seconds for browser context closure, existing
 child stops (8 seconds each, up to 16 with a lock child), filesystem removal,
 and scheduling. B04 counts twice that. Owned-job cleanup and receipt finalization

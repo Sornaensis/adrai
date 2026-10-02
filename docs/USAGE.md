@@ -55,14 +55,28 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 | `compare` | Compare two immutable revisions. |
 | `compile` | Build or reuse the repository's derived SQLite index. |
 | `doctor` | Report source, graph, provenance, and cache diagnostics. |
-| `explore` | Open the terminal explorer. Its read commands currently print placeholders; use the CLI or `web` for real results. |
+| `explore` | Open the terminal explorer. Search, inspection, history, conflicts, and checked edits use the shared repository services. |
 | `web` | Start the authenticated loopback repository explorer, HTTP API, and event WebSocket. |
 
 Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands also accept `--json` for stable machine-readable output. Run `adrai COMMAND --help` for the complete option list.
 
-Mutation commands require an actor in `kind:identifier` form and create Git commits. Pass `--actor` or set `ADRAI_ACTOR`; valid kinds are `human`, `llm`, and `service`. Options such as `--expect STATE_TOKEN` provide optimistic concurrency checks when a caller is acting on previously read state.
+CLI mutation commands require an actor in `kind:identifier` form and create Git commits. Pass `--actor` or set `ADRAI_ACTOR`; valid kinds are `human`, `llm`, and `service`. Options such as `--expect STATE_TOKEN` provide optimistic concurrency checks when a caller is acting on previously read state. The option-free terminal explorer instead defaults to `human:terminal-explorer` and changes its actor through the `:actor` session control.
 
-In the terminal explorer, `:help` lists accepted input syntax and a first step. `help`, `exit`, `quit`, and `:q` also work. `search QUERY` (or free text), `show ADR_ID`, `view ADR_ID [collapsed|exploded]`, `history [ADR_ID]`, and `conflicts` parse, but their output is currently a placeholder, not repository data. Use `adrai search`, `adrai show`, `adrai history`, or `adrai web` for live inspection. `status ADR_ID active|obsolete` (also `:status`) commits a status change and exits on success. Terminal `create` and `amend` input is unavailable and makes no Git commit; use the corresponding CLI commands or web forms for those edits. Malformed command-shaped input reports guidance instead of becoming a search.
+In the option-free terminal explorer, `:help` lists the syntax. Use `search QUERY`
+(or free text), `show ADR_ID`, `view ADR_ID [collapsed|exploded]`,
+`history [ADR_ID]`, and `conflicts` for repository data. Session controls are
+`:view collapsed|exploded`, `:mode fts|vector|hybrid`, `:obsolete on|off`,
+`:file PATH|clear`, `filter file PATH|clear`, `filter obsolete on|off`,
+`:actor human|llm|service:ID`, `:revision REF`, and `:refresh`.
+
+`create JSON` accepts `title`, `summary`, `body`, `domains`, and `applies_to`;
+`amend ADR_ID JSON` accepts `body`, `change_summary`, and optional `title` and
+`summary`. Inspect an ADR before `amend` or `status ADR_ID active|obsolete`.
+Checked edits retain the viewed repository basis and ADR state token: an
+external change rejects the edit rather than silently adopting new state.
+Explicit non-HEAD revisions are read-only. `:refresh` returns to HEAD and clears
+viewed tokens; inspect again before editing. A successful commit exits the
+session; errors leave it open. `exit`, `quit`, and `:q` cancel without a commit.
 
 Run `adrai web --no-open` from a worktree to print a one-time authenticated
 loopback URL without opening a browser. Use `--port PORT` to request a specific
@@ -100,5 +114,6 @@ its new bootstrap URL before resuming edits.
 - `0`: success
 - `2`: invalid input, repository integrity failure, or another user-facing error
 - `3`: a semantic conflict prevented the requested operation or projection
+- `4`: `doctor` completed and reported `ok=false`
 
 See [Conflict handling](CONFLICTS.md) for the distinction between conflicts and malformed history.

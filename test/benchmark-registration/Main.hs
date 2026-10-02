@@ -259,24 +259,25 @@ exactArtifactDocumentation :: [String]
 exactArtifactDocumentation =
   [ "stack bench adrai:bench:adrai-bench --ba \"--list\"",
     "stack bench adrai:bench:adrai-bench --ba \"--help\"",
-    "stack test adrai:adrai-benchmark-registration-test",
-    "under `.adrai/benchmarks/`",
+    "tools/RunRetainedTests.ps1 -Mode Focused -Component adrai-benchmark-registration-test",
+    "fresh external OS Temp directory",
+    "(cd \"$run_dir\" && \"$benchmark_exe\" --match prefix adrai/search/current-warm-2000-adr --json criterion.json --csv criterion.csv",
     "Criterion\ncreates `criterion.json` and `criterion.csv` from the `--json` and `--csv`",
     "GHC RTS creates the `.prof`, `.hp`, and `.eventlog` profiling files",
     "Reports are comparative and host-specific observations, not CI pass/fail\n  thresholds.",
     "`STACK_ROOT` must be writable, and Stack invocations must be serialized.",
     "`adrai-profile` is a separate, Criterion-free executable for one-action\nattribution.",
     "stack build --profile adrai:exe:adrai-profile",
-    "stack exec --profile adrai-profile -- --workload current-warm-2000-adr +RTS -N1 -p -po$profile_dir/current-warm -RTS",
-    "stack exec --profile adrai-profile -- --workload current-warm-2000-adr +RTS -N1 -p -hc -i0.02 -l -po$profile_dir/current-warm-heap -ol$profile_dir/current-warm-heap.eventlog -RTS",
+    "stack --stack-yaml \"$repo_root/stack.yaml\" exec --profile adrai-profile -- --workload current-warm-2000-adr +RTS -N1 -p -pocurrent-warm -RTS",
+    "stack --stack-yaml \"$repo_root/stack.yaml\" exec --profile adrai-profile -- --workload current-warm-2000-adr +RTS -N1 -p -hc -i0.02 -l -pocurrent-warm-heap -olcurrent-warm-heap.eventlog -RTS",
     "`--mode action-batch --iterations N` profile",
     "`--mode fixture-control --iterations N` profile",
-    "stack exec --profile adrai-profile -- --workload current-warm-2000-adr --mode action-batch --iterations 8 +RTS -N1 -p -hc -i0.02 -l -po$isolation_dir/action-batch -ol$isolation_dir/action-batch.eventlog -RTS",
-    "stack exec --profile adrai-profile -- --workload current-warm-2000-adr --mode fixture-control --iterations 8 +RTS -N1 -p -hc -i0.02 -l -po$isolation_dir/fixture-control -ol$isolation_dir/fixture-control.eventlog -RTS",
+    "stack --stack-yaml \"$repo_root/stack.yaml\" exec --profile adrai-profile -- --workload current-warm-2000-adr --mode action-batch --iterations 8 +RTS -N1 -p -hc -i0.02 -l -poaction-batch -olaction-batch.eventlog -RTS",
+    "stack --stack-yaml \"$repo_root/stack.yaml\" exec --profile adrai-profile -- --workload current-warm-2000-adr --mode fixture-control --iterations 8 +RTS -N1 -p -hc -i0.02 -l -pofixture-control -olfixture-control.eventlog -RTS",
     "The paired run must produce non-empty `action-batch.prof`, `action-batch.hp`,",
-    "hp2ps \"$profile_dir/current-warm-heap.hp\"",
-    "eventlog2html \"$profile_dir/current-warm-heap.eventlog\"",
-    "The former PowerShell measurement profiles were retired after native Criterion\nJSON/CSV and selected-workload Stack profiling artifacts were verified.",
+    "(cd \"$profile_dir\" && hp2ps current-warm-heap.hp)",
+    "(cd \"$profile_dir\" && eventlog2html current-warm-heap.eventlog)",
+    "The former PowerShell measurement profiles are retired; native Criterion and\nselected-workload Stack profiling provide the current workflow.",
     "The native workflow above replaces the retired measurement harness."
   ]
 
@@ -389,7 +390,7 @@ takeBalancedGroup depth reversedBody (character : rest)
 
 stackBenchInvocationLines :: String -> [String]
 stackBenchInvocationLines =
-  filter (isInfixOf "stack bench adrai:bench:adrai-bench") . lines
+  filter (isInfixOf "bench adrai:bench:adrai-bench") . lines
 
 readRequired :: FilePath -> IO String
 readRequired path = do

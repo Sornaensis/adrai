@@ -2,6 +2,11 @@
 
 ADRAI is currently installed from source.
 
+The current native runtime and retained/frontend launchers require Windows.
+Repository locking, watching, cache publication, and owned-process cleanup use
+Windows APIs or PowerShell. Cross-platform support is under analysis, not an
+implemented installation path.
+
 ## Requirements
 
 - Git 2.31 or newer

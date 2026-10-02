@@ -1,4 +1,4 @@
-﻿{
+{
     "schema":  "adrai/coverage-ledger-category/v1",
     "category":  "graph-service-conflicts-integrity",
     "expectedCount":  50,
@@ -35,9 +35,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"create commits complete active ADR graph atomically\"",
+                                      "selector": "ordinary --source-test-label \"create commits complete active ADR graph atomically\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:12 (static prototype test); existing golden: test/fixtures/contracts/v1/documents/decision-create.sealed.md and test/fixtures/contracts/v1/documents/decision-create.semantic.md",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:12 (static prototype test); existing golden: test/fixtures/contracts/v1/documents/decision-create.sealed.md and test/fixtures/contracts/v1/documents/decision-create.semantic.md"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:12 (static prototype test); existing golden: test/fixtures/contracts/v1/documents/decision-create.sealed.md and test/fixtures/contracts/v1/documents/decision-create.semantic.md"
                                   }
                  },
                  {
@@ -50,9 +50,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"single-head amend inherits fields into full snapshot\"",
+                                      "selector": "ordinary --source-test-label \"single-head amend inherits fields into full snapshot\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:33 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:33 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:33 (static prototype test)"
                                   }
                  },
                  {
@@ -65,9 +65,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"no-op amend is rejected without a commit\"",
+                                      "selector": "ordinary --source-test-label \"no-op amend is rejected without a commit\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:61 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:61 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:61 (static prototype test)"
                                   }
                  },
                  {
@@ -80,9 +80,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /P6-03A.0/&&/real/ -j 1'; stack test adrai:adrai-test --test-arguments='-p /P6-02A/&&!/real/ -j 1'; stack test adrai:adrai-test --test-arguments='-p /reconciliation/&&/history/&&/exposes/ -j 1'; stack test adrai:adrai-test --test-arguments='-p /multi-parent/&&/amend/&&/exposes/ -j 1'",
+                                      "selector": "ordinary --source-test-label \"P6-03A.0 ordinary amend reconciles merged decision heads\"",
                                       "fixture":  "MutationE2ETest.p603a0OrdinaryAmendReconciles creates independent decision heads, merges them, proves exact conflict exit and reduced head IDs, rejects incomplete reconciliation with exact conflict bytes/full preservation, reconciles through ordinary amend with the exact conflicted state token, and asserts the complete parent set through public amend JSON, public history, sealed edge, provenance, stale retry, and caller-state preservation; companion real tests reject native domain/status conflicts and an inactive ADR with exact conflict exits/full preservation; MutationServiceTest covers partial, correct/stale CAS, unknown, inactive, misplaced, and non-decision-conflict rejection; CliContractTest preserves singleton bytes while projecting canonical multiparent output.",
-                                      "result":  "Standard D:\\Projects\\adrai\\.stack-work current source based on HEAD 2512c21: no-run test+exe build PASS; P6-03A.0 real executable 4/4 PASS in 42.06s; P6-02A mutation service 23/23 PASS in 102.87s; P6-02B real amend regression 1/1 PASS in 16.26s; focused history and multiparent renderer contracts each 1/1 PASS"
+                                      "sourceCoverage": "Source contract: Parallel decision heads remain visible as a semantic conflict until an ordinary amendment explicitly reconciles them into one head. Target: test/integration/Adrai/MutationE2ETest.hs (P6-03A.0 ordinary amend reconciles merged decision heads)."
                                   }
                  },
                  {
@@ -95,9 +95,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"scope supports expand contract mixed and replace\"",
+                                      "selector": "ordinary --source-test-label \"scope supports expand contract mixed and replace\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:133 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:133 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:133 (static prototype test)"
                                   }
                  },
                  {
@@ -110,9 +110,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"invalid or empty scope changes are rejected\"",
+                                      "selector": "ordinary --source-test-label \"invalid or empty scope changes are rejected\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:168 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:168 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:168 (static prototype test)"
                                   }
                  },
                  {
@@ -125,9 +125,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"parallel scope heads require explicit full resolution\"",
+                                      "selector": "ordinary --source-test-label \"parallel scope heads require explicit full resolution\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:200 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:200 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:200 (static prototype test)"
                                   }
                  },
                  {
@@ -140,9 +140,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"obsolete ADR hiding and reactivation preserve history\"",
+                                      "selector": "ordinary --source-test-label \"obsolete ADR hiding and reactivation preserve history\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:251 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:251 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:251 (static prototype test)"
                                   }
                  },
                  {
@@ -155,9 +155,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"obsoletion records an active replacement\"",
+                                      "selector": "ordinary --source-test-label \"obsoletion records an active replacement\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:282 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:282 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:282 (static prototype test)"
                                   }
                  },
                  {
@@ -170,9 +170,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"obsolete ADR rejects amend and rescope\"",
+                                      "selector": "ordinary --source-test-label \"obsolete ADR rejects amend and rescope\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:304 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:304 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:304 (static prototype test)"
                                   }
                  },
                  {
@@ -185,9 +185,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"parallel status heads resolve append-only\"",
+                                      "selector": "ordinary --source-test-label \"parallel status heads resolve append-only\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:335 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:335 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:335 (static prototype test)"
                                   }
                  },
                  {
@@ -200,9 +200,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"obsolete-versus-amend merge exposes and resolves conflict\"",
+                                      "selector": "ordinary --source-test-label \"obsolete-versus-amend merge exposes and resolves conflict\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:383 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_graph_lifecycle.py:383 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_graph_lifecycle.py:383 (static prototype test)"
                                   }
                  },
                  {
@@ -215,9 +215,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"missing initial domain revision is incomplete\"",
+                                      "selector": "ordinary --source-test-label \"missing initial domain revision is incomplete\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:15 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:15 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:15 (static prototype test)"
                                   }
                  },
                  {
@@ -230,9 +230,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain input canonicalizes root and dotted names\"",
+                                      "selector": "ordinary --source-test-label \"domain input canonicalizes root and dotted names\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:32 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:17-59 | test/property/Adrai/DomainProperties.hs:25-52",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:32 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:17-59 | test/property/Adrai/DomainProperties.hs:25-52"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:32 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:17-59 | test/property/Adrai/DomainProperties.hs:25-52"
                                   }
                  },
                  {
@@ -245,9 +245,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"invalid or redundant domains do not commit\"",
+                                      "selector": "ordinary --source-test-label \"invalid or redundant domains do not commit\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:80 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:80 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:80 (static prototype test)"
                                   }
                  },
                  {
@@ -260,9 +260,9 @@
                      "phaseOwner":  "P2",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain refinement requires strict descendant\"",
+                                      "selector": "ordinary --source-test-label \"domain refinement requires strict descendant\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:113 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:60-69 | test/property/Adrai/DomainProperties.hs:54-70",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:113 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:60-69 | test/property/Adrai/DomainProperties.hs:54-70"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:113 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:60-69 | test/property/Adrai/DomainProperties.hs:54-70"
                                   }
                  },
                  {
@@ -275,9 +275,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"root domain refines to dotted child\"",
+                                      "selector": "ordinary --source-test-label \"root domain refines to dotted child\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:138 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:138 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:138 (static prototype test)"
                                   }
                  },
                  {
@@ -290,9 +290,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain refinement is one visible append-only operation\"",
+                                      "selector": "ordinary --source-test-label \"domain refinement is one visible append-only operation\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:165 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:165 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:165 (static prototype test)"
                                   }
                  },
                  {
@@ -305,9 +305,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domains expand contract replace clear and re-add\"",
+                                      "selector": "ordinary --source-test-label \"domains expand contract replace clear and re-add\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:219 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:219 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:219 (static prototype test)"
                                   }
                  },
                  {
@@ -320,9 +320,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"amend inherits refined domains without changing them\"",
+                                      "selector": "ordinary --source-test-label \"amend inherits refined domains without changing them\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:291 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:291 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:291 (static prototype test)"
                                   }
                  },
                  {
@@ -335,9 +335,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain changes require active ADR and nonempty delta\"",
+                                      "selector": "ordinary --source-test-label \"domain changes require active ADR and nonempty delta\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:323 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:323 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:323 (static prototype test)"
                                   }
                  },
                  {
@@ -350,9 +350,9 @@
                      "phaseOwner":  "P2",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain filters are hierarchical and intersect\"",
+                                      "selector": "ordinary --source-test-label \"domain filters are hierarchical and intersect\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:380 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:50-59 | test/property/Adrai/DomainProperties.hs:72-85 (pure hierarchy primitive only; repeated search-filter conjunction remains P5 consumer work)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:380 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:50-59 | test/property/Adrai/DomainProperties.hs:72-85 (pure hierarchy primitive only; repeated search-filter conjunction remains P5 consumer work)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:380 (static prototype test) | test/unit/Adrai/DomainFormatTest.hs:50-59 | test/property/Adrai/DomainProperties.hs:72-85 (pure hierarchy primitive only; repeated search-filter conjunction remains P5 consumer work)"
                                   }
                  },
                  {
@@ -365,9 +365,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+                                      "selector": "ordinary --source-test-label \"P6-02D domain refinement returns stable JSON\"",
                                       "fixture":  "MutationE2ETest.p602dDomain exercises real-executable domain refinement and asserts canonical JSON bytes, exact delta/refinement/effective facts, exit classes, topology, provenance, and caller-state preservation.",
-                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
+                                      "sourceCoverage": "Source contract: The public CLI refines domains and emits the stable compact JSON response and exit behavior promised by the public contract. Target: test/integration/Adrai/MutationE2ETest.hs (P6-02D domain refinement returns stable JSON)."
                                   }
                  },
                  {
@@ -380,9 +380,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain classification remains revision-local\"",
+                                      "selector": "ordinary --source-test-label \"domain classification remains revision-local\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:490 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:490 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:490 (static prototype test)"
                                   }
                  },
                  {
@@ -395,9 +395,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"divergent domain refinements conflict then reconcile\"",
+                                      "selector": "ordinary --source-test-label \"divergent domain refinements conflict then reconcile\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_domains.py:539 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_domains.py:539 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_domains.py:539 (static prototype test)"
                                   }
                  },
                  {
@@ -410,9 +410,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"release merge semantic conflict resolves once and propagates\"",
+                                      "selector": "ordinary --source-test-label \"release merge semantic conflict resolves once and propagates\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py:11 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py:11 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_release_stable_conflicts.py:11 (static prototype test)"
                                   }
                  },
                  {
@@ -425,9 +425,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"release merge reports and resolves all conflict axes\"",
+                                      "selector": "ordinary --source-test-label \"release merge reports and resolves all conflict axes\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py:142 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_release_stable_conflicts.py:142 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_release_stable_conflicts.py:142 (static prototype test)"
                                   }
                  },
                  {
@@ -440,9 +440,9 @@
                      "phaseOwner":  "P6",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"complete public lifecycle commits once per mutation\"",
+                                      "selector": "ordinary --source-test-label \"complete public lifecycle commits once per mutation\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:40 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:40 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_public_workflows.py:40 (static prototype test)"
                                   }
                  },
                  {
@@ -455,9 +455,9 @@
                      "phaseOwner":  "P6",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"structured JSON preserves digest provenance\"",
+                                      "selector": "ordinary --source-test-label \"structured JSON preserves digest provenance\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:173 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json",
-                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:173 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_public_workflows.py:173 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json"
                                   }
                  },
                  {
@@ -470,9 +470,9 @@
                      "phaseOwner":  "P6",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"structured JSON is strict and blocks domain backdoor\"",
+                                      "selector": "ordinary --source-test-label \"structured JSON is strict and blocks domain backdoor\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:202 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json",
-                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:202 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_public_workflows.py:202 (static prototype test); existing golden: test/fixtures/contracts/v1/public-json/contracts.json"
                                   }
                  },
                  {
@@ -485,9 +485,9 @@
                      "phaseOwner":  "P6",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"failed public mutations create no commits\"",
+                                      "selector": "ordinary --source-test-label \"failed public mutations create no commits\"",
                                       "fixture":  "ADRAI_1_Source/tests/test_public_workflows.py:244 (static prototype test)",
-                                      "result":  "ADRAI_1_Source/tests/test_public_workflows.py:244 (static prototype test)"
+                                      "sourceCoverage": "ADRAI_1_Source/tests/test_public_workflows.py:244 (static prototype test)"
                                   }
                  },
                  {
@@ -500,9 +500,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /init/&&/create/&&/CLI/&&/contracts/ -j 1'",
+                                      "selector": "ordinary --source-test-label \"P6-02 parser exposes exactly the frozen 15-command inventory\"",
                                       "fixture":  "CliContractTest.mutationCliContractTests contains the canonical parser contract for every frozen command and the repository-owned test/fixtures/contracts/v1/cli/commands.json inventory.",
-                                      "result":  "HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; init/create CLI contracts ALL 49 PASS in 0.03s"
+                                      "sourceCoverage": "Source contract: The command parser exposes exactly the supported public commands and does not advertise unimplemented operations. Target: test/unit/Adrai/CliContractTest.hs (P6-02 parser exposes exactly the frozen 15-command inventory)."
                                   }
                  },
                  {
@@ -515,9 +515,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"reads use committed tree while dirty mutations fail\"",
+                                      "selector": "ordinary --source-test-label \"reads use committed tree while dirty mutations fail\"",
                                       "fixture":  "P4-02 RepositoryIsolationTest and P4-03 ColdCompilerTest prove exact-OID compilation ignores dirty managed worktree bytes. Public doctor and mutation rejection remain P4-06; Python was reviewed statically and not executed.",
-                                      "result":  "P4-02 RepositoryIsolationTest and P4-03 ColdCompilerTest prove exact-OID compilation ignores dirty managed worktree bytes. Public doctor and mutation rejection remain P4-06; Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-02 RepositoryIsolationTest and P4-03 ColdCompilerTest prove exact-OID compilation ignores dirty managed worktree bytes. Public doctor and mutation rejection remain P4-06; Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -530,9 +530,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"resealed rewrite still violates append-only history\"",
+                                      "selector": "ordinary --source-test-label \"resealed rewrite still violates append-only history\"",
                                       "fixture":  "P4-03 IntegrityAdversarialTest changes a typed connection rationale, recomputes its semantic digest, rebuilds the provenance capsule, reseals the managed document at the same path, and asserts persisted APPEND_ONLY_REWRITE with semantics gated; Python was reviewed statically and not executed.",
-                                      "result":  "P4-03 IntegrityAdversarialTest changes a typed connection rationale, recomputes its semantic digest, rebuilds the provenance capsule, reseals the managed document at the same path, and asserts persisted APPEND_ONLY_REWRITE with semantics gated; Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-03 IntegrityAdversarialTest changes a typed connection rationale, recomputes its semantic digest, rebuilds the provenance capsule, reseals the managed document at the same path, and asserts persisted APPEND_ONLY_REWRITE with semantics gated; Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -545,9 +545,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"deleted immutable object is missing and incomplete\"",
+                                      "selector": "ordinary --source-test-label \"deleted immutable object is missing and incomplete\"",
                                       "fixture":  "P4-03 IntegrityAdversarialTest deletes one member of a valid committed scope operation and asserts persisted MISSING_HISTORICAL_OBJECT plus INCOMPLETE_OPERATION with semantic/search rows gated; Python was reviewed statically and not executed.",
-                                      "result":  "P4-03 IntegrityAdversarialTest deletes one member of a valid committed scope operation and asserts persisted MISSING_HISTORICAL_OBJECT plus INCOMPLETE_OPERATION with semantic/search rows gated; Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-03 IntegrityAdversarialTest deletes one member of a valid committed scope operation and asserts persisted MISSING_HISTORICAL_OBJECT plus INCOMPLETE_OPERATION with semantic/search rows gated; Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -560,9 +560,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"renamed object diagnoses destination and deletion\"",
+                                      "selector": "ordinary --source-test-label \"renamed object diagnoses destination and deletion\"",
                                       "fixture":  "P4-03 IntegrityAdversarialTest performs a real-Git managed rename and asserts NON_CANONICAL_PATH plus MISSING_HISTORICAL_OBJECT in the diagnostic database; Python was reviewed statically and not executed.",
-                                      "result":  "P4-03 IntegrityAdversarialTest performs a real-Git managed rename and asserts NON_CANONICAL_PATH plus MISSING_HISTORICAL_OBJECT in the diagnostic database; Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-03 IntegrityAdversarialTest performs a real-Git managed rename and asserts NON_CANONICAL_PATH plus MISSING_HISTORICAL_OBJECT in the diagnostic database; Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -575,9 +575,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"doctor survives invalid capsule and digest\"",
+                                      "selector": "ordinary --source-test-label \"doctor survives invalid capsule and digest\"",
                                       "fixture":  "ManagedDocumentFormatTest and ProvenanceFormatTest reject malformed capsule data and digest mismatches, and P4-03 persists malformed managed input without crashing. Public doctor rendering remains P4-06; Python was reviewed statically and not executed.",
-                                      "result":  "ManagedDocumentFormatTest and ProvenanceFormatTest reject malformed capsule data and digest mismatches, and P4-03 persists malformed managed input without crashing. Public doctor rendering remains P4-06; Python was reviewed statically and not executed."
+                                      "sourceCoverage": "ManagedDocumentFormatTest and ProvenanceFormatTest reject malformed capsule data and digest mismatches, and P4-03 persists malformed managed input without crashing. Public doctor rendering remains P4-06; Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -590,9 +590,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"duplicate object identifier is detected\"",
+                                      "selector": "ordinary --source-test-label \"duplicate object identifier is detected\"",
                                       "fixture":  "P4-03 IntegrityAdversarialTest commits a duplicate sealed decision at a second managed path and asserts DUPLICATE_OBJECT_ID plus deterministic semantic gating; Python was reviewed statically and not executed.",
-                                      "result":  "P4-03 IntegrityAdversarialTest commits a duplicate sealed decision at a second managed path and asserts DUPLICATE_OBJECT_ID plus deterministic semantic gating; Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-03 IntegrityAdversarialTest commits a duplicate sealed decision at a second managed path and asserts DUPLICATE_OBJECT_ID plus deterministic semantic gating; Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -605,9 +605,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"historical revision remains queryable after HEAD corruption\"",
+                                      "selector": "ordinary --source-test-label \"historical revision remains queryable after HEAD corruption\"",
                                       "fixture":  "P4-03 ColdCompilerTest binds a healthy historical full OID, corrupts later HEAD, and still materializes normalized/search rows from the bound revision. Public query command behavior remains P4-06; Python was reviewed statically and not executed.",
-                                      "result":  "P4-03 ColdCompilerTest binds a healthy historical full OID, corrupts later HEAD, and still materializes normalized/search rows from the bound revision. Public query command behavior remains P4-06; Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-03 ColdCompilerTest binds a healthy historical full OID, corrupts later HEAD, and still materializes normalized/search rows from the bound revision. Public query command behavior remains P4-06; Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -620,9 +620,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"resealed semantic hash cannot hide capsule type errors\"",
+                                      "selector": "ordinary --source-test-label \"resealed semantic hash cannot hide capsule type errors\"",
                                       "fixture":  "ProvenanceFormatTest and ManagedDocumentFormatTest independently reject closed-schema capsule type/key violations and semantic/object digest mismatches; P4-03 maps managed parse failures to stable diagnostics, but an exact resealed capsule-type cold-database fixture is still pending. Python was reviewed statically and not executed.",
-                                      "result":  "ProvenanceFormatTest and ManagedDocumentFormatTest independently reject closed-schema capsule type/key violations and semantic/object digest mismatches; P4-03 maps managed parse failures to stable diagnostics, but an exact resealed capsule-type cold-database fixture is still pending. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "ProvenanceFormatTest and ManagedDocumentFormatTest independently reject closed-schema capsule type/key violations and semantic/object digest mismatches; P4-03 maps managed parse failures to stable diagnostics, but an exact resealed capsule-type cold-database fixture is still pending. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -635,9 +635,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"resealed decision still validates frontmatter\"",
+                                      "selector": "ordinary --source-test-label \"resealed decision still validates frontmatter\"",
                                       "fixture":  "ManagedDocumentFormatTest exercises strict decision frontmatter, closed keys, canonical semantic rendering, and capsule validation; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT, but an exact resealed frontmatter cold-database fixture is still pending. Python was reviewed statically and not executed.",
-                                      "result":  "ManagedDocumentFormatTest exercises strict decision frontmatter, closed keys, canonical semantic rendering, and capsule validation; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT, but an exact resealed frontmatter cold-database fixture is still pending. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "ManagedDocumentFormatTest exercises strict decision frontmatter, closed keys, canonical semantic rendering, and capsule validation; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT, but an exact resealed frontmatter cold-database fixture is still pending. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -650,9 +650,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"resealed connection rejects non-array graph fields\"",
+                                      "selector": "ordinary --source-test-label \"resealed connection rejects non-array graph fields\"",
                                       "fixture":  "ManagedDocumentFormatTest exercises strict typed connection arrays and canonical relation payloads; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT and blocks semantics, but an exact resealed non-array cold-database fixture is still pending. Python was reviewed statically and not executed.",
-                                      "result":  "ManagedDocumentFormatTest exercises strict typed connection arrays and canonical relation payloads; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT and blocks semantics, but an exact resealed non-array cold-database fixture is still pending. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "ManagedDocumentFormatTest exercises strict typed connection arrays and canonical relation payloads; P4-03 malformed-document integration persists INVALID_MANAGED_DOCUMENT and blocks semantics, but an exact resealed non-array cold-database fixture is still pending. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -665,9 +665,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"operation members share provenance digests\"",
+                                      "selector": "ordinary --source-test-label \"operation members share provenance digests\"",
                                       "fixture":  "P4-03 CompilerSnapshotTest changes one member\u0027s ProvenanceInputs and shared timestamp independently and asserts INCONSISTENT_OPERATION_CAPSULE through the extracted OperationContext validator. Python was reviewed statically and not executed.",
-                                      "result":  "P4-03 CompilerSnapshotTest changes one member\u0027s ProvenanceInputs and shared timestamp independently and asserts INCONSISTENT_OPERATION_CAPSULE through the extracted OperationContext validator. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-03 CompilerSnapshotTest changes one member's ProvenanceInputs and shared timestamp independently and asserts INCONSISTENT_OPERATION_CAPSULE through the extracted OperationContext validator. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -680,9 +680,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"unavailable basis commit is explicit\"",
+                                      "selector": "ordinary --source-test-label \"unavailable basis commit is explicit\"",
                                       "fixture":  "P4-03 ColdCompilerTest covers both missing and present-noncommit basis OIDs and asserts stable BASIS_COMMIT_UNAVAILABLE warnings without blocking semantic rows. Python was reviewed statically and not executed.",
-                                      "result":  "P4-03 ColdCompilerTest covers both missing and present-noncommit basis OIDs and asserts stable BASIS_COMMIT_UNAVAILABLE warnings without blocking semantic rows. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-03 ColdCompilerTest covers both missing and present-noncommit basis OIDs and asserts stable BASIS_COMMIT_UNAVAILABLE warnings without blocking semantic rows. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -695,9 +695,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"amendment with missing parent is not collapsed\"",
+                                      "selector": "ordinary --source-test-label \"amendment with missing parent is not collapsed\"",
                                       "fixture":  "GraphTest missing-parent coverage and P4-03 IntegrityAdversarialTest\u0027s orphan amendment/zero-head fixture persist graph-origin errors and block semantic/search rows. Python was reviewed statically and not executed.",
-                                      "result":  "GraphTest missing-parent coverage and P4-03 IntegrityAdversarialTest\u0027s orphan amendment/zero-head fixture persist graph-origin errors and block semantic/search rows. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "GraphTest missing-parent coverage and P4-03 IntegrityAdversarialTest's orphan amendment/zero-head fixture persist graph-origin errors and block semantic/search rows. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -710,9 +710,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"scope self-cycle and invalid delta are diagnosed\"",
+                                      "selector": "ordinary --source-test-label \"scope self-cycle and invalid delta are diagnosed\"",
                                       "fixture":  "GraphTest compound malformed records asserts SCOPE_CYCLE and SCOPE_DELTA_MISMATCH together; P4-03 maps graph issues into strict compiler diagnostics, but an exact persisted cold-database fixture for this pair is still pending. Python was reviewed statically and not executed.",
-                                      "result":  "GraphTest compound malformed records asserts SCOPE_CYCLE and SCOPE_DELTA_MISMATCH together; P4-03 maps graph issues into strict compiler diagnostics, but an exact persisted cold-database fixture for this pair is still pending. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "GraphTest compound malformed records asserts SCOPE_CYCLE and SCOPE_DELTA_MISMATCH together; P4-03 maps graph issues into strict compiler diagnostics, but an exact persisted cold-database fixture for this pair is still pending. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -725,9 +725,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"domain refinement mapping matches committed delta\"",
+                                      "selector": "ordinary --source-test-label \"domain refinement mapping matches committed delta\"",
                                       "fixture":  "GraphTest refinementAndReplacementDiagnostics asserts DOMAIN_REFINEMENT_MISMATCH and P4-03 maps the same reducer output into strict graph-origin diagnostics, but an exact persisted cold-database refinement fixture is still pending. Python was reviewed statically and not executed.",
-                                      "result":  "GraphTest refinementAndReplacementDiagnostics asserts DOMAIN_REFINEMENT_MISMATCH and P4-03 maps the same reducer output into strict graph-origin diagnostics, but an exact persisted cold-database refinement fixture is still pending. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "GraphTest refinementAndReplacementDiagnostics asserts DOMAIN_REFINEMENT_MISMATCH and P4-03 maps the same reducer output into strict graph-origin diagnostics, but an exact persisted cold-database refinement fixture is still pending. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -740,9 +740,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"unknown status replacement is diagnosed\"",
+                                      "selector": "ordinary --source-test-label \"unknown status replacement is diagnosed\"",
                                       "fixture":  "GraphTest refinementAndReplacementDiagnostics asserts MISSING_REPLACEMENT_ADR for a typed status record and P4-03 maps reducer issues into strict compiler diagnostics, but an exact persisted cold-database replacement fixture is still pending. Python was reviewed statically and not executed.",
-                                      "result":  "GraphTest refinementAndReplacementDiagnostics asserts MISSING_REPLACEMENT_ADR for a typed status record and P4-03 maps reducer issues into strict compiler diagnostics, but an exact persisted cold-database replacement fixture is still pending. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "GraphTest refinementAndReplacementDiagnostics asserts MISSING_REPLACEMENT_ADR for a typed status record and P4-03 maps reducer issues into strict compiler diagnostics, but an exact persisted cold-database replacement fixture is still pending. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -755,9 +755,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"status event and state mismatch is detected\"",
+                                      "selector": "ordinary --source-test-label \"status event and state mismatch is detected\"",
                                       "fixture":  "P4-03 CompilerSnapshotTest mutates the exact status event independently of the typed status payload and asserts STATUS_EVENT_KIND_MISMATCH. Python was reviewed statically and not executed.",
-                                      "result":  "P4-03 CompilerSnapshotTest mutates the exact status event independently of the typed status payload and asserts STATUS_EVENT_KIND_MISMATCH. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-03 CompilerSnapshotTest mutates the exact status event independently of the typed status payload and asserts STATUS_EVENT_KIND_MISMATCH. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -770,9 +770,9 @@
                      "phaseOwner":  "P4",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"cross-ADR operation group is rejected\"",
+                                      "selector": "ordinary --source-test-label \"cross-ADR operation group is rejected\"",
                                       "fixture":  "P4-03 CompilerSnapshotTest groups otherwise valid members across two ADR identities and asserts CROSS_ADR_OPERATION. Python was reviewed statically and not executed.",
-                                      "result":  "P4-03 CompilerSnapshotTest groups otherwise valid members across two ADR identities and asserts CROSS_ADR_OPERATION. Python was reviewed statically and not executed."
+                                      "sourceCoverage": "P4-03 CompilerSnapshotTest groups otherwise valid members across two ADR identities and asserts CROSS_ADR_OPERATION. Python was reviewed statically and not executed."
                                   }
                  }
              ]

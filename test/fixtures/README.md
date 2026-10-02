@@ -13,4 +13,6 @@ These counts are not interchangeable. In particular, the retrieval corpus has 2,
 
 `contracts/v1/search/dropwire-current.json` is only the current Dropwire result baseline. The external Dropwire source corpus used to produce the historical evaluation is not present in this repository, so that JSON cannot reconstruct or regenerate the source corpus. Haskell E2E parity must either use an independently available authorized Dropwire corpus or treat the committed JSON strictly as result-level acceptance evidence.
 
-Generated repositories are future interpreter outputs and must not be committed as golden fixtures. Stable contracts are asserted through the compact Haskell summary and its SHA-256 digest.
+Generated repositories are temporary interpreter outputs and must not be
+committed as golden fixtures. The retained stress contract uses compact selected
+shapes; the larger logical plans above do not establish executed capacity coverage. Stable contracts are asserted through the compact Haskell summary and its SHA-256 digest.

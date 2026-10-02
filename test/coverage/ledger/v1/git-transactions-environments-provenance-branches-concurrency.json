@@ -1,4 +1,4 @@
-﻿{
+{
     "schema":  "adrai/coverage-ledger-category/v1",
     "category":  "git-transactions-environments-provenance-branches-concurrency",
     "expectedCount":  42,
@@ -35,9 +35,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"immediate commit is original and first trunk landing\"",
+                                      "selector": "ordinary --source-test-label \"immediate commit is original and first trunk landing\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_immediate_commit_is_original_and_first_trunk_landing; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_immediate_commit_is_original_and_first_trunk_landing; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_immediate_commit_is_original_and_first_trunk_landing; Python not executed."
                                   }
                  },
                  {
@@ -50,9 +50,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"fast forward landing preserves original feature commit\"",
+                                      "selector": "ordinary --source-test-label \"fast forward landing preserves original feature commit\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_fast_forward_landing_preserves_original_feature_commit; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_fast_forward_landing_preserves_original_feature_commit; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_fast_forward_landing_preserves_original_feature_commit; Python not executed."
                                   }
                  },
                  {
@@ -65,9 +65,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"no ff merge separates feature origin from trunk landing\"",
+                                      "selector": "ordinary --source-test-label \"no ff merge separates feature origin from trunk landing\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_no_ff_merge_has_feature_origin_and_merge_commit_trunk_landing; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_no_ff_merge_has_feature_origin_and_merge_commit_trunk_landing; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_no_ff_merge_has_feature_origin_and_merge_commit_trunk_landing; Python not executed."
                                   }
                  },
                  {
@@ -80,9 +80,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"merge trailer is introduction not fabricated origin\"",
+                                      "selector": "ordinary --source-test-label \"merge trailer is introduction not fabricated origin\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_merge_commit_trailer_is_an_introduction_not_a_fabricated_origin; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_merge_commit_trailer_is_an_introduction_not_a_fabricated_origin; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_merge_commit_trailer_is_an_introduction_not_a_fabricated_origin; Python not executed."
                                   }
                  },
                  {
@@ -95,9 +95,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"cherry pick binds original and reachable copy\"",
+                                      "selector": "ordinary --source-test-label \"cherry pick binds original and reachable copy\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_cherry_pick_binds_original_and_reachable_copy; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_cherry_pick_binds_original_and_reachable_copy; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_cherry_pick_binds_original_and_reachable_copy; Python not executed."
                                   }
                  },
                  {
@@ -110,9 +110,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"rebase binds surviving copy without semantic provenance change\"",
+                                      "selector": "ordinary --source-test-label \"rebase binds surviving copy without semantic provenance change\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_rebase_binds_surviving_copy_without_changing_semantic_provenance; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_rebase_binds_surviving_copy_without_changing_semantic_provenance; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_rebase_binds_surviving_copy_without_changing_semantic_provenance; Python not executed."
                                   }
                  },
                  {
@@ -125,9 +125,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"squash merge falls back to surviving introduction\"",
+                                      "selector": "ordinary --source-test-label \"squash merge falls back to surviving introduction\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_squash_merge_falls_back_to_surviving_introduction; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_squash_merge_falls_back_to_surviving_introduction; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_squash_merge_falls_back_to_surviving_introduction; Python not executed."
                                   }
                  },
                  {
@@ -140,9 +140,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"squash provenance survives branch deletion reflog expiry and gc\"",
+                                      "selector": "ordinary --source-test-label \"squash provenance survives branch deletion reflog expiry and gc\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_squash_survives_deleted_branch_reflog_expiry_and_gc; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_squash_survives_deleted_branch_reflog_expiry_and_gc; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_squash_survives_deleted_branch_reflog_expiry_and_gc; Python not executed."
                                   }
                  },
                  {
@@ -155,9 +155,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"branch rename and deletion preserve recorded hint\"",
+                                      "selector": "ordinary --source-test-label \"branch rename and deletion preserve recorded hint\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_branch_rename_and_deletion_do_not_rewrite_recorded_hint; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_branch_rename_and_deletion_do_not_rewrite_recorded_hint; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_branch_rename_and_deletion_do_not_rewrite_recorded_hint; Python not executed."
                                   }
                  },
                  {
@@ -170,9 +170,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"redundant operation trailer does not fabricate copy\"",
+                                      "selector": "ordinary --source-test-label \"redundant operation trailer does not fabricate copy\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_redundant_operation_trailer_does_not_fabricate_a_copy; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_redundant_operation_trailer_does_not_fabricate_a_copy; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_redundant_operation_trailer_does_not_fabricate_a_copy; Python not executed."
                                   }
                  },
                  {
@@ -185,9 +185,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"trailer without sealed files is warned and ignored\"",
+                                      "selector": "ordinary --source-test-label \"trailer without sealed files is warned and ignored\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_trailer_without_sealed_files_is_warned_and_ignored; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_trailer_without_sealed_files_is_warned_and_ignored; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_trailer_without_sealed_files_is_warned_and_ignored; Python not executed."
                                   }
                  },
                  {
@@ -200,9 +200,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"wrong object set trailer warns without false source error\"",
+                                      "selector": "ordinary --source-test-label \"wrong object set trailer warns without false source error\"",
                                       "fixture":  "Static read of test_git_provenance.py::test_wrong_object_set_trailer_is_a_warning_not_a_false_source_error; Python not executed.",
-                                      "result":  "Static read of test_git_provenance.py::test_wrong_object_set_trailer_is_a_warning_not_a_false_source_error; Python not executed."
+                                      "sourceCoverage": "Static read of test_git_provenance.py::test_wrong_object_set_trailer_is_a_warning_not_a_false_source_error; Python not executed."
                                   }
                  },
                  {
@@ -215,9 +215,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"shallow clone marks history and line landings incomplete\"",
+                                      "selector": "ordinary --source-test-label \"shallow clone marks history and line landings incomplete\"",
                                       "fixture":  "P4-03 ColdCompilerTest compiles a real depth-1 clone, persists HISTORY_COVERAGE_INCOMPLETE, records history_complete=false, and retains valid semantic/search rows. Line-landing completeness remains P4-04, so this row remains partial; Python was read statically and not executed.",
-                                      "result":  "P4-03 ColdCompilerTest compiles a real depth-1 clone, persists HISTORY_COVERAGE_INCOMPLETE, records history_complete=false, and retains valid semantic/search rows. Line-landing completeness remains P4-04, so this row remains partial; Python was read statically and not executed."
+                                      "sourceCoverage": "P4-03 ColdCompilerTest compiles a real depth-1 clone, persists HISTORY_COVERAGE_INCOMPLETE, records history_complete=false, and retains valid semantic/search rows. Line-landing completeness remains P4-04, so this row remains partial; Python was read statically and not executed."
                                   }
                  },
                  {
@@ -230,9 +230,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"P6-02A\" -j 1'",
+                                      "selector": "ordinary --source-test-label \"P6-02A init creates a parentless root commit\"",
                                       "fixture":  "test/integration/Adrai/MutationE2ETest.hs::p602aInitUnborn creates a fresh unborn Git repository with an unrelated staged binary; ADRAI_EXE names the executable under test.",
-                                      "result":  "Commit 19798ef; reviewed focused P6-02A validation passed 19/19, asserting a parentless bootstrap commit, exact committed bootstrap bytes, and the expected committed tree."
+                                      "sourceCoverage": "Source contract: Initialization in an unborn repository creates the root ADRAI bootstrap commit. Target: test/integration/Adrai/MutationE2ETest.hs (P6-02A init creates a parentless root commit)."
                                   }
                  },
                  {
@@ -245,9 +245,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"P6-02A\" -j 1'",
+                                      "selector": "ordinary --source-test-label \"P6-02A init preserves unrelated staged binary\"",
                                       "fixture":  "test/integration/Adrai/MutationE2ETest.hs::p602aInitUnborn stages unrelated-staged.bin before invoking the real init executable; ADRAI_EXE names the executable under test.",
-                                      "result":  "Commit 19798ef; reviewed focused P6-02A validation passed 19/19, preserving the exact staged binary/index entry while excluding it from HEAD."
+                                      "sourceCoverage": "Source contract: Initialization in an unborn repository preserves unrelated staged index entries. Target: test/integration/Adrai/MutationE2ETest.hs (P6-02A init preserves unrelated staged binary)."
                                   }
                  },
                  {
@@ -260,9 +260,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"mutation is isolated commit preserving unrelated dirty state\"",
+                                      "selector": "ordinary --source-test-label \"mutation is isolated commit preserving unrelated dirty state\"",
                                       "fixture":  "Static read of test_transactions.py::test_mutation_is_one_isolated_commit_and_preserves_dirty_unrelated_state; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_mutation_is_one_isolated_commit_and_preserves_dirty_unrelated_state; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_mutation_is_one_isolated_commit_and_preserves_dirty_unrelated_state; Python not executed."
                                   }
                  },
                  {
@@ -275,9 +275,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"bootstrap appends to tracked ignore and attributes\"",
+                                      "selector": "ordinary --source-test-label \"bootstrap appends to tracked ignore and attributes\"",
                                       "fixture":  "Static read of test_transactions.py::test_bootstrap_appends_to_existing_tracked_ignore_and_attributes; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_bootstrap_appends_to_existing_tracked_ignore_and_attributes; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_bootstrap_appends_to_existing_tracked_ignore_and_attributes; Python not executed."
                                   }
                  },
                  {
@@ -290,9 +290,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"dirty managed states are refused\"",
+                                      "selector": "ordinary --source-test-label \"dirty managed states are refused\"",
                                       "fixture":  "Static read of test_transactions.py::test_dirty_managed_states_are_refused; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_dirty_managed_states_are_refused; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_dirty_managed_states_are_refused; Python not executed."
                                   }
                  },
                  {
@@ -305,9 +305,9 @@
                      "phaseOwner":  "P4",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"detached head reads but refuses mutation\"",
+                                      "selector": "ordinary --source-test-label \"detached head reads but refuses mutation\"",
                                       "fixture":  "P4-02 RepositoryIsolationTest asserts that detached HEAD is advisory and still permits an exact committed repository observation. Mutation refusal remains unimplemented; Python was read statically and not executed.",
-                                      "result":  "P4-02 RepositoryIsolationTest asserts that detached HEAD is advisory and still permits an exact committed repository observation. Mutation refusal remains unimplemented; Python was read statically and not executed."
+                                      "sourceCoverage": "P4-02 RepositoryIsolationTest asserts that detached HEAD is advisory and still permits an exact committed repository observation. Mutation refusal remains unimplemented; Python was read statically and not executed."
                                   }
                  },
                  {
@@ -320,9 +320,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"active git operation sentinels block mutation\"",
+                                      "selector": "ordinary --source-test-label \"active git operation sentinels block mutation\"",
                                       "fixture":  "Static read of test_transactions.py::test_active_git_operation_sentinels_block_mutation; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_active_git_operation_sentinels_block_mutation; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_active_git_operation_sentinels_block_mutation; Python not executed."
                                   }
                  },
                  {
@@ -335,9 +335,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"live lock refuses and stale lock recovers\"",
+                                      "selector": "ordinary --source-test-label \"live lock refuses and stale lock recovers\"",
                                       "fixture":  "Static read of test_transactions.py::test_live_lock_refuses_and_stale_lock_is_recovered; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_live_lock_refuses_and_stale_lock_is_recovered; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_live_lock_refuses_and_stale_lock_is_recovered; Python not executed."
                                   }
                  },
                  {
@@ -350,9 +350,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"compare and swap rejects head movement and cleans files\"",
+                                      "selector": "ordinary --source-test-label \"compare and swap rejects head movement and cleans files\"",
                                       "fixture":  "Static read of test_transactions.py::test_compare_and_swap_rejects_head_movement_and_cleans_generated_files; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_compare_and_swap_rejects_head_movement_and_cleans_generated_files; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_compare_and_swap_rejects_head_movement_and_cleans_generated_files; Python not executed."
                                   }
                  },
                  {
@@ -365,9 +365,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"external commit adopting generated files is recoverable\"",
+                                      "selector": "ordinary --source-test-label \"external commit adopting generated files is recoverable\"",
                                       "fixture":  "Static read of test_transactions.py::test_race_where_external_commit_adopts_generated_files_is_recoverable; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_race_where_external_commit_adopts_generated_files_is_recoverable; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_race_where_external_commit_adopts_generated_files_is_recoverable; Python not executed."
                                   }
                  },
                  {
@@ -380,9 +380,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"post commit indexing failure reports durable success\"",
+                                      "selector": "ordinary --source-test-label \"post commit indexing failure reports durable success\"",
                                       "fixture":  "Static read of test_transactions.py::test_post_commit_indexing_failure_reports_durable_success; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_post_commit_indexing_failure_reports_durable_success; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_post_commit_indexing_failure_reports_durable_success; Python not executed."
                                   }
                  },
                  {
@@ -395,9 +395,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"index refresh failure is reported without losing commit\"",
+                                      "selector": "ordinary --source-test-label \"index refresh failure is reported without losing commit\"",
                                       "fixture":  "Static read of test_transactions.py::test_real_index_refresh_failure_is_reported_without_losing_commit; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_real_index_refresh_failure_is_reported_without_losing_commit; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_real_index_refresh_failure_is_reported_without_losing_commit; Python not executed."
                                   }
                  },
                  {
@@ -410,9 +410,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"stale state token prevents semantic lost update\"",
+                                      "selector": "ordinary --source-test-label \"stale state token prevents semantic lost update\"",
                                       "fixture":  "Static read of test_transactions.py::test_stale_state_token_prevents_semantic_lost_update; Python not executed.",
-                                      "result":  "Static read of test_transactions.py::test_stale_state_token_prevents_semantic_lost_update; Python not executed."
+                                      "sourceCoverage": "Static read of test_transactions.py::test_stale_state_token_prevents_semantic_lost_update; Python not executed."
                                   }
                  },
                  {
@@ -425,9 +425,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                       "command":  "stack test adrai:adrai-test --test-arguments='-p /linked_worktree_commits_only_its_branch_and_uses_common_lock/ -j 1'",
+                                       "selector": "ordinary --source-test-label \"linked_worktree_commits_only_its_branch_and_uses_common_lock\"",
                                        "fixture":  "EnvironmentTest creates a real initialized main repository and linked worktree, holds the production common-directory lock in the parent, invokes adrai.exe as the child create command, asserts exact ExitFailure 2/empty stdout/typed Stage2AcquireLock stderr and full caller Git/cache preservation, then releases and proves the linked branch alone advances.",
-                                       "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /linked_worktree_commits_only_its_branch_and_uses_common_lock/ -j1 ALL 1 PASS"
+                                       "sourceCoverage": "Source contract: A linked worktree commits only its checked-out branch and shares the repository-wide mutation lock. Target: test/integration/Adrai/EnvironmentTest.hs (linked_worktree_commits_only_its_branch_and_uses_common_lock)."
                                      }
                  },
                  {
@@ -440,9 +440,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/worktree_branch_can_merge_back_and_rebuild_from_main/\" -j 1'",
+                                      "selector": "ordinary --source-test-label \"worktree_branch_can_merge_back_and_rebuild_from_main\"",
                                       "fixture":  "EnvironmentTest.testWorktreeBranchMergeBack creates a real linked worktree ADR through the standard executable, proves main's pre-existing canonical index resolves to the pre-merge OID and cannot show the ADR, proves the worktree has a distinct cache at the feature OID, fast-forwards main to that exact OID, then proves the same main index is republished at the integrated OID and public show/FTS expose the ADR; the test-owned worktree is removed and its directory absence asserted.",
-                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /worktree_branch_can_merge_back_and_rebuild_from_main/ -j1 ALL 1 PASS in 12.75s"
+                                      "sourceCoverage": "Source contract: A linked-worktree branch can merge to main and the main revision database rebuilds to expose the integrated ADR. Target: test/integration/Adrai/EnvironmentTest.hs (worktree_branch_can_merge_back_and_rebuild_from_main)."
                                   }
                  },
                  {
@@ -455,9 +455,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns/ -j 1'",
+                                      "selector": "ordinary --source-test-label \"sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns\"",
                                       "fixture":  "EnvironmentTest creates a real cone sparse checkout containing only src, proves exact sparse configuration, source bytes, full refs, full index, tree, and clean status; invokes adrai.exe for current create; requires HEAD's exact changed-path set to equal the generated architecture/adrai paths; reapplies the unchanged cone and proves every generated path is absent from the worktree but retained in HEAD and the full index. It then removes only the test-owned ignored .adrai cache after truthful create indexing to avoid the separate Windows warm ReplaceFileW contract before cold-compiling and positional-FTS-searching the same HEAD, with every read-side Git snapshot unchanged.",
-                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns/ -j1 ALL 1 PASS"
+                                      "sourceCoverage": "Source contract: Sparse checkout can create, compile, and query managed ADR files even when their roots are outside the sparse patterns. Target: test/integration/Adrai/EnvironmentTest.hs (sparse_checkout_can_create_and_query_adrs_outside_sparse_patterns)."
                                   }
                  },
                  {
@@ -470,9 +470,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p /symlinked managed parent cannot escape repository/ -j 1'",
+                                      "selector": "ordinary --source-test-label \"symlinked managed parent cannot escape repository\"",
                                       "fixture":  "EnvironmentTest creates a test-owned native Windows junction at architecture/adrai pointing to an outside temporary directory, then invokes adrai.exe with public create --json. It requires ExitFailure 2, empty stdout, and the typed Stage5ValidateGenerated/ManagedPathRedirected stderr channel; snapshots symbolic HEAD, HEAD/tree, raw index bytes, staged entries/diff, status, refs, reflogs, committed managed paths, managed-parent entries, cache bytes, and outside bytes unchanged. It removes only the junction, then proves a control installed-executable create returns truthful indexed JSON while preserving the unrelated staged binary caller entry and outside bytes.",
-                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /symlinked managed parent cannot escape repository/ -j1 ALL 1 PASS"
+                                      "sourceCoverage": "Source contract: A symlinked managed parent cannot redirect ADRAI writes outside the repository boundary. Target: test/integration/Adrai/EnvironmentTest.hs (symlinked managed parent cannot escape repository)."
                                   }
                  },
                  {
@@ -485,9 +485,9 @@
                      "phaseOwner":  "P6",
                      "state":  "partial",
                      "evidence":  {
-                                       "command":  "stack test adrai:adrai-test --test-arguments='--pattern=\"configured managed roots are physically distinct\"'",
+                                       "selector": "ordinary --source-test-label \"configured managed roots are physically distinct\"",
                                        "fixture":  "The primary retained unit carrier validates physically distinct configured decision and connection roots. The retained rich linked-worktree Environment carrier is secondary evidence: it commits configured roots, executes a genuine installed-executable compile, and proves returned HEAD, one decision and three connection paths, physical files and matching SQLite identities. Query separately retains Unicode exact/cold search parity.",
-                                       "result":  "Coverage is partial. The former standalone Environment target and the retired ColdCompiler custom-root source-set target are historical. Current evidence is split across the distinct primary managed-root contract, the secondary linked Environment create/compile/SQLite carrier, and Query exact/cold parity; the combined branch-committed custom-root creation, compilation, and search composition, including independent Unicode-to-SQLite cold replay, is an explicit round-nine loss. Python was reviewed statically and not executed."
+                                       "sourceCoverage": "Coverage is partial. The former standalone Environment target and the retired ColdCompiler custom-root source-set target are historical. Current evidence is split across the distinct primary managed-root contract, the secondary linked Environment create/compile/SQLite carrier, and Query exact/cold parity; the combined branch-committed custom-root creation, compilation, and search composition, including independent Unicode-to-SQLite cold replay, is an explicit round-nine loss. Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -500,9 +500,9 @@
                      "phaseOwner":  "P6",
                      "state":  "partial",
                      "evidence":  {
-                                       "command":  "stack test adrai:adrai-test --test-arguments='--pattern=\"P6-08Q exact-v3 archive hooks and tamper fallback\"'",
+                                       "selector": "ordinary --source-test-label \"P6-08Q exact-v3 archive hooks and tamper fallback\"",
                                       "fixture":  "QueryIntegration's shared exact/cold fixture retains RFC punctuation, København, Japanese, emoji and newline source bytes, materialization equality and vector-corpus parity without a second repository pipeline.",
-                                      "result":  "Current retained proof covers raw Git/source bytes, SQLite materialization and vector-corpus parity. The separate Japanese/emoji sentence-retrieval pipeline is an explicit accepted loss; Python was reviewed statically and not executed."
+                                      "sourceCoverage": "Current retained proof covers raw Git/source bytes, SQLite materialization and vector-corpus parity. The separate Japanese/emoji sentence-retrieval pipeline is an explicit accepted loss; Python was reviewed statically and not executed."
                                   }
                  },
                  {
@@ -515,9 +515,9 @@
                      "phaseOwner":  "P6",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"upstream hint line anchor and ref observation survive integration\"",
+                                      "selector": "ordinary --source-test-label \"upstream hint line anchor and ref observation survive integration\"",
                                       "fixture":  "Static read of test_repository_environments.py::test_upstream_hint_line_anchor_and_ref_observation_survive_integration; Python not executed.",
-                                      "result":  "Static read of test_repository_environments.py::test_upstream_hint_line_anchor_and_ref_observation_survive_integration; Python not executed."
+                                      "sourceCoverage": "Static read of test_repository_environments.py::test_upstream_hint_line_anchor_and_ref_observation_survive_integration; Python not executed."
                                   }
                  },
                  {
@@ -530,9 +530,9 @@
                      "phaseOwner":  "P6",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"force reset hides adr until immutable files return\"",
+                                      "selector": "ordinary --source-test-label \"force reset hides adr until immutable files return\"",
                                       "fixture":  "P4-02 RepositoryIsolationTest creates a base commit without the selected path and a newer commit with it, binds the newer OID, hard-resets to the base, asserts a fresh observation excludes the path while the bound newer observation retains exact bytes, then recommits the path and asserts fresh restoration. ADR parsing, provenance, and public reset behavior remain unimplemented; Python was read statically and not executed.",
-                                      "result":  "P4-02 RepositoryIsolationTest creates a base commit without the selected path and a newer commit with it, binds the newer OID, hard-resets to the base, asserts a fresh observation excludes the path while the bound newer observation retains exact bytes, then recommits the path and asserts fresh restoration. ADR parsing, provenance, and public reset behavior remain unimplemented; Python was read statically and not executed."
+                                      "sourceCoverage": "P4-02 RepositoryIsolationTest creates a base commit without the selected path and a newer commit with it, binds the newer OID, hard-resets to the base, asserts a fresh observation excludes the path while the bound newer observation retains exact bytes, then recommits the path and asserts fresh restoration. ADR parsing, provenance, and public reset behavior remain unimplemented; Python was read statically and not executed."
                                   }
                  },
                  {
@@ -545,9 +545,9 @@
                      "phaseOwner":  "P6",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"repeated switches do not leak feature adrs into main\"",
+                                      "selector": "ordinary --source-test-label \"repeated switches do not leak feature adrs into main\"",
                                       "fixture":  "P4-02 RepositoryIsolationTest repeatedly switches main and feature while asserting exact, nonleaking configured managed-path and blob observations for each resolved commit. ADR/amendment parsing and revision caches remain unimplemented; Python was read statically and not executed.",
-                                      "result":  "P4-02 RepositoryIsolationTest repeatedly switches main and feature while asserting exact, nonleaking configured managed-path and blob observations for each resolved commit. ADR/amendment parsing and revision caches remain unimplemented; Python was read statically and not executed."
+                                      "sourceCoverage": "P4-02 RepositoryIsolationTest repeatedly switches main and feature while asserting exact, nonleaking configured managed-path and blob observations for each resolved commit. ADR/amendment parsing and revision caches remain unimplemented; Python was read statically and not executed."
                                   }
                  },
                  {
@@ -560,9 +560,9 @@
                      "phaseOwner":  "P6",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"scope and status resolve from checked out branch only\"",
+                                      "selector": "ordinary --source-test-label \"scope and status resolve from checked out branch only\"",
                                       "fixture":  "Static read of test_branch_switch_consistency.py::test_scope_and_status_are_resolved_from_the_checked_out_branch_only; Python not executed.",
-                                      "result":  "Static read of test_branch_switch_consistency.py::test_scope_and_status_are_resolved_from_the_checked_out_branch_only; Python not executed."
+                                      "sourceCoverage": "Static read of test_branch_switch_consistency.py::test_scope_and_status_are_resolved_from_the_checked_out_branch_only; Python not executed."
                                   }
                  },
                  {
@@ -575,9 +575,9 @@
                      "phaseOwner":  "P6",
                      "state":  "partial",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"branch specific roots use checked out configuration\"",
+                                      "selector": "ordinary --source-test-label \"branch specific roots use checked out configuration\"",
                                       "fixture":  "P4-02 RepositoryIsolationTest asserts that each branch resolves `.adrai.toml` and its selected managed roots from one branch-specific commit OID across repeated switches. Creation, document compilation, and public queries remain unimplemented; Python was read statically and not executed.",
-                                      "result":  "P4-02 RepositoryIsolationTest asserts that each branch resolves `.adrai.toml` and its selected managed roots from one branch-specific commit OID across repeated switches. Creation, document compilation, and public queries remain unimplemented; Python was read statically and not executed."
+                                      "sourceCoverage": "P4-02 RepositoryIsolationTest asserts that each branch resolves `.adrai.toml` and its selected managed roots from one branch-specific commit OID across repeated switches. Creation, document compilation, and public queries remain unimplemented; Python was read statically and not executed."
                                   }
                  },
                  {
@@ -590,9 +590,9 @@
                      "phaseOwner":  "P6",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"divergent amendments become merge conflict after branch local views\"",
+                                      "selector": "ordinary --source-test-label \"divergent amendments become merge conflict after branch local views\"",
                                       "fixture":  "Static read of test_branch_switch_consistency.py::test_divergent_amendments_are_branch_local_then_visible_as_a_merge_conflict; Python not executed.",
-                                      "result":  "Static read of test_branch_switch_consistency.py::test_divergent_amendments_are_branch_local_then_visible_as_a_merge_conflict; Python not executed."
+                                      "sourceCoverage": "Static read of test_branch_switch_consistency.py::test_divergent_amendments_are_branch_local_then_visible_as_a_merge_conflict; Python not executed."
                                   }
                  },
                  {
@@ -605,9 +605,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments='-p \"/two_worktrees_keep_different_adr_sets_and_compiled_databases/\" -j 1'",
+                                      "selector": "ordinary --source-test-label \"two_worktrees_keep_different_adr_sets_and_compiled_databases\"",
                                       "fixture":  "EnvironmentTest.testTwoWorktreesDifferentAdrs commits one shared ADR, cold-publishes independent main and linked-worktree indexes through real create commands, proves exact canonical database paths and resolved OIDs, proves exact public ADR sets plus opposite-branch show/search exclusion, repeats the views in reverse order without cache leakage, preserves each caller Git state, and removes the test-owned linked worktree.",
-                                      "result":  "standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /two_worktrees_keep_different_adr_sets_and_compiled_databases/ -j1 ALL 1 PASS in 124.34s"
+                                      "sourceCoverage": "Source contract: Two linked worktrees retain distinct reachable ADR sets and revision-specific compiled databases. Target: test/integration/Adrai/EnvironmentTest.hs (two_worktrees_keep_different_adr_sets_and_compiled_databases)."
                                   }
                  },
                  {
@@ -620,9 +620,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"concurrent head and as of queries isolate databases\"",
+                                      "selector": "ordinary --source-test-label \"concurrent head and as of queries isolate databases\"",
                                       "fixture":  "Static read of test_concurrency.py::test_concurrent_head_and_as_of_queries_do_not_cross_contaminate_databases; Python not executed.",
-                                      "result":  "Static read of test_concurrency.py::test_concurrent_head_and_as_of_queries_do_not_cross_contaminate_databases; Python not executed."
+                                      "sourceCoverage": "Static read of test_concurrency.py::test_concurrent_head_and_as_of_queries_do_not_cross_contaminate_databases; Python not executed."
                                   }
                  },
                  {
@@ -635,9 +635,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"concurrent compile temp files are unique and atomic\"",
+                                      "selector": "ordinary --source-test-label \"concurrent compile temp files are unique and atomic\"",
                                       "fixture":  "Static read of test_concurrency.py::test_concurrent_compile_temp_files_are_unique_and_publish_atomically; Python not executed.",
-                                      "result":  "Static read of test_concurrency.py::test_concurrent_compile_temp_files_are_unique_and_publish_atomically; Python not executed."
+                                      "sourceCoverage": "Static read of test_concurrency.py::test_concurrent_compile_temp_files_are_unique_and_publish_atomically; Python not executed."
                                   }
                  },
                  {
@@ -650,9 +650,9 @@
                      "phaseOwner":  "P4",
                      "state":  "planned",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-test --test-arguments=--pattern=\"repository lock rejects second mutation during ref transaction\"",
+                                      "selector": "ordinary --source-test-label \"repository lock rejects second mutation during ref transaction\"",
                                       "fixture":  "Static read of test_concurrency.py::test_repository_wide_lock_rejects_a_second_mutation_during_ref_transaction; Python not executed.",
-                                      "result":  "Static read of test_concurrency.py::test_repository_wide_lock_rejects_a_second_mutation_during_ref_transaction; Python not executed."
+                                      "sourceCoverage": "Static read of test_concurrency.py::test_repository_wide_lock_rejects_a_second_mutation_during_ref_transaction; Python not executed."
                                   }
                  }
              ]

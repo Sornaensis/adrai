@@ -1,3 +1,5 @@
 # Unit tests
 
-This directory will own focused tests for individual Haskell modules. The suite is currently a scaffold; implementation-specific tests will be added with each module.
+This directory contains registered tests for individual Haskell modules and
+public command contracts. Select an exact registered leaf with the canonical
+`Focused` runner described in [Testing](../../docs/TESTING.md).

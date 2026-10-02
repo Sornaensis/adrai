@@ -6,7 +6,9 @@ ADRAI distinguishes a valid unresolved multihead from malformed graph state.
 
 `ADR_CONFLICT` represents multiple valid current heads. It is semantic state, not corrupt data. Compilation retains the competing records in `adr_conflict`, and search indexes one deterministic `ADR@record` candidate for each current decision head. Collapsed results group those candidates under the logical ADR while preserving the matched head as evidence.
 
-`doctor` and `explore` expose conflicts. A command that cannot safely choose a head exits with status `3`. Resolution is axis-specific: use the relevant mutation command and its reviewed replacement or resolution option; inspect `adrai COMMAND --help` before changing a conflicted ADR.
+`doctor` and the terminal explorer's `conflicts` command expose conflicts. The
+terminal `show` and `view` commands inspect shared collapsed/exploded projections;
+checked terminal edits require the viewed current basis and state token. A command that cannot safely choose a head exits with status `3`. Resolution is axis-specific: use the relevant mutation command and its reviewed replacement or resolution option; inspect `adrai COMMAND --help` before changing a conflicted ADR.
 
 ## Integrity failures
 

@@ -43,9 +43,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"configured embeddings have fixed dimensions and independently normalized halves\"",
+        "selector": "ordinary --source-test-label \"configured embeddings have fixed dimensions and independently normalized halves\"",
         "fixture": "Haskell-owned float32 goldens freeze exact configured outputs; the property discriminates fixed dimensions and independent zero-or-sqrt(0.5) half norms; static Python anchor test_vectors.py:30 was reviewed without execution.",
-        "result": "Haskell-owned float32 goldens freeze exact configured outputs; the property discriminates fixed dimensions and independent zero-or-sqrt(0.5) half norms; static Python anchor test_vectors.py:30 was reviewed without execution."
+        "sourceCoverage": "Haskell-owned float32 goldens freeze exact configured outputs; the property discriminates fixed dimensions and independent zero-or-sqrt(0.5) half norms; static Python anchor test_vectors.py:30 was reviewed without execution."
       }
     },
     {
@@ -58,9 +58,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"architecture synonyms rank closer than unrelated text\"",
+        "selector": "ordinary --source-test-label \"architecture synonyms rank closer than unrelated text\"",
         "fixture": "Haskell-owned quality golden and semantic-embedder inequality cover memoized compiler/cache vocabulary; static Python anchor test_vectors.py:37 was reviewed without execution.",
-        "result": "Haskell-owned quality golden and semantic-embedder inequality cover memoized compiler/cache vocabulary; static Python anchor test_vectors.py:37 was reviewed without execution."
+        "sourceCoverage": "Haskell-owned quality golden and semantic-embedder inequality cover memoized compiler/cache vocabulary; static Python anchor test_vectors.py:37 was reviewed without execution."
       }
     },
     {
@@ -73,9 +73,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"identifier parts and lease tokens are contextually useful\"",
+        "selector": "ordinary --source-test-label \"identifier parts and lease tokens are contextually useful\"",
         "fixture": "Haskell-owned quality golden uses the semantic embedder for the DropwireLease/token/environment comparison; static Python anchor test_vectors.py:43 was reviewed without execution.",
-        "result": "Haskell-owned quality golden uses the semantic embedder for the DropwireLease/token/environment comparison; static Python anchor test_vectors.py:43 was reviewed without execution."
+        "sourceCoverage": "Haskell-owned quality golden uses the semantic embedder for the DropwireLease/token/environment comparison; static Python anchor test_vectors.py:43 was reviewed without execution."
       }
     },
     {
@@ -88,9 +88,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"embedder validation fingerprints IDs and descriptions are exact\"",
+        "selector": "ordinary --source-test-label \"embedder validation fingerprints IDs and descriptions are exact\"",
         "fixture": "Haskell unit and contract golden freeze dimensions, descriptions, compact fingerprints, and both retained vector IDs; static Python anchor test_vectors.py:66 was reviewed without execution.",
-        "result": "Haskell unit and contract golden freeze dimensions, descriptions, compact fingerprints, and both retained vector IDs; static Python anchor test_vectors.py:66 was reviewed without execution."
+        "sourceCoverage": "Haskell unit and contract golden freeze dimensions, descriptions, compact fingerprints, and both retained vector IDs; static Python anchor test_vectors.py:66 was reviewed without execution."
       }
     },
     {
@@ -103,9 +103,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"float32-origin blobs pack after unpack byte-for-byte\"",
+        "selector": "ordinary --source-test-label \"float32-origin blobs pack after unpack byte-for-byte\"",
         "fixture": "Haskell property excludes NaN payloads and checks float32-origin byte identity; unit cases cover empty blobs, negative zero, malformed lengths, empty dot, and mismatched dimensions; static Python anchor test_vectors.py:83 was reviewed without execution.",
-        "result": "Haskell property excludes NaN payloads and checks float32-origin byte identity; unit cases cover empty blobs, negative zero, malformed lengths, empty dot, and mismatched dimensions; static Python anchor test_vectors.py:83 was reviewed without execution."
+        "sourceCoverage": "Haskell property excludes NaN payloads and checks float32-origin byte identity; unit cases cover empty blobs, negative zero, malformed lengths, empty dot, and mismatched dimensions; static Python anchor test_vectors.py:83 was reviewed without execution."
       }
     },
     {
@@ -118,9 +118,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"LSH planes signatures and probe neighborhoods satisfy frozen geometry\"",
+        "selector": "ordinary --source-test-label \"LSH planes signatures and probe neighborhoods satisfy frozen geometry\"",
         "fixture": "The Haskell-owned contract golden freezes exact nonzero signatures and probes; the property discriminates band/bit/sample uniqueness and one-bit sorted neighborhoods while unit cases cover empty and zero vectors; static Python anchor test_vectors.py:94 was reviewed without execution.",
-        "result": "The Haskell-owned contract golden freezes exact nonzero signatures and probes; the property discriminates band/bit/sample uniqueness and one-bit sorted neighborhoods while unit cases cover empty and zero vectors; static Python anchor test_vectors.py:94 was reviewed without execution."
+        "sourceCoverage": "The Haskell-owned contract golden freezes exact nonzero signatures and probes; the property discriminates band/bit/sample uniqueness and one-bit sorted neighborhoods while unit cases cover empty and zero vectors; static Python anchor test_vectors.py:94 was reviewed without execution."
       }
     },
     {
@@ -133,9 +133,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"fts, vector, and hybrid run without optional dependencies\"",
+        "selector": "ordinary --source-test-label \"fts, vector, and hybrid run without optional dependencies\"",
         "fixture": "In-memory Haskell SQLite integration executes vector and hybrid current-search retrieval through the mandatory dependency-free embedders and deterministic section reranker; static Python anchor test_vectors.py:108 was reviewed without execution.",
-        "result": "In-memory Haskell SQLite integration executes vector and hybrid current-search retrieval through the mandatory dependency-free embedders and deterministic section reranker; static Python anchor test_vectors.py:108 was reviewed without execution."
+        "sourceCoverage": "In-memory Haskell SQLite integration executes vector and hybrid current-search retrieval through the mandatory dependency-free embedders and deterministic section reranker; static Python anchor test_vectors.py:108 was reviewed without execution."
       }
     },
     {
@@ -148,9 +148,9 @@
       "phaseOwner": "P3",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"embeddings are reused after unrelated adr operation\"",
+        "selector": "ordinary --source-test-label \"embeddings are reused after unrelated adr operation\"",
         "fixture": "Static anchor test_vectors.py:130; Python not executed.",
-        "result": "Static anchor test_vectors.py:130; Python not executed."
+        "sourceCoverage": "Static anchor test_vectors.py:130; Python not executed."
       }
     },
     {
@@ -163,9 +163,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"explorer renderers show effective decision and git lineage\"",
+        "selector": "ordinary --source-test-label \"explorer renderers show effective decision and git lineage\"",
         "fixture": "Static anchor test_explorer_graph.py:17; Python not executed.",
-        "result": "Static anchor test_explorer_graph.py:17; Python not executed."
+        "sourceCoverage": "Static anchor test_explorer_graph.py:17; Python not executed."
       }
     },
     {
@@ -178,9 +178,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"explorer renders domain refinement in both views\"",
+        "selector": "ordinary --source-test-label \"explorer renders domain refinement in both views\"",
         "fixture": "Static anchor test_explorer_graph.py:39; Python not executed.",
-        "result": "Static anchor test_explorer_graph.py:39; Python not executed."
+        "sourceCoverage": "Static anchor test_explorer_graph.py:39; Python not executed."
       }
     },
     {
@@ -193,9 +193,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"explorer conflict resolution is symmetric with cli amend\"",
+        "selector": "ordinary --source-test-label \"explorer conflict resolution is symmetric with cli amend\"",
         "fixture": "Static anchor test_explorer_graph.py:90; Python not executed.",
-        "result": "Static anchor test_explorer_graph.py:90; Python not executed."
+        "sourceCoverage": "Static anchor test_explorer_graph.py:90; Python not executed."
       }
     },
     {
@@ -208,9 +208,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"guided scope resolution selects reviewed complete scope\"",
+        "selector": "ordinary --source-test-label \"guided scope resolution selects reviewed complete scope\"",
         "fixture": "Static anchor test_explorer_graph.py:111; Python not executed.",
-        "result": "Static anchor test_explorer_graph.py:111; Python not executed."
+        "sourceCoverage": "Static anchor test_explorer_graph.py:111; Python not executed."
       }
     },
     {
@@ -223,9 +223,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"guided domain resolution selects reviewed complete set\"",
+        "selector": "ordinary --source-test-label \"guided domain resolution selects reviewed complete set\"",
         "fixture": "Static anchor test_explorer_graph.py:148; Python not executed.",
-        "result": "Static anchor test_explorer_graph.py:148; Python not executed."
+        "sourceCoverage": "Static anchor test_explorer_graph.py:148; Python not executed."
       }
     },
     {
@@ -238,9 +238,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"guided status resolution can choose active\"",
+        "selector": "ordinary --source-test-label \"guided status resolution can choose active\"",
         "fixture": "Static anchor test_explorer_graph.py:190; Python not executed.",
-        "result": "Static anchor test_explorer_graph.py:190; Python not executed."
+        "sourceCoverage": "Static anchor test_explorer_graph.py:190; Python not executed."
       }
     },
     {
@@ -253,9 +253,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"interactive explorer exposes conflict plan publicly\"",
+        "selector": "ordinary --source-test-label \"interactive explorer exposes conflict plan publicly\"",
         "fixture": "Static anchor test_explorer_graph.py:230; Python not executed.",
-        "result": "Static anchor test_explorer_graph.py:230; Python not executed."
+        "sourceCoverage": "Static anchor test_explorer_graph.py:230; Python not executed."
       }
     },
     {
@@ -268,9 +268,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"markdown sections and query profiles are deterministic\"",
+        "selector": "ordinary --source-test-label \"markdown sections and query profiles are deterministic\"",
         "fixture": "Haskell query-profile and section-order properties plus canonical plan goldens cover deterministic construction; static Python anchor test_search_retrieval_quality.py:16 was reviewed without execution.",
-        "result": "Haskell query-profile and section-order properties plus canonical plan goldens cover deterministic construction; static Python anchor test_search_retrieval_quality.py:16 was reviewed without execution."
+        "sourceCoverage": "Haskell query-profile and section-order properties plus canonical plan goldens cover deterministic construction; static Python anchor test_search_retrieval_quality.py:16 was reviewed without execution."
       }
     },
     {
@@ -283,9 +283,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"identifier trigrams are limited to identifier tokens\"",
+        "selector": "ordinary --source-test-label \"identifier trigrams are limited to identifier tokens\"",
         "fixture": "Haskell unit vectors distinguish identifier-shaped classification and freeze identifier-channel trigram bounds while ordinary query planning remains trigram-free; static Python anchor test_search_retrieval_quality.py:50 was reviewed without execution.",
-        "result": "Haskell unit vectors distinguish identifier-shaped classification and freeze identifier-channel trigram bounds while ordinary query planning remains trigram-free; static Python anchor test_search_retrieval_quality.py:50 was reviewed without execution."
+        "sourceCoverage": "Haskell unit vectors distinguish identifier-shaped classification and freeze identifier-channel trigram bounds while ordinary query planning remains trigram-free; static Python anchor test_search_retrieval_quality.py:50 was reviewed without execution."
       }
     },
     {
@@ -298,9 +298,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"exact phrase and decision field outweigh scattered context\"",
+        "selector": "ordinary --source-test-label \"exact phrase and decision field outweigh scattered context\"",
         "fixture": "In-memory Haskell FTS5 integration asserts the exact phrase in the 5.5-weight decision field outranks the same phrase in the 1.5-weight context field; static Python anchor test_search_retrieval_quality.py:59 was reviewed without execution.",
-        "result": "In-memory Haskell FTS5 integration asserts the exact phrase in the 5.5-weight decision field outranks the same phrase in the 1.5-weight context field; static Python anchor test_search_retrieval_quality.py:59 was reviewed without execution."
+        "sourceCoverage": "In-memory Haskell FTS5 integration asserts the exact phrase in the 5.5-weight decision field outranks the same phrase in the 1.5-weight context field; static Python anchor test_search_retrieval_quality.py:59 was reviewed without execution."
       }
     },
     {
@@ -313,9 +313,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"porter channel recovers grammatical variation\"",
+        "selector": "ordinary --source-test-label \"porter channel recovers grammatical variation\"",
         "fixture": "In-memory Haskell FTS5 integration indexes persist and retrieves it through persistence on the porter unicode61 target; static Python anchor test_search_retrieval_quality.py:88 was reviewed without execution.",
-        "result": "In-memory Haskell FTS5 integration indexes persist and retrieves it through persistence on the porter unicode61 target; static Python anchor test_search_retrieval_quality.py:88 was reviewed without execution."
+        "sourceCoverage": "In-memory Haskell FTS5 integration indexes persist and retrieves it through persistence on the porter unicode61 target; static Python anchor test_search_retrieval_quality.py:88 was reviewed without execution."
       }
     },
     {
@@ -328,9 +328,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"collapsed search contains only effective rationale\"",
+        "selector": "ordinary --source-test-label \"collapsed search contains only effective rationale\"",
         "fixture": "Haskell materialization and in-memory SQLite integration persist only reducer-validated current decision/connection evidence and prove superseded text is absent from all current candidate rows; static Python anchor test_search_retrieval_quality.py:112 was reviewed without execution.",
-        "result": "Haskell materialization and in-memory SQLite integration persist only reducer-validated current decision/connection evidence and prove superseded text is absent from all current candidate rows; static Python anchor test_search_retrieval_quality.py:112 was reviewed without execution."
+        "sourceCoverage": "Haskell materialization and in-memory SQLite integration persist only reducer-validated current decision/connection evidence and prove superseded text is absent from all current candidate rows; static Python anchor test_search_retrieval_quality.py:112 was reviewed without execution."
       }
     },
     {
@@ -343,9 +343,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"decision heads are retrieved independently then grouped once\"",
+        "selector": "ordinary --source-test-label \"decision heads are retrieved independently then grouped once\"",
         "fixture": "Haskell integration retrieves left and right ADR@record heads independently, selects the matching candidate, groups one logical ADR, and preserves ordered decision-conflict explanation data; static Python anchor test_search_retrieval_quality.py:153 was reviewed without execution.",
-        "result": "Haskell integration retrieves left and right ADR@record heads independently, selects the matching candidate, groups one logical ADR, and preserves ordered decision-conflict explanation data; static Python anchor test_search_retrieval_quality.py:153 was reviewed without execution."
+        "sourceCoverage": "Haskell integration retrieves left and right ADR@record heads independently, selects the matching candidate, groups one logical ADR, and preserves ordered decision-conflict explanation data; static Python anchor test_search_retrieval_quality.py:153 was reviewed without execution."
       }
     },
     {
@@ -358,9 +358,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"identifier channels and passage fts rescue terse implementation\"",
+        "selector": "ordinary --source-test-label \"identifier channels and passage fts rescue terse implementation\"",
         "fixture": "Static anchor test_search_retrieval_quality.py:210; current Dropwire golden supplies acceptance evidence; Python not executed.",
-        "result": "Static anchor test_search_retrieval_quality.py:210; current Dropwire golden supplies acceptance evidence; Python not executed."
+        "sourceCoverage": "Static anchor test_search_retrieval_quality.py:210; current Dropwire golden supplies acceptance evidence; Python not executed."
       }
     },
     {
@@ -373,9 +373,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"exploded vector search is ephemeral not persisted\"",
+        "selector": "ordinary --source-test-label \"exploded vector search is ephemeral not persisted\"",
         "fixture": "Static anchor test_search_retrieval_quality.py:251; Python not executed.",
-        "result": "Static anchor test_search_retrieval_quality.py:251; Python not executed."
+        "sourceCoverage": "Static anchor test_search_retrieval_quality.py:251; Python not executed."
       }
     },
     {
@@ -388,9 +388,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"collapsed view explains effective adr evolution\"",
+        "selector": "ordinary --source-test-label \"collapsed view explains effective adr evolution\"",
         "fixture": "Static anchor test_evolution_compare_ann.py:10; Python not executed.",
-        "result": "Static anchor test_evolution_compare_ann.py:10; Python not executed."
+        "sourceCoverage": "Static anchor test_evolution_compare_ann.py:10; Python not executed."
       }
     },
     {
@@ -403,9 +403,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"compare reports branch only adrs without worktree projection\"",
+        "selector": "ordinary --source-test-label \"compare reports branch only adrs without worktree projection\"",
         "fixture": "Static anchor test_evolution_compare_ann.py:74; Python not executed.",
-        "result": "Static anchor test_evolution_compare_ann.py:74; Python not executed."
+        "sourceCoverage": "Static anchor test_evolution_compare_ann.py:74; Python not executed."
       }
     },
     {
@@ -418,9 +418,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"compare cli and explorer share read service\"",
+        "selector": "ordinary --source-test-label \"compare cli and explorer share read service\"",
         "fixture": "Static anchor test_evolution_compare_ann.py:102; Python not executed.",
-        "result": "Static anchor test_evolution_compare_ann.py:102; Python not executed."
+        "sourceCoverage": "Static anchor test_evolution_compare_ann.py:102; Python not executed."
       }
     },
     {
@@ -433,9 +433,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"dependency free vectors match architecture synonyms\"",
+        "selector": "ordinary --source-test-label \"dependency free vectors match architecture synonyms\"",
         "fixture": "Static anchor test_evolution_compare_ann.py:119; current Dropwire golden supplies acceptance evidence; Python not executed.",
-        "result": "Static anchor test_evolution_compare_ann.py:119; current Dropwire golden supplies acceptance evidence; Python not executed."
+        "sourceCoverage": "Static anchor test_evolution_compare_ann.py:119; current Dropwire golden supplies acceptance evidence; Python not executed."
       }
     },
     {
@@ -448,9 +448,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"hybrid search preserves unique lexical matches\"",
+        "selector": "ordinary --source-test-label \"hybrid search preserves unique lexical matches\"",
         "fixture": "Static anchor test_evolution_compare_ann.py:143; current Dropwire golden supplies acceptance evidence; Python not executed.",
-        "result": "Static anchor test_evolution_compare_ann.py:143; current Dropwire golden supplies acceptance evidence; Python not executed."
+        "sourceCoverage": "Static anchor test_evolution_compare_ann.py:143; current Dropwire golden supplies acceptance evidence; Python not executed."
       }
     },
     {
@@ -463,9 +463,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"new operations omit writer digest and reject unknown capsule fields\"",
+        "selector": "ordinary --source-test-label \"new operations omit writer digest and reject unknown capsule fields\"",
         "fixture": "Static anchor test_evolution_compare_ann.py:195; Python not executed.",
-        "result": "Static anchor test_evolution_compare_ann.py:195; Python not executed."
+        "sourceCoverage": "Static anchor test_evolution_compare_ann.py:195; Python not executed."
       }
     },
     {
@@ -478,9 +478,9 @@
       "phaseOwner": "P6",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+        "selector": "ordinary --source-test-label \"ADRAI.P3-04.P3-04 current weighted search.fts, vector, and hybrid run without optional dependencies\"",
         "fixture": "CurrentSearchTest.threeModeContract retains the typed FTS, vector, and hybrid execution and stable projection contract. The removed QueryIntegrationTest carrier is historical evidence only.",
-        "result": "Historical removed-carrier evidence (not a current execution claim): HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
+        "sourceCoverage": "Source contract: FTS, vector, and hybrid modes rank the relevant ADR and return a stable public result shape. Target: test/integration/Adrai/CurrentSearchTest.hs (ADRAI.P3-04.P3-04 current weighted search.fts, vector, and hybrid run without optional dependencies)."
       }
     },
     {
@@ -493,9 +493,9 @@
       "phaseOwner": "P6",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+        "selector": "ordinary --source-test-label \"ADRAI.P3-04.P3-04 current weighted search.scope forks retain matching ambiguity and exclude no-match files\"",
         "fixture": "CurrentSearchTest.scopeConflictFilterContract retains repository-relative matching, ambiguity, and no-match exclusion. The removed QueryIntegrationTest carrier is historical evidence only.",
-        "result": "Historical removed-carrier evidence (not a current execution claim): HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
+        "sourceCoverage": "Source contract: File-scope filtering is deterministic and interprets globs with repository-relative semantics. Target: test/integration/Adrai/CurrentSearchTest.hs (ADRAI.P3-04.P3-04 current weighted search.scope forks retain matching ambiguity and exclude no-match files)."
       }
     },
     {
@@ -508,9 +508,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"file filter marks scope fork ambiguous\"",
+        "selector": "ordinary --source-test-label \"file filter marks scope fork ambiguous\"",
         "fixture": "Static anchor test_search_cli_explorer.py:55; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:55; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:55; Python not executed."
       }
     },
     {
@@ -523,9 +523,9 @@
       "phaseOwner": "P6",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+        "selector": "ordinary --source-test-label \"ADRAI.P3-04.P3-04 current weighted search.obsolete actor time and validation filters are exact\"",
         "fixture": "CurrentSearchTest.ordinaryFilterValidationContract retains domain, actor, since, until, obsolete, and validation filters. The removed QueryIntegrationTest carrier is historical evidence only.",
-        "result": "Historical removed-carrier evidence (not a current execution claim): HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
+        "sourceCoverage": "Source contract: Domain, actor, since, and until filters constrain search consistently. Target: test/integration/Adrai/CurrentSearchTest.hs (ADRAI.P3-04.P3-04 current weighted search.obsolete actor time and validation filters are exact)."
       }
     },
     {
@@ -538,9 +538,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"exploded search targets historical text and actor\"",
+        "selector": "ordinary --source-test-label \"exploded search targets historical text and actor\"",
         "fixture": "Static anchor test_search_cli_explorer.py:98; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:98; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:98; Python not executed."
       }
     },
     {
@@ -553,9 +553,9 @@
       "phaseOwner": "P6",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments='--pattern=\"P6-02I real executable compile is revision-bound\"'",
+        "selector": "ordinary --source-test-label \"ADRAI.P3-03.P3-03 compiled search SQLite.P6-02I real executable compile is revision-bound, canonical, readable, and preserves caller state\"",
         "fixture": "Current CompilerSearchSqliteTest.p602iRealExecutableCompile binds current and historical compilation to resolved commit OIDs, asserts exact revision-archive paths and SQLite readability, and preserves staged, dirty, untracked, HEAD, ref, tree, and index state. Removed QueryIntegration P6-02 revision-query cases are historical only.",
-        "result": "Historical old-matrix evidence, not a current execution claim: HEAD c7c66e5 /P6-02/&&/real/ passed 22/22 in 361.06s. Current compact carrier remains the registered executable boundary."
+        "sourceCoverage": "Source contract: As-of queries compile the requested committed tree and ignore unrelated current-worktree state. Target: test/integration/Adrai/CompilerSearchSqliteTest.hs (ADRAI.P3-03.P3-03 compiled search SQLite.P6-02I real executable compile is revision-bound, canonical, readable, and preserves caller state). Current compact carrier remains the registered executable boundary."
       }
     },
     {
@@ -568,9 +568,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"embedding cache reuse and corrupt database recovery\"",
+        "selector": "ordinary --source-test-label \"embedding cache reuse and corrupt database recovery\"",
         "fixture": "Static anchor test_search_cli_explorer.py:145; production-stress golden records cache reuse; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:145; production-stress golden records cache reuse; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:145; production-stress golden records cache reuse; Python not executed."
       }
     },
     {
@@ -583,9 +583,9 @@
       "phaseOwner": "P6",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments='-p \"/P6-02/&&/real/\" -j 1'",
+        "selector": "ordinary --source-test-label \"ADRAI.P3-03.P3-03 current search materialization.resolved items use ADR identity and explicit obsolete visibility\"",
         "fixture": "CompilerMaterializationTest.resolvedIdentityAndVisibility retains explicit obsolete visibility; CurrentSearchTest.ordinaryFilterValidationContract separately retains supported modes, limits, time ranges, and typed validation. The removed QueryIntegrationTest carrier is historical evidence only.",
-        "result": "Historical removed-carrier evidence (not a current execution claim): HEAD c7c66e5; standard D:\\Projects\\adrai\\.stack-work; ADRAI_EXE standard build; /P6-02/&&/real/ -j 1 ALL 22 PASS in 361.06s"
+        "sourceCoverage": "Source contract: Search validates modes and limits and hides obsolete ADRs unless explicitly requested. Target: test/unit/Adrai/CompilerMaterializationTest.hs (ADRAI.P3-03.P3-03 current search materialization.resolved items use ADR identity and explicit obsolete visibility)."
       }
     },
     {
@@ -598,9 +598,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"structured json input and provenance digests\"",
+        "selector": "ordinary --source-test-label \"structured json input and provenance digests\"",
         "fixture": "Static anchor test_search_cli_explorer.py:193; digest contract fixture supplies frozen vectors; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:193; digest contract fixture supplies frozen vectors; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:193; digest contract fixture supplies frozen vectors; Python not executed."
       }
     },
     {
@@ -613,9 +613,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"stdin and file content sources share semantics\"",
+        "selector": "ordinary --source-test-label \"stdin and file content sources share semantics\"",
         "fixture": "Static anchor test_search_cli_explorer.py:226; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:226; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:226; Python not executed."
       }
     },
     {
@@ -628,9 +628,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"editor driven create and amend\"",
+        "selector": "ordinary --source-test-label \"editor driven create and amend\"",
         "fixture": "Static anchor test_search_cli_explorer.py:262; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:262; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:262; Python not executed."
       }
     },
     {
@@ -643,9 +643,9 @@
       "phaseOwner": "P6",
       "state": "partial",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments='--pattern=\"public commands preserve a staged binary and return canonical exits\"'",
+        "selector": "ordinary --source-test-label \"ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.public commands preserve a staged binary and return canonical exits\"",
         "fixture": "Current MutationE2ETest compact real executable wiring proves exit 0 for successful public commands, exit 2 for invalid requests, and exit 3 for semantic conflicts. Current CliContractTest typed doctor coverage proves exit 4 rendering and dispatch. Deleted MutationE2ETest.p602lDoctor and P6-02B-E/F/J matrices are historical only.",
-        "result": "Historical old-matrix evidence, not a current execution claim: HEAD c7c66e5 /P6-02/&&/real/ passed 22/22 in 361.06s. Current accepted loss: unhealthy doctor exit 4 no longer has real-process assurance."
+        "sourceCoverage": "Source contract: CLI exits distinguish user error, semantic conflict, and unhealthy doctor results. Target: test/integration/Adrai/MutationE2ETest.hs (ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.public commands preserve a staged binary and return canonical exits). Current accepted loss: unhealthy doctor exit 4 no longer has real-process assurance."
       }
     },
     {
@@ -658,9 +658,9 @@
       "phaseOwner": "P6",
       "state": "partial",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments='--pattern=\"showCommandJson accepts record and connection references\"'",
+        "selector": "ordinary --source-test-label \"ADRAI.P4-06.cli-contracts.JSON schema contracts.showCommandJson accepts record and connection references without ADR-only crashes\"",
         "fixture": "Current CliContractTest exercises typed record and connection references through show JSON rendering without ADR-only crashes. QueryIntegrationTest.testP602FRealExecutableShow and its lowercase-prefix real-process matrix are removed.",
-        "result": "Historical old-matrix evidence, not a current execution claim: HEAD c7c66e5 /P6-02/&&/real/ passed 22/22 in 361.06s. Current accepted loss: real executable same-logical-projection and lowercase-prefix equivalence are not repeated."
+        "sourceCoverage": "Source contract: Show resolves ADR, record, and connection references to the same logical decision. Target: test/unit/Adrai/CliContractTest.hs (ADRAI.P4-06.cli-contracts.JSON schema contracts.showCommandJson accepts record and connection references without ADR-only crashes). Current accepted loss: real executable same-logical-projection and lowercase-prefix equivalence are not repeated."
       }
     },
     {
@@ -673,9 +673,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"session shares search and show services\"",
+        "selector": "ordinary --source-test-label \"session shares search and show services\"",
         "fixture": "Static anchor test_search_cli_explorer.py:355; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:355; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:355; Python not executed."
       }
     },
     {
@@ -688,9 +688,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"editor mutations share library operations\"",
+        "selector": "ordinary --source-test-label \"editor mutations share library operations\"",
         "fixture": "Static anchor test_search_cli_explorer.py:367; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:367; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:367; Python not executed."
       }
     },
     {
@@ -703,9 +703,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"session scope obsolete and history guards share services\"",
+        "selector": "ordinary --source-test-label \"session scope obsolete and history guards share services\"",
         "fixture": "Static anchor test_search_cli_explorer.py:388; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:388; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:388; Python not executed."
       }
     },
     {
@@ -718,9 +718,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"interactive explorer search and filter toggles\"",
+        "selector": "ordinary --source-test-label \"interactive explorer search and filter toggles\"",
         "fixture": "Static anchor test_search_cli_explorer.py:411; Python not executed.",
-        "result": "Static anchor test_search_cli_explorer.py:411; Python not executed."
+        "sourceCoverage": "Static anchor test_search_cli_explorer.py:411; Python not executed."
       }
     },
     {
@@ -733,9 +733,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"relevance chunk normalization ranges and fingerprint are deterministic\"",
+        "selector": "ordinary --source-test-label \"relevance chunk normalization ranges and fingerprint are deterministic\"",
         "fixture": "Haskell property checks normalized chunk equality and freezes the compact chunking fingerprint; independent P3-03 properties cover overlap and inclusive line ranges; static Python anchor test_relevance.py:30 was reviewed without execution.",
-        "result": "Haskell property checks normalized chunk equality and freezes the compact chunking fingerprint; independent P3-03 properties cover overlap and inclusive line ranges; static Python anchor test_relevance.py:30 was reviewed without execution."
+        "sourceCoverage": "Haskell property checks normalized chunk equality and freezes the compact chunking fingerprint; independent P3-03 properties cover overlap and inclusive line ranges; static Python anchor test_relevance.py:30 was reviewed without execution."
       }
     },
     {
@@ -748,9 +748,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"relevance replaces malformed utf8 and chunks long lines\"",
+        "selector": "ordinary --source-test-label \"relevance replaces malformed utf8 and chunks long lines\"",
         "fixture": "Haskell property decodes malformed UTF-8 with replacement and verifies multi-chunk one-line ranges; static Python anchor test_relevance.py:41 was reviewed without execution.",
-        "result": "Haskell property decodes malformed UTF-8 with replacement and verifies multi-chunk one-line ranges; static Python anchor test_relevance.py:41 was reviewed without execution."
+        "sourceCoverage": "Haskell property decodes malformed UTF-8 with replacement and verifies multi-chunk one-line ranges; static Python anchor test_relevance.py:41 was reviewed without execution."
       }
     },
     {
@@ -763,9 +763,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"high confidence requires strength and result margin\"",
+        "selector": "ordinary --source-test-label \"high confidence requires strength and result margin\"",
         "fixture": "Haskell unit freezes high/medium absolute thresholds and the high margin gate; the named P3-05 integration regression proves a limit-one result retains confidence and margin computed against every aggregate before publication; static Python anchor test_relevance.py:48 was reviewed without execution.",
-        "result": "Haskell unit freezes high/medium absolute thresholds and the high margin gate; the named P3-05 integration regression proves a limit-one result retains confidence and margin computed against every aggregate before publication; static Python anchor test_relevance.py:48 was reviewed without execution."
+        "sourceCoverage": "Haskell unit freezes high/medium absolute thresholds and the high margin gate; the named P3-05 integration regression proves a limit-one result retains confidence and margin computed against every aggregate before publication; static Python anchor test_relevance.py:48 was reviewed without execution."
       }
     },
     {
@@ -778,9 +778,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"relevance whitespace binary and size limits are explicit\"",
+        "selector": "ordinary --source-test-label \"relevance whitespace binary and size limits are explicit\"",
         "fixture": "Haskell unit covers whitespace-empty chunks, whole-input NUL rejection, sampled control-ratio boundary, and exact 4 MiB size failure; static Python anchor test_relevance.py:66 was reviewed without execution.",
-        "result": "Haskell unit covers whitespace-empty chunks, whole-input NUL rejection, sampled control-ratio boundary, and exact 4 MiB size failure; static Python anchor test_relevance.py:66 was reviewed without execution."
+        "sourceCoverage": "Haskell unit covers whitespace-empty chunks, whole-input NUL rejection, sampled control-ratio boundary, and exact 4 MiB size failure; static Python anchor test_relevance.py:66 was reviewed without execution."
       }
     },
     {
@@ -793,9 +793,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"identical bytes yield identical chunks across filenames\"",
+        "selector": "ordinary --source-test-label \"identical bytes yield identical chunks across filenames\"",
         "fixture": "Haskell property varies only the typed source label across extension and extensionless shapes and observes identical decoded chunks; static Python anchor test_relevance.py:73 was reviewed without execution.",
-        "result": "Haskell property varies only the typed source label across extension and extensionless shapes and observes identical decoded chunks; static Python anchor test_relevance.py:73 was reviewed without execution."
+        "sourceCoverage": "Haskell property varies only the typed source label across extension and extensionless shapes and observes identical decoded chunks; static Python anchor test_relevance.py:73 was reviewed without execution."
       }
     },
     {
@@ -808,9 +808,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"embedding whitespace collapses without evidence mutation\"",
+        "selector": "ordinary --source-test-label \"embedding whitespace collapses without evidence mutation\"",
         "fixture": "Haskell property collapses vectorization whitespace while asserting the selected chunk retains its original evidence bytes as text; static Python anchor test_relevance.py:87 was reviewed without execution.",
-        "result": "Haskell property collapses vectorization whitespace while asserting the selected chunk retains its original evidence bytes as text; static Python anchor test_relevance.py:87 was reviewed without execution."
+        "sourceCoverage": "Haskell property collapses vectorization whitespace while asserting the selected chunk retains its original evidence bytes as text; static Python anchor test_relevance.py:87 was reviewed without execution."
       }
     },
     {
@@ -823,9 +823,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"row 72 six cross-format positives literal path and renamed extension preserve relevance\"",
+        "selector": "ordinary --source-test-label \"row 72 six cross-format positives literal path and renamed extension preserve relevance\"",
         "fixture": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes namespace adrai-relevance-six:v1 and seed 260729 through materializeQueryFixture and runRelevant: cache-python, auth-text, queue-compose, storage-sql, observability-custom, and deployment-extensionless each retain the intended ADR within top 3; literal-queue-path and renamed-queue-extension additionally freeze literal-path and extension independence, with queue-compose and the renamed bytes producing identical results, retrieval diagnostics, digest, and chunk counts. Static Python anchor test_relevance.py:195 was reviewed; Python was not executed.",
-        "result": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes namespace adrai-relevance-six:v1 and seed 260729 through materializeQueryFixture and runRelevant: cache-python, auth-text, queue-compose, storage-sql, observability-custom, and deployment-extensionless each retain the intended ADR within top 3; literal-queue-path and renamed-queue-extension additionally freeze literal-path and extension independence, with queue-compose and the renamed bytes producing identical results, retrieval diagnostics, digest, and chunk counts. Static Python anchor test_relevance.py:195 was reviewed; Python was not executed."
+        "sourceCoverage": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes namespace adrai-relevance-six:v1 and seed 260729 through materializeQueryFixture and runRelevant: cache-python, auth-text, queue-compose, storage-sql, observability-custom, and deployment-extensionless each retain the intended ADR within top 3; literal-queue-path and renamed-queue-extension additionally freeze literal-path and extension independence, with queue-compose and the renamed bytes producing identical results, retrieval diagnostics, digest, and chunk counts. Static Python anchor test_relevance.py:195 was reviewed; Python was not executed."
       }
     },
     {
@@ -838,9 +838,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"relevance is stable across line endings whitespace and dirty files\"",
+        "selector": "ordinary --source-test-label \"relevance is stable across line endings whitespace and dirty files\"",
         "fixture": "Static anchor test_relevance.py:246; Python not executed.",
-        "result": "Static anchor test_relevance.py:246; Python not executed."
+        "sourceCoverage": "Static anchor test_relevance.py:246; Python not executed."
       }
     },
     {
@@ -853,9 +853,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"worktree relevance path safety and ephemeral vectors\"",
+        "selector": "ordinary --source-test-label \"worktree relevance path safety and ephemeral vectors\"",
         "fixture": "Static anchor test_relevance.py:279; Python not executed.",
-        "result": "Static anchor test_relevance.py:279; Python not executed."
+        "sourceCoverage": "Static anchor test_relevance.py:279; Python not executed."
       }
     },
     {
@@ -868,9 +868,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"scope is bonus not filter or confidence source\"",
+        "selector": "ordinary --source-test-label \"scope is bonus not filter or confidence source\"",
         "fixture": "Haskell integration compares the same ADR and semantic score inside and outside scope, with only the exact 0.025 bonus changing, and proves an exact-scope weak source cannot become high confidence; the Haskell-owned golden freezes the inside/outside projections; static Python anchor test_relevance.py:313 was reviewed without execution.",
-        "result": "Haskell integration compares the same ADR and semantic score inside and outside scope, with only the exact 0.025 bonus changing, and proves an exact-scope weak source cannot become high confidence; the Haskell-owned golden freezes the inside/outside projections; static Python anchor test_relevance.py:313 was reviewed without execution."
+        "sourceCoverage": "Haskell integration compares the same ADR and semantic score inside and outside scope, with only the exact 0.025 bonus changing, and proves an exact-scope weak source cannot become high confidence; the Haskell-owned golden freezes the inside/outside projections; static Python anchor test_relevance.py:313 was reviewed without execution."
       }
     },
     {
@@ -883,9 +883,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"row 76 large boilerplate source recovers cache and observability evidence after line 500\"",
+        "selector": "ordinary --source-test-label \"row 76 large boilerplate source recovers cache and observability evidence after line 500\"",
         "fixture": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes seed 260729 source large-cache-observability-region through the production relevance API, proves the source exceeds the 24-query-chunk cap while selection remains bounded at 24, returns both cache and observability ADRs, and anchors their evidence to genuine cache-identity and request_id regions after line 500. Static Python anchor test_relevance.py:359 was reviewed; Python was not executed.",
-        "result": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes seed 260729 source large-cache-observability-region through the production relevance API, proves the source exceeds the 24-query-chunk cap while selection remains bounded at 24, returns both cache and observability ADRs, and anchors their evidence to genuine cache-identity and request_id regions after line 500. Static Python anchor test_relevance.py:359 was reviewed; Python was not executed."
+        "sourceCoverage": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes seed 260729 source large-cache-observability-region through the production relevance API, proves the source exceeds the 24-query-chunk cap while selection remains bounded at 24, returns both cache and observability ADRs, and anchors their evidence to genuine cache-identity and request_id regions after line 500. Static Python anchor test_relevance.py:359 was reviewed; Python was not executed."
       }
     },
     {
@@ -898,9 +898,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"row 77 repeated boilerplate and empty inputs obey hard-negative confidence bounds\"",
+        "selector": "ordinary --source-test-label \"row 77 repeated boilerplate and empty inputs obey hard-negative confidence bounds\"",
         "fixture": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes seed 260729 sources generic-hard-negative, empty-hard-negative, tiny-hard-negative, and scope-only-unrelated: repeated boilerplate remains Low confidence below the repetitive-information threshold, empty and tiny inputs retain empty outcomes, and scope-only unrelated text never becomes High confidence or uses scope for eligibility. Static Python anchor test_relevance.py:380 was reviewed; Python was not executed.",
-        "result": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes seed 260729 sources generic-hard-negative, empty-hard-negative, tiny-hard-negative, and scope-only-unrelated: repeated boilerplate remains Low confidence below the repetitive-information threshold, empty and tiny inputs retain empty outcomes, and scope-only unrelated text never becomes High confidence or uses scope for eligibility. Static Python anchor test_relevance.py:380 was reviewed; Python was not executed."
+        "sourceCoverage": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes seed 260729 sources generic-hard-negative, empty-hard-negative, tiny-hard-negative, and scope-only-unrelated: repeated boilerplate remains Low confidence below the repetitive-information threshold, empty and tiny inputs retain empty outcomes, and scope-only unrelated text never becomes High confidence or uses scope for eligibility. Static Python anchor test_relevance.py:380 was reviewed; Python was not executed."
       }
     },
     {
@@ -913,9 +913,9 @@
       "phaseOwner": "P3",
       "state": "covered",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"row 78 translated config health secrets and lease context retain intended ADRs\"",
+        "selector": "ordinary --source-test-label \"row 78 translated config health secrets and lease context retain intended ADRs\"",
         "fixture": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes seed 260729 sources config-health-secrets-compose and lease-token-context: configuration, readiness-health, and environment-secret ADRs are all recovered with evidence, health is within top 3, and the queue ADR is within top 3, outranks authentication, and retains positive lexical score plus matched-term evidence for lease/ack-after-commit context. Static Python anchor test_relevance.py:401 was reviewed; Python was not executed.",
-        "result": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes seed 260729 sources config-health-secrets-compose and lease-token-context: configuration, readiness-health, and environment-secret ADRs are all recovered with evidence, health is within top 3, and the queue ADR is within top 3, outranks authentication, and retains positive lexical score plus matched-term evidence for lease/ack-after-commit context. Static Python anchor test_relevance.py:401 was reviewed; Python was not executed."
+        "sourceCoverage": "Haskell integration test/integration/Adrai/RelevanceQualityTest.hs executes seed 260729 sources config-health-secrets-compose and lease-token-context: configuration, readiness-health, and environment-secret ADRs are all recovered with evidence, health is within top 3, and the queue ADR is within top 3, outranks authentication, and retains positive lexical score plus matched-term evidence for lease/ack-after-commit context. Static Python anchor test_relevance.py:401 was reviewed; Python was not executed."
       }
     },
     {
@@ -928,9 +928,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"obsolete historical and worktree relevance are revision safe\"",
+        "selector": "ordinary --source-test-label \"obsolete historical and worktree relevance are revision safe\"",
         "fixture": "Static anchor test_relevance.py:455; Python not executed.",
-        "result": "Static anchor test_relevance.py:455; Python not executed."
+        "sourceCoverage": "Static anchor test_relevance.py:455; Python not executed."
       }
     },
     {
@@ -943,9 +943,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"cold warm incremental and branch relevance outputs match\"",
+        "selector": "ordinary --source-test-label \"cold warm incremental and branch relevance outputs match\"",
         "fixture": "Static anchor test_relevance.py:505; production-stress golden records cache-path evidence; Python not executed.",
-        "result": "Static anchor test_relevance.py:505; production-stress golden records cache-path evidence; Python not executed."
+        "sourceCoverage": "Static anchor test_relevance.py:505; production-stress golden records cache-path evidence; Python not executed."
       }
     },
     {
@@ -958,9 +958,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"crossref embeddings reuse until fingerprint changes\"",
+        "selector": "ordinary --source-test-label \"crossref embeddings reuse until fingerprint changes\"",
         "fixture": "Static anchor test_relevance.py:556; production-stress golden records reuse evidence; Python not executed.",
-        "result": "Static anchor test_relevance.py:556; production-stress golden records reuse evidence; Python not executed."
+        "sourceCoverage": "Static anchor test_relevance.py:556; production-stress golden records reuse evidence; Python not executed."
       }
     },
     {
@@ -973,9 +973,9 @@
       "phaseOwner": "P6",
       "state": "partial",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments='--pattern=\"relevant accepts only revision or explicit worktree sources\"'",
+        "selector": "ordinary --source-test-label \"ADRAI.P4-06.cli-contracts.init/create CLI contracts.relevant accepts only revision or explicit worktree sources, renders exactly, and dispatches typed intent\"",
         "fixture": "Current CliContractTest retains exact relevant syntax, typed dispatch, JSON and human rendering, and validation routing. QueryIntegrationTest.testP602KRealExecutableRelevant and its repeated historical/worktree/limit process matrix are removed.",
-        "result": "Historical old-matrix evidence, not a current execution claim: HEAD c7c66e5 /P6-02/&&/real/ passed 22/22 in 361.06s. Current accepted loss: repeated real-process historical/worktree/limit permutations."
+        "sourceCoverage": "Source contract: Relevant-command JSON, human-readable text, and validation errors have stable public forms. Target: test/unit/Adrai/CliContractTest.hs (ADRAI.P4-06.cli-contracts.init/create CLI contracts.relevant accepts only revision or explicit worktree sources, renders exactly, and dispatches typed intent). Current accepted loss: repeated real-process historical/worktree/limit permutations."
       }
     },
     {
@@ -988,9 +988,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"repository and adr history are grouped filtered and compact\"",
+        "selector": "ordinary --source-test-label \"repository and adr history are grouped filtered and compact\"",
         "fixture": "Static anchor test_history_command.py:14; Python not executed.",
-        "result": "Static anchor test_history_command.py:14; Python not executed."
+        "sourceCoverage": "Static anchor test_history_command.py:14; Python not executed."
       }
     },
     {
@@ -1003,9 +1003,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"history is revision local across branch switches\"",
+        "selector": "ordinary --source-test-label \"history is revision local across branch switches\"",
         "fixture": "Static anchor test_history_command.py:81; Python not executed.",
-        "result": "Static anchor test_history_command.py:81; Python not executed."
+        "sourceCoverage": "Static anchor test_history_command.py:81; Python not executed."
       }
     },
     {
@@ -1018,9 +1018,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"history exposes conflict and reconciliation evidence\"",
+        "selector": "ordinary --source-test-label \"history exposes conflict and reconciliation evidence\"",
         "fixture": "Static anchor test_history_command.py:116; Python not executed.",
-        "result": "Static anchor test_history_command.py:116; Python not executed."
+        "sourceCoverage": "Static anchor test_history_command.py:116; Python not executed."
       }
     },
     {
@@ -1033,9 +1033,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"history summarizes every evolution axis\"",
+        "selector": "ordinary --source-test-label \"history summarizes every evolution axis\"",
         "fixture": "Static anchor test_history_command.py:167; Python not executed.",
-        "result": "Static anchor test_history_command.py:167; Python not executed."
+        "sourceCoverage": "Static anchor test_history_command.py:167; Python not executed."
       }
     },
     {
@@ -1048,9 +1048,9 @@
       "phaseOwner": "P5",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"adr history uses semantic parents not claimed clock\"",
+        "selector": "ordinary --source-test-label \"adr history uses semantic parents not claimed clock\"",
         "fixture": "Static anchor test_history_command.py:221; Python not executed.",
-        "result": "Static anchor test_history_command.py:221; Python not executed."
+        "sourceCoverage": "Static anchor test_history_command.py:221; Python not executed."
       }
     },
     {
@@ -1063,9 +1063,9 @@
       "phaseOwner": "P6",
       "state": "planned",
       "evidence": {
-        "command": "stack test adrai:adrai-test --test-arguments=--pattern=\"history validates limit and explorer shares service\"",
+        "selector": "ordinary --source-test-label \"history validates limit and explorer shares service\"",
         "fixture": "Static anchor test_history_command.py:250; public JSON history fixture supplies frozen shape; Python not executed.",
-        "result": "Static anchor test_history_command.py:250; public JSON history fixture supplies frozen shape; Python not executed."
+        "sourceCoverage": "Static anchor test_history_command.py:250; public JSON history fixture supplies frozen shape; Python not executed."
       }
     }
   ]

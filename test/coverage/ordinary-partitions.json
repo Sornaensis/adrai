@@ -33,7 +33,7 @@
         "ADRAI.mutation service results.P6-02A mutation service results.post-commit database close failure keeps its live handle and cleanup failure observable",
         "ADRAI.mutation service results.P6-02A mutation service results.amend rejection routes preserve complete caller state across attached detached and conflicted histories"
       ],
-      "rationale": "Keep the P6-02A mutation-service group intact while scheduling its measured setup cost early.",
+      "rationale": "Keep the P6-02A mutation-service group intact and schedule its shared fixture setup early in the declared queue.",
       "costProvenance": "Current static retained count 23 after consolidating three amend-rejection fixtures into one retained carrier; selected-process seed setup is included in runtime."
     },
     {
@@ -48,7 +48,7 @@
         "ADRAI.mutation service results.P6-02C scope mutation service.scope reviewed set rejects a conflict outside the scope axis without state changes"
       ],
       "rationale": "Keep scope mutation fixtures and rollback checks in one isolated process.",
-      "costProvenance": "Static retained count 4 after source-ready mutation reduction; focused scope rejection previously measured 32.870041 seconds including selected setup."
+      "costProvenance": "Source-defined retained selection and fixture setup; current elapsed cost requires matching external execution evidence."
     },
     {
       "id": "D",
@@ -240,7 +240,7 @@
         "ADRAI.P4-07.Cache integration (P4-07).competing tree-identical targets retain their own provenance projections"
       ],
       "rationale": "Run only the genuine competing-target race after all active jobs drain; its two real CLI children remain concurrent inside the isolated test process.",
-      "costProvenance": "The pre-edit isolated selection passed in 31.26495 seconds runner time (29.53 seconds Tasty, 14.35 seconds body) with cleanup verified. Fixture hashes later changed, so current Krace cost is unknown. The split adds one simple seed/setup acquisition relative to the former K plus repeat topology."
+      "costProvenance": "Source-defined retained selection and fixture setup; current elapsed cost requires matching external execution evidence."
     },
     {
       "id": "O",
@@ -452,7 +452,7 @@
         "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads"
       ],
       "rationale": "Keep compact real command wiring and merged-head reconciliation in one isolated process.",
-      "costProvenance": "Static retained count 7; Complete42 did not dispatch this group, so runtime is unmeasured."
+      "costProvenance": "Source-defined retained selection and fixture setup; current elapsed cost requires matching external execution evidence."
     },
     {
       "id": "Rest",
@@ -1058,7 +1058,7 @@
         "ADRAI.P7-05.initial event retries when publication lands between watcher sample and registration"
       ],
       "rationale": "Exact complement of the thirteen anchored intact groups, proved against the full current ordinary registration before dispatch.",
-      "costProvenance": "Static Rest count 594 after the seven relevance and web registrations; elapsed cost requires a matching complete snapshot."
+      "costProvenance": "Static Rest count 596 after the seven relevance and web registrations; elapsed cost requires a matching complete snapshot."
     }
   ],
   "queue": [

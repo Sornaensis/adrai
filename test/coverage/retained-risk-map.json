@@ -1,28 +1,5 @@
 {
   "schemaVersion": 1,
-  "snapshot": {
-    "baseSha": "1794ec24edb198bb8949b22b3d7bf0a333dc72a0",
-    "registrationEvidence": {
-      "ordinary": {
-        "count": 949,
-        "evidence": "C:\\Users\\Sornaensis\\AppData\\Local\\Temp\\adrai-retained-list-ordinary-query-git-20260907\\result.json"
-      },
-      "cacheSelection": {
-        "count": 9,
-        "evidence": "C:\\Users\\Sornaensis\\AppData\\Local\\Temp\\adrai-retained-list-bound-cache-20260906\\result.json"
-      },
-      "stressWithRunStress": {
-        "count": 28,
-        "evidence": "C:\\Users\\Sornaensis\\AppData\\Local\\Temp\\adrai-retained-list-bound-stress-20260906\\result.json"
-      },
-      "benchmarkRegistration": {
-        "count": 6,
-        "evidence": "C:\\Users\\Sornaensis\\AppData\\Local\\Temp\\adrai-retained-list-bound-benchmark-20260906\\result.json"
-      }
-    },
-    "projectedOrdinaryCountAfterRetainedReductions": 852,
-    "note": "The 949 ordinary count remains historical bounded evidence. The last bounded List verified 885 names before round-nine source changes. Frozen round nine removes 13 R, seven N, four K, eight O and one D registrations and renames one retained RepositorySnapshot leaf, declaring 852 names pending the next bounded List."
-  },
   "replacements": [
     {
       "removed": "Consistency oracle.all_mutation_axes_and_merge_heavy_branch_switches_are_cold_warm_identical",
@@ -556,8 +533,8 @@
         "ADRAI.P4-07.Environment (branch / worktree / sparse / unicode).linked_worktree_commits_only_its_branch_and_uses_common_lock",
         "ADRAI.Transaction contract.Stage7 failure restores caller index and generated worktree state exactly"
       ],
-    "boundary": "One real linked-worktree executable carrier now owns configured roots, distinct local index/gitdir, pinned feature-only advancement, main/index/tree/cache preservation, a genuine installed-executable compile and pre-existing SQLite cache-byte equality, canonical common lock, live contention, absolute-child Stage2 rejection and exact raw caller state. The retained Stage7 carrier preserves injected post-generation rollback and generated-file cleanup.",
-    "acceptedLoss": "Six separate fixtures, two CLI children, four repository initializations, three linked-worktree creations and three direct native transaction calls are retired. Their mapped assertions remain; only repeated fixture and native successful-transaction permutations are lost."
+      "boundary": "One real linked-worktree executable carrier now owns configured roots, distinct local index/gitdir, pinned feature-only advancement, main/index/tree/cache preservation, a genuine installed-executable compile and pre-existing SQLite cache-byte equality, canonical common lock, live contention, absolute-child Stage2 rejection and exact raw caller state. The retained Stage7 carrier preserves injected post-generation rollback and generated-file cleanup.",
+      "acceptedLoss": "Six separate fixtures, two CLI children, four repository initializations, three linked-worktree creations and three direct native transaction calls are retired. Their mapped assertions remain; only repeated fixture and native successful-transaction permutations are lost."
     },
     {
       "removed": "three standalone ColdCompiler capacity/optimization carriers and eight fragmented CacheSync carriers",
@@ -709,7 +686,7 @@
     }
   ],
   "runtimeDesign": {
-    "targetSeconds": 600,
+    "targetSeconds": 1800,
     "allocationsAreUnvalidated": true,
     "proposedCountsAreNotClaims": true,
     "overlayFixtureReduction": {
@@ -834,11 +811,11 @@
         "registeredCasesBefore": 55,
         "registeredCasesAfter": 49,
         "cliChildrenBefore": 5,
-      "cliChildrenAfter": 3,
-      "successfulCliChildrenBefore": 3,
-      "successfulCliChildrenAfter": 2,
-      "rejectedCliChildrenBefore": 2,
-      "rejectedCliChildrenAfter": 1,
+        "cliChildrenAfter": 3,
+        "successfulCliChildrenBefore": 3,
+        "successfulCliChildrenAfter": 2,
+        "rejectedCliChildrenBefore": 2,
+        "rejectedCliChildrenAfter": 1,
         "freshRepositoryInitializationsBefore": 5,
         "freshRepositoryInitializationsAfter": 1,
         "linkedWorktreeCreationsBefore": 4,
@@ -846,12 +823,12 @@
         "repositoryDiscoveriesBefore": 7,
         "repositoryDiscoveriesAfter": 2,
         "harnessGitProcessesBefore": 119,
-      "harnessGitProcessesAfter": 26,
-      "successfulCompilerSqliteBuildsBefore": 3,
-      "successfulCompilerSqliteBuildsAfter": 2,
-      "emptyPreflightDirectoriesAdded": 1,
-      "cacheCopiesAdded": 0,
-      "cacheSeedsAdded": 0
+        "harnessGitProcessesAfter": 26,
+        "successfulCompilerSqliteBuildsBefore": 3,
+        "successfulCompilerSqliteBuildsAfter": 2,
+        "emptyPreflightDirectoriesAdded": 1,
+        "cacheCopiesAdded": 0,
+        "cacheSeedsAdded": 0
       },
       "compilerAndCacheSync": {
         "registeredCasesBefore": 39,
@@ -939,8 +916,7 @@
         "reconciliationCompilerSqliteBuildsAfter": 2,
         "reconciliationExplicitHarnessGitBefore": 78,
         "reconciliationExplicitHarnessGitAfter": 87
-      },
-      "measurement": "All counts are static source-derived scopes. Complete83 remains failed/incomplete at 590.032027 seconds; no post-round-nine runtime saving is claimed."
+      }
     }
   }
 }

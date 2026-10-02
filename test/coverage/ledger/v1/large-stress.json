@@ -1,4 +1,4 @@
-﻿{
+{
     "schema":  "adrai/coverage-ledger-category/v1",
     "category":  "large-stress",
     "expectedCount":  1,
@@ -19,9 +19,9 @@
                      "phaseOwner":  "P6",
                      "state":  "covered",
                      "evidence":  {
-                                      "command":  "stack test adrai:adrai-stress-test --test-arguments='--run-stress -p \"/compact repository stress/\"'",
+                                      "selector": "stress --run-stress --source-test-label \"ADRAI stress.P6-06G compact repository stress.32-commit repository with 16 ADR operations and a two-parent merge\"",
                                       "fixture":  "Current retained compact fixture: 32 base commits, one post-cache noise commit, 16 ADR operations, and a two-parent merge. Historical 12,000/2,000 artifacts remain provenance only.",
-                                      "result":  "Historical retired-capacity evidence (not a current execution claim): 2026-08-25 authoritative detached run at clean baseline 09f0a839caef0d311439de6652a6af2e7d12b831: the exact selector exited 0 and selected/passed 1/1 in 3,844.45 s. Timings (ms): materialize=28,893; cold-compile=9,566; exact-compile-1=9,713; exact-compile-2=8,239; hybrid-search=975,045; representative-relevance=1,145,625; tree-identical-compile=8,441; feature-compile=16,436; feature-branch-search=938,661; main-branch-compile=8,839; main-branch-search=691,656. Cold assertions passed: errors=0, history_commits_scanned=12,000, documents_parsed=5,350, adrs_rebuilt=900; both exact-cache reuse assertions passed. Resource sampling recorded cold_compile_max_residency_bytes=58,927,192 and complete process-tree peak=237,449,216 bytes across 6 successful samples. Hybrid retrieval and representative relevance passed; tree-identical reuse passed with zero parses; branch isolation, revision checks, and feature/main search visibility passed. Current accepted loss: no 12,000-commit, 2,000-operation, fast-import, or 2,000-commit profiling proof."
+                                      "sourceCoverage": "Source contract: A Haskell-owned deterministic compact generator builds an actual 32-base-plus-one-post-cache-noise commit repository with 16 ADR operations and a two-parent merge, and verifies retained compile, cache, retrieval, and branch behavior. The former 12,000-commit/2,000-operation capacity contract is explicitly retired and uncovered. Target: test/e2e/Adrai/LargeRepositoryStressTest.hs (ADRAI stress.P6-06G compact repository stress.32-commit repository with 16 ADR operations and a two-parent merge). Current accepted loss: no 12,000-commit, 2,000-operation, fast-import, or 2,000-commit profiling proof."
                                   }
                  }
              ]

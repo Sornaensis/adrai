@@ -6,19 +6,13 @@ generators. Generated IDs and references come from the same shrinking ordinal
 specifications, so minimized cases retain their intended validity or their one
 deliberate graph/input fault.
 
-Run the bounded P2-06 group with:
+Use an exact registered P2-06 property name with the canonical `Focused` runner
+in [Testing](../../docs/TESTING.md). It supplies the property's source-defined
+budget; it does not accept arbitrary Hedgehog or Tasty arguments.
 
-```powershell
-stack test --test-arguments "--pattern P2-06 --hedgehog-tests 100"
-```
-
-Hedgehog prints a native replay value when a property fails. Copy that exact
-value, retain the failing test pattern, and pass it back to the installed
-runner; do not translate it into a separate application seed:
-
-```powershell
-stack test --test-arguments "--pattern '<failing P2-06 test>' --hedgehog-replay '<exact value printed by the runner>'"
-```
+Hedgehog prints a native replay value when a property fails. Preserve that value
+with the external failure evidence; do not translate it into an application seed.
+The retained runner currently exposes no replay option.
 
 The default per-property budgets are 100-150 format/domain cases, 75 graph and
 token cases, and 60 reconciliation/projection cases. Input-order properties
