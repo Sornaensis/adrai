@@ -17,6 +17,12 @@ components. Tests and benchmarks are compiled but not executed, and build time
 is not part of the retained-test runtime. Running benchmarks is an optional
 performance investigation outside retained-test acceptance.
 
+For browser UI workflows, run `npm test` from `browser-tests`. These independent
+production-Elm workflows use small deterministic HTTP fixtures, causal response
+promises, and ordinary visible-control assertions. They have no case or step
+deadlines, and keep compilation and test output in OS temporary directories.
+See [browser workflows](../browser-tests/README.md) for coverage and cleanup.
+
 Golden tests are read-only by default. Their fixture directories under `test/golden/` document the explicit regeneration switches. Regeneration must remain Haskell-owned and must not execute or import a prototype implementation.
 
 ## Architecture boundaries

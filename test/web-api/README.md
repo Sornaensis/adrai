@@ -6,9 +6,12 @@ route, occupied-port, and shutdown behavior. P7-03 cases also use real
 WebSocket clients, temporary Git repositories and worktrees, the live watcher,
 and concurrent exact-revision compilation. P7-04 cases exercise the rich and
 conflicted shared projections, strict query windows, decimal generation
-boundary, and durable mutation outcome against the same runtime. The browser
-smoke in `browser-tests/tests/p704-smoke.spec.ts` uses a separate temporary
-repository and the real built server for the Elm client.
+boundary, and durable mutation outcome against the same runtime. The supported
+browser command is `npm test` from `browser-tests`; its independent workflows
+exercise production Elm and the JavaScript bridge against deterministic HTTP
+fixtures. They do not claim coverage of this real service or Git lifecycle.
+The older real-server browser specs are historical and excluded from default
+discovery. See [browser workflows](../../browser-tests/README.md).
 
 `WebServerTest` exercises the live HTTP admission and error envelope: bootstrap,
 Host and Origin, bearer and cookie rules, method and path failures, strict query

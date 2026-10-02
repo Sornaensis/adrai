@@ -273,38 +273,19 @@ module independently validates that receipt at compile time, including the
 recursive web source set. A warm Haskell Build must reject changed or newly
 added web source, bridge, or bootstrap inputs until the bundle is rebuilt. List, Focused, and
 Complete then reject any input drift relative to the Haskell build manifest.
-Run `browser-tests/support/run-p704-smoke.ps1 -Probe normal` after a fresh
-canonical Build to exercise the compact P7-04 Playwright smoke. It launches a
-real `adrai web` process in an owned temporary repository, verifies checked
-mutation and stale-draft review, and records desktop and narrow browser evidence.
+Run `npm test` from `browser-tests` for five independent production-Elm browser
+workflows. They use small deterministic HTTP fixtures and causal promises rather
+than real Git/server setup, per-case deadlines, or matrix admission receipts.
+The supported command disables Playwright case, expectation, action, and navigation
+timeouts explicitly. Compilation and all browser output go to a fresh OS temporary
+directory printed by the launcher; owned browser contexts, HTTP servers, and child
+processes are cleaned up on success and failure. See [browser workflows](../browser-tests/README.md)
+for the precise UI assurance and filtering command.
 
-The separate P7-05 matrix is listed exactly in
-`browser-tests/tests/p705-scenarios.json`. Build the test-only
-`adrai-window-fixture` executable, run `verify:assets` and `test:assets`, and
-persist their G01 result with current bundle and provenance hashes before the
-browser aggregate. Supply that receipt and both fresh executable paths to
-`browser-tests/support/run-p705-matrix.ps1 -Scenario all -AssetGateReceipt PATH
--AdraiExe PATH -WindowFixtureExe PATH`. The runner rejects missing or stale
-asset evidence. It discovers all 15 B cases before execution, uses one pinned
-Playwright 1.61.1 worker with Chromium headless shell revision 1228 and no
-retries, and keeps discovery, fixture generation, browser assertions, evidence,
-and cleanup within a 6,795-second deadline. All 15 whole-case caps sum to
-6,660 seconds, with exactly 75 seconds for discovery and runner overhead and
-60 seconds reserved for owned-job cleanup and finalization. The root work wait
-uses at most 6,735 seconds and excludes that cleanup reserve. The runner checks
-inventory/aggregate equality and records the arithmetic in its receipt. B01 has
-a 530-second whole-case cap; B02 has 310 seconds and B06 has 290 seconds.
-The [browser accounting table](../browser-tests/tests/README.md#whole-case-liveness-accounting)
-counts real init, both CLI creates, all setup Git checks, seed-specific work,
-workflow multiplicities, and per-case teardown. Allocations are operational
-assumptions under one finite case timer; they do not prove a full setup maximum
-or change smaller child/action guards. These bounds are test liveness guards,
-not product latency targets.
-Each case owns a temporary real repository and server. The runner records
-exact source, bundle, provenance, browser, and executable hashes with process,
-listener, and temporary-root cleanup results. A01/A02 are named retained
-HTTP/WebSocket leaves; G01 verifies a fresh optimized build, reproducibility,
-and copied-input drift rejection.
+The historical P7-04/P7-05 real-server browser specs and supervisors remain outside
+default discovery. Their paging, conflicts, reconnect, and real-service integration
+claims are not claims of these deterministic UI workflows. Native HTTP/WebSocket
+and Elm component tests continue to exercise their separate documented scopes.
 
 The P7-05 exact-archive regression leaves exercise simultaneous validators
 and mixed HTTP consumers. When an exact SQLite archive is temporarily locked,

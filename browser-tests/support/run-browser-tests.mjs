@@ -1,0 +1,24 @@
+import { spawnSync } from 'node:child_process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const web = resolve(root, '../web');
+const output = process.env.ADRAI_BROWSER_OUTPUT;
+if (!output) throw new Error('The owned launcher must select an external output directory.');
+const project = join(output, 'elm-project');
+await mkdir(project, { recursive: true });
+const manifest = JSON.parse(await readFile(join(web, 'elm.json'), 'utf8'));
+manifest['source-directories'] = [join(web, 'src'), join(root, 'fixtures')];
+await writeFile(join(project, 'elm.json'), JSON.stringify(manifest));
+const compiler = join(web, 'node_modules', '@elm_binaries', `${process.platform}_${process.arch}`, process.platform === 'win32' ? 'elm.exe' : 'elm');
+const bundle = join(output, 'fixture.js');
+const compile = spawnSync(compiler, ['make', join(root, 'fixtures/BrowserFixture.elm'), '--optimize', '--output', bundle], { cwd: project, stdio: 'inherit', windowsHide: true });
+if (compile.error) throw compile.error;
+if (compile.status !== 0) process.exit(compile.status ?? 1);
+await writeFile(bundle, (await readFile(bundle)) + '\nwindow.Elm.Main = window.Elm.BrowserFixture;\n' + (await readFile(join(web, 'static/bridge.js'))));
+process.env.ADRAI_BROWSER_BUNDLE = bundle;
+const run = spawnSync(process.execPath, [join(root, 'node_modules/@playwright/test/cli.js'), 'test', ...process.argv.slice(2)], { cwd: root, env: process.env, stdio: 'inherit', windowsHide: true });
+if (run.error) throw run.error;
+process.exit(run.status ?? 1);

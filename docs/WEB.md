@@ -3,13 +3,13 @@
 `adrai web` starts the repository-bound Haskell HTTP and WebSocket service and
 serves its embedded Elm explorer from locally embedded assets.
 
-The real-server P7-05 browser suite uses one finite timer per case for real
-repository initialization, both CLI decision creates, browser assertions, and
-teardown. Its fifteen caps total 6,660 seconds; the aggregate adds exactly
-75 seconds for discovery/runner overhead and 60 seconds for owned cleanup,
-giving 6,795 seconds. These operational liveness guards are not product latency
-targets. See the [phase/workflow accounting](../browser-tests/tests/README.md#whole-case-liveness-accounting)
-and [supported testing command](TESTING.md) for the guard assumptions and receipts.
+Run `npm test` from `browser-tests` for the supported browser workflows. Small
+deterministic HTTP fixtures exercise the production Elm UI, bootstrap, bridge,
+checked request payloads, and causal draft updates. They do not start this Haskell
+service or initialize Git repositories. See [browser workflows](../browser-tests/README.md)
+for scope, external output, and cleanup. Native HTTP/WebSocket tests separately
+exercise the repository-bound service. The older real-server browser matrix is
+historical and excluded from the default browser command.
 
 ## Repository binding and routes
 
