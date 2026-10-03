@@ -23,7 +23,11 @@ import Adrai.Web.Application (ApplicationServices (..), applicationActiveFileReg
 import Adrai.CliRunner (parseArguments)
 import Adrai.Compiler.CacheSelection (validateExactCacheTarget)
 import Adrai.Format.Config (defaultConfigText)
-import Adrai.Git (Repository (..), RevisionSpec (RevisionSpec), discoverRepository, resolveRevision, systemGit)
+import Adrai.Git (Repository (..), GitOid, RevisionSpec (RevisionSpec), discoverRepository, repositoryHeadState, resolveRevision, systemGit)
+import Adrai.Domain (mkDomain)
+import Adrai.Repository (repositorySnapshot, repositorySnapshotManagedPaths)
+import Adrai.Scope (mkScopePattern)
+import Adrai.Service.Transaction (ExpectedRepositoryBasis (..))
 import Adrai.History (revisionRequested, revisionResolved)
 import Adrai.Provenance (gitOidText)
 import Adrai.Provenance.Git.Lock (GitLockError (LockHeld), gitLockStatus, withGitLock)
@@ -284,10 +288,34 @@ testEventsUnavailable = withServer $ \running _ -> do
   assertBool "metadata is unavailable, not an ambient commit" ("X-Adrai-As-Of: unavailable:events-transport-unavailable" `BS.isInfixOf` response)
 
 testRelevantV2Route :: IO ()
-testRelevantV2Route = withSeededServer $ \_ running -> do
-  basis <- repositoryBasis running
-  created <- postJson running "/api/v1/adrs" (createBody basis)
-  current <- textAt ["metadata", "as_of", "oid"] created
+testRelevantV2Route = withSeededRepository $ \root -> do
+  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  committed <- seedRelevantDecision repository
+  -- This leaf owns the read projection. HTTP mutation behavior is covered by
+  -- testMutationRoutes; prepare its real sealed state without a timed POST.
+  _ <- Runtime.ensureExactArchive repository committed >>= either (assertFailure . Text.unpack) pure
+  started <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ ->
+    assertRelevantProjection running (gitOidText committed)
+  either (assertFailure . Text.unpack) pure started
+
+seedRelevantDecision :: Repository -> IO GitOid
+seedRelevantDecision repository = do
+  headOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
+  headState <- repositoryHeadState repository >>= either (assertFailure . show) pure
+  snapshot <- repositorySnapshot repository (RevisionSpec (gitOidText headOid)) >>= either (assertFailure . show) pure
+  actor <- either (assertFailure . show) pure (Types.mkActor Types.HumanActor "web-test" Nothing)
+  domain <- either (assertFailure . show) pure (mkDomain "core")
+  scope <- either (assertFailure . show) pure (mkScopePattern "src/**")
+  created <- Mutation.createAdrCommandAutoChecked
+    (ExpectedRepositoryBasis headOid headState) repository (repositorySnapshotManagedPaths snapshot) actor
+    "Runtime ADR" "HTTP shared mutation" "runtime body\n" [domain] [scope] Nothing Nothing Nothing
+    >>= either (assertFailure . ("relevant fixture checked create: " <>) . show) pure
+  assertBool "relevant fixture updates the committed Git index" (Mutation.createIndexUpdated created)
+  Mutation.createPublicationError created @?= Nothing
+  pure (Mutation.createCommitOid created)
+
+assertRelevantProjection :: RunningServer -> Text -> IO ()
+assertRelevantProjection running current = do
   response <- getJson running ("/api/v1/relevant?file=seed.txt&at=" <> current)
   textAt ["data", "schema"] response >>= (@?= "adrai/relevant/v2")
   textAt ["metadata", "as_of", "oid"] response >>= (@?= current)

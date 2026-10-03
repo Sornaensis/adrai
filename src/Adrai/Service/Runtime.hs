@@ -75,7 +75,7 @@ import Adrai.Provenance.Ensure
     openReadWriteExisting,
     seedRegisteredOperationsFromSemanticCache,
   )
-import Adrai.Provenance.Lock (withOverlayLock)
+import Adrai.Provenance.Lock (withOverlayLockWaiting)
 import Adrai.Provenance.Overlay
   ( OverlaySchemaState (..),
     createOverlaySchema,
@@ -254,7 +254,7 @@ withRefreshedProvenance repository seedRegistered target snapshot useRefreshed =
           decisions = repoPathText (managedDecisionPath managed)
           connections = repoPathText (managedConnectionPath managed)
           lineKey = configKey decisions connections lineIds
-      refreshed <- try $ withOverlayLock (takeDirectory overlay) $ do
+      refreshed <- try $ withOverlayLockWaiting (takeDirectory overlay) $ do
         when (managed /= configuredManaged) $
           throwIO (userError "snapshot managed paths disagree with its parsed configuration")
         existing <- doesFileExist overlay

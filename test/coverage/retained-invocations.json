@@ -10,7 +10,7 @@
   "components": [
     {
       "name": "adrai-test",
-      "registrationCount": 907,
+      "registrationCount": 911,
       "registrationState": "source-declared; the canonical retained runner List checks exact registration equality",
       "staticEvidence": {
         "nativeHelperRootProcessesRound6": 12,
@@ -342,7 +342,7 @@
       {
         "id": "R",
         "component": "adrai-test",
-        "selectedTests": 98,
+        "selectedTests": 102,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "The changed round-seven R scopes use six Tasty resource acquisitions constructing seven immutable seeds in the selected process.",
         "privateCopies": "In the round-nine ColdCompiler, RepositorySnapshot, RepositoryIsolation and IntegrityAdversarial scope, private copy/hook-rebind executions fall from 38 to 27; two unchanged audit copies are included. Other R fixture copies remain outside this scoped count.",

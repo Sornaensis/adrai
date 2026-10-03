@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Adrai.Provenance.LockTest (tests) where
+module Adrai.Provenance.LockTest (tests, holdSessionForTest) where
 
 import Adrai.Provenance.Lock
   ( OverlayLock (..),
@@ -12,6 +12,8 @@ import Adrai.Provenance.Lock
     releaseOverlayLockWith,
     withOverlayLock,
     withOverlayLockWithReleaseHook,
+    withOverlayLockWaiting,
+    withOverlayLockWaitingWithRetryHook,
   )
 import Adrai.Provenance.Overlay
   ( createOverlaySchema,
@@ -20,16 +22,19 @@ import Adrai.Provenance.Overlay
     overlayValidWithCleanup,
   )
 import Control.Concurrent (forkIO, threadDelay, throwTo)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar, takeMVar)
+import Control.Concurrent.Async (cancelWith, race, wait, waitCatch, withAsync)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Exception
   ( AsyncException (ThreadKilled),
     SomeException,
+    bracket,
     fromException,
+    finally,
     throwIO,
     try,
   )
-import Control.Monad (forM_)
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Control.Monad (forM_, void, when)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Database.SQLite.Simple
   ( Only (..),
@@ -39,7 +44,10 @@ import Database.SQLite.Simple
     close,
   )
 import System.FilePath ((</>))
+import System.Environment (getExecutablePath)
+import System.IO (hClose, hFlush, hGetLine, stdout)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Process (CreateProcess (..), StdStream (CreatePipe), createProcess, getProcessExitCode, proc, terminateProcess, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=), assertBool, assertFailure)
 
@@ -59,18 +67,15 @@ tests =
         , testCase "Returns Nothing when already held" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath = tmpDir </> "test_provenance.sqlite"
-              result1 <- acquireOverlayLock dbPath
-              assertBool "first acquire should succeed" (isJust result1)
-              case result1 of
-                Just lock -> do
-                  result2 <- acquireOverlayLock dbPath
-                  assertBool "second acquire should return Nothing" (not (isJust result2))
-                  inspection <- open (lockPath lock)
-                  rows <- query_ inspection "SELECT holder_pid FROM overlay_lock" :: IO [Only Text]
-                  close inspection
-                  rows @?= [Only (lockHolderPid lock)]
-                  releaseOverlayLock lock
-                Nothing -> assertFailure "first acquisition must succeed"
+              bracket (acquireOverlayLock dbPath) (mapM_ releaseOverlayLock) $ \result1 -> do
+                assertBool "first acquire should succeed" (isJust result1)
+                case result1 of
+                  Just lock ->
+                    bracket (acquireOverlayLock dbPath) (mapM_ releaseOverlayLock) $ \result2 -> do
+                      assertBool "second acquire should return Nothing" (not (isJust result2))
+                      rows <- query_ (lockConnection lock) "SELECT holder_pid FROM overlay_lock" :: IO [Only Text]
+                      rows @?= [Only (lockHolderPid lock)]
+                  Nothing -> assertFailure "first acquisition must succeed"
         , testCase "Lock DB path is correct" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath   = tmpDir </> "subdir" </> "provenance.sqlite"
@@ -153,23 +158,26 @@ tests =
               case outcome of
                 Left problem -> assertFailure ("contended lock acquisition failed: " <> show problem)
                 Right () -> pure ()
-        , testCase "An ignored insert with the same token cannot claim or delete the owner" $
+        , testCase "The same token cannot claim or release another writer owner" $
             withSystemTempDirectory "adrai_lock_test" $ \tmpDir -> do
               let dbPath = tmpDir </> "provenance.sqlite"
                   identicalToken = "identical-attempt-token"
-              owner <- acquireOverlayLockWithToken dbPath identicalToken (pure ())
-              assertBool "first identical token must acquire" (isJust owner)
-              contender <- acquireOverlayLockWithToken dbPath identicalToken (pure ())
-              assertBool "ignored same-token insert must not acquire" (not (isJust contender))
-              case owner of
-                Nothing -> assertFailure "same-token fixture lost its owner"
-                Just lock -> do
-                  inspection <- open (lockPath lock)
-                  rows <- query_ inspection "SELECT holder_pid FROM overlay_lock" :: IO [Only Text]
-                  close inspection
-                  rows @?= [Only identicalToken]
-                  releaseOverlayLock lock
+              bracket (acquireOverlayLockWithToken dbPath identicalToken (pure ())) (mapM_ releaseOverlayLock) $ \owner -> do
+                assertBool "first identical token must acquire" (isJust owner)
+                bracket (acquireOverlayLockWithToken dbPath identicalToken (pure ())) (mapM_ releaseOverlayLock) $ \contender -> do
+                  assertBool "same-token contender must not acquire" (not (isJust contender))
+                  case owner of
+                    Nothing -> assertFailure "same-token fixture lost its owner"
+                    Just lock -> do
+                      rows <- query_ (lockConnection lock) "SELECT holder_pid FROM overlay_lock" :: IO [Only Text]
+                      rows @?= [Only identicalToken]
     ]
+    , testGroup "session lifetime"
+        [ testCase "mixed bounded and waiting callers hand off beyond the bounded retry count" testMixedHandoff
+        , testCase "waiting owner and contender cancellation release only owned authority" testWaitingCancellation
+        , testCase "an independently terminated owner releases its writer session" testTerminatedOwner
+        , testCase "committed unknown ownership is refused finitely and preserved" testCommittedOwner
+        ]
     , testGroup
         "releaseOverlayLock"
         [ testCase "Safe to call multiple times" $
@@ -225,6 +233,7 @@ tests =
                   execute_ cleanup "DELETE FROM overlay_lock"
                   close cleanup
     ]
+
     , testGroup
         "withOverlayLock"
         [ testCase "Action runs with lock held" $
@@ -347,3 +356,96 @@ isJust (Just _) = True
 isLeft :: Either a b -> Bool
 isLeft (Left _)  = True
 isLeft (Right _) = False
+
+-- | Test-only child entrypoint, never a product command. The ready line proves
+-- the writer transaction is held before the parent tests exclusion/termination.
+holdSessionForTest :: FilePath -> IO ()
+holdSessionForTest path = withOverlayLockWaiting path $ do
+  putStrLn "overlay-session-held"
+  hFlush stdout
+  gate <- newEmptyMVar :: IO (MVar ())
+  takeMVar gate
+
+testMixedHandoff :: IO ()
+testMixedHandoff = withSystemTempDirectory "overlay-handoff" $ \root -> do
+  let path = root </> "overlay"
+  entered <- newEmptyMVar
+  release <- newEmptyMVar
+  withAsync (withOverlayLock path (putMVar entered () >> takeMVar release)) $ \owner ->
+    flip finally (void (tryPutMVar release ()) >> void (waitCatch owner)) $ do
+      startup <- race (takeMVar entered) (wait owner)
+      case startup of
+        Left () -> pure ()
+        Right () -> assertFailure "owner exited before entering its protected action"
+      attempts <- newIORef (0 :: Int)
+      let onBusy = do
+            count <- atomicModifyIORef' attempts (\value -> (value + 1, value + 1))
+            when (count == 51) (void (tryPutMVar release ()))
+      outcome <- try @SomeException (withOverlayLockWaitingWithRetryHook path onBusy (pure ()))
+      void (tryPutMVar release ())
+      ownerResult <- waitCatch owner
+      assertBool "bounded owner completed its protected action" (not (isLeft ownerResult))
+      assertBool ("waiting handoff succeeds: " <> show outcome) (not (isLeft outcome))
+      count <- readIORef attempts
+      assertBool "handoff is causal after more than the old retry allowance" (count >= 51)
+
+testWaitingCancellation :: IO ()
+testWaitingCancellation = withSystemTempDirectory "overlay-cancellation" $ \root -> do
+  let path = root </> "overlay"
+  cancelled <- try @SomeException (withOverlayLockWaiting path (throwIO ThreadKilled))
+  case cancelled of
+    Left problem -> fromException problem @?= Just ThreadKilled
+    Right () -> assertFailure "waiting owner cancellation must escape"
+  bracket (acquireOverlayLock path) (mapM_ releaseOverlayLock) $ \acquired ->
+    case acquired of
+      Nothing -> assertFailure "cancelled owner must release its session"
+      Just owner -> do
+        busy <- newEmptyMVar
+        withAsync (withOverlayLockWaitingWithRetryHook path (void (tryPutMVar busy ())) (assertFailure "contender must not enter")) $ \waiter -> do
+          startup <- race (takeMVar busy) (wait waiter)
+          case startup of
+            Left () -> pure ()
+            Right () -> assertFailure "contender exited before observing contention"
+          cancelWith waiter ThreadKilled
+          outcome <- waitCatch waiter
+          case outcome of
+            Left problem -> fromException problem @?= Just ThreadKilled
+            Right () -> assertFailure "contender cancellation must escape"
+          rows <- query_ (lockConnection owner) "SELECT holder_pid FROM overlay_lock" :: IO [Only Text]
+          rows @?= [Only (lockHolderPid owner)]
+  withOverlayLockWaiting path (pure ())
+
+testTerminatedOwner :: IO ()
+testTerminatedOwner = withSystemTempDirectory "overlay-process" $ \root -> do
+  executable <- getExecutablePath
+  let path = root </> "overlay"
+  bracket (createProcess (proc executable ["--hold-overlay-session", path]) {std_out = CreatePipe})
+    (\(_, output, _, process) -> flip finally (forM_ output hClose) $ do
+      status <- getProcessExitCode process
+      when (status == Nothing) (terminateProcess process)
+      void (waitForProcess process)) $ \(_, output, _, process) -> do
+        case output of
+          Nothing -> assertFailure "lock child requires its ready pipe"
+          Just pipe -> hGetLine pipe >>= (@?= "overlay-session-held")
+        bracket (acquireOverlayLock path) (mapM_ releaseOverlayLock) $ \contender ->
+          assertBool "independent owner excludes another connection" (not (isJust contender))
+        terminateProcess process
+        void (waitForProcess process)
+        withOverlayLockWaiting path (pure ())
+
+testCommittedOwner :: IO ()
+testCommittedOwner = withSystemTempDirectory "overlay-unknown" $ \root -> do
+  let path = root </> "overlay"
+  database <- bracket (acquireOverlayLock path) (mapM_ releaseOverlayLock) $ \initialized ->
+    case initialized of
+      Nothing -> assertFailure "unknown-owner fixture must initialize" >> fail "unreachable"
+      Just owner -> pure (lockPath owner)
+  bracket (open database) close $ \connection ->
+    execute_ connection "INSERT INTO overlay_lock(rowid,holder_pid,acquired_at) VALUES(1,'unknown-owner','unknown-time')"
+  result <- try @SomeException (withOverlayLockWaiting path (assertFailure "unknown ownership cannot be acquired"))
+  case result of
+    Left problem -> show problem @?= "OverlayOwnershipUnknown"
+    Right () -> assertFailure "unknown committed owner must be refused"
+  bracket (open database) close $ \connection -> do
+    rows <- query_ connection "SELECT holder_pid FROM overlay_lock" :: IO [Only Text]
+    rows @?= [Only "unknown-owner"]

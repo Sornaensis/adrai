@@ -366,7 +366,11 @@
         "ADRAI.P4-05.OverlayLock.acquireOverlayLock.Cancellation after singleton claim rolls back and permits retry",
         "ADRAI.P4-05.OverlayLock.acquireOverlayLock.Simultaneous acquisitions publish exactly one owner",
         "ADRAI.P4-05.OverlayLock.acquireOverlayLock.Waits for lock-database startup write instead of surfacing SQLite busy",
-        "ADRAI.P4-05.OverlayLock.acquireOverlayLock.An ignored insert with the same token cannot claim or delete the owner",
+        "ADRAI.P4-05.OverlayLock.acquireOverlayLock.The same token cannot claim or release another writer owner",
+        "ADRAI.P4-05.OverlayLock.session lifetime.mixed bounded and waiting callers hand off beyond the bounded retry count",
+        "ADRAI.P4-05.OverlayLock.session lifetime.waiting owner and contender cancellation release only owned authority",
+        "ADRAI.P4-05.OverlayLock.session lifetime.an independently terminated owner releases its writer session",
+        "ADRAI.P4-05.OverlayLock.session lifetime.committed unknown ownership is refused finitely and preserved",
         "ADRAI.P4-05.OverlayLock.releaseOverlayLock.Safe to call multiple times",
         "ADRAI.P4-05.OverlayLock.releaseOverlayLock.Releases lock for re-acquisition",
         "ADRAI.P4-05.OverlayLock.releaseOverlayLock.Release cancellation closes and removes the owned row before rethrow",
@@ -393,7 +397,7 @@
         "ADRAI.P4-05.DocumentCache.CachedDocument.CachedDocument equality works"
       ],
       "rationale": "Combine compiler, repository, property, and golden groups that do not own the isolated mutation/cache fixtures. Consolidated cold-compiler and CacheSync carriers retain the mapped assertions without changing this resource boundary.",
-      "costProvenance": "Static retained count 98 across P4-02, P4-03, and P4-05 after round-nine repository and compiler consolidation; elapsed cost requires a matching complete snapshot."
+      "costProvenance": "Static retained count 102 across P4-02, P4-03, and P4-05, including four causal overlay session-lifetime regressions; elapsed cost requires a matching complete snapshot."
     },
     {
       "id": "Q",
