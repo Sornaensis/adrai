@@ -43,7 +43,7 @@ import Adrai.Web.Server (RunningServer (..), ServerDependencies (..), withWebSer
 import qualified Adrai.Web.Security as Security
 import Adrai.Web.Socket (unavailableEventsTransport)
 import qualified Adrai.Web.Watch as Watch
-import Control.Concurrent (MVar, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar, tryTakeMVar)
+import Control.Concurrent (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.Async (Async, async, cancel, poll, race, wait, waitCatch, withAsync)
 import Control.Exception (SomeAsyncException, SomeException, bracket, bracketOnError, finally, fromException, onException, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
@@ -290,7 +290,7 @@ testEventsUnavailable = withServer $ \running _ -> do
 testRelevantV2Route :: IO ()
 testRelevantV2Route = withSeededRepository $ \root -> do
   repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
-  committed <- seedRelevantDecision repository
+  (_, committed) <- seedRelevantDecision repository
   -- This leaf owns the read projection. HTTP mutation behavior is covered by
   -- testMutationRoutes; prepare its real sealed state without a timed POST.
   _ <- Runtime.ensureExactArchive repository committed >>= either (assertFailure . Text.unpack) pure
@@ -298,7 +298,7 @@ testRelevantV2Route = withSeededRepository $ \root -> do
     assertRelevantProjection running (gitOidText committed)
   either (assertFailure . Text.unpack) pure started
 
-seedRelevantDecision :: Repository -> IO GitOid
+seedRelevantDecision :: Repository -> IO (Text, GitOid)
 seedRelevantDecision repository = do
   headOid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
   headState <- repositoryHeadState repository >>= either (assertFailure . show) pure
@@ -312,7 +312,7 @@ seedRelevantDecision repository = do
     >>= either (assertFailure . ("relevant fixture checked create: " <>) . show) pure
   assertBool "relevant fixture updates the committed Git index" (Mutation.createIndexUpdated created)
   Mutation.createPublicationError created @?= Nothing
-  pure (Mutation.createCommitOid created)
+  pure (Types.adrIdText (Mutation.createAdrId created), Mutation.createCommitOid created)
 
 assertRelevantProjection :: RunningServer -> Text -> IO ()
 assertRelevantProjection running current = do
@@ -331,12 +331,16 @@ assertRelevantProjection running current = do
     _ -> assertFailure "relevant route did not return a result array"
 
 testQueryRoutes :: IO ()
-testQueryRoutes = withSeededServer $ \root running -> do
-  basis <- repositoryBasis running
-  created <- postJson running "/api/v1/adrs" (createBody basis)
-  adr <- textAt ["data", "adr"] created
-  current <- textAt ["metadata", "as_of", "oid"] created
+testQueryRoutes = withSeededRepository $ \root -> do
   repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  (adr, committed) <- seedRelevantDecision repository
+  _ <- Runtime.ensureExactArchive repository committed >>= either (assertFailure . Text.unpack) pure
+  started <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ ->
+    assertQueryRouteSnapshots root repository adr (gitOidText committed) running
+  either (assertFailure . Text.unpack) pure started
+
+assertQueryRouteSnapshots :: FilePath -> Repository -> Text -> Text -> RunningServer -> IO ()
+assertQueryRouteSnapshots root repository adr current running = do
   sharedShown <- Query.runWebShow repository (Query.ShowRequest adr CollapsedView current False) >>= either (assertFailure . Text.unpack . Query.showFailureText) pure
   httpShown <- getJson running ("/api/v1/adrs/" <> adr <> "?at=" <> current)
   valueAt ["data"] httpShown >>= (@?= Api.apiResultPayload (Api.ApiShowResult sharedShown))
@@ -1477,62 +1481,83 @@ testWatchRuntime = withSeededRepository $ \root -> do
         now <- getMonotonicTimeNSec
         atomicModifyIORef' retryPhases (\entries -> ((now - retryStarted, phase) : entries, ()))
   attempts <- newIORef (0 :: Int)
+  scanArmed <- newIORef False
+  scanOpenings <- newIORef (0 :: Int)
+  firstScanOpened <- newEmptyMVar
+  releaseFirstScan <- newEmptyMVar
   retryScanOpened <- newEmptyMVar
   retryObserver <- Watch.observerForRegistryWithHandleHook registry bound $ \component ->
     when (component == "seed.txt") $ do
-      markRetryPhase "scan opened relevant file"
-      count <- readIORef attempts
-      when (count >= 1) (void (tryPutMVar retryScanOpened ()))
+      armed <- readIORef scanArmed
+      when armed $ do
+        opening <- atomicModifyIORef' scanOpenings (\count -> let next = count + 1 in (next, next))
+        markRetryPhase "scan opened relevant file"
+        if opening == 1
+          then do
+            _ <- tryPutMVar firstScanOpened ()
+            -- The native handle shares reads/writes; hold it before reading
+            -- while the parent writes the final coalesced bytes.
+            _ <- readMVar releaseFirstScan
+            pure ()
+          else do
+            count <- readIORef attempts
+            when (count >= 1) (void (tryPutMVar retryScanOpened ()))
   firstFailure <- newEmptyMVar
   delivered <- newEmptyMVar
-  markRetryPhase "starting watcher initial snapshot"
-  watcher <- Watch.watchRepository retryObserver bound $ \event -> do
-    attempt <- atomicModifyIORef' attempts (\value -> let next = value + 1 in (next, next))
-    markRetryPhase ("publication attempt " <> show attempt <> " entered")
-    if attempt == 1
-      then (ioError (userError "simulated busy publication") `onException` do
-              markRetryPhase "first publication failed synchronously"
-              putMVar firstFailure ())
-      else putMVar delivered event >> markRetryPhase "later publication delivered"
-  markRetryPhase "watcher initial snapshot completed"
-  BS.writeFile (root </> "seed.txt") "coalesced change one"
-  markRetryPhase "first file write completed"
-  BS.writeFile (root </> "seed.txt") "coalesced change two"
-  markRetryPhase "second file write completed"
-  BS.writeFile (root </> "seed.txt") "coalesced final bytes"
-  markRetryPhase "final file write completed"
-  firstFailed <- timeout 3000000 (takeMVar firstFailure)
-  markRetryPhase (if maybe False (const True) firstFailed then "first failure observed" else "first-failure deadline elapsed")
-  -- A periodic scan resolves Git state and traverses managed paths before opening the relevant file.
-  -- Bound that scan separately from publication after the first synchronous failure.
-  rescanned <- case firstFailed of
-    Just () -> timeout 6000000 (takeMVar retryScanOpened)
-    Nothing -> pure Nothing
-  markRetryPhase (if maybe False (const True) rescanned then "retry scan opened relevant file" else "retry scan deadline elapsed")
-  retried <- case rescanned of
-    Just () -> timeout 3000000 (takeMVar delivered)
-    Nothing -> pure Nothing
-  markRetryPhase (if maybe False (const True) retried then "delivery received" else "delivery deadline elapsed")
-  watcherStopped <- timeout 3000000 (Watch.stopWatching watcher >> Watch.awaitWatcher watcher)
-  markRetryPhase (if maybe False (const True) watcherStopped then "watcher stopped" else "watcher stop deadline elapsed")
-  retryPhaseLog <- reverse <$> readIORef retryPhases
-  putStrLn ("p7-03-watch: unacknowledged retry phase trace (ms) " <>
-    show [((at `div` 1000000), phase) | (at, phase) <- retryPhaseLog])
-  assertBool ("fact watcher workers stop within the owner bound; phases=" <> show retryPhaseLog) (maybe False (const True) watcherStopped)
-  assertBool ("first publication failed synchronously after the file writes; phases=" <> show retryPhaseLog) (maybe False (const True) firstFailed)
-  assertBool ("periodic verification rescans an unacknowledged publication; phases=" <> show retryPhaseLog) (maybe False (const True) rescanned)
-  assertBool ("periodic verification retries an unacknowledged publication; phases=" <> show retryPhaseLog) (maybe False (const True) retried)
-  count <- readIORef attempts
-  assertBool "publication was attempted again without another filesystem change" (count >= 2)
-  case retried of
-    Just (Watch.RepositoryFactsChanged _ eventSnapshot _) -> do
-      finalSnapshot <- Watch.repositorySnapshot observer bound
-      case (eventSnapshot, finalSnapshot) of
-        (Watch.RepositorySnapshot _ eventFacts, Watch.RepositorySnapshot _ finalFacts) ->
-          Watch.factsRelevantWorktreeIdentity eventFacts @?= Watch.factsRelevantWorktreeIdentity finalFacts
-        _ -> assertFailure "coalesced-hint snapshots failed"
-    Just (Watch.RepositoryObservationFailure _ failure) -> assertFailure ("coalesced hints ended in observation failure: " <> show failure)
-    Nothing -> pure ()
+  let publishRetry event = do
+        attempt <- atomicModifyIORef' attempts (\value -> let next = value + 1 in (next, next))
+        markRetryPhase ("publication attempt " <> show attempt <> " entered")
+        if attempt == 1
+          then (ioError (userError "simulated busy publication") `onException` do
+                  markRetryPhase "first publication failed synchronously"
+                  void (tryPutMVar firstFailure ()))
+          else do
+            _ <- tryPutMVar delivered event
+            markRetryPhase "later publication delivered"
+      startRetryWatcher = do
+        markRetryPhase "starting watcher initial snapshot"
+        watcher <- Watch.watchRepository retryObserver bound publishRetry
+        markRetryPhase "watcher initial snapshot completed"
+        writeIORef scanArmed True
+        pure watcher
+      stopRetryWatcher watcher = do
+        _ <- tryPutMVar releaseFirstScan ()
+        Watch.stopWatching watcher `finally` Watch.awaitWatcher watcher
+        markRetryPhase "watcher stopped"
+        retryPhaseLog <- reverse <$> readIORef retryPhases
+        putStrLn ("p7-03-watch: unacknowledged retry phase trace (ms) " <>
+          show [((at `div` 1000000), phase) | (at, phase) <- retryPhaseLog])
+  bracket startRetryWatcher stopRetryWatcher $ \watcher ->
+    withAsync (Watch.awaitWatcher watcher) $ \finished -> do
+      let awaitRetrySignal label signal = do
+            observed <- race (takeMVar signal) (wait finished)
+            case observed of
+              Left value -> pure value
+              Right () -> assertFailure ("watcher terminated before " <> label)
+      _ <- awaitRetrySignal "post-baseline relevant-file scan" firstScanOpened
+      BS.writeFile (root </> "seed.txt") "coalesced change one"
+      markRetryPhase "first file write completed"
+      BS.writeFile (root </> "seed.txt") "coalesced change two"
+      markRetryPhase "second file write completed"
+      BS.writeFile (root </> "seed.txt") "coalesced final bytes"
+      markRetryPhase "final file write completed"
+      _ <- tryPutMVar releaseFirstScan ()
+      _ <- awaitRetrySignal "first synchronous publication failure" firstFailure
+      markRetryPhase "first failure observed"
+      _ <- awaitRetrySignal "retry scan opening the relevant file" retryScanOpened
+      markRetryPhase "retry scan opened relevant file"
+      retried <- awaitRetrySignal "retried publication delivery" delivered
+      markRetryPhase "delivery received"
+      count <- readIORef attempts
+      assertBool "publication was attempted again without another filesystem change" (count >= 2)
+      case retried of
+        Watch.RepositoryFactsChanged _ eventSnapshot _ -> do
+          finalSnapshot <- Watch.repositorySnapshot observer bound
+          case (eventSnapshot, finalSnapshot) of
+            (Watch.RepositorySnapshot _ eventFacts, Watch.RepositorySnapshot _ finalFacts) ->
+              Watch.factsRelevantWorktreeIdentity eventFacts @?= Watch.factsRelevantWorktreeIdentity finalFacts
+            _ -> assertFailure "coalesced-hint snapshots failed"
+        Watch.RepositoryObservationFailure _ failure -> assertFailure ("coalesced hints ended in observation failure: " <> show failure)
   terminalStarted <- getMonotonicTimeNSec
   terminalPhases <- newIORef []
   let markTerminalPhase phase = do

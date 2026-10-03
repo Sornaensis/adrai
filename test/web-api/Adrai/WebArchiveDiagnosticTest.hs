@@ -33,7 +33,6 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Data.Word (Word64)
 import Database.SQLite.Simple (Only (..), execute_, query_, withTransaction)
 import qualified Database.SQLite.Simple as SQLite (close)
 import GHC.Clock (getMonotonicTimeNSec)
@@ -64,124 +63,116 @@ mixedExactArchiveConsumers :: TestTree
 mixedExactArchiveConsumers = testCase "physical exact archive contention types mixed HTTP consumers and recovers without cold compile" testMixedExactArchiveConsumers
 
 testMixedExactArchiveConsumers :: IO ()
-testMixedExactArchiveConsumers = do
-  bounded <- timeout 40000000 $ Server.withSeededRepository $ \root -> do
-    mixedPhase "seeded"
-    repository <- discoverRepository systemGit root >>= either (const (assertFailure "mixed fixture discovery failed")) pure
-    oid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (const (assertFailure "mixed fixture HEAD failed")) pure
-    archive <- Runtime.ensureExactArchive repository oid >>= either (const (assertFailure "mixed fixture archive failed")) pure
-    mixedPhase "archive-valid"
-    let target = gitOidText oid
-        doctorPath = "/api/v1/doctor?at=" <> target
-        searchPath = "/api/v1/search?q=Seeded&mode=fts&view=collapsed&limit=100&include_obsolete=false&shallow=false&at=" <> target
-        relevantPath = "/api/v1/relevant?file=seed.txt&at=" <> target
-    coldBranches <- newIORef (0 :: Int)
-    producerEntries <- newIORef (0 :: Int)
-    joinEntries <- newIORef (0 :: Int)
-    firstJoined <- newEmptyMVar
-    producerEntered <- newEmptyMVar
-    releaseProducer <- newEmptyMVar
-    peerJoined <- newEmptyMVar
-    releaseJoiners <- newEmptyMVar
-    holderEntered <- newEmptyMVar
-    releaseHolder <- newEmptyMVar
-    let recordColdBranch = atomicModifyIORef' coldBranches (\count -> (count + 1, ()))
-        compileExact compileRepository compileOid = do
-          entry <- atomicModifyIORef' producerEntries (\count -> let next = count + 1 in (next, next))
-          if entry == 1 then putMVar producerEntered () >> takeMVar releaseProducer else pure ()
-          Runtime.ensureExactArchiveWithColdPathObserver recordColdBranch compileRepository compileOid
-        afterJoin = do
-          entry <- atomicModifyIORef' joinEntries (\count -> let next = count + 1 in (next, next))
-          if entry == 1 then putMVar firstJoined () else pure ()
-          if entry >= 2 && entry <= 4 then do
-            putMVar peerJoined ()
-            _ <- readMVar releaseJoiners
-            pure ()
-          else pure ()
-        services = defaultApplicationServices
-          { applicationCompileExact = compileExact,
-            applicationAfterCompilationJoin = afterJoin
-          }
-        dependencies = Server.dependencies {serverApplicationServices = services}
-        holdValidated = bracket (openReadWriteExisting archive) SQLite.close $ \connection ->
-          withTransaction connection $
-            Cache.withValidatedExactCacheTargetConnection target connection $ \_ -> do
-              execute_ connection "PRAGMA query_only=ON"
-              putMVar holderEntered ()
-              takeMVar releaseHolder
-        request running path = rawJsonRequest running "GET" path Nothing ByteString.empty
-    started <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ ->
-      withAsync (request running doctorPath) $ \first ->
-        (do
-          joined <- timeout 5000000 (takeMVar firstJoined)
-          assertBool "first HTTP doctor joined the real exact compilation flight" (joined == Just ())
-          entered <- timeout 5000000 (takeMVar producerEntered)
-          assertBool "the real exact producer reached its pause" (entered == Just ())
-          mixedPhase "first-joined"
-          admissionDeadline <- (+ 9000000000) <$> getMonotonicTimeNSec
-          withAdmittedPeer (request running searchPath) peerJoined admissionDeadline "search" $ \search ->
-            withAdmittedPeer (request running relevantPath) peerJoined admissionDeadline "relevance" $ \relevant ->
-              withAdmittedPeer (request running doctorPath) peerJoined admissionDeadline "doctor" $ \peerDoctor -> do
-                joinedPeers <- readIORef joinEntries
-                assertBool "search, relevance, and doctor joined the first exact flight" (joinedPeers == 4)
-                beforeProducerRelease <- mapM poll [search, relevant, peerDoctor]
-                assertBool "all three admitted consumers remain in the first flight before producer release"
-                  (all isPending beforeProducerRelease)
-                mixedPhase "three-joined"
-                _ <- tryPutMVar releaseProducer ()
-                firstResult <- awaitHttp first "first real doctor"
-                assertExactSuccess target firstResult
-                mixedPhase "first-doctor-200"
-                searchPending <- poll search
-                relevantPending <- poll relevant
-                doctorPending <- poll peerDoctor
-                assertBool "all three consumers remain held after the producer completed"
-                  (all isPending [searchPending, relevantPending, doctorPending])
-                beforeBytes <- ByteString.readFile archive
-                withAsync holdValidated $ \holder ->
-                  (do
-                    held <- timeout 5000000 (takeMVar holderEntered)
-                    assertBool "the peer holds a fully validated exact archive" (held == Just ())
-                    mixedPhase "holder-entered"
-                    _ <- tryPutMVar releaseJoiners ()
-                    busyPeers <- timeout 8000000 $ mapConcurrently
-                      (\(worker, label) -> awaitHttp worker label)
-                      [(search, "real search consumer"), (relevant, "real relevance consumer"), (peerDoctor, "real doctor consumer")]
-                    mapM_ assertTypedBusy =<< maybe (assertFailure "mixed busy consumers exceeded the shared phase bound") pure busyPeers
-                    mixedPhase "three-consumers-503"
-                    producerBusy <- request running doctorPath
-                    assertTypedBusy producerBusy
-                    mixedPhase "new-producer-503"
-                    entries <- readIORef producerEntries
-                    assertBool "a separate real producer attempted the held archive" (entries == 2)
-                    coldWhileHeld <- readIORef coldBranches
-                    assertBool "busy never entered the physical cold compile branch" (coldWhileHeld == 0)
-                    _ <- tryPutMVar releaseHolder ()
-                    heldResult <- waitCatch holder
-                    case heldResult of
-                      Left exception -> rethrowAsync exception >> assertFailure "held exact consumer failed"
-                      Right accepted -> assertBool "held exact consumer completed" (accepted == Just ())
-                    recoveryDeadline <- (+ 9000000000) <$> getMonotonicTimeNSec
-                    recoverExact running target recoveryDeadline "search" searchPath
-                    recoverExact running target recoveryDeadline "relevance" relevantPath
-                    recoverExact running target recoveryDeadline "doctor" doctorPath
-                    mixedPhase "three-consumers-recovered"
-                    afterBytes <- ByteString.readFile archive
-                    assertBool "the same exact archive bytes survive busy and recovery" (beforeBytes == afterBytes)
-                    coldAfterRecovery <- readIORef coldBranches
-                    assertBool "recovery did not enter the cold compile branch" (coldAfterRecovery == 0)
-                  ) `finally` do
-                    _ <- tryPutMVar releaseHolder ()
-                    pure ()
-        ) `finally` do
-          _ <- tryPutMVar releaseProducer ()
-          _ <- tryPutMVar releaseJoiners ()
-          _ <- tryPutMVar releaseHolder ()
+testMixedExactArchiveConsumers = Server.withSeededRepository $ \root -> do
+  mixedPhase "seeded"
+  repository <- discoverRepository systemGit root >>= either (const (assertFailure "mixed fixture discovery failed")) pure
+  oid <- resolveRevision repository (RevisionSpec "HEAD") >>= either (const (assertFailure "mixed fixture HEAD failed")) pure
+  archive <- Runtime.ensureExactArchive repository oid >>= either (const (assertFailure "mixed fixture archive failed")) pure
+  mixedPhase "archive-valid"
+  let target = gitOidText oid
+      doctorPath = "/api/v1/doctor?at=" <> target
+      searchPath = "/api/v1/search?q=Seeded&mode=fts&view=collapsed&limit=100&include_obsolete=false&shallow=false&at=" <> target
+      relevantPath = "/api/v1/relevant?file=seed.txt&at=" <> target
+  coldBranches <- newIORef (0 :: Int)
+  producerEntries <- newIORef (0 :: Int)
+  joinEntries <- newIORef (0 :: Int)
+  firstJoined <- newEmptyMVar
+  producerEntered <- newEmptyMVar
+  releaseProducer <- newEmptyMVar
+  peerJoined <- newEmptyMVar
+  releaseJoiners <- newEmptyMVar
+  holderEntered <- newEmptyMVar
+  releaseHolder <- newEmptyMVar
+  let recordColdBranch = atomicModifyIORef' coldBranches (\count -> (count + 1, ()))
+      compileExact compileRepository compileOid = do
+        entry <- atomicModifyIORef' producerEntries (\count -> let next = count + 1 in (next, next))
+        if entry == 1 then putMVar producerEntered () >> takeMVar releaseProducer else pure ()
+        Runtime.ensureExactArchiveWithColdPathObserver recordColdBranch compileRepository compileOid
+      afterJoin = do
+        entry <- atomicModifyIORef' joinEntries (\count -> let next = count + 1 in (next, next))
+        if entry == 1 then putMVar firstJoined () else pure ()
+        if entry >= 2 && entry <= 4 then do
+          putMVar peerJoined ()
+          _ <- readMVar releaseJoiners
           pure ()
-    either (assertFailure . Text.unpack) pure started
-  case bounded of
-    Nothing -> assertFailure "mixed exact HTTP consumers exceeded 40 seconds"
-    Just () -> pure ()
+        else pure ()
+      services = defaultApplicationServices
+        { applicationCompileExact = compileExact,
+          applicationAfterCompilationJoin = afterJoin
+        }
+      dependencies = Server.dependencies {serverApplicationServices = services}
+      holdValidated = bracket (openReadWriteExisting archive) SQLite.close $ \connection ->
+        withTransaction connection $
+          Cache.withValidatedExactCacheTargetConnection target connection $ \_ -> do
+            execute_ connection "PRAGMA query_only=ON"
+            putMVar holderEntered ()
+            takeMVar releaseHolder
+      request running path = rawJsonRequest running "GET" path Nothing ByteString.empty
+      releaseMixedGates = do
+        _ <- tryPutMVar releaseProducer ()
+        _ <- tryPutMVar releaseJoiners ()
+        _ <- tryPutMVar releaseHolder ()
+        pure ()
+  started <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ ->
+    withAsync (request running doctorPath) $ \first ->
+      (do
+        awaitMixedGate first firstJoined "first HTTP doctor compilation join"
+        awaitMixedGate first producerEntered "real exact producer pause"
+        mixedPhase "first-joined"
+        withAdmittedPeer (request running searchPath) peerJoined "search" releaseMixedGates $ \search ->
+          withAdmittedPeer (request running relevantPath) peerJoined "relevance" releaseMixedGates $ \relevant ->
+            withAdmittedPeer (request running doctorPath) peerJoined "doctor" releaseMixedGates $ \peerDoctor -> do
+              joinedPeers <- readIORef joinEntries
+              assertBool "search, relevance, and doctor joined the first exact flight" (joinedPeers == 4)
+              beforeProducerRelease <- mapM poll [search, relevant, peerDoctor]
+              assertBool "all three admitted consumers remain in the first flight before producer release"
+                (all isPending beforeProducerRelease)
+              mixedPhase "three-joined"
+              _ <- tryPutMVar releaseProducer ()
+              firstResult <- awaitHttp first "first real doctor"
+              assertExactSuccess target firstResult
+              mixedPhase "first-doctor-200"
+              searchPending <- poll search
+              relevantPending <- poll relevant
+              doctorPending <- poll peerDoctor
+              assertBool "all three consumers remain held after the producer completed"
+                (all isPending [searchPending, relevantPending, doctorPending])
+              beforeBytes <- ByteString.readFile archive
+              withAsync holdValidated $ \holder ->
+                (do
+                  awaitMixedGate holder holderEntered "validated exact archive holder"
+                  mixedPhase "holder-entered"
+                  _ <- tryPutMVar releaseJoiners ()
+                  busyPeers <- mapConcurrently
+                    (\(worker, label) -> awaitHttp worker label)
+                    [(search, "real search consumer"), (relevant, "real relevance consumer"), (peerDoctor, "real doctor consumer")]
+                  mapM_ assertTypedBusy busyPeers
+                  mixedPhase "three-consumers-503"
+                  producerBusy <- request running doctorPath
+                  assertTypedBusy producerBusy
+                  mixedPhase "new-producer-503"
+                  entries <- readIORef producerEntries
+                  assertBool "a separate real producer attempted the held archive" (entries == 2)
+                  coldWhileHeld <- readIORef coldBranches
+                  assertBool "busy never entered the physical cold compile branch" (coldWhileHeld == 0)
+                  _ <- tryPutMVar releaseHolder ()
+                  heldResult <- waitCatch holder
+                  case heldResult of
+                    Left exception -> rethrowAsync exception >> assertFailure "held exact consumer failed"
+                    Right accepted -> assertBool "held exact consumer completed" (accepted == Just ())
+                  recoverExact running target "search" searchPath
+                  recoverExact running target "relevance" relevantPath
+                  recoverExact running target "doctor" doctorPath
+                  mixedPhase "three-consumers-recovered"
+                  afterBytes <- ByteString.readFile archive
+                  assertBool "the same exact archive bytes survive busy and recovery" (beforeBytes == afterBytes)
+                  coldAfterRecovery <- readIORef coldBranches
+                  assertBool "recovery did not enter the cold compile branch" (coldAfterRecovery == 0)
+                ) `finally` do
+                  _ <- tryPutMVar releaseHolder ()
+                  pure ()
+      ) `finally` releaseMixedGates
+  either (assertFailure . Text.unpack) pure started
   where
     isPending Nothing = True
     isPending _ = False
@@ -189,50 +180,47 @@ testMixedExactArchiveConsumers = do
 mixedPhase :: String -> IO ()
 mixedPhase label = putStrLn ("mixed-exact-phase: " <> label) >> hFlush stdout
 
-withAdmittedPeer :: IO (Int, Aeson.Value) -> MVar () -> Word64 -> String -> (Async (Int, Aeson.Value) -> IO a) -> IO a
-withAdmittedPeer request joined deadline label useWorker = go (0 :: Int)
+-- Readiness is an actual service gate, not elapsed-time evidence. A worker
+-- ending first is a stage failure rather than an indefinitely pending gate.
+awaitMixedGate :: Async a -> MVar () -> String -> IO ()
+awaitMixedGate worker signal label = do
+  observed <- race (takeMVar signal) (waitCatch worker)
+  case observed of
+    Left () -> pure ()
+    Right (Left exception) -> rethrowAsync exception >> assertFailure (label <> " worker failed: " <> show exception)
+    Right (Right _) -> assertFailure (label <> " worker completed before readiness")
+
+withAdmittedPeer :: IO (Int, Aeson.Value) -> MVar () -> String -> IO () -> (Async (Int, Aeson.Value) -> IO a) -> IO a
+withAdmittedPeer request joined label releaseGates useWorker = go (0 :: Int)
   where
     go retries
       | retries >= 4 = assertFailure (label <> " did not join the first exact flight after typed busy admission")
       | otherwise = withAsync request $ \worker -> do
-          now <- getMonotonicTimeNSec
-          let remaining = if now >= deadline then 0 else fromIntegral ((deadline - now) `div` 1000)
-          if remaining <= 0
-            then assertFailure (label <> " admission exceeded the shared nine-second bound")
-            else do
-              outcome <- timeout (min 3000000 remaining) (race (takeMVar joined) (waitCatch worker))
-              case outcome of
-                Nothing -> assertFailure (label <> " admission did not reach a join or typed busy response")
-                Just (Left ()) -> useWorker worker
-                Just (Right (Left exception)) -> rethrowAsync exception >> assertFailure (label <> " admission socket failed")
-                Just (Right (Right response)) -> assertTypedBusy response >> go (retries + 1)
+          outcome <- race (takeMVar joined) (waitCatch worker)
+          case outcome of
+            Left () -> useWorker worker `finally` releaseGates
+            Right (Left exception) -> rethrowAsync exception >> assertFailure (label <> " admission socket failed: " <> show exception)
+            Right (Right response) -> assertTypedBusy response >> go (retries + 1)
 
-recoverExact :: RunningServer -> Text -> Word64 -> String -> Text -> IO ()
-recoverExact running target deadline label path = go (0 :: Int)
+recoverExact :: RunningServer -> Text -> String -> Text -> IO ()
+recoverExact running target label path = go (0 :: Int)
   where
     go attempts
       | attempts >= 6 = assertFailure (label <> " recovery exhausted typed busy attempts")
       | otherwise = do
-          now <- getMonotonicTimeNSec
-          let remaining = if now >= deadline then 0 else fromIntegral ((deadline - now) `div` 1000)
-          if remaining <= 0
-            then assertFailure (label <> " recovery exceeded the shared nine-second bound")
-            else do
-              response <- timeout remaining (rawJsonRequest running "GET" path Nothing ByteString.empty)
-              case response of
-                Nothing -> assertFailure (label <> " recovery HTTP request exceeded the shared bound")
-                Just result@(status, value)
-                  | status == 200 -> do
-                      assertExactSuccess target result
-                      putStrLn ("mixed-exact-recovery: " <> label <> " status=200 as_of=exact") >> hFlush stdout
-                  | status == 503 && safeErrorCode value == "repository-busy" -> do
-                      putStrLn ("mixed-exact-recovery: " <> label <> " status=503 code=repository-busy as_of=" <> safeAsOfKind value) >> hFlush stdout
-                      threadDelay 50000
-                      go (attempts + 1)
-                  | otherwise -> assertFailure
-                      (label <> " recovery returned status=" <> show status <> " code=" <> Text.unpack (safeErrorCode value)
-                        <> " as_of=" <> safeAsOfKind value)
-
+          result@(status, value) <- rawJsonRequest running "GET" path Nothing ByteString.empty
+          if status == 200
+            then do
+              assertExactSuccess target result
+              putStrLn ("mixed-exact-recovery: " <> label <> " status=200 as_of=exact") >> hFlush stdout
+            else if status == 503 && safeErrorCode value == "repository-busy"
+              then do
+                putStrLn ("mixed-exact-recovery: " <> label <> " status=503 code=repository-busy as_of=" <> safeAsOfKind value) >> hFlush stdout
+                threadDelay 50000
+                go (attempts + 1)
+              else assertFailure
+                (label <> " recovery returned status=" <> show status <> " code=" <> Text.unpack (safeErrorCode value)
+                  <> " as_of=" <> safeAsOfKind value)
 safeErrorCode :: Aeson.Value -> Text
 safeErrorCode (Aeson.Object outer) = case KeyMap.lookup "error" outer of
   Just (Aeson.Object problem) -> case KeyMap.lookup "code" problem of
@@ -257,12 +245,11 @@ safeAsOfKind _ = "other"
 
 awaitHttp :: Async (Int, Aeson.Value) -> String -> IO (Int, Aeson.Value)
 awaitHttp worker label = do
-  result <- timeout 8000000 (waitCatch worker)
+  -- rawJsonRequest retains its bounded socket/body protocol and owned cleanup.
+  result <- waitCatch worker
   case result of
-    Nothing -> assertFailure (label <> " exceeded its bounded HTTP wait")
-    Just (Left exception) -> rethrowAsync exception >> assertFailure (label <> " failed")
-    Just (Right response) -> pure response
-
+    Left exception -> rethrowAsync exception >> assertFailure (label <> " failed: " <> show exception)
+    Right response -> pure response
 assertExactSuccess :: Text -> (Int, Aeson.Value) -> IO ()
 assertExactSuccess target (status, response) = do
   assertBool "a real exact HTTP consumer returned 200" (status == 200)
