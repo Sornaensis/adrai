@@ -101,11 +101,11 @@ import qualified Data.ByteString.Char8 as BS8
 import Data.Either (isLeft)
 import Data.Time.Clock (addUTCTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
-import Control.Exception (AsyncException (ThreadKilled), SomeException, fromException, throwIO, try)
+import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, finally, fromException, throwIO, try)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Directory (createDirectory, createDirectoryLink, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, removeDirectory, removeDirectoryRecursive, removeFile, setModificationTime)
+import System.Directory (createDirectory, createDirectoryLink, createFileLink, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, removeDirectory, removeDirectoryRecursive, removeFile, setModificationTime)
 import Data.List (isPrefixOf, sort)
 import qualified System.Exit as Exit
 import System.FilePath (isAbsolute, makeRelative, normalise, splitDirectories, (</>), takeDirectory)
@@ -785,7 +785,24 @@ gitLockTests getSeed =
         leadingZeroRecovered <- acquireGitLock repository
         BS.readFile path >>= assertEqual "leading-zero PID is rewritten to canonical bytes" (BS8.pack ("pid=" <> show (gitLockPid leadingZeroRecovered) <> "\n"))
         releaseGitLock leadingZeroRecovered
-        gitLockStatus repository >>= assertEqual "persistent stale file has no native owner" (Right Nothing),
+        gitLockStatus repository >>= assertEqual "persistent stale file has no native owner" (Right Nothing)
+        if os == "linux" then do
+          removeFile path
+          createDirectory path
+          (do
+              bracket (try @GitLockError (acquireGitLock repository)) (either (const (pure ())) releaseGitLock) assertNativePathFailure
+              gitLockStatus repository >>= assertNativePathFailure
+            ) `finally` removeDirectory path
+          let target = repositoryCommonDir repository </> "unchanged-lock-target"
+          BS.writeFile target "unrelated bytes\n"
+          createFileLink target path
+          (do
+              bracket (try @GitLockError (acquireGitLock repository)) (either (const (pure ())) releaseGitLock) assertNativePathFailure
+              gitLockStatus repository >>= assertNativePathFailure
+              BS.readFile target >>= assertEqual "a rejected lock symlink never rewrites its target" "unrelated bytes\n"
+            ) `finally` (removeFile path >> removeFile target)
+          bracket (acquireGitLock repository) releaseGitLock (const (pure ()))
+        else pure (),
     testCase "simultaneous persistent-file contenders yield one native owner" $
       withTransactionRepositoryCopy getSeed "adrai stale contender Git lock" $ \_ _ repository _ -> do
         let path = repositoryCommonDir repository </> "adrai.lock"
@@ -951,6 +968,10 @@ gitLockTests getSeed =
         doesFileExist path >>= assertEqual "asynchronous cleanup preserves the canonical lock file" True
         gitLockStatus repository >>= assertEqual "asynchronous cleanup releases native ownership" (Right Nothing)
   ]
+
+assertNativePathFailure :: Either GitLockError a -> IO ()
+assertNativePathFailure (Left (LockFailed _ _)) = pure ()
+assertNativePathFailure _ = assertFailure "nonregular/symlink lock path must be an I/O failure, not contention or absence"
 
 adraiTemporaryIndexes :: FilePath -> IO [FilePath]
 adraiTemporaryIndexes repositoryPath =

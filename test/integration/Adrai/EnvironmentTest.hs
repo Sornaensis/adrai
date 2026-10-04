@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -53,7 +54,11 @@ import System.FilePath (isAbsolute, makeRelative, takeDirectory, (</>))
 import System.Info (os)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process.Typed (proc, readProcess, runProcess, shell)
+#if defined(mingw32_HOST_OS)
 import System.Win32 (getCurrentProcessId)
+#else
+import System.Posix.Process (getProcessID)
+#endif
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
   ( (@?=),
@@ -65,6 +70,13 @@ import Test.Tasty.HUnit
 -- =====================================================================
 -- JSON helpers
 -- =====================================================================
+
+currentProcessPid :: IO Int
+#if defined(mingw32_HOST_OS)
+currentProcessPid = fromIntegral <$> getCurrentProcessId
+#else
+currentProcessPid = fromIntegral <$> getProcessID
+#endif
 
 _Object :: Data.Aeson.Value -> Maybe (KM.KeyMap Data.Aeson.Value)
 _Object (Data.Aeson.Object o) = Just o
@@ -312,7 +324,7 @@ testLinkedWorktreeCommitsOnlyItsBranch =
             Left lockError@(LockHeld lockPath holderPid) -> do
               lockPath @?= repositoryCommonDir mainRepository </> "adrai.lock"
               assertBool "the parent-held lock PID is positive" (holderPid > 0)
-              currentPid <- fromIntegral <$> getCurrentProcessId
+              currentPid <- currentProcessPid
               holderPid @?= currentPid
               pure (lockError, lockPath, holderPid)
             Left problem -> assertFailure ("parent-held production lock must be LockHeld, got " <> show problem) >> fail "unreachable"

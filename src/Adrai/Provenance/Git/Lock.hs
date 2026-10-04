@@ -27,11 +27,22 @@ module Adrai.Provenance.Git.Lock
 where
 
 import Adrai.Git (Repository (..), repositoryCommonDir)
+import Adrai.Provenance.Git.Lock.Native
+  ( NativeLock,
+    getMyPid,
+    nativeCloseCompleted,
+    nativeFailureIsContention,
+    nativeFailureIsMissing,
+    nativeStatusNeedsOpen,
+    openExistingNative,
+    openOwnedNative,
+    releaseNative,
+    writeOwnedNative,
+  )
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
 import Control.Exception (Exception, IOException, SomeAsyncException, SomeException, fromException, mask, throwIO, try, uninterruptibleMask_)
-import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Map.Strict as Map
@@ -40,12 +51,6 @@ import qualified Data.Text as Text
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Unsafe (unsafePerformIO)
-
-import Data.Bits ((.|.))
-import Foreign.Ptr (castPtr)
-import System.Win32 (getCurrentProcessId)
-import qualified System.Win32.File as Win32
-import System.Win32.Types (HANDLE)
 
 data GitLockError
   = LockHeld FilePath Int
@@ -79,8 +84,6 @@ newtype GitLockDependencies = GitLockDependencies
 defaultGitLockDependencies :: GitLockDependencies
 defaultGitLockDependencies = GitLockDependencies (\_ _ -> pure ())
 
-newtype NativeLock = NativeLock HANDLE
-
 newtype ReservationToken = ReservationToken {unReservationToken :: Int}
   deriving (Eq, Show)
 
@@ -101,7 +104,7 @@ lockFileName = "adrai.lock"
 lockFilePathFor :: FilePath -> FilePath
 lockFilePathFor directory = directory </> lockFileName
 
--- | A native Windows handle is the cross-process authority.  This registry
+-- | A native handle/descriptor is the cross-process authority. This registry
 -- serializes same-process acquire and status probes.  Each reservation has an
 -- unforgeable-for-this-process generation token, so a late/double release of
 -- an old lock cannot clear a newer owner's reservation for the same pathname.
@@ -155,7 +158,7 @@ registerOwner dependencies path pid token native =
 
 -- | Atomically remove the native handle from the available state before any
 -- close.  A duplicate release can therefore observe only 'OwnerClosing',
--- never the handle that is about to be closed (or recycled by Windows).
+-- never the handle that is about to be closed (or recycled by the OS).
 claimOwner :: GitLock -> IO (Maybe (NativeLock, GitLockDependencies))
 claimOwner lock =
   uninterruptibleMask_ $
@@ -242,9 +245,6 @@ releaseProbeReservationUnlessBlocked path token =
 lockKey :: GitLock -> LockKey
 lockKey lock = LockKey (gitLockPath lock) (gitLockFd lock) (gitLockPid lock)
 
-canonicalLockContent :: Int -> BS.ByteString
-canonicalLockContent pid = BS8.pack ("pid=" <> show pid <> "\n")
-
 parseLockPid :: BS.ByteString -> Maybe Int
 parseLockPid bytes =
   case BS8.unpack bytes of
@@ -277,12 +277,9 @@ readHeld path = go (0 :: Int)
 lockFailureOrHeld :: FilePath -> IOException -> IO a
 lockFailureOrHeld path failure = do
   exists <- doesFileExist path
-  if exists
+  if exists && nativeFailureIsContention failure
     then readHeld path >>= throwIO
     else throwIO (LockFailed path (Text.pack (show failure)))
-
-getMyPid :: IO Int
-getMyPid = fromIntegral <$> getCurrentProcessId
 
 -- | Status probes native ownership.  A persistent but unheld file is not a
 -- lock; no PID liveness guess is necessary or authoritative.
@@ -301,13 +298,16 @@ gitLockStatusWith dependencies repository = mask $ \restore -> do
 statusWithReservation :: GitLockDependencies -> FilePath -> ReservationToken -> (forall a. IO a -> IO a) -> IO (Either GitLockError (Maybe GitLockInfo))
 statusWithReservation dependencies path token restoreAction = do
   outcome <- try @SomeException $ do
-    exists <- restoreAction (doesFileExist path)
+    exists <- restoreAction (nativeStatusNeedsOpen path)
     if not exists
       then pure (Right Nothing)
       else do
         probe <- try @IOException (openExistingNative path)
         case probe of
-          Left _ -> restoreAction (Left <$> readHeld path)
+          Left failure
+            | nativeFailureIsMissing failure -> pure (Right Nothing)
+            | nativeFailureIsContention failure -> restoreAction (Left <$> readHeld path)
+            | otherwise -> pure (Left (LockFailed path (Text.pack (show failure))))
           Right native -> closeFreshProbe dependencies path token native
   releaseProbeReservationUnlessBlocked path token
   case outcome of
@@ -322,7 +322,11 @@ closeFreshProbe dependencies path token native = do
   case closed of
     Right () -> pure (Right Nothing)
     Left failure -> do
-      recordBlockedProbe path token native
+      -- A real Linux close has consumed the descriptor, even when reporting
+      -- delayed I/O errors. A pre-close hook still retains native ownership.
+      if nativeCloseCompleted failure
+        then completeBlockedProbe path token
+        else recordBlockedProbe path token native
       rethrowAsync failure (pure (Left (LockFailed path (Text.pack (show failure)))))
 
 retryBlockedProbe :: GitLockDependencies -> FilePath -> IO (Maybe (Either GitLockError (Maybe GitLockInfo)))
@@ -336,7 +340,9 @@ retryBlockedProbe dependencies path =
       case closed of
         Right () -> completeBlockedProbe path token >> pure (Just (Right Nothing))
         Left failure -> do
-          restoreBlockedProbe path token native
+          if nativeCloseCompleted failure
+            then completeBlockedProbe path token
+            else restoreBlockedProbe path token native
           rethrowAsync failure (pure (Just (Left (LockFailed path (Text.pack (show failure))))) )
 
 
@@ -384,7 +390,9 @@ releaseGitLock lock = mask $ \_ -> do
         releaseNative native
       case released of
         Left failure -> do
-          restoreOwner lock native dependencies
+          if nativeCloseCompleted failure
+            then completeOwnerRelease lock
+            else restoreOwner lock native dependencies
           rethrowAsync failure (throwIO (LockFailed (gitLockPath lock) (Text.pack (show failure))))
         Right () -> completeOwnerRelease lock
 
@@ -399,8 +407,8 @@ rethrowAsync failure fallback =
 
 -- | Close a partially acquired native owner while masked.  A successful close
 -- permits release of this exact reservation token.  If close itself fails the
--- token remains reserved, preventing a retry from claiming a handle whose
--- ownership could not be conclusively released.
+-- token remains reserved when ownership could not be conclusively released.
+-- A consumed Linux descriptor is never restored or closed a second time.
 closeAfterFailedWrite :: GitLockDependencies -> FilePath -> ReservationToken -> NativeLock -> SomeException -> IO a
 closeAfterFailedWrite dependencies path token native writeFailure = do
   closed <- try @SomeException $ do
@@ -410,7 +418,8 @@ closeAfterFailedWrite dependencies path token native writeFailure = do
     Right () -> do
       releaseLocal path token
       throwIO writeFailure
-    Left closeFailure ->
+    Left closeFailure -> do
+      if nativeCloseCompleted closeFailure then releaseLocal path token else pure ()
       rethrowAsync writeFailure $
         throwIO
           ( LockFailed
@@ -439,42 +448,3 @@ withGitLockWith dependencies repository action = mask $ \restore -> do
       Left cleanupFailure -> throwIO cleanupFailure
       Right () -> pure value
 
-openOwnedNative :: FilePath -> IO NativeLock
-openOwnedNative path =
-  NativeLock
-    <$> Win32.createFile
-      path
-      (Win32.gENERIC_READ .|. Win32.gENERIC_WRITE)
-      -- Readers can inspect an initializing owner; competing writers cannot
-      -- open until this handle closes.
-      Win32.fILE_SHARE_READ
-      Nothing
-      Win32.oPEN_ALWAYS
-      Win32.fILE_ATTRIBUTE_NORMAL
-      Nothing
-
-openExistingNative :: FilePath -> IO NativeLock
-openExistingNative path =
-  NativeLock
-    <$> Win32.createFile
-      path
-      (Win32.gENERIC_READ .|. Win32.gENERIC_WRITE)
-      Win32.fILE_SHARE_READ
-      Nothing
-      Win32.oPEN_EXISTING
-      Win32.fILE_ATTRIBUTE_NORMAL
-      Nothing
-
-writeOwnedNative :: FilePath -> NativeLock -> Int -> IO ()
-writeOwnedNative _ (NativeLock handle) pid = do
-  -- A newly opened handle starts at offset zero, so truncation and write are
-  -- both performed through the still-owned handle.
-  Win32.setEndOfFile handle
-  let content = canonicalLockContent pid
-  BS.useAsCStringLen content $ \(pointer, byteCount) -> do
-    written <- Win32.win32_WriteFile handle (castPtr pointer) (fromIntegral byteCount) Nothing
-    unless (written == fromIntegral byteCount) (throwIO (userError "short Windows Git lock write"))
-  Win32.flushFileBuffers handle
-
-releaseNative :: NativeLock -> IO ()
-releaseNative (NativeLock handle) = Win32.closeHandle handle

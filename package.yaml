@@ -37,7 +37,6 @@ dependencies:
   - network
   - optparse-applicative
   - process
-  - Win32
   - sqlite-simple
   - stm
   - template-haskell
@@ -53,6 +52,12 @@ dependencies:
   - websockets
   - scientific
   - random
+
+when:
+  - condition: os(windows)
+    dependencies: [Win32]
+  - condition: os(linux)
+    dependencies: [unix]
 
 library:
   source-dirs: []
@@ -126,7 +131,11 @@ internal-libraries:
     other-modules:
       - Adrai.Compiler.CacheLease.Internal
       - Adrai.Compiler.CacheSelection.Internal
+      - Adrai.Provenance.Git.Lock.Native
       - Adrai.Service.PostCommitIndex.Internal
+    when:
+      - condition: os(linux)
+        c-sources: src/Adrai/Provenance/Git/Lock/git_lock_linux.c
 
 executables:
   adrai:
