@@ -2,7 +2,6 @@
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE ForeignFunctionInterface #-}
 
 -- | Disposable SQLite projection of an already committed repository revision.
 --
@@ -72,8 +71,8 @@ import Adrai.Repository
     resolveRepositoryRevision,
     resolvedCommitOid,
   )
+import qualified Adrai.Service.PostCommitIndex.Native as Native
 import Control.Exception (SomeAsyncException, SomeException, displayException, evaluate, fromException, mask, throwIO, try)
-import Data.Bits ((.|.))
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (sortOn)
 import Data.Text (Text)
@@ -82,9 +81,6 @@ import Database.SQLite.Simple (Connection, close, execute, open, query_)
 import System.Directory (copyFile, doesFileExist, removeFile, renameFile)
 import System.FilePath (takeDirectory, takeFileName)
 import System.IO (Handle, hClose, openTempFile)
-import System.Win32.Types (BOOL, DWORD, LPTSTR, failIfFalse_, withTString)
-
-foreign import ccall unsafe "MoveFileExW" c_MoveFileExW :: LPTSTR -> LPTSTR -> DWORD -> IO BOOL
 
 -- | A stable public projection of a compiler warning.  Compiler diagnostics
 -- retain their richer internal provenance; callers of this result only need a
@@ -1107,32 +1103,10 @@ publishErrorText = \case
 installCandidate :: FilePath -> FilePath -> Maybe FilePath -> IO (Either PostCommitIndexPublishError ())
 installCandidate databasePath temporaryPath backupPath = do
   installed <-
-    trySynchronous $ case backupPath of
-      Just path -> atomicReplaceFile databasePath temporaryPath path
-      Nothing -> renameFile temporaryPath databasePath
+    trySynchronous (Native.installFile databasePath temporaryPath (maybe False (const True) backupPath))
   pure $ case installed of
     Left exception -> Left (PostCommitIndexInstallFailure (Text.pack (displayException exception)))
     Right () -> Right ()
-
--- | Atomically replace a same-directory target on Windows.  'ReplaceFileW'
--- opens its replacement argument without a sharing mode, which conflicts with
--- SQLite's deferred Windows handle release even after a connection has been
--- closed.  'MoveFileExW' with @MOVEFILE_REPLACE_EXISTING@ performs the
--- same-volume namespace replacement without that incompatible open.  The
--- candidate is always a sibling of the target, so omitting COPY_ALLOWED keeps
--- this a rename rather than a copy/delete sequence.  WRITE_THROUGH is retained
--- for the API's strongest completion request, while same-volume publication
--- remains a single namespace operation.
-atomicReplaceFile :: FilePath -> FilePath -> FilePath -> IO ()
-atomicReplaceFile databasePath temporaryPath _backupPath =
-  withTString temporaryPath $ \temporaryPointer ->
-    withTString databasePath $ \databasePointer ->
-      failIfFalse_
-        "MoveFileExW"
-        (c_MoveFileExW temporaryPointer databasePointer moveFileReplaceExistingAndWriteThrough)
-
-moveFileReplaceExistingAndWriteThrough :: DWORD
-moveFileReplaceExistingAndWriteThrough = 0x00000001 .|. 0x00000008
 
 -- | Cleanup is limited to the candidate and SQLite sidecars derived from its
 -- task-owned name.  Every path is attempted in deterministic order and every

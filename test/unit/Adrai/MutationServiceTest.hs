@@ -229,10 +229,25 @@ data FailureSnapshot = FailureSnapshot
 
 postCommitIndexProjectsExactCommit :: IO PostCommitRepositorySeed -> IO ()
 postCommitIndexProjectsExactCommit getSeed =
-  withPostCommitRepositoryCopy getSeed "adrai post-commit index" $ \temporary _ repository commitOid _base -> do
+  withPostCommitRepositoryCopy getSeed "adrai post-commit index" $ \temporary _ repository commitOid base -> do
     let database = temporary </> "index.sqlite"
     assertIndexed repository commitOid database
     created <- assertRight =<< runCreate repository
+    let failAfterInstall target candidate backup = do
+          installed <- postCommitInstallDatabase base target candidate backup
+          pure $ case installed of
+            Left problem -> Left problem
+            Right () -> Left (PostCommitIndexInstallFailure "injected synchronization failure after namespace installation")
+    afterEffect <- compilePostCommitIndexWith
+      (postCommitIndexDependencies {postCommitInstallDatabase = failAfterInstall}) repository (createCommitOid created) database
+    postCommitIndexed afterEffect @?= False
+    postCommitDatabase afterEffect @?= Nothing
+    postCommitIndexError afterEffect @?= Just
+      (PostCommitIndexPublishFailure (PostCommitIndexInstallFailure "injected synchronization failure after namespace installation"))
+    assertDatabaseRevision database (createCommitOid created)
+    siblings <- listDirectory temporary
+    assertBool "installed-but-failed publication cleans disposable siblings without restoring the old index"
+      (not (any (isPrefixOf (takeFileName database <> ".post-commit-")) siblings))
     assertIndexed repository (createCommitOid created) database
 
 postCommitIndexFailurePreservesCommit :: IO PostCommitRepositorySeed -> IO ()

@@ -134,6 +134,7 @@ internal-libraries:
       - Adrai.Provenance.Git.Lock.Native
       - Adrai.Web.Watch.Native
       - Adrai.Service.PostCommitIndex.Internal
+      - Adrai.Service.PostCommitIndex.Native
     when:
       - condition: os(linux)
         c-sources:
