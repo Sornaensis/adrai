@@ -18,6 +18,7 @@ import Adrai.Provenance (encodeBase64Url, sha256Digest)
 import Adrai.Types (Config (..), ManagedPaths (..), RepoPath, defaultConfig, digestBytes, repoPathText)
 import Adrai.Web.Api (Repo (..))
 import Adrai.Web.Events (Invalidation (..))
+import Adrai.Web.Watch.Native
 import qualified Adrai.Web.Events as Events
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (asyncWithUnmask, cancel, waitCatch)
@@ -25,9 +26,7 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.STM
 import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, finally, fromException, mask, onException, throwIO, try)
 import Control.Monad (void, when)
-import Data.Bits ((.&.), (.|.))
 import qualified Data.ByteString as BS
-import Data.Int (Int32)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (sort)
 import qualified Data.Map.Strict as Map
@@ -36,24 +35,9 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Data.Word (Word16, Word32, Word64, Word8)
-import Foreign (Ptr, alloca, allocaBytesAligned, castPtr, fillBytes, nullPtr, peek, peekByteOff, plusPtr, pokeByteOff)
-import Foreign.C.String (peekCWStringLen, withCWStringLen)
-import Foreign.Ptr (WordPtr)
-import Numeric (showHex)
+import Data.Word (Word64)
 import System.FilePath ((</>), isAbsolute, joinPath, makeRelative, normalise, splitDirectories)
 import System.FSNotify (eventPath, watchTree, withManager)
-import qualified System.Win32.File as Win32
-import System.Win32.Types (HANDLE)
-
-foreign import ccall safe "NtCreateFile"
-  c_NtCreateFile :: Ptr HANDLE -> Word32 -> Ptr () -> Ptr () -> Ptr () -> Word32 -> Word32 -> Word32 -> Word32 -> Ptr () -> Word32 -> IO Int32
-
-foreign import ccall safe "NtQueryDirectoryFile"
-  c_NtQueryDirectoryFile :: HANDLE -> HANDLE -> Ptr () -> Ptr () -> Ptr () -> Ptr () -> Word32 -> Int32 -> Word8 -> Ptr () -> Word8 -> IO Int32
-
-foreign import ccall safe "ReadFile"
-  c_ReadFile :: HANDLE -> Ptr Word8 -> Word32 -> Ptr Word32 -> Ptr () -> IO Int32
 
 data RepositoryFacts = RepositoryFacts
   { factsHead :: Maybe GitOid, factsHeadState :: Maybe GitHeadState,
@@ -196,10 +180,9 @@ trySynchronous action = do
       Nothing -> pure (Left failure)
     Right value -> pure (Right value)
 
-data FileIdentity = FileIdentity Word32 Word64 deriving (Eq, Show)
 data RootIdentities = RootIdentities FileIdentity FileIdentity FileIdentity deriving (Eq)
 data RootKind = WorktreeRoot | GitRoot | CommonRoot deriving (Eq)
-data RootHandles = RootHandles HANDLE HANDLE HANDLE
+data RootHandles = RootHandles NativeHandle NativeHandle NativeHandle
 data ObservationBudget = ObservationBudget (IORef (Int, Int)) (FilePath -> IO ())
 
 snapshotRepository :: ActiveFileRegistry -> RootIdentities -> (FilePath -> IO ()) -> Repo -> IO RepositorySnapshot
@@ -253,19 +236,19 @@ relevantIdentity budget roots paths =
 repoComponents :: RepoPath -> [FilePath]
 repoComponents = map Text.unpack . Text.splitOn "/" . repoPathText
 
-combinedIdentity :: ObservationBudget -> RootKind -> HANDLE -> [[FilePath]] -> IO (Maybe Text)
+combinedIdentity :: ObservationBudget -> RootKind -> NativeHandle -> [[FilePath]] -> IO (Maybe Text)
 combinedIdentity budget kind root paths =
   fingerprint . map (maybe "<missing>" TextEncoding.encodeUtf8) <$> mapM (pathIdentity budget kind root) paths
 
-sequencerActive :: ObservationBudget -> HANDLE -> IO Bool
+sequencerActive :: ObservationBudget -> NativeHandle -> IO Bool
 sequencerActive budget root =
   or <$> mapM (pathPresent budget root . pure) ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer"]
 
-pathPresent :: ObservationBudget -> HANDLE -> [FilePath] -> IO Bool
+pathPresent :: ObservationBudget -> NativeHandle -> [FilePath] -> IO Bool
 pathPresent budget root components =
   withRelativeHandle budget root components AnyEntry (pure . maybe False (const True))
 
-pathIdentity :: ObservationBudget -> RootKind -> HANDLE -> [FilePath] -> IO (Maybe Text)
+pathIdentity :: ObservationBudget -> RootKind -> NativeHandle -> [FilePath] -> IO (Maybe Text)
 pathIdentity budget kind root components =
   withRelativeHandle budget root components AnyEntry $ \case
     Nothing -> pure Nothing
@@ -275,22 +258,22 @@ pathIdentity budget kind root components =
         then directoryIdentityFromHandle budget kind components handle
         else Just . digest <$> readBoundedHandle budget handle
 
-fileIdentity :: ObservationBudget -> HANDLE -> [FilePath] -> IO (Maybe Text)
+fileIdentity :: ObservationBudget -> NativeHandle -> [FilePath] -> IO (Maybe Text)
 fileIdentity budget root components = fmap digest <$> observedFile budget root components
 
-observedFile :: ObservationBudget -> HANDLE -> [FilePath] -> IO (Maybe BS.ByteString)
+observedFile :: ObservationBudget -> NativeHandle -> [FilePath] -> IO (Maybe BS.ByteString)
 observedFile budget root components =
   withRelativeHandle budget root components FileEntry $ \case
     Nothing -> pure Nothing
     Just handle -> Just <$> readBoundedHandle budget handle
 
-directoryIdentity :: ObservationBudget -> RootKind -> HANDLE -> [FilePath] -> IO (Maybe Text)
+directoryIdentity :: ObservationBudget -> RootKind -> NativeHandle -> [FilePath] -> IO (Maybe Text)
 directoryIdentity budget kind root components =
   withRelativeHandle budget root components DirectoryEntry $ \case
     Nothing -> pure Nothing
     Just handle -> directoryIdentityFromHandle budget kind components handle
 
-directoryIdentityFromHandle :: ObservationBudget -> RootKind -> [FilePath] -> HANDLE -> IO (Maybe Text)
+directoryIdentityFromHandle :: ObservationBudget -> RootKind -> [FilePath] -> NativeHandle -> IO (Maybe Text)
 directoryIdentityFromHandle budget kind prefix root =
   fingerprint . map frame . sort <$> collect prefix root
   where
@@ -323,7 +306,7 @@ chargeEntry (ObservationBudget budget _) = do
      in (next, fst next > maximumObservationEntries)
   when exceeded (throwIO (userError "observation entry budget exceeded"))
 
-readBoundedHandle :: ObservationBudget -> HANDLE -> IO BS.ByteString
+readBoundedHandle :: ObservationBudget -> NativeHandle -> IO BS.ByteString
 readBoundedHandle (ObservationBudget budget _) handle = go []
   where
     go chunks = do
@@ -342,19 +325,20 @@ maximumObservationEntries, maximumObservationBytes :: Int
 maximumObservationEntries = 4096
 maximumObservationBytes = 16 * 1024 * 1024
 
-data NativeEntryKind = AnyEntry | FileEntry | DirectoryEntry
+nativeBufferBytes :: Int
+nativeBufferBytes = 64 * 1024
 
 captureRootIdentities :: Repo -> IO RootIdentities
 captureRootIdentities repo = withRootHandles repo identitiesOf
 
 withRootHandles :: Repo -> (RootHandles -> IO value) -> IO value
 withRootHandles repo action =
-  bracket (openAbsoluteDirectory (repoWorktreeRoot repo)) Win32.closeHandle $ \worktree ->
-    bracket (openAbsoluteDirectory (repoGitDirectory repo)) Win32.closeHandle $ \git ->
-      bracket (openAbsoluteDirectory (repoCommonDirectory repo)) Win32.closeHandle $ \common ->
+  bracket (openAbsoluteDirectory (repoWorktreeRoot repo)) closeHandle $ \worktree ->
+    bracket (openAbsoluteDirectory (repoGitDirectory repo)) closeHandle $ \git ->
+      bracket (openAbsoluteDirectory (repoCommonDirectory repo)) closeHandle $ \common ->
         action (RootHandles worktree git common)
 
-rootHandle :: RootHandles -> RootKind -> HANDLE
+rootHandle :: RootHandles -> RootKind -> NativeHandle
 rootHandle (RootHandles worktree _ _) WorktreeRoot = worktree
 rootHandle (RootHandles _ git _) GitRoot = git
 rootHandle (RootHandles _ _ common) CommonRoot = common
@@ -363,36 +347,12 @@ identitiesOf :: RootHandles -> IO RootIdentities
 identitiesOf (RootHandles worktree git common) =
   RootIdentities <$> handleIdentity worktree <*> handleIdentity git <*> handleIdentity common
 
-handleIdentity :: HANDLE -> IO FileIdentity
-handleIdentity handle = do
-  information <- Win32.getFileInformationByHandle handle
-  pure (FileIdentity (Win32.bhfiVolumeSerialNumber information) (Win32.bhfiFileIndex information))
-
-checkedInformation :: HANDLE -> IO Win32.BY_HANDLE_FILE_INFORMATION
-checkedInformation handle = do
-  information <- Win32.getFileInformationByHandle handle
-  when (isReparseInfo information) (throwIO (userError "refusing reparse-point observation handle"))
-  pure information
-
-isDirectoryInfo :: Win32.BY_HANDLE_FILE_INFORMATION -> Bool
-isDirectoryInfo information =
-  Win32.bhfiFileAttributes information .&. Win32.fILE_ATTRIBUTE_DIRECTORY /= (0 :: Word32)
-
-isReparseInfo :: Win32.BY_HANDLE_FILE_INFORMATION -> Bool
-isReparseInfo information =
-  Win32.bhfiFileAttributes information .&. Win32.fILE_ATTRIBUTE_REPARSE_POINT /= (0 :: Word32)
-
-openAbsoluteDirectory :: FilePath -> IO HANDLE
-openAbsoluteDirectory path = do
-  opened <- openNative nullPtr ("\\??\\" <> normalise path) DirectoryEntry
-  maybe (throwIO (userError ("repository observation root is missing: " <> path))) pure opened
-
-withRelativeHandle :: ObservationBudget -> HANDLE -> [FilePath] -> NativeEntryKind -> (Maybe HANDLE -> IO value) -> IO value
+withRelativeHandle :: ObservationBudget -> NativeHandle -> [FilePath] -> NativeEntryKind -> (Maybe NativeHandle -> IO value) -> IO value
 withRelativeHandle budget root components kind action = do
   mapM_ (const (chargeEntry budget)) components
   withRelativeHandleUncharged budget root components kind action
 
-withRelativeHandleUncharged :: ObservationBudget -> HANDLE -> [FilePath] -> NativeEntryKind -> (Maybe HANDLE -> IO value) -> IO value
+withRelativeHandleUncharged :: ObservationBudget -> NativeHandle -> [FilePath] -> NativeEntryKind -> (Maybe NativeHandle -> IO value) -> IO value
 withRelativeHandleUncharged _ root [] kind action = do
   validateHandleKind root kind
   action (Just root)
@@ -408,144 +368,13 @@ withRelativeHandleUncharged budget@(ObservationBudget _ afterHandleOpen) root (c
         when (not (isDirectoryInfo information)) (throwIO (userError "observation path component is not a directory"))
       withRelativeHandleUncharged budget owned remaining kind action
 
-validateHandleKind :: HANDLE -> NativeEntryKind -> IO ()
-validateHandleKind handle kind = do
-  information <- checkedInformation handle
-  case kind of
-    AnyEntry -> pure ()
-    FileEntry -> when (isDirectoryInfo information) (throwIO (userError "expected a regular observation file"))
-    DirectoryEntry -> when (not (isDirectoryInfo information)) (throwIO (userError "expected an observation directory"))
-
 validateComponent :: FilePath -> IO ()
 validateComponent component =
-  when (null component || component `elem` [".", ".."] || any (`elem` component) ['\\', '/', ':'])
+  when (null component || component `elem` [".", ".."] || any (`elem` component) ['\\', '/', ':', '\0'])
     (throwIO (userError "unsafe native observation path component"))
-
-openNative :: HANDLE -> FilePath -> NativeEntryKind -> IO (Maybe HANDLE)
-openNative parent name kind = mask $ \_ ->
-  openNativeRaw parent name kind
-
-withNativeHandle :: HANDLE -> FilePath -> NativeEntryKind -> (Maybe HANDLE -> IO value) -> IO value
-withNativeHandle parent name kind action = mask $ \restore -> do
-  opened <- openNativeRaw parent name kind
-  case opened of
-    Nothing -> restore (action Nothing)
-    Just handle -> bracket (pure handle) Win32.closeHandle (restore . action . Just)
-
-openNativeRaw :: HANDLE -> FilePath -> NativeEntryKind -> IO (Maybe HANDLE)
-openNativeRaw parent name kind = do
-  nameBytes <- either (throwIO . userError . Text.unpack) pure (nativeNameByteLength name)
-  withCWStringLen name $ \(namePointer, characterCount) ->
-    allocaBytesAligned unicodeStringBytes 8 $ \unicode ->
-      allocaBytesAligned objectAttributesBytes 8 $ \objectAttributes ->
-        allocaBytesAligned ioStatusBytes 8 $ \ioStatus ->
-          alloca $ \handlePointer -> do
-            fillBytes unicode 0 unicodeStringBytes
-            fillBytes objectAttributes 0 objectAttributesBytes
-            fillBytes ioStatus 0 ioStatusBytes
-            when (characterCount * 2 /= fromIntegral nameBytes) (throwIO (userError "native UTF-16 name length mismatch"))
-            pokeByteOff unicode 0 nameBytes
-            pokeByteOff unicode 2 nameBytes
-            pokeByteOff unicode 8 namePointer
-            pokeByteOff objectAttributes 0 (fromIntegral objectAttributesBytes :: Word32)
-            pokeByteOff objectAttributes 8 parent
-            pokeByteOff objectAttributes 16 (castPtr unicode :: Ptr ())
-            pokeByteOff objectAttributes 24 (objectCaseInsensitive .|. objectDontReparse :: Word32)
-            status <- c_NtCreateFile handlePointer desiredAccess (castPtr objectAttributes) (castPtr ioStatus) nullPtr
-              0 shareAll fileOpen (openOptions kind) nullPtr 0
-            if status `elem` missingStatuses then pure Nothing
-            else if status < 0 then throwNt "NtCreateFile" status
-            else do
-              handle <- peek handlePointer
-              information <- Win32.getFileInformationByHandle handle `onException` Win32.closeHandle handle
-              if isReparseInfo information
-                then Win32.closeHandle handle >> throwIO (userError "refusing reparse-point observation handle")
-                else do
-                  validateHandleKind handle kind `onException` Win32.closeHandle handle
-                  pure (Just handle)
-
-nativeNameByteLength :: FilePath -> Either Text Word16
-nativeNameByteLength name =
-  let byteCount = BS.length (TextEncoding.encodeUtf16LE (Text.pack name))
-   in if byteCount <= 0 || byteCount > fromIntegral (maxBound :: Word16)
-        then Left "native observation name exceeds the UTF-16 length bound"
-        else Right (fromIntegral byteCount)
-
-nativeNameLengthAcceptedForTest :: FilePath -> Bool
-nativeNameLengthAcceptedForTest name = case nativeNameByteLength name of
-  Left _ -> False
-  Right _ -> True
-
-openOptions :: NativeEntryKind -> Word32
-openOptions kind = fileOpenReparsePoint .|. fileSynchronousIoNonalert .|. case kind of
-  AnyEntry -> 0
-  FileEntry -> fileNonDirectoryFile
-  DirectoryEntry -> fileDirectoryFile
-
-foldDirectory :: HANDLE -> value -> (value -> FilePath -> IO value) -> IO value
-foldDirectory handle initial step =
-  allocaBytesAligned ioStatusBytes 8 $ \ioStatus ->
-    allocaBytesAligned nativeBufferBytes 8 $ \buffer -> loop ioStatus buffer True initial
-  where
-    loop ioStatus buffer restart value = do
-      fillBytes ioStatus 0 ioStatusBytes
-      status <- c_NtQueryDirectoryFile handle nullPtr nullPtr nullPtr (castPtr ioStatus) (castPtr buffer)
-        (fromIntegral nativeBufferBytes) fileNamesInformation 1 nullPtr (if restart then 1 else 0)
-      if status == statusNoMoreFiles then pure value
-      else if status < 0 then throwNt "NtQueryDirectoryFile" status
-      else do
-        informationBytes <- peekByteOff ioStatus 8 :: IO WordPtr
-        when (informationBytes < 12 || informationBytes > fromIntegral nativeBufferBytes)
-          (throwIO (userError "invalid native directory information length"))
-        nextOffset <- peekByteOff buffer 0 :: IO Word32
-        nameBytes <- peekByteOff buffer 8 :: IO Word32
-        when (nextOffset /= 0 || odd nameBytes || nameBytes > fromIntegral informationBytes - 12)
-          (throwIO (userError "invalid native directory entry"))
-        name <- peekCWStringLen (castPtr (buffer `plusPtr` 12), fromIntegral nameBytes `div` 2)
-        next <- step value name
-        loop ioStatus buffer False next
-
-readHandleChunk :: HANDLE -> Int -> IO BS.ByteString
-readHandleChunk handle requested =
-  allocaBytesAligned requested 8 $ \buffer ->
-    alloca $ \readPointer -> do
-      succeeded <- c_ReadFile handle (castPtr buffer) (fromIntegral requested) readPointer nullPtr
-      when (succeeded == 0) (throwIO (userError "native observation read failed"))
-      actual <- peek readPointer
-      BS.packCStringLen (castPtr buffer, fromIntegral actual)
-
-throwNt :: String -> Int32 -> IO value
-throwNt operation status =
-  throwIO (userError (operation <> " failed with NTSTATUS 0x" <> showHex (fromIntegral status :: Word32) ""))
 
 joinComponents :: [FilePath] -> FilePath
 joinComponents = joinPath
-
-desiredAccess, shareAll, fileOpen, fileOpenReparsePoint, fileSynchronousIoNonalert, fileDirectoryFile, fileNonDirectoryFile, objectCaseInsensitive, objectDontReparse :: Word32
-desiredAccess = 0x00100081
-shareAll = 0x00000007
-fileOpen = 1
-fileOpenReparsePoint = 0x00200000
-fileSynchronousIoNonalert = 0x00000020
-fileDirectoryFile = 0x00000001
-fileNonDirectoryFile = 0x00000040
-objectCaseInsensitive = 0x00000040
-objectDontReparse = 0x00001000
-
-fileNamesInformation :: Int32
-fileNamesInformation = 12
-
-missingStatuses :: [Int32]
-missingStatuses = map fromIntegral ([0xC0000034, 0xC000003A] :: [Word32])
-
-statusNoMoreFiles :: Int32
-statusNoMoreFiles = fromIntegral (0x80000006 :: Word32)
-
-unicodeStringBytes, objectAttributesBytes, ioStatusBytes, nativeBufferBytes :: Int
-unicodeStringBytes = 16
-objectAttributesBytes = 48
-ioStatusBytes = 16
-nativeBufferBytes = 64 * 1024
 
 fingerprint :: [BS.ByteString] -> Maybe Text
 fingerprint [] = Nothing

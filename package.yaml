@@ -132,10 +132,13 @@ internal-libraries:
       - Adrai.Compiler.CacheLease.Internal
       - Adrai.Compiler.CacheSelection.Internal
       - Adrai.Provenance.Git.Lock.Native
+      - Adrai.Web.Watch.Native
       - Adrai.Service.PostCommitIndex.Internal
     when:
       - condition: os(linux)
-        c-sources: src/Adrai/Provenance/Git/Lock/git_lock_linux.c
+        c-sources:
+          - src/Adrai/Provenance/Git/Lock/git_lock_linux.c
+          - src/Adrai/Web/Watch/watch_linux.c
 
 executables:
   adrai:

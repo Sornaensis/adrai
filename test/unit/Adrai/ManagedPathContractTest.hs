@@ -67,6 +67,15 @@ unicodeNonexistentLeaf =
         )
     exists <- doesFileExist resolved
     assertBool "resolution must not create the leaf" (not exists)
+    -- Linux names remain case-sensitive; containment never folds or normalizes
+    -- persisted RepoPath spelling.
+    if os == "linux" then do
+      createDirectory (root </> "Architecture")
+      upper <- pathOrFail "Architecture/new.md"
+      upperResolved <- resolveManagedWritePath root upper >>= assertRight
+      upperResolved @?= canonicalRoot </> "Architecture" </> "new.md"
+      assertBool "case-distinct parents retain their spelling" (upperResolved /= canonicalRoot </> "architecture" </> "new.md")
+    else pure ()
 
 canonicalLocationMismatches :: IO ()
 canonicalLocationMismatches = do
@@ -161,6 +170,18 @@ linkedParentEscape =
     assertBool ("expected redirect rejection, got " <> show result) (isRedirectError result)
     escaped <- doesFileExist outsideLeaf
     assertBool "resolution must never write through the linked parent" (not escaped)
+    let contained = root </> "contained"
+        readLink = root </> "read-link"
+    createDirectory contained
+    BS.writeFile (contained </> "read.md") "contained read bytes"
+    createDirectoryRedirect contained readLink
+    readPath <- pathOrFail "read-link/read.md"
+    (logical, physical) <- resolveRepositoryReadPath root readPath >>= assertRight
+    logical @?= readPath
+    canonicalizePath (contained </> "read.md") >>= (physical @?=)
+    BS.readFile physical >>= (@?= "contained read bytes")
+    writePath <- pathOrFail "read-link/new.md"
+    resolveManagedWritePath root writePath >>= assertBool "even a contained read link cannot redirect a write" . isRedirectError
 
 createDirectoryRedirect :: FilePath -> FilePath -> IO ()
 createDirectoryRedirect target link

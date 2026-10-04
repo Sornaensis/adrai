@@ -66,7 +66,8 @@ import Network.Socket
     bind, close, connect, defaultProtocol, getSocketName, setSocketOption, shutdown, socket, tupleToHostAddress )
 import Network.Socket.ByteString (recv, sendAll)
 import qualified Network.WebSockets as WS
-import System.Directory (Permissions (writable), copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getPermissions, listDirectory, removeDirectory, removeDirectoryRecursive, removeFile, renameDirectory, setPermissions)
+import System.Directory (Permissions (writable), copyFile, createDirectory, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, doesFileExist, getCurrentDirectory, getPermissions, listDirectory, removeDirectoryLink, removeDirectoryRecursive, removeFile, renameDirectory, setPermissions)
+import System.Info (os)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -1318,6 +1319,15 @@ verifySlowNetworkSubscriber root = do
           assertFailure ("the unread live subscriber was not physically closed after its send deadline: " <> show other)
   either (assertFailure . Text.unpack) pure started
 
+-- Windows junctions and Linux symlinks exercise the same redirected-component
+-- rejection without changing the production observer's read policy.
+createObservationRedirect :: FilePath -> FilePath -> IO ()
+createObservationRedirect target link
+  | os == "mingw32" = do
+      (code, _, diagnostic) <- readCreateProcessWithExitCode (shell ("mklink /J \"" <> link <> "\" \"" <> target <> "\"")) ""
+      assertBool ("observation junction creation failed: " <> diagnostic) (code == ExitSuccess)
+  | otherwise = createDirectoryLink target link
+
 testWatchRuntime :: IO ()
 testWatchRuntime = withSeededRepository $ \root -> do
   repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
@@ -1432,9 +1442,13 @@ testWatchRuntime = withSeededRepository $ \root -> do
     (BS.writeFile worktreeMetadata "worktree metadata")
   removeFile worktreeMetadata
   before <- Watch.repositorySnapshot observer bound
-  assertBool "the native scanner accepts the largest even UTF-16 byte length" (Watch.nativeNameLengthAcceptedForTest (replicate 32767 'a'))
-  assertBool "the native scanner rejects a wrapping UTF-16 byte length" (not (Watch.nativeNameLengthAcceptedForTest (replicate 32768 'a')))
-  assertBool "the native scanner counts surrogate pairs as two UTF-16 code units" (not (Watch.nativeNameLengthAcceptedForTest (replicate 16384 '\x1f600')))
+  if os == "mingw32" then do
+    assertBool "the native scanner accepts the largest even UTF-16 byte length" (Watch.nativeNameLengthAcceptedForTest (replicate 32767 'a'))
+    assertBool "the native scanner rejects a wrapping UTF-16 byte length" (not (Watch.nativeNameLengthAcceptedForTest (replicate 32768 'a')))
+    assertBool "the native scanner counts surrogate pairs as two UTF-16 code units" (not (Watch.nativeNameLengthAcceptedForTest (replicate 16384 '\x1f600')))
+  else do
+    assertBool "the Linux scanner preserves non-ASCII component spelling" (Watch.nativeNameLengthAcceptedForTest "répertoire-Δ")
+    assertBool "the Linux scanner refuses NUL in components" (not (Watch.nativeNameLengthAcceptedForTest "bad\0name"))
   BS.writeFile (root </> "seed.txt") "changed relevant bytes"
   after <- Watch.repositorySnapshot observer bound
   case (before, after) of
@@ -1620,10 +1634,9 @@ testWatchRuntime = withSeededRepository $ \root -> do
   createDirectoryIfMissing True (external </> "adrai")
   BS.writeFile (external </> "adrai" </> "external-sentinel.txt") "must never be observed"
   let controlLink = root </> "junction-control"
-  (controlExit, _, controlError) <- readCreateProcessWithExitCode (shell ("mklink /J \"" <> controlLink <> "\" \"" <> external <> "\"")) ""
-  assertBool ("junction control failed before the held-handle test: " <> controlError) (controlExit == ExitSuccess)
+  createObservationRedirect external controlLink
   doesFileExist (controlLink </> "adrai" </> "external-sentinel.txt") >>= assertBool "junction control exposes the external sentinel"
-  removeDirectory controlLink
+  removeDirectoryLink controlLink
   putStrLn "p7-03-watch: junction control complete"
   nativeSwapOrigin <- getMonotonicTimeNSec
   writeIORef nativeSwapTracing True
@@ -1683,12 +1696,11 @@ testWatchRuntime = withSeededRepository $ \root -> do
             replacement <- doesDirectoryExist architecture
             original <- doesDirectoryExist ownedArchitecture
             if original then do
-              if replacement then removeDirectory architecture else pure ()
+              if replacement then removeDirectoryLink architecture else pure ()
               renameDirectory ownedArchitecture architecture
             else pure ()
       (`finally` restoreArchitecture) $ do
-        (swapExit, _, swapError) <- readCreateProcessWithExitCode (shell ("mklink /J \"" <> architecture <> "\" \"" <> external <> "\"")) ""
-        assertBool ("held-ancestor junction replacement failed: " <> swapError) (swapExit == ExitSuccess)
+        createObservationRedirect external architecture
         doesFileExist (architecture </> "adrai" </> "external-sentinel.txt") >>= assertBool "the pathname was replaced by the external junction while the ancestor handle stayed open"
         recordNativeSwapPhase "junction replacement verified"
         putMVar resumeAncestor ()
