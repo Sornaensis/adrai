@@ -192,8 +192,7 @@ dependencies = ServerDependencies
   }
 
 withServer :: (RunningServer -> Async () -> IO value) -> IO value
-withServer action = do
-  root <- getCurrentDirectory
+withServer action = withSeededRepository $ \root -> do
   started <- withWebServer dependencies root (Api.WebOptions Nothing False) action
   either (assertFailure . Text.unpack) pure started
 
