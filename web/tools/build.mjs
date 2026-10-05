@@ -147,7 +147,11 @@ export async function buildAsset({ root = webRoot, compilerPath, write = true, s
     const tools = await toolchain(absoluteRoot, compilerPath, signal, onCompilerSpawn);
     const compiledPath = join(temporary, 'elm.js');
     await runCompiler(absoluteRoot, compilerPath, ['make', 'src/Main.elm', '--optimize', `--output=${compiledPath}`], signal, onCompilerSpawn);
-    const elm = await readFile(compiledPath);
+    // Native compiler runtime templates differ in CRLF versus LF. Canonicalize
+    // only their generated line endings; retain source and bridge bytes exactly.
+    const elm = (await readFile(compiledPath)).filter(
+      (byte, index, bytes) => byte !== 13 || bytes[index + 1] !== 10,
+    );
     const bridge = await readFile(join(absoluteRoot, 'static', 'bridge.js'));
     if (JSON.stringify(await inputsFor(absoluteRoot)) !== JSON.stringify(inputs)) {
       throw new Error('Asset inputs changed during compilation; retry the build.');

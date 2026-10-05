@@ -10,7 +10,7 @@
     "check:elm": "elm make src/Main.elm --optimize --output=elm-stuff/p704-check.js",
     "verify:assets": "node tools/verify-assets.mjs",
     "test:assets": "node --test tests/assets.test.mjs",
-    "test:components": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/run-components.ps1"
+    "test:components": "node tools/run-owned-frontend.mjs components"
   },
   "devDependencies": {
     "elm": "0.19.2-0",

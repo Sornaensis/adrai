@@ -9,8 +9,12 @@ artifact-binding workflow. The complete gate executes every registered test
 in the ordinary, cache-selection, stress, and benchmark-registration
 components, enables the stress cases with `--run-stress`, and includes the
 named reliability repeats, fixture setup, and owned-descendant cleanup within
-one aggregate 1,800-second deadline. A timeout, omitted test, or surviving
-descendant fails the gate.
+one aggregate deadline (1,800 seconds by default, up to an explicit 3,600
+seconds). A timeout, omitted test, or surviving descendant fails the gate.
+For combined native and frontend acceptance, one outer owner allocates a single
+3,600-second host execution budget and passes its remaining allocation to each
+stage; stages do not start a new hour. Dependency setup and compilation precede
+that execution clock.
 
 Compilation is a separate, consistently configured pedantic build of all
 components. Tests and benchmarks are compiled but not executed, and build time
@@ -22,6 +26,19 @@ production-Elm workflows use small deterministic HTTP fixtures, causal response
 promises, and ordinary visible-control assertions. They have no case or step
 deadlines, and keep compilation and test output in OS temporary directories.
 See [browser workflows](../browser-tests/README.md) for coverage and cleanup.
+
+The component and browser npm commands pass the launcher's actual Node executable to the platform
+PowerShell supervisor. Linux requires an absolute `PWSH_EXE` and the verified
+`ADRAI_RETAINED_OWNER_EXE` helper with its build sidecar. Use external executable
+temporary directories and explicit `ELM_HOME` and browser/npm cache paths.
+`ADRAI_FRONTEND_REMAINING_MS` supplies the remaining execution and cleanup
+allocation; standalone commands default to one hour. Asset build, verification,
+and tests remain direct Node commands and require enclosing ownership for
+forced-caller-death containment. Asset tests reserve cleanup time and reject
+completion beyond their caller allocation. Component tests run with
+the pinned elm-test's `--workers 1`, and Playwright also uses one worker.
+Component tests and generated FixtureData are copied into an external Elm
+project, so running them does not add inputs to the embedded asset inventory.
 
 Golden tests are read-only by default. Their fixture directories under `test/golden/` document the explicit regeneration switches. Regeneration must remain Haskell-owned and must not execute or import a prototype implementation.
 

@@ -3,7 +3,7 @@
   "inputs": {
     "elm.json": "a645d4f55afc34911f4571f902cfbaa2bcb6ca3933b47ccbeb397c16d52bedd8",
     "package-lock.json": "5f5c0a606f3355de0850f118daf5fe14e1e9ed240640550db2e98ce9dd315bca",
-    "package.json": "7c539af6eb32dbf7b4ce61cdce314a4ba1ed6d1315fcc8bcd9c158c83bedd101",
+    "package.json": "5ba65e2055ae1f91e11e3f4b849f8cd76c573ad9437c491ecfbbd240825e80a4",
     "src/Api.elm": "39c572b8e2b7868a382eb19ac835e5c0bc2cf13f8e7dff841dd5ebddf4fa30a0",
     "src/Main.elm": "f33783e286a3ca64c366de7f006e62b00bc35f4f704d2c19f1371535d3f3ab0c",
     "src/Route.elm": "a9f3be1ba500c1d57a87460cded82ba2da927f9bc1baff4773f8f739a6b2918d",
@@ -11,7 +11,7 @@
     "static/app.css": "7edc8058b9b58301ab78c8492517e35d1f53e83815274e5f53fb4d454f98a1a3",
     "static/bridge.js": "a184c4e00aad9134e9f5232f38a743dc553129cd5f518fb3fe0eeb9f5f8c2b5a",
     "static/index.html": "4b2f806eb312de2012efd0775608282a3501ef2b300147a79040c9ffb227ccad",
-    "tools/build.mjs": "4251bbae85d36b7ad5fa23d3dc955e6a6d3a0d18975e0afe33f4385fa86406d6",
+    "tools/build.mjs": "0807b84cb587f2b4f0259781858d9cc55cb5d8c954be1a98287e8b50517b18a1",
     "tools/verify-assets.mjs": "695e8a95fc012e6a6b0c8b17987630c401ef746a73bf8ab6b954211ef18d6fd5"
   },
   "toolchain": {
@@ -20,6 +20,6 @@
     "elm": "0.19.2"
   },
   "output": {
-    "dist/app.js": "0519a8f6911b170f4a913765fe7beb149fa7a58bff1aae10b5c2371658f8e0eb"
+    "dist/app.js": "1ce6789793a60a5c900f00b379598fff3195bf43fe026911a99653803a09ec29"
   }
 }

@@ -2,7 +2,7 @@
   "name": "adrai-browser-tests",
   "private": true,
   "scripts": {
-    "test": "powershell -NoProfile -ExecutionPolicy Bypass -File support/run-browser-tests.ps1"
+    "test": "node ../web/tools/run-owned-frontend.mjs browser"
   },
   "engines": {
     "node": "24.x"

@@ -2,15 +2,25 @@
 
 ADRAI is currently installed from source.
 
-The current native runtime and retained/frontend launchers require Windows.
-Repository locking, watching, cache publication, and owned-process cleanup use
-Windows APIs or PowerShell. Cross-platform support is under analysis, not an
-implemented installation path.
+The native runtime has Windows and Linux backends for repository locking,
+verified filesystem observation, cache publication, and process ownership.
+The retained and frontend launchers use Windows PowerShell 5.1 on Windows or
+an explicitly selected PowerShell 7 executable on Linux. Linux process ownership
+requires the native helper and permission to create an unprivileged user/PID
+namespace; a process group alone does not satisfy that requirement. macOS is
+not a supported installation target for these backends.
 
 ## Requirements
 
 - Git 2.31 or newer
 - Stack 3.11.1
+
+On Linux, use a filesystem that supports advisory `flock` and file/directory
+`fsync`. Cache publication requests those synchronization operations; their
+completion is not a universal power-loss guarantee. The browser opener uses
+`xdg-open`, which requires a desktop session; `adrai web --no-open` works without
+an opener. See [Testing](TESTING.md) for test-runner prerequisites and the
+separate complete-host acceptance gate.
 
 The project pins its compiler and package set in `stack.yaml` (`lts-24.52`). Stack downloads the matching GHC toolchain when needed. Python and libgit2 are not runtime dependencies.
 

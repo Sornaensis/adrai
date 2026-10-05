@@ -4,14 +4,26 @@ import { cp, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { performance } from 'node:perf_hooks';
 import { buildAsset, nativeCompiler, webRoot } from '../tools/build.mjs';
 import { verifyAssets } from '../tools/verify-assets.mjs';
 
 const compilerPath = nativeCompiler(webRoot);
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const aggregateSignal = AbortSignal.timeout(60000);
+const supplied = process.env.ADRAI_FRONTEND_REMAINING_MS ?? '3600000';
+if (!/^\d+$/.test(supplied) || !Number.isSafeInteger(Number(supplied)) || Number(supplied) < 1) {
+  throw new Error('ADRAI_FRONTEND_REMAINING_MS must be a positive remaining execution and cleanup budget.');
+}
+const started = performance.now();
+const cleanupReserve = 10000;
+if (Number(supplied) <= cleanupReserve) throw new Error('No asset execution and cleanup allocation remains.');
+const aggregateSignal = AbortSignal.timeout(Number(supplied) - cleanupReserve);
+const assertCompletionWithinAllocation = () => assert.ok(
+  performance.now() - started < Number(supplied),
+  'Asset execution and cleanup exceeded the caller allocation',
+);
 
-test('optimized assets rebuild identically and copied source drift is rejected', { timeout: 70000 }, async () => {
+test('optimized assets rebuild identically and copied source drift is rejected', async () => {
   const root = await mkdtemp(join(tmpdir(), 'adrai-asset-test-'));
   try {
     for (const name of ['src', 'static', 'tools', 'dist', 'elm.json', 'package.json', 'package-lock.json']) {
@@ -66,9 +78,10 @@ test('optimized assets rebuild identically and copied source drift is rejected',
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+  assertCompletionWithinAllocation();
 });
 
-test('cancelled native Elm compile closes before temporary cleanup', { timeout: 70000 }, async () => {
+test('cancelled native Elm compile closes before temporary cleanup', async () => {
   const controller = new AbortController();
   let compilerPid;
   await assert.rejects(buildAsset({
@@ -83,4 +96,5 @@ test('cancelled native Elm compile closes before temporary cleanup', { timeout: 
   }), /cancelled/);
   assert.ok(Number.isInteger(compilerPid));
   assert.throws(() => process.kill(compilerPid, 0), { code: 'ESRCH' });
+  assertCompletionWithinAllocation();
 });

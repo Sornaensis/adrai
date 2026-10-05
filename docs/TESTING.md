@@ -189,13 +189,11 @@ multiset from the verified partitions, retained components, and expanded repeat
 counts and requires exact equality with the configured queue before dispatch.
 Quoted command lines are checked against the Windows 32,767-character limit.
 
-The current source ledger declares 911 unique ordinary tests, 9 cache-selection
-tests, 28 stress tests, and 6 benchmark-registration tests: 954 unique
-registrations. The explicit competing-target repeat makes 955 planned
-executions. These source counts require a fresh runner List before they are
-verified; only Complete establishes actual execution. The runner does not
-hardcode these totals. A fresh matching build must list every
-actual registration and prove exact equality before dispatch.
+Derive unique registration totals from the current ledger and each component's
+fresh List. Expand the ledger's repeat counts to derive planned executions.
+Only Complete establishes actual execution; the runner does not hardcode these
+totals. A fresh matching build must list every actual registration and prove
+exact equality before dispatch.
 The Complete gate uses its one shared selected deadline, including
 listing, setup, dispatch, and owned-descendant cleanup. It is a finite liveness
 guard, not a product latency target or a promise about another checkout or host.
@@ -212,7 +210,7 @@ must confirm all source-derived counts against the frozen executable snapshot.
 
 If one queued process times out, exits unsuccessfully, leaves a descendant, or
 fails its expected Tasty count, dispatch stops. The coordinator requests
-termination of every active owned Job Object before waiting for any cleanup,
+termination of every active platform ownership scope before waiting for cleanup,
 then verifies all trees against the remaining time in the same global deadline.
 It never extends the deadline or selects unrelated processes by name.
 
@@ -269,6 +267,38 @@ timeouts explicitly. Compilation and all browser output go to a fresh OS tempora
 directory printed by the launcher; owned browser contexts, HTTP servers, and child
 processes are cleaned up on success and failure. See [browser workflows](../browser-tests/README.md)
 for the precise UI assurance and filtering command.
+
+The component and browser npm entrypoints select Windows PowerShell 5.1 on Windows or the
+absolute `PWSH_EXE` on Linux, and pass their actual Node executable explicitly.
+Linux requires the source-bound native owner and its verified build sidecar in
+`ADRAI_RETAINED_OWNER_EXE`. Set external executable `TEMP`, `TMP`, and `TMPDIR`
+roots, `ELM_HOME`, and `PLAYWRIGHT_BROWSERS_PATH` before launch. Dependencies and
+browser binaries must match the locks; use the local Playwright CLI to install
+Chromium, without silently installing system packages. These controlled fixtures
+retain pinned Playwright's default Chromium launch options, including its
+inherited `--no-sandbox`. This is not a sandbox-enabled or general browsing
+security claim; do not add bypass flags, privileges, or broader namespace rules.
+
+`ADRAI_FRONTEND_REMAINING_MS` passes the caller's remaining execution and cleanup
+allocation (standalone default: 3,600,000 milliseconds). The Node dispatcher
+passes an absolute expiry through PowerShell startup and checks completion
+against its monotonic clock. A combined host gate must own the entire chain and
+pass the remaining shared allocation at each stage. Test case and step timeouts
+remain disabled; the aggregate bound is a liveness and cleanup guard.
+
+The component supervisor also supports its existing `-Probe timeout`,
+`spawn-failure`, `early-success`, and `early-error` modes through
+`npm --prefix web run test:components -- -Probe <mode>`. The timeout-named probe
+requests cancellation after the descendant's actual readiness signal; it does
+not assert a startup speed. Provider cleanup proves the owned tree has exited.
+The dispatcher maps SIGINT and SIGTERM to Node's default child termination
+request (SIGTERM on Linux, forceful termination on Windows). PowerShell's
+`finally` is not guaranteed by that request. Forced dispatcher death requires
+an enclosing owned runner; standalone npm is not an independent caller-death
+supervisor. Asset build, verification, and tests remain direct Node commands;
+their enclosing owner supplies forced-caller-death and finite process cleanup.
+The asset tests reserve cleanup within the supplied allocation and reject late
+completion without adding per-case speed limits.
 
 The historical P7-04/P7-05 real-server browser specs and supervisors remain outside
 default discovery. Their paging, conflicts, reconnect, and real-service integration

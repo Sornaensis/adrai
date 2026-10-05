@@ -4,11 +4,15 @@ import path from "node:path";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mode = process.argv[2] || "normal";
+const projectRoot = process.argv[3] || webRoot;
+const testPath = process.argv[4] || "tests/ExplorerTest.elm";
+const compiler = process.argv[5];
 
 if (mode === "normal") {
   const executable = path.join(webRoot, "node_modules", "elm-test", "bin", "elm-test");
-  const child = spawn(process.execPath, [executable, "tests/ExplorerTest.elm"], {
-    cwd: webRoot, stdio: "inherit", windowsHide: true, shell: false
+  if (!compiler || !path.isAbsolute(compiler)) throw new Error("The owned launcher must select the native Elm compiler.");
+  const child = spawn(process.execPath, [executable, "--compiler", compiler, "--workers", "1", testPath], {
+    cwd: projectRoot, stdio: "inherit", windowsHide: true, shell: false
   });
   child.once("error", error => {
     console.error(error.message);

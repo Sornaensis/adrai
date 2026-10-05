@@ -2,7 +2,7 @@
 
 From `browser-tests`, run:
 
-```powershell
+```console
 npm test
 ```
 
@@ -30,8 +30,28 @@ There are no case, expectation, action, or navigation deadlines or speed asserti
 Playwright timeout defaults are explicitly disabled, including for manually
 created contexts. Interrupt a run that cannot make progress to diagnose its awaited
 condition. Browser contexts and fixture servers close in nested `finally` blocks;
-a thin Windows owned-job launcher contains descendants on cancellation or failure.
-Its finite cleanup waits drain owned processes, not measure test performance.
+a platform supervisor contains descendants in a Windows Job Object or the
+verified Linux native owner's private PID namespace. Its finite cleanup waits
+drain owned processes, not measure test performance.
+
+Linux requires absolute `PWSH_EXE` and `ADRAI_RETAINED_OWNER_EXE` selections; the
+owner binary's build sidecar must match its current source. Keep executable
+temporary projects and tools outside the repository, with explicit `ELM_HOME`
+and `PLAYWRIGHT_BROWSERS_PATH`. The npm launcher passes its actual Node executable
+to PowerShell instead of rediscovering it through PATH.
+
+`ADRAI_FRONTEND_REMAINING_MS` supplies the caller's remaining execution and
+cleanup budget, defaulting to one hour for a standalone command. PowerShell
+startup and output finalization consume that allocation. A combined host gate
+uses an enclosing owned runner and passes its shared remaining budget rather
+than resetting a clock for this stage. SIGINT/SIGTERM request Node's default
+child termination (SIGTERM on Linux, forceful termination on Windows); this
+does not guarantee PowerShell finally blocks run. Forced npm/dispatcher death
+needs enclosing ownership and is not a standalone launcher guarantee.
+
+These local controlled fixtures retain pinned Playwright's Chromium defaults,
+including its inherited `--no-sandbox`; they do not establish a sandbox-enabled
+or general browsing security boundary. Do not add bypass flags or privileges.
 
 The launcher prints a fresh OS temporary output directory. Elm compilation/cache,
 Playwright output, and stdout/stderr remain there, outside the repository. The
