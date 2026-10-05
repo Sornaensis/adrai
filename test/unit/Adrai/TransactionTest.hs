@@ -105,13 +105,13 @@ import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket,
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Directory (createDirectory, createDirectoryLink, createFileLink, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, removeDirectory, removeDirectoryRecursive, removeFile, setModificationTime)
+import System.Directory (createDirectory, createDirectoryLink, createFileLink, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, pathIsSymbolicLink, removeDirectory, removeDirectoryLink, removeDirectoryRecursive, removeFile, setModificationTime)
 import Data.List (isPrefixOf, sort)
 import qualified System.Exit as Exit
 import System.FilePath (isAbsolute, makeRelative, normalise, splitDirectories, (</>), takeDirectory)
 import System.Process.Typed (runProcess, shell)
 import System.Info (os)
-import System.IO.Error (tryIOError)
+import System.IO.Error (isDoesNotExistError, tryIOError)
 import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -1031,8 +1031,8 @@ assertLateRedirectAfterParentCreation getSeed label runTransaction =
         assertBool (label <> " returns a typed containment-aware failure") ("ManagedPathRedirected" `Text.isInfixOf` Text.pack (show problem))
       Right success -> assertFailure (label <> " unexpectedly committed after a late redirect: " <> show success)
     listDirectory outsidePath >>= assertEqual (label <> " writes no managed bytes through the redirect") []
-    _ <- tryIOError (removeDirectory managedParent)
-    _ <- tryIOError (removeDirectory architectureParent)
+    removeDirectoryRedirect managedParent
+    removeDirectory architectureParent
     after <- transactionObservableState repositoryPath
     assertEqual (label <> " leaves HEAD, refs, index, status, and reflogs unchanged after link removal") before after
 
@@ -1219,8 +1219,8 @@ assertPreCasRedirect getSeed label runTransaction =
       Left problem -> assertBool (label <> " returns a typed containment/rollback failure") ("ManagedPathRedirected" `Text.isInfixOf` Text.pack (show problem))
       Right success -> assertFailure (label <> " unexpectedly published a ref: " <> show success)
     listDirectory outsidePath >>= assertEqual (label <> " writes no bytes through the pre-CAS redirect") []
-    _ <- tryIOError (removeDirectory redirectedParent)
-    _ <- tryIOError (removeDirectory architectureParent)
+    removeDirectoryRedirect redirectedParent
+    removeDirectory architectureParent
     after <- transactionObservableState repositoryPath
     assertEqual (label <> " publishes no ref or index/worktree/reflog mutation before CAS") before after
 
@@ -1383,6 +1383,18 @@ createDirectoryRedirect target link
       case result of
         Right () -> pure ()
         Left problem -> assertFailure ("failed to create directory symlink: " <> show problem)
+
+-- Remove the injected link itself before comparing the caller's Git state.
+-- An unexpected directory or removal failure must remain a fixture failure.
+removeDirectoryRedirect :: FilePath -> IO ()
+removeDirectoryRedirect link = do
+  pathIsSymbolicLink link >>= assertBool "injected managed redirect is still a link"
+  removeDirectoryLink link
+  remaining <- tryIOError (pathIsSymbolicLink link)
+  case remaining of
+    Left problem | isDoesNotExistError problem -> pure ()
+    Left problem -> ioError problem
+    Right _ -> assertFailure "injected managed redirect entry still exists"
 
 transactionGeneratedFile :: GitOid -> IO (String, GeneratedFile)
 transactionGeneratedFile basis = do
