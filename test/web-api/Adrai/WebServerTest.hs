@@ -46,6 +46,7 @@ import Adrai.Web.Socket (unavailableEventsTransport)
 import qualified Adrai.Web.Watch as Watch
 import Control.Concurrent (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.Async (Async, async, cancel, poll, race, wait, waitCatch, withAsync)
+import Control.Concurrent.STM (atomically, check, newEmptyTMVarIO, newTVarIO, orElse, putTMVar, readTVar, takeTMVar, writeTVar)
 import Control.Exception (SomeAsyncException, SomeException, bracket, bracketOnError, finally, fromException, onException, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
 import qualified Data.ByteString as BS
@@ -186,6 +187,7 @@ dependencies = ServerDependencies
     serverReady = const (pure ()),
     serverStopping = pure (),
     serverEventCoordinatorReady = const (pure ()),
+    serverWatcherPublished = const (pure ()),
     serverEventSendDeadline = pure (),
     serverApplicationServices = defaultApplicationServices,
     serverEventsTransport = unavailableEventsTransport
@@ -465,6 +467,11 @@ assertQueryRouteSnapshots root repository adr current running = do
 
 testMutationRoutes :: IO ()
 testMutationRoutes = withSeededRepository $ \root -> do
+  publicationArmed <- newTVarIO False
+  publicationClosing <- newTVarIO False
+  publishedHead <- newEmptyTMVarIO
+  releasePublication <- newEmptyTMVarIO
+  publicationParked <- newIORef False
   blockNextArchive <- newIORef False
   blockedArchive <- newIORef Nothing
   lastPhase <- newIORef ("server not started" :: String)
@@ -479,6 +486,24 @@ testMutationRoutes = withSeededRepository $ \root -> do
         phase <- readIORef lastPhase
         lock <- gitLockStatus fixtureRepository
         putStrLn ("all-six failure; last server phase " <> phase <> ", Git lock " <> show lock)
+      afterPublication oid = do
+        parked <- atomically $
+          (readTVar publicationClosing >>= check >> pure False) `orElse` do
+            armed <- readTVar publicationArmed
+            if armed then putTMVar publishedHead (gitOidText oid) >> pure True else pure False
+        when parked $ atomically $
+          (readTVar publicationClosing >>= check) `orElse` takeTMVar releasePublication
+      releaseParked = do
+        parked <- atomicModifyIORef' publicationParked (\previous -> (False, previous))
+        when parked (atomically (putTMVar releasePublication ()))
+      awaitPublication expected = do
+        releaseParked
+        let awaitNext = do
+              observed <- atomically (takeTMVar publishedHead)
+              writeIORef publicationParked True
+              if observed == expected then pure () else releaseParked >> awaitNext
+        awaitNext
+      closePublications = atomically (writeTVar publicationClosing True)
   let compileExact repository oid = do
         recordPhase "exact archive compilation entered"
         shouldBlock <- atomicModifyIORef' blockNextArchive (\armed -> (False, armed))
@@ -505,23 +530,29 @@ testMutationRoutes = withSeededRepository $ \root -> do
         recordPhase ("dispatch returned " <> operation)
         pure result
       services = defaultApplicationServices {applicationCompileExact = compileExact, dispatchApplicationRequest = dispatch}
-      injected = dependencies {serverApplicationServices = services}
+      injected = dependencies {serverApplicationServices = services, serverWatcherPublished = afterPublication}
   started <- withWebServer injected root (Api.WebOptions Nothing False) $ \running _ ->
-    testMutationRoutesOnServer root running blockNextArchive blockedArchive `onException` onFailure
+    (do
+      atomically (writeTVar publicationArmed True)
+      testMutationRoutesOnServer root running blockNextArchive blockedArchive awaitPublication `onException` onFailure)
+      `finally` closePublications
   either (assertFailure . Text.unpack) pure started
 
-testMutationRoutesOnServer :: FilePath -> RunningServer -> IORef Bool -> IORef (Maybe FilePath) -> IO ()
-testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
+testMutationRoutesOnServer :: FilePath -> RunningServer -> IORef Bool -> IORef (Maybe FilePath) -> (Text -> IO ()) -> IO ()
+testMutationRoutesOnServer root running blockNextArchive blockedArchive awaitPublication = do
+  let committedAndPublished response = do
+        assertCommitted response
+        textAt ["data", "commit"] response >>= awaitPublication
   basis0 <- repositoryBasis running
   created <- postJsonLabeled 60000000 "all-six create" running "/api/v1/adrs" (createBody basis0)
   adr <- textAt ["data", "adr"] created
-  assertCommitted created
+  committedAndPublished created
   initiallyShown <- getJson running ("/api/v1/adrs/" <> adr)
   staleState <- valueAt ["data", "state_token"] initiallyShown
-  mutateExisting running adr "amend" ["change_summary" Aeson..= ("revise" :: Text), "title" Aeson..= ("Revised" :: Text), "summary" Aeson..= ("revised" :: Text), "body" Aeson..= ("body two\n" :: Text)] >>= assertCommitted
-  mutateExisting running adr "scope" ["reason" Aeson..= ("broaden" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["docs/**"] :: [Text]), "remove" Aeson..= ([] :: [Text])] >>= assertCommitted
-  mutateExisting running adr "domain" ["reason" Aeson..= ("broaden" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["ui"] :: [Text]), "remove" Aeson..= ([] :: [Text])] >>= assertCommitted
-  mutateExisting running adr "obsolete" ["reason" Aeson..= ("retired" :: Text)] >>= assertCommitted
+  mutateExisting running adr "amend" ["change_summary" Aeson..= ("revise" :: Text), "title" Aeson..= ("Revised" :: Text), "summary" Aeson..= ("revised" :: Text), "body" Aeson..= ("body two\n" :: Text)] >>= committedAndPublished
+  mutateExisting running adr "scope" ["reason" Aeson..= ("broaden" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["docs/**"] :: [Text]), "remove" Aeson..= ([] :: [Text])] >>= committedAndPublished
+  mutateExisting running adr "domain" ["reason" Aeson..= ("broaden" :: Text), "mode" Aeson..= ("delta" :: Text), "add" Aeson..= (["ui"] :: [Text]), "remove" Aeson..= ([] :: [Text])] >>= committedAndPublished
+  mutateExisting running adr "obsolete" ["reason" Aeson..= ("retired" :: Text)] >>= committedAndPublished
   writeIORef blockNextArchive True
   reactivated <- mutateExisting running adr "reactivate" ["reason" Aeson..= ("needed again" :: Text)]
   assertCommitted reactivated
@@ -534,6 +565,7 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
   valueAt ["data", "indexed"] reactivated >>= (@?= Aeson.Bool False)
   indexError <- valueAt ["data", "index_error"] reactivated
   assertBool "post-commit index failure is reported as a warning payload" (indexError /= Aeson.Null)
+  awaitPublication reactivatedOid
   currentBasis <- repositoryBasis running
   let stale operation fields = postJsonStatus running ("/api/v1/adrs/" <> adr <> "/" <> operation) $ Aeson.object
         ([ "repository_state" Aeson..= currentBasis,

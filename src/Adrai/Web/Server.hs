@@ -13,7 +13,7 @@ module Adrai.Web.Server
   )
 where
 
-import Adrai.Git (discoverRepository, systemGit)
+import Adrai.Git (GitOid, discoverRepository, systemGit)
 import qualified Adrai.Web.Api as Api
 import Adrai.Web.Application
   ( ApplicationServices,
@@ -31,6 +31,7 @@ import qualified Adrai.Web.Security as Security
 import qualified Adrai.Web.Events as Events
 import Adrai.Web.Socket (EventsTransport, eventsServerApplication, newSocketRuntime, unavailableEventsTransport)
 import Adrai.Web.Watch (Observer (..), awaitWatcher, observerForRegistry, stopWatching)
+import qualified Adrai.Web.Watch as Watch
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, race, waitCatch)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newEmptyMVar, newMVar, putMVar, readMVar, takeMVar, tryPutMVar)
@@ -105,6 +106,7 @@ data ServerDependencies = ServerDependencies
     serverReady :: RunningServer -> IO (),
     serverStopping :: IO (),
     serverEventCoordinatorReady :: Events.EventCoordinator -> IO (),
+    serverWatcherPublished :: GitOid -> IO (),
     serverEventSendDeadline :: IO (),
     serverApplicationServices :: ApplicationServices,
     serverEventsTransport :: EventsTransport
@@ -215,6 +217,7 @@ defaultServerDependencies =
       serverReady = \running -> putStrLn (Text.unpack ("ADRAI web ready at " <> runningBootstrapUrl running)) >> hFlush stdout,
       serverStopping = pure (),
       serverEventCoordinatorReady = const (pure ()),
+      serverWatcherPublished = const (pure ()),
       serverEventSendDeadline = pure (),
       serverApplicationServices = defaultApplicationServices,
       serverEventsTransport = unavailableEventsTransport
@@ -271,7 +274,14 @@ withWebServer dependencies startDirectory options consume = do
                           Just abort -> websocketsOr socketOptions (eventsServerApplication socketRuntime abort) (webApplication runtime) request respond
                       else webApplication runtime request respond
               bracket
-                (watchRepository observer bound (publishWatcherEvent runtime))
+                (watchRepository observer bound (\event -> do
+                  publishWatcherEvent runtime event
+                  case event of
+                    Watch.RepositoryFactsChanged _ (Watch.RepositorySnapshot _ facts) _ ->
+                      case (Watch.factsHead facts, Watch.factsHeadState facts) of
+                        (Just oid, Just _) -> serverWatcherPublished dependencies oid
+                        _ -> pure ()
+                    _ -> pure ()))
                 (\watcher -> stopWatching watcher >> awaitWatcher watcher >> stopApplicationRuntime runtime)
                 (\_watcher -> do
                   serverEventCoordinatorReady dependencies (applicationEventCoordinator runtime)
