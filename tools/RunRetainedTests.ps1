@@ -35,6 +35,12 @@ param(
     [string] $StackExe,
 
     [Parameter()]
+    [string] $LinuxOwnerExe,
+
+    [Parameter()]
+    [string] $SourceReferencePath,
+
+    [Parameter()]
     [ValidateSet('adrai-test', 'adrai-cache-selection-test', 'adrai-stress-test', 'adrai-benchmark-registration-test')]
     [string] $Component,
 
@@ -55,6 +61,14 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:IsWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+if (-not $script:IsWindowsHost -and -not [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Linux)) {
+    throw 'Retained ownership is implemented for Windows and Linux only.'
+}
+$script:PathComparison = if ($script:IsWindowsHost) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+$script:PathComparer = if ($script:IsWindowsHost) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
+$script:OwnershipBinding = $null
+$script:SourceIdentity = $null
 
 $script:Evidence = [ordered] @{
     schemaVersion = 1
@@ -86,7 +100,8 @@ function Resolve-AbsoluteDirectory {
 function Resolve-AbsoluteFile {
     param(
         [Parameter(Mandatory = $true)][string] $Path,
-        [Parameter(Mandatory = $true)][string] $Label
+        [Parameter(Mandatory = $true)][string] $Label,
+        [switch] $Executable
     )
     if ([string]::IsNullOrWhiteSpace($Path)) {
         throw "$Label is required."
@@ -94,6 +109,9 @@ function Resolve-AbsoluteFile {
     $full = [IO.Path]::GetFullPath($Path)
     if (-not [IO.Path]::IsPathRooted($full) -or -not (Test-Path -LiteralPath $full -PathType Leaf)) {
         throw "$Label must name an existing absolute file: $full"
+    }
+    if ($Executable -and -not $script:IsWindowsHost -and ([int][IO.File]::GetUnixFileMode($full) -band 73) -eq 0) {
+        throw "$Label lacks Linux executable permission: $full"
     }
     return $full
 }
@@ -105,8 +123,8 @@ function Test-PathInsideRoot {
     )
     $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
     $fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-    return $fullPath.Equals($fullRoot, [StringComparison]::OrdinalIgnoreCase) -or
-        $fullPath.StartsWith($fullRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+    return $fullPath.Equals($fullRoot, $script:PathComparison) -or
+        $fullPath.StartsWith($fullRoot + [IO.Path]::DirectorySeparatorChar, $script:PathComparison)
 }
 
 function Get-Sha256 {
@@ -152,7 +170,7 @@ function Get-BuildInputInventory {
     }
 
     [string[]]$uniquePaths = @($paths | Select-Object -Unique)
-    [Array]::Sort($uniquePaths, [StringComparer]::OrdinalIgnoreCase)
+    [Array]::Sort($uniquePaths, $script:PathComparer)
     $records = [Collections.Generic.List[object]]::new()
     foreach ($path in $uniquePaths) {
         $relative = $path.Substring($Root.Length).TrimStart(
@@ -230,6 +248,66 @@ function Get-GitHeadFromFiles {
     throw "Unable to resolve symbolic HEAD ref from Git files: $refName"
 }
 
+function Get-SourceRevision {
+    param([Parameter(Mandatory = $true)][string] $Root)
+    if ([string]::IsNullOrWhiteSpace($SourceReferencePath)) {
+        $revision = Get-GitHeadFromFiles -Root $Root
+        $script:SourceIdentity = [ordered]@{ kind = 'checkout'; canonicalRoot = $Root; gitHead = $revision }
+        return $revision
+    }
+    # An explicitly exported validation tree has no synthetic .git or hmem
+    # context. The coordinator's canonical identity stays separate from it.
+    $referencePath = Resolve-AbsoluteFile -Path $SourceReferencePath -Label 'SourceReferencePath'
+    if (Test-PathInsideRoot -Path $referencePath -Root $Root) { throw 'Source reference must be external to the build tree.' }
+    $reference = [IO.File]::ReadAllText($referencePath) | ConvertFrom-Json
+    if ($reference.schemaVersion -ne 1 -or [string]$reference.gitHead -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$reference.workspace -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -or
+        [string]::IsNullOrWhiteSpace([string]$reference.canonicalRoot) -or @($reference.files).Count -eq 0) {
+        throw 'Exported source reference identity is malformed.'
+    }
+    if ([string]$reference.scope -cnotin @('tools', 'product-and-tools') -or
+        ($Mode -ne 'SelfCheck' -and [string]$reference.scope -cne 'product-and-tools')) {
+        throw 'Export reference must declare its complete relevant input scope.'
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $referenceHashes = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in @($reference.files)) {
+        $name = [string]$entry.path
+        if ($name -cmatch '(^/|\\|(^|/)\.\.?(/|$)|(^|/)\.git(/|$)|(^|/)\.hmem\.workspace$)' -or -not $seen.Add($name)) {
+            throw 'Exported source reference contains an unsafe or duplicate path.'
+        }
+        $path = [IO.Path]::GetFullPath((Join-Path $Root $name))
+        if (-not (Test-PathInsideRoot -Path $path -Root $Root) -or (Get-Sha256 $path) -cne [string]$entry.sha256) {
+            throw "Exported source input changed: $name"
+        }
+        $referenceHashes.Add($name, [string]$entry.sha256)
+    }
+    $required = [Collections.Generic.List[object]]::new()
+    if ([string]$reference.scope -ceq 'product-and-tools') {
+        foreach ($entry in @(Get-BuildInputInventory -Root $Root)) { $required.Add($entry) }
+    }
+    foreach ($name in @('tools/RunRetainedTests.ps1', 'tools/run-retained-tests.sh',
+        'tools/RetainedTests/OwnedJob.cs', 'tools/RetainedTests/LinuxOwnedJob.cs',
+        'tools/RetainedTests/linux_owner.c', 'tools/RetainedTests/LinuxSelfCheck.ps1')) {
+        $required.Add([ordered]@{path=$name;sha256=(Get-Sha256 (Join-Path $Root $name))})
+    }
+    foreach ($entry in $required) {
+        if (-not $referenceHashes.ContainsKey([string]$entry.path) -or
+            $referenceHashes[[string]$entry.path] -cne [string]$entry.sha256) {
+            throw "Export reference does not bind required input: $($entry.path)"
+        }
+    }
+    $identity = [ordered]@{kind='export';canonicalRoot=[string]$reference.canonicalRoot;
+        workspace=[string]$reference.workspace;gitHead=[string]$reference.gitHead;buildRoot=$Root;
+        scope=[string]$reference.scope;referenceSha256=(Get-Sha256 $referencePath)}
+    if ($null -eq $script:SourceIdentity) { $script:SourceIdentity = $identity }
+    elseif ((ConvertTo-Json $identity -Compress -Depth 5) -cne
+        (ConvertTo-Json $script:SourceIdentity -Compress -Depth 5)) {
+        throw 'Export source reference identity changed during admission or execution.'
+    }
+    return [string]$reference.gitHead
+}
+
 function New-EvidenceDirectory {
     param(
         [Parameter(Mandatory = $true)][string] $Root,
@@ -265,9 +343,9 @@ function Get-ProcessEnvironment {
         [string] $ResolvedAdraiExe,
         [bool] $ConstrainRuntime = $true
     )
-    $environment = @{}
+    $environment = [Collections.Hashtable]::new($script:PathComparer)
     foreach ($entry in Get-ChildItem Env:) {
-        if ($entry.Name.StartsWith('TASTY_', [StringComparison]::OrdinalIgnoreCase)) {
+        if ($entry.Name.StartsWith('TASTY_', $script:PathComparison)) {
             $environment[$entry.Name] = $null
         }
     }
@@ -313,6 +391,7 @@ function Invoke-OwnedProcess {
         launched = $false
         launchFailureCleanupVerified = $null
         pid = $null
+        controllerPid = $null
         exitCode = $null
         timedOut = $false
         orphanedDescendants = $false
@@ -348,7 +427,8 @@ function Invoke-OwnedProcess {
             throw
         }
         $record.launched = $true
-        $record.pid = $process.ProcessId
+        if ($script:IsWindowsHost) { $record.pid = $process.ProcessId }
+        else { $record.controllerPid = $process.ProcessId }
         $globalUsableAfterLaunch = (Get-RemainingMilliseconds) - $cleanupReserveMilliseconds
         $invocationUsableAfterLaunch = $invocationBudget - $invocationTimer.ElapsedMilliseconds
         $waitMilliseconds = [Math]::Min($globalUsableAfterLaunch, $invocationUsableAfterLaunch)
@@ -380,7 +460,10 @@ function Invoke-OwnedProcess {
                         triggerMonotonicMilliseconds = $orphanTriggerMilliseconds
                         rootExitObservedMonotonicMilliseconds = $rootExitObservedAtMilliseconds
                         rootPid = $record.pid
-                        activeProcessCount = $orphanActiveProcessCount
+                        activeProcessCount = $(if ($script:IsWindowsHost) { $orphanActiveProcessCount } else { $null })
+                        controllerPid = $record.controllerPid
+                        namespaceActive = $(if ($script:IsWindowsHost) { $null } else { $orphanActiveProcessCount -ne 0 })
+                        memberEnumerationSupported = $script:IsWindowsHost
                         captureError = $null
                         job = $job.CaptureFailureSnapshot()
                     }
@@ -390,7 +473,10 @@ function Invoke-OwnedProcess {
                         triggerMonotonicMilliseconds = $orphanTriggerMilliseconds
                         rootExitObservedMonotonicMilliseconds = $rootExitObservedAtMilliseconds
                         rootPid = $record.pid
-                        activeProcessCount = $orphanActiveProcessCount
+                        activeProcessCount = $(if ($script:IsWindowsHost) { $orphanActiveProcessCount } else { $null })
+                        controllerPid = $record.controllerPid
+                        namespaceActive = $(if ($script:IsWindowsHost) { $null } else { $orphanActiveProcessCount -ne 0 })
+                        memberEnumerationSupported = $script:IsWindowsHost
                         captureError = $_.Exception.Message
                         job = $null
                     }
@@ -476,6 +562,7 @@ function New-OwnedProcessState {
         launched = $false
         launchFailureCleanupVerified = $null
         pid = $null
+        controllerPid = $null
         exitCode = $null
         timedOut = $false
         orphanedDescendants = $false
@@ -531,7 +618,8 @@ function Start-OwnedProcessState {
         throw
     }
     $State.Record.launched = $true
-    $State.Record.pid = $State.Process.ProcessId
+    if ($script:IsWindowsHost) { $State.Record.pid = $State.Process.ProcessId }
+    else { $State.Record.controllerPid = $State.Process.ProcessId }
     return $State
 }
 
@@ -563,7 +651,10 @@ function Get-OwnedProcessStateDisposition {
                 triggerMonotonicMilliseconds = $orphanTriggerMilliseconds
                 rootExitObservedMonotonicMilliseconds = $State.RootExitedAtMilliseconds
                 rootPid = $State.Record.pid
-                activeProcessCount = $activeProcessCount
+                activeProcessCount = $(if ($script:IsWindowsHost) { $activeProcessCount } else { $null })
+                controllerPid = $State.Record.controllerPid
+                namespaceActive = $(if ($script:IsWindowsHost) { $null } else { $activeProcessCount -ne 0 })
+                memberEnumerationSupported = $script:IsWindowsHost
                 captureError = $null
                 job = $State.Job.CaptureFailureSnapshot()
             }
@@ -573,7 +664,10 @@ function Get-OwnedProcessStateDisposition {
                 triggerMonotonicMilliseconds = $orphanTriggerMilliseconds
                 rootExitObservedMonotonicMilliseconds = $State.RootExitedAtMilliseconds
                 rootPid = $State.Record.pid
-                activeProcessCount = $activeProcessCount
+                activeProcessCount = $(if ($script:IsWindowsHost) { $activeProcessCount } else { $null })
+                controllerPid = $State.Record.controllerPid
+                namespaceActive = $(if ($script:IsWindowsHost) { $null } else { $activeProcessCount -ne 0 })
+                memberEnumerationSupported = $script:IsWindowsHost
                 captureError = $_.Exception.Message
                 job = $null
             }
@@ -781,11 +875,11 @@ function Assert-TastyExecutionCount {
 
 function Get-ArtifactPaths {
     return [ordered] @{
-        adrai = Resolve-AbsoluteFile -Path $AdraiExe -Label 'AdraiExe'
-        ordinary = Resolve-AbsoluteFile -Path $OrdinaryTestExe -Label 'OrdinaryTestExe'
-        cacheSelection = Resolve-AbsoluteFile -Path $CacheSelectionTestExe -Label 'CacheSelectionTestExe'
-        stress = Resolve-AbsoluteFile -Path $StressTestExe -Label 'StressTestExe'
-        benchmarkRegistration = Resolve-AbsoluteFile -Path $BenchmarkRegistrationTestExe -Label 'BenchmarkRegistrationTestExe'
+        adrai = Resolve-AbsoluteFile -Path $AdraiExe -Label 'AdraiExe' -Executable
+        ordinary = Resolve-AbsoluteFile -Path $OrdinaryTestExe -Label 'OrdinaryTestExe' -Executable
+        cacheSelection = Resolve-AbsoluteFile -Path $CacheSelectionTestExe -Label 'CacheSelectionTestExe' -Executable
+        stress = Resolve-AbsoluteFile -Path $StressTestExe -Label 'StressTestExe' -Executable
+        benchmarkRegistration = Resolve-AbsoluteFile -Path $BenchmarkRegistrationTestExe -Label 'BenchmarkRegistrationTestExe' -Executable
     }
 }
 
@@ -795,16 +889,17 @@ function Get-ExpectedStackArtifacts {
         [Parameter(Mandatory = $true)][string] $DistDirectory
     )
     $fullDist = [IO.Path]::GetFullPath($(if ([IO.Path]::IsPathRooted($DistDirectory)) { $DistDirectory } else { Join-Path $Root $DistDirectory }))
-    $requiredPrefix = [IO.Path]::GetFullPath((Join-Path $Root '.stack-work\dist')).TrimEnd('\') + '\'
-    if (-not $fullDist.StartsWith($requiredPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    $requiredPrefix = [IO.Path]::GetFullPath((Join-Path $Root '.stack-work/dist')).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (-not $fullDist.StartsWith($requiredPrefix, $script:PathComparison)) {
         throw "Stack dist directory is outside the repository's .stack-work/dist tree: $fullDist"
     }
+    $suffix = if ($script:IsWindowsHost) { '.exe' } else { '' }
     return [ordered]@{
-        adrai = [IO.Path]::GetFullPath((Join-Path $fullDist 'build\adrai\adrai.exe'))
-        ordinary = [IO.Path]::GetFullPath((Join-Path $fullDist 'build\adrai-test\adrai-test.exe'))
-        cacheSelection = [IO.Path]::GetFullPath((Join-Path $fullDist 'build\adrai-cache-selection-test\adrai-cache-selection-test.exe'))
-        stress = [IO.Path]::GetFullPath((Join-Path $fullDist 'build\adrai-stress-test\adrai-stress-test.exe'))
-        benchmarkRegistration = [IO.Path]::GetFullPath((Join-Path $fullDist 'build\adrai-benchmark-registration-test\adrai-benchmark-registration-test.exe'))
+        adrai = [IO.Path]::GetFullPath((Join-Path $fullDist "build/adrai/adrai$suffix"))
+        ordinary = [IO.Path]::GetFullPath((Join-Path $fullDist "build/adrai-test/adrai-test$suffix"))
+        cacheSelection = [IO.Path]::GetFullPath((Join-Path $fullDist "build/adrai-cache-selection-test/adrai-cache-selection-test$suffix"))
+        stress = [IO.Path]::GetFullPath((Join-Path $fullDist "build/adrai-stress-test/adrai-stress-test$suffix"))
+        benchmarkRegistration = [IO.Path]::GetFullPath((Join-Path $fullDist "build/adrai-benchmark-registration-test/adrai-benchmark-registration-test$suffix"))
     }
 }
 
@@ -814,7 +909,7 @@ function Assert-StackArtifactPaths {
         [Parameter(Mandatory = $true)][Collections.IDictionary] $Expected
     )
     foreach ($role in @('adrai', 'ordinary', 'cacheSelection', 'stress', 'benchmarkRegistration')) {
-        if (-not ([string]$Explicit[$role]).Equals([string]$Expected[$role], [StringComparison]::OrdinalIgnoreCase)) {
+        if (-not ([string]$Explicit[$role]).Equals([string]$Expected[$role], $script:PathComparison)) {
             throw "Explicit '$role' executable is not the corresponding Stack dist artifact. Expected '$($Expected[$role])'."
         }
     }
@@ -847,11 +942,13 @@ function New-BuildManifest {
         artifactOrigin = 'stack-dist'
         stackDistDirectory = $StackDistDirectory
         repositoryRoot = $Root
-        gitHead = Get-GitHeadFromFiles -Root $Root
+        gitHead = Get-SourceRevision -Root $Root
         packageSha256 = Get-Sha256 (Join-Path $Root 'package.yaml')
         stackSha256 = Get-Sha256 (Join-Path $Root 'stack.yaml')
         buildInputs = $BuildInputs
         artifacts = $artifactRecords
+        ownershipProvider = $script:OwnershipBinding
+        sourceIdentity = $script:SourceIdentity
     }
 }
 
@@ -864,16 +961,25 @@ function Read-And-VerifyBuildManifest {
     $manifest = [IO.File]::ReadAllText($path) | ConvertFrom-Json
     if ($manifest.schemaVersion -ne 1) { throw 'Unsupported build manifest schemaVersion.' }
     if ([string]$manifest.artifactOrigin -cne 'stack-dist') { throw 'Build manifest artifact origin is not Stack dist.' }
-    if (-not ([string]$manifest.repositoryRoot).Equals($Root, [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not ([string]$manifest.repositoryRoot).Equals($Root, $script:PathComparison)) {
         throw 'Build manifest repositoryRoot does not match the requested repository.'
     }
-    if ([string]$manifest.gitHead -cne (Get-GitHeadFromFiles -Root $Root)) { throw 'Build manifest Git HEAD is stale.' }
+    if ([string]$manifest.gitHead -cne (Get-SourceRevision -Root $Root)) { throw 'Build manifest source revision is stale.' }
+    if ($null -eq $manifest.PSObject.Properties['sourceIdentity'] -or
+        (ConvertTo-Json $manifest.sourceIdentity -Compress -Depth 5) -cne (ConvertTo-Json $script:SourceIdentity -Compress -Depth 5)) {
+        throw 'Build manifest canonical source identity/build-root binding changed.'
+    }
     if ([string]$manifest.packageSha256 -cne (Get-Sha256 (Join-Path $Root 'package.yaml'))) { throw 'Build manifest package.yaml hash is stale.' }
     if ([string]$manifest.stackSha256 -cne (Get-Sha256 (Join-Path $Root 'stack.yaml'))) { throw 'Build manifest stack.yaml hash is stale.' }
     [object[]]$manifestInputs = @($manifest.buildInputs)
     if ($manifestInputs.Count -eq 0) { throw 'Build manifest buildInputs are missing.' }
     [object[]]$currentInputs = @(Get-BuildInputInventory -Root $Root)
     Assert-MatchingBuildInputs -Expected $manifestInputs -Actual $currentInputs -Context 'Pre-execution'
+    $providerProperty = $manifest.PSObject.Properties['ownershipProvider']
+    if ($null -eq $providerProperty -or
+        (ConvertTo-Json $providerProperty.Value -Compress -Depth 5) -cne (ConvertTo-Json $script:OwnershipBinding -Compress -Depth 5)) {
+        throw 'Build manifest ownership provider/source/helper binding is missing or changed.'
+    }
     $expectedStackArtifacts = Get-ExpectedStackArtifacts -Root $Root -DistDirectory ([string]$manifest.stackDistDirectory)
     Assert-StackArtifactPaths -Explicit $Artifacts -Expected $expectedStackArtifacts
 
@@ -883,7 +989,7 @@ function Read-And-VerifyBuildManifest {
         $entries = @($manifest.artifacts | Where-Object { [string]$_.role -ceq $role })
         if ($entries.Count -ne 1) { throw "Build manifest must contain exactly one '$role' artifact." }
         $actualPath = [string]$Artifacts[$role]
-        if (-not ([IO.Path]::GetFullPath([string]$entries[0].path)).Equals($actualPath, [StringComparison]::OrdinalIgnoreCase)) {
+        if (-not ([IO.Path]::GetFullPath([string]$entries[0].path)).Equals($actualPath, $script:PathComparison)) {
             throw "Explicit '$role' path does not match the frozen build manifest."
         }
         $actualHash = Get-Sha256 $actualPath
@@ -1037,6 +1143,8 @@ function Assert-WindowsCommandLineLength {
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $Arguments,
         [Parameter(Mandatory = $true)][string] $Id
     )
+
+    if (-not $script:IsWindowsHost) { return $null }
 
     $parts = @((ConvertTo-WindowsCommandLineArgument $Executable)) + @(
         $Arguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument ([string]$_) }
@@ -1621,7 +1729,7 @@ try {
             'Build' { 1200 }
         }
     }
-    if (($Mode -eq 'Complete' -and $DeadlineSeconds -gt 1800) -or
+    if (($Mode -eq 'Complete' -and $DeadlineSeconds -gt 3600) -or
         ($Mode -eq 'List' -and $DeadlineSeconds -gt 60) -or
         ($Mode -eq 'Focused' -and $DeadlineSeconds -gt 600)) {
         throw "DeadlineSeconds exceeds the maximum for mode '$Mode'."
@@ -1640,15 +1748,44 @@ try {
     $script:Evidence.repositoryRoot = $script:RepositoryRoot
     $script:EvidenceDirectory = New-EvidenceDirectory -Root $script:RepositoryRoot -Requested $EvidenceDirectory
     $script:EvidenceFile = Join-Path $script:EvidenceDirectory 'result.json'
+    [void](Get-SourceRevision -Root $script:RepositoryRoot)
 
-    $helperPath = Join-Path $PSScriptRoot 'RetainedTests\OwnedJob.cs'
+    $providerName = if ($script:IsWindowsHost) { 'OwnedJob.cs' } else { 'LinuxOwnedJob.cs' }
+    $helperPath = Join-Path $PSScriptRoot ("RetainedTests/$providerName")
+    $script:OwnershipBinding = [ordered]@{
+        platform = $(if ($script:IsWindowsHost) { 'windows' } else { 'linux' })
+        runnerSha256 = Get-Sha256 $PSCommandPath
+        providerSha256 = Get-Sha256 $helperPath
+    }
+    if (-not $script:IsWindowsHost) {
+        if ([string]::IsNullOrWhiteSpace($LinuxOwnerExe)) { $LinuxOwnerExe = $env:ADRAI_RETAINED_OWNER_EXE }
+        $LinuxOwnerExe = Resolve-AbsoluteFile -Path $LinuxOwnerExe -Label 'LinuxOwnerExe' -Executable
+        $script:OwnershipBinding.helperPath = $LinuxOwnerExe
+        $script:OwnershipBinding.helperSha256 = Get-Sha256 $LinuxOwnerExe
+        $script:OwnershipBinding.helperSourceSha256 = Get-Sha256 (Join-Path $PSScriptRoot 'RetainedTests/linux_owner.c')
+        $buildRecordPath = Resolve-AbsoluteFile -Path ($LinuxOwnerExe + '.json') -Label 'Linux ownership helper build record'
+        $buildRecord = [IO.File]::ReadAllText($buildRecordPath) | ConvertFrom-Json
+        if ($buildRecord.schemaVersion -ne 1 -or
+            [string]$buildRecord.binarySha256 -cne $script:OwnershipBinding.helperSha256 -or
+            [string]$buildRecord.sourceSha256 -cne $script:OwnershipBinding.helperSourceSha256 -or
+            -not [IO.Path]::IsPathFullyQualified([string]$buildRecord.compilerPath) -or
+            [string]$buildRecord.compilerSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]::IsNullOrWhiteSpace([string]$buildRecord.compilerVersion)) {
+            throw 'Linux ownership helper build provenance does not match current source/binary/tool.'
+        }
+        $script:OwnershipBinding.helperBuildRecordSha256 = Get-Sha256 $buildRecordPath
+        $script:OwnershipBinding.selfCheckSha256 = Get-Sha256 (Join-Path $PSScriptRoot 'RetainedTests/LinuxSelfCheck.ps1')
+        $script:OwnershipBinding.entrypointSha256 = Get-Sha256 (Join-Path $PSScriptRoot 'run-retained-tests.sh')
+    }
     Add-Type -Path $helperPath
+    if (-not $script:IsWindowsHost) { [Adrai.RetainedTests.OwnedJob]::HelperPath = $LinuxOwnerExe }
 
     if ($Mode -eq 'SelfCheck') {
-        Invoke-SelfCheck
+        if ($script:IsWindowsHost) { Invoke-SelfCheck }
+        else { . (Join-Path $PSScriptRoot 'RetainedTests/LinuxSelfCheck.ps1'); Invoke-LinuxSelfCheck }
     }
     elseif ($Mode -eq 'Build') {
-        $resolvedStack = Resolve-AbsoluteFile -Path $StackExe -Label 'StackExe'
+        $resolvedStack = Resolve-AbsoluteFile -Path $StackExe -Label 'StackExe' -Executable
         if ([string]::IsNullOrWhiteSpace($BuildManifestPath)) { throw 'BuildManifestPath is required for Build mode.' }
         [object[]]$inputsBeforeBuild = @(Get-BuildInputInventory -Root $script:RepositoryRoot)
         $build = Invoke-OwnedProcess -Id 'build' -Executable $resolvedStack -Arguments @(
@@ -1706,6 +1843,17 @@ try {
 
     if ($script:RunTimer.ElapsedMilliseconds -gt $script:DeadlineMilliseconds) {
         throw "Mode '$Mode' exceeded its monotonic deadline during setup or cleanup."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($SourceReferencePath)) { [void](Get-SourceRevision -Root $script:RepositoryRoot) }
+    if ((Get-Sha256 $PSCommandPath) -cne $script:OwnershipBinding.runnerSha256 -or
+        (Get-Sha256 $helperPath) -cne $script:OwnershipBinding.providerSha256) { throw 'Ownership source changed during execution.' }
+    if (-not $script:IsWindowsHost -and (
+        (Get-Sha256 $LinuxOwnerExe) -cne $script:OwnershipBinding.helperSha256 -or
+        (Get-Sha256 (Join-Path $PSScriptRoot 'RetainedTests/linux_owner.c')) -cne $script:OwnershipBinding.helperSourceSha256 -or
+        (Get-Sha256 $buildRecordPath) -cne $script:OwnershipBinding.helperBuildRecordSha256 -or
+        (Get-Sha256 (Join-Path $PSScriptRoot 'RetainedTests/LinuxSelfCheck.ps1')) -cne $script:OwnershipBinding.selfCheckSha256 -or
+        (Get-Sha256 (Join-Path $PSScriptRoot 'run-retained-tests.sh')) -cne $script:OwnershipBinding.entrypointSha256)) {
+        throw 'Linux ownership tool/source changed during execution.'
     }
     $script:Evidence.cleanupVerified = $true
     $script:Evidence.result = 'passed'

@@ -4,12 +4,53 @@ ADRAI has four retained test components. A complete gate runs every registered
 test in each component, enables the stress component explicitly, and then runs
 the reliability repeats recorded in `test/coverage/retained-suite.json`.
 
-`tools/RunRetainedTests.ps1` is the only supported launcher for retained tests.
-It gives each child process its own Windows Job Object. The child is created
+`tools/RunRetainedTests.ps1` owns the retained-test scheduler on both platforms.
+On Windows it gives each child process its own Windows Job Object. The child is created
 suspended, assigned to the Job Object, and resumed only after assignment
 succeeds. Closing or terminating that job therefore includes the child's Git,
 CLI, console, and helper descendants without selecting unrelated processes by
 name.
+
+The Windows provider retains PowerShell 5.1 compatibility. Linux loads a separate
+PowerShell 7/.NET provider and a caller-selected native helper; it requires a
+permitted unprivileged user/PID namespace, single-ID mapping, pidfds and
+`PR_SET_PDEATHSIG`. Missing facilities fail admission rather than falling back
+to process groups. The helper keeps namespace PID1 alive to reap descendants,
+including detached children, and separates payload exec acknowledgement/root
+exit from namespace reaping and joined status/diagnostic readers. A private
+controller-only channel couples PowerShell caller death to cancellation; the
+native creating thread and its stable pidfd cover PID1 parent-death races.
+Namespace activity is reported separately from an unknown member count, and
+controller PIDs are diagnostic metadata rather than PID-based cleanup targets.
+
+Prepare the Linux helper outside the repository with the selected C compiler:
+
+```sh
+"$CC" -std=c11 -O2 -Wall -Wextra -Werror tools/RetainedTests/linux_owner.c -o "$owner_exe"
+PWSH_EXE=/absolute/path/to/pwsh ADRAI_RETAINED_OWNER_EXE="$owner_exe" \
+  sh tools/run-retained-tests.sh -Mode SelfCheck -RepositoryRoot "$repo" \
+  -EvidenceDirectory "$scratch/selfcheck"
+```
+
+The adjacent `$owner_exe.json` build record must have `schemaVersion: 1`, the
+lowercase SHA-256 `sourceSha256` and `binarySha256`, and the selected compiler's
+absolute `compilerPath`, lowercase `compilerSha256` and `compilerVersion`.
+Build manifests bind the runner/provider/helper sources, helper binary and this
+record independently of the five product artifacts. Finite cleanup that cannot
+verify namespace reaping and reader joins remains a cleanup failure; disposing
+an object is not a tree-absence assertion. Full Linux product/frontend support
+requires the final available-host verification; local owner checks alone do
+not establish it.
+
+For reviewed exported validation inputs, `-SourceReferencePath` explicitly binds
+the canonical repository root, workspace UUID, commit and exact exported file
+hashes. The actual Linux build root stays separate; an export is not a Git
+repository and receives no synthetic Git or hmem metadata. Native checkouts
+continue to resolve their real Git HEAD normally.
+The reference declares `scope: "tools"` for a tool-only SelfCheck or
+`scope: "product-and-tools"` for Build/List/Focused/Complete. The latter must
+cover every actual build input and all ownership tool sources. Reference identity
+and hash are frozen at admission and checked again after execution.
 
 ## Build and artifact manifest
 
@@ -111,9 +152,10 @@ complement with the other anchored ordinary groups.
 
 ## Running the gate
 
-Complete mode uses one monotonic 1,800-second deadline and one coordinator with
+Complete mode defaults to one monotonic 1,800-second deadline; an explicit
+`-DeadlineSeconds` may allocate up to 3,600 seconds. One coordinator runs with
 at most three active owned test roots. Every root is still an isolated
-`TASTY_NUM_THREADS=1`, `GHCRTS=-N1` process with its own Job Object; retained
+`TASTY_NUM_THREADS=1`, `GHCRTS=-N1` process with its own platform ownership scope; retained
 concurrency inside an individual test remains unchanged. The timer starts before
 runner setup, type compilation, artifact hashing, ledger validation, or evidence
 directory creation and is never reset for a component or repeat. It includes
@@ -154,7 +196,7 @@ executions. These source counts require a fresh runner List before they are
 verified; only Complete establishes actual execution. The runner does not
 hardcode these totals. A fresh matching build must list every
 actual registration and prove exact equality before dispatch.
-The current Complete gate has one shared 1,800-second deadline, including
+The Complete gate uses its one shared selected deadline, including
 listing, setup, dispatch, and owned-descendant cleanup. It is a finite liveness
 guard, not a product latency target or a promise about another checkout or host.
 Only a complete run on a frozen build and matching ledgers establishes execution;
