@@ -89,7 +89,9 @@ import Adrai.CliRunner
 import qualified Adrai.Explorer.Types as Explorer
 import Adrai.Explorer.Render (renderHelp)
 import Adrai.Git (GitOid (..))
-import Adrai.Integration.CLI (parseCompileResult, prependExtraPathParts, spawnAdraiWith)
+import qualified Adrai.Git as Git
+import Adrai.RetainedNative.NativeFixture (copyNativeFixture, nativeProgramName)
+import Adrai.Integration.CLI (createTestRepo, parseCompileResult, prependExtraPathParts, requireExecutable, spawnAdraiWith)
 import Adrai.Domain (canonicalDomains, mkDomain, parseDomainRefinement)
 import Adrai.Scope (mkScopePattern)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
@@ -151,14 +153,18 @@ import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, inf
 import System.Exit (ExitCode (..))
 import System.IO (IOMode (WriteMode), withBinaryFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
-import System.Timeout (timeout)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
-import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, evaluate, fromException, throwIO, try)
+import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, fromException, throwIO, try)
 import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Foldable (for_)
 import Data.List (sort)
+import Control.Monad (when)
+import System.FilePath (searchPathSeparator, takeDirectory)
+import System.FilePath ((</>))
+import System.Directory (executable, getPermissions, setPermissions)
+import System.Info (os)
 
 -- | Fixture: a minimal CompileResult with known values for testing.
 mkCompileResult :: CompileResult
@@ -2131,34 +2137,54 @@ pathHarnessTests :: TestTree
 pathHarnessTests =
   testGroup "integration CLI PATH harness"
     [ testCase "prepends extras to a multi-entry inherited PATH intact" $
-        assertPathBuildsWithin
-          "C:\\Windows\\System32;D:\\tools"
-          "C:\\Program Files\\Git\\cmd;D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin;C:\\Windows\\System32;D:\\tools",
+        prependExtraPathParts ["selected Git Ω", "selected adrai"] "first inherited;second:inherited"
+          @?= "selected Git Ω" <> [searchPathSeparator] <> "selected adrai" <> [searchPathSeparator] <> "first inherited;second:inherited",
       testCase "uses only extras when the inherited PATH is empty" $
-        assertPathBuildsWithin
-          ""
-          "C:\\Program Files\\Git\\cmd;D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin",
+        prependExtraPathParts ["selected Git Ω", "selected adrai"] ""
+          @?= "selected Git Ω" <> [searchPathSeparator] <> "selected adrai",
       testCase "spawnAdraiWith gives a bounded child the exact constructed PATH" $ do
-        let inheritedPath = "C:\\Windows\\System32;D:\\tools"
-            expectedPath = prependExtraPathParts inheritedPath
+        let inheritedPath = "first inherited;second:inherited"
         testRunner <- getExecutablePath
-        -- 'readProcess' is async-exception-safe, so timeout interrupts the
-        -- pre-launch regression and terminates/reaps any started child.
-        completed <- timeout 3000000 $ spawnAdraiWith testRunner inheritedPath "." ["--integration-cli-path-probe"]
-        case completed of
-          Nothing -> assertFailure "spawnAdraiWith PATH probe exceeded its 3-second bound"
-          Just (exitCode, stdout, stderr) -> do
-            exitCode @?= ExitSuccess
-            stderr @?= ""
-            Text.Encoding.decodeUtf8 (BL.toStrict stdout) @?= T.pack expectedPath
+        selectedGit <- requireExecutable "git"
+        let expectedPath = prependExtraPathParts [takeDirectory selectedGit, takeDirectory testRunner] inheritedPath
+        -- The captured process owner supplies cancellation/cleanup. This is an
+        -- exact environment assertion, without a local execution-speed gate.
+        (exitCode, stdout, stderr) <- spawnAdraiWith testRunner inheritedPath "." ["--integration-cli-path-probe"]
+        exitCode @?= ExitSuccess
+        stderr @?= ""
+        Text.Encoding.decodeUtf8 (BL.toStrict stdout) @?= T.pack expectedPath
+        let externalKeys = ["TEMP", "TMP", "TMPDIR"]
+        expectedExternal <- mapM (\key -> (key,) <$> lookupEnv key) externalKeys
+        (environmentExit, environmentBytes, environmentErrors) <- spawnAdraiWith testRunner inheritedPath "." ("--integration-cli-environment-probe" : externalKeys)
+        environmentExit @?= ExitSuccess
+        environmentErrors @?= ""
+        Aeson.eitherDecode environmentBytes @?= Right expectedExternal
+        withSystemTempDirectory "adrai environment semantics" $ \temporary -> do
+          fixtureRoot <- createTestRepo temporary
+          repository <- Git.discoverRepository Git.systemGit fixtureRoot >>= either (assertFailure . show) pure
+          let fake = repository {Git.repositoryClient = Git.GitClient testRunner}
+              explicit = Map.fromList [("ADRAI_CASE", "upper"), ("adrai_case", "lower")]
+          Git.runRepositoryWithEnvironment fake explicit "environment probe" ["--integration-cli-environment-probe", "ADRAI_CASE", "adrai_case"] "" >>= \result ->
+            case result of
+              Left problem -> assertFailure (show problem)
+              Right observed -> do
+                Git.processExitCode observed @?= ExitSuccess
+                let expected :: [(String, Maybe String)]
+                    expected = if os == "mingw32" then [("ADRAI_CASE", Just "lower"), ("adrai_case", Just "lower")] else [("ADRAI_CASE", Just "upper"), ("adrai_case", Just "lower")]
+                Aeson.eitherDecodeStrict (Git.processStdout observed) @?= Right expected
+        withSystemTempDirectory "adrai selected executable Ω" $ \temporary -> do
+          let selected = temporary </> nativeProgramName "selected executable Ω"
+          copyNativeFixture selected
+          requireExecutable selected >>= (@?= selected)
+          (selectedExit, _, selectedErrors) <- spawnAdraiWith selected inheritedPath "." ["--integration-cli-path-probe"]
+          selectedExit @?= ExitSuccess
+          selectedErrors @?= ""
+          when (os == "linux") $ do
+            permissions <- getPermissions selected
+            bracket (setPermissions selected permissions {executable=False}) (const (setPermissions selected permissions)) $ \() -> do
+              refused <- try @SomeException (requireExecutable selected)
+              assertBool "a selected non-executable is not replaced by another tool" (either (const True) (const False) refused)
     ]
-  where
-    assertPathBuildsWithin inheritedPath expectedPath = do
-      completed <- timeout 1000000 $ evaluate (prependExtraPathParts inheritedPath == expectedPath)
-      case completed of
-        Nothing -> assertFailure "PATH construction exceeded its 1-second bound"
-        Just True -> pure ()
-        Just False -> assertFailure "PATH construction produced an unexpected value"
 
 -- ============================================================
 -- Top-level tests

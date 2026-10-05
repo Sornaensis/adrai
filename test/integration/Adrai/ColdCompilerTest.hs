@@ -18,6 +18,8 @@ import Adrai.Git
 import Adrai.GitTestSupport
 import Adrai.Provenance (mkGitOid)
 import Adrai.Repository
+import Adrai.RetainedNative.NativeFixture (nativeProgramName, copyNativeFixture, tracingNativeFixture)
+import Adrai.NativeProcessObservation (withNativeObservation, awaitNativeReadiness)
 import Adrai.RetainedNative.RepositorySeed
   ( RepositorySeed,
     createRepositorySeedWith,
@@ -41,15 +43,10 @@ import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.SQLite.Simple (Connection, Only (..), Query, close, execute_, open, query_)
-import System.Directory (copyFile, doesDirectoryExist, doesFileExist, listDirectory)
-import System.Environment (getExecutablePath)
-import System.FilePath ((</>), normalise)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.FilePath ((</>), normalise, takeDirectory)
 import System.IO.Temp (withSystemTempDirectory)
-import System.Timeout (timeout)
 import Control.Monad (forM_)
-import Control.Concurrent (threadDelay)
-import qualified Data.ByteString.Lazy as LBS
-import System.Process.Typed (proc, readProcess)
 import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
@@ -186,7 +183,7 @@ tests =
             expectedRows <- managedSourceRows normalConnection
             close normalConnection
             let traceFile = temporary </> "restream-git-argv.txt"
-                wrapper = temporary </> "restream-tracing-git.cmd"
+                wrapper = temporary </> nativeGitFixtureBatchHelperProgram
             writeTracingGitWrapper wrapper traceFile
             wrapped <- requireResolvedWithGitClient repository (GitClient wrapper) "HEAD"
             raw <-
@@ -453,7 +450,7 @@ nativeLateHistoryBatchFailure :: IO ()
 nativeLateHistoryBatchFailure =
   withSystemTempDirectory "adrai native late history" $ \temporary -> do
       let repository = temporary </> "repository"
-          helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+          helper = temporary </> nativeGitFixtureBatchHelperProgram
       initTestRepository repository
       basisText <- commitFile repository "seed.txt" "basis"
       basis <-
@@ -471,8 +468,7 @@ nativeLateHistoryBatchFailure =
         ]
       resolved <- requireResolved repository "HEAD"
       raw <- observeRawRepositorySnapshotAt resolved >>= either (assertFailure . show) pure
-      executable <- getExecutablePath
-      copyFile executable helper
+      copyNativeFixture helper
       BS.writeFile (temporary </> "fixture-shallow") "false\n"
       graph <- gitSuccess repository ["rev-list", "--topo-order", "--reverse", "--parents", Text.unpack (gitOidText (resolvedCommitOid resolved))] BS.empty
       BS.writeFile (temporary </> "fixture-rev-list") graph
@@ -489,10 +485,10 @@ nativeLateHistoryBatchFailure =
       let wrappedRepository = (resolvedRepository resolved) {repositoryClient = GitClient helper}
           wrappedRevision = resolved {resolvedRepository = wrappedRepository}
           wrappedRaw = raw {rawRepositorySnapshotRevision = wrappedRevision}
-      Async.withAsync (analyzeRepositorySnapshotWithHistoryCounts wrappedRaw) $ \analysis -> do
+      Async.withAsync (withNativeObservation temporary (analyzeRepositorySnapshotWithHistoryCounts wrappedRaw)) $ \analysis -> do
         waitForNativeHistoryPhase (temporary </> "fixture-phase") analysis
-        timeout (10 * 1000000) (Async.wait analysis) >>= \case
-          Just (Left (RepositorySnapshotGitError (GitInvalidOutput "cat-file batch" (GitMalformedObjectHeader "malformed"))), parsed, requested) -> do
+        Async.wait analysis >>= \case
+          (Left (RepositorySnapshotGitError (GitInvalidOutput "cat-file batch" (GitMalformedObjectHeader "malformed"))), parsed, requested) -> do
             parsed @?= 256
             requested @?= 257
           result -> assertFailure ("expected native late history Git error after fixture phase, got " <> show result)
@@ -500,46 +496,27 @@ nativeLateHistoryBatchFailure =
       length seen @?= 257
       boundaries <- lines <$> readFile (temporary </> "fixture-window-boundaries")
       boundaries @?= ["256:False"]
-      helperPid <- read <$> readFile (temporary </> "fixture-helper.pid")
-      waitForExactPidAbsence helperPid 50
       analyzeRepositorySnapshotWithHistoryCounts raw >>= \case
         (Right _, parsed, requested) -> do
           parsed @?= 257
           requested @?= 257
         result -> assertFailure ("fresh real-Git history retry failed: " <> show result)
 
-waitForNativeHistoryPhase :: Show value => FilePath -> Async.Async value -> IO ()
-waitForNativeHistoryPhase phaseFile analysis = go (300 :: Int)
-  where
-    go attempts = do
-      exists <- doesFileExist phaseFile
-      if exists
-        then readFile phaseFile >>= (@?= "malformed\n")
-        else do
-          Async.poll analysis >>= \case
-            Just result -> assertFailure ("native late-history analysis completed before fixture phase: " <> show result)
-            Nothing
-              | attempts <= 0 -> assertFailure "native late-history fixture phase did not arrive within 30 seconds"
-              | otherwise -> threadDelay 100000 >> go (attempts - 1)
+waitForNativeHistoryPhase :: FilePath -> Async.Async value -> IO ()
+waitForNativeHistoryPhase phaseFile analysis = do
+  awaitNativeReadiness analysis "native late-history fixture phase" $ do
+    exists <- doesFileExist phaseFile
+    pure (if exists then Just () else Nothing)
+  readFile phaseFile >>= (@?= "malformed\n")
 
-waitForExactPidAbsence :: Int -> Int -> IO ()
-waitForExactPidAbsence pid attempts = do
-  (_, output, _) <- readProcess (proc "powershell.exe" ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; try { [void][Diagnostics.Process]::GetProcessById(" <> show pid <> "); [Console]::Out.Write('present') } catch [ArgumentException] { [Console]::Out.Write('absent') }"])
-  if LBS.toStrict output == "absent"
-    then pure ()
-    else if attempts <= 0
-      then assertFailure "exact native history helper PID remained after cleanup"
-      else threadDelay 100000 >> waitForExactPidAbsence pid (attempts - 1)
+
+nativeGitFixtureBatchHelperProgram :: FilePath
+nativeGitFixtureBatchHelperProgram = nativeProgramName "adrai-native-git-fixture-batch-p6133"
 
 writeTracingGitWrapper :: FilePath -> FilePath -> IO ()
-writeTracingGitWrapper wrapper traceFile =
-  BS.writeFile
-    wrapper
-    ( "@echo off\r\n"
-        <> "echo %*>> \""
-        <> BS8.pack traceFile
-        <> "\"\r\ngit %*\r\n"
-    )
+writeTracingGitWrapper wrapper traceFile = do
+  selected <- tracingNativeFixture (takeDirectory wrapper) traceFile
+  selected @?= wrapper
 
 assertSingleUnbufferedBlobSession :: FilePath -> IO ()
 assertSingleUnbufferedBlobSession traceFile = do

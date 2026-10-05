@@ -179,6 +179,8 @@ executables:
 tests:
   adrai-test:
     main: Main.hs
+    c-sources:
+      - test/default/Adrai/native_process_observation.c
     source-dirs:
       - test/default
       - test/unit

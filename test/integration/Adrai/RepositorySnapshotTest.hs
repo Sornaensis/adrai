@@ -6,6 +6,8 @@ module Adrai.RepositorySnapshotTest (tests) where
 import Adrai.Git
 import Adrai.GitTestSupport
 import Adrai.Repository
+import Adrai.RetainedNative.NativeFixture (nativeProgramName, copyNativeFixture, tracingNativeFixture)
+import Adrai.NativeProcessObservation (withNativeObservation)
 import Adrai.RetainedNative.RepositorySeed
   ( RepositorySeed,
     createRepositorySeed,
@@ -21,14 +23,8 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Control.Monad (forM_)
-import Control.Concurrent (threadDelay)
-import qualified Data.ByteString.Lazy as LBS
-import System.Directory (copyFile)
-import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Timeout (timeout)
-import System.Process.Typed (proc, readProcess)
 import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
@@ -128,11 +124,10 @@ contradictoryPathPromotionIdentity getSeed =
     withSystemTempDirectory "adrai native contradictory path" $ \temporary -> do
     let configured = configBytes "custom/decisions" "custom/connections"
         path = requireRepoPath "custom/decisions/same.decision.md"
-        helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+        helper = temporary </> nativeGitFixtureBatchHelperProgram
     _ <- commitFile repository ".adrai.toml" configured
     discovered <- requireRepository repository
-    executable <- getExecutablePath
-    copyFile executable helper
+    copyNativeFixture helper
     configOid <- GitOid <$> hashObject repository configured
     firstOid <- GitOid <$> hashObject repository "first"
     secondOid <- GitOid <$> hashObject repository "second"
@@ -153,10 +148,8 @@ contradictoryPathPromotionIdentity getSeed =
     listTreeEntriesAt fixtureRepository (resolvedCommitOid resolved) [requireRepoPath "custom/decisions", requireRepoPath "custom/connections"] >>= \case
       Left (GitInvalidOutput "list tree" (GitMalformedTreeRecord "contradictory duplicate path")) -> pure ()
       result -> assertFailure ("expected strict list-tree duplicate rejection, got " <> show result)
-    observeRawRepositorySnapshotAt wrapped >>= (@?= Left expected)
+    withNativeObservation temporary (observeRawRepositorySnapshotAt wrapped) >>= (@?= Left expected)
     lines <$> readFile (temporary </> "fixture-requests") >>= (@?= [Text.unpack (gitOidText configOid)])
-    helperPid <- read <$> readFile (temporary </> "fixture-helper.pid")
-    waitForExactFixturePidAbsence helperPid 50
     requireSnapshot discovered "HEAD" >>= \snapshot -> repositoryConfigOrigin (repositorySnapshotConfig snapshot) @?= CommittedConfigOrigin
 
 combinedPersistentSessionComposition :: IO RepositorySeed -> IO ()
@@ -184,7 +177,6 @@ combinedPersistentSessionComposition getSeed =
           gitlinkPath = Text.unpack decisionRoot <> "/modul med mellemrum.decision.md"
           traceFile = temporary </> "git-argv.txt"
           blobTraceFile = temporary </> "blob-sessions.txt"
-          wrapper = temporary </> "tracing-git.cmd"
           padded index = replicate (4 - length shown) '0' <> shown
             where
               shown = show index
@@ -202,14 +194,7 @@ combinedPersistentSessionComposition getSeed =
             repository
             ["commit-tree", Text.unpack tree, "-p", Text.unpack parentCommit]
             "combined persistent session composition\n"
-      BS.writeFile
-        wrapper
-        ( "@echo off\r\necho %*>> \""
-            <> BS8.pack traceFile
-            <> "\"\r\necho %* | findstr /c:\"cat-file\" >nul\r\nif errorlevel 1 goto run\r\necho blob>> \""
-            <> BS8.pack blobTraceFile
-            <> "\"\r\n:run\r\ngit %*\r\n"
-        )
+      wrapper <- tracingNativeFixture temporary traceFile
       discovered <- requireRepository repository
       snapshot <- requireSnapshot (discovered {repositoryClient = GitClient wrapper}) combinedCommit
       let observations = repositorySnapshotEntries snapshot
@@ -242,6 +227,9 @@ combinedPersistentSessionComposition getSeed =
       length (BS8.lines blobSessions) @?= 1
       assertBool "combined snapshot must use one unbuffered blob child" (not ("--buffer" `BS.isInfixOf` invocations))
 
+nativeGitFixtureBatchHelperProgram :: FilePath
+nativeGitFixtureBatchHelperProgram = nativeProgramName "adrai-native-git-fixture-batch-p6133"
+
 observationBytes :: RepositorySnapshot -> Map.Map Text.Text (Maybe ByteString)
 observationBytes snapshot =
   Map.fromList
@@ -267,14 +255,13 @@ nativeLateManagedTreeFailure :: IO RepositorySeed -> IO ()
 nativeLateManagedTreeFailure getSeed =
   withRepository getSeed $ \repository ->
     withSystemTempDirectory "adrai native late managed-tree" $ \temporary -> do
-      let helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+      let helper = temporary </> nativeGitFixtureBatchHelperProgram
           configured = configBytes "custom/decisions" "custom/connections"
           managed = [("custom/decisions/item-" <> pad n <> ".decision.md", TextEncoding.encodeUtf8 ("decision-" <> Text.pack (show n))) | n <- [0 :: Int .. 1]]
           pad n = replicate (4 - length shown) '0' <> shown where shown = show n
       _ <- commitFiles repository ((".adrai.toml", configured) : managed)
       discovered <- requireRepository repository
-      executable <- getExecutablePath
-      copyFile executable helper
+      copyNativeFixture helper
       configTree <- gitSuccess repository ["ls-tree", "-z", "HEAD", "--", ".adrai.toml"] BS.empty
       managedTree <- gitSuccess repository ["ls-tree", "-rz", "HEAD", "--", "custom/decisions", "custom/connections"] BS.empty
       BS.writeFile (temporary </> "fixture-config-tree") configTree
@@ -288,20 +275,10 @@ nativeLateManagedTreeFailure getSeed =
       forM_ (Map.elems blobs) $ \blob -> BS.writeFile (temporary </> "fixture-blob-" <> Text.unpack (gitOidText (gitBlobOid blob))) (gitBlobBytes blob)
       writeFile (temporary </> "fixture-malformed-after") "3"
       let wrapped = resolved {resolvedRepository = discovered {repositoryClient = GitClient helper}}
-      timeout (5 * 1000000) (observeRawRepositorySnapshotAt wrapped) >>= \case
-        Just (Left (RepositorySnapshotGitError (GitInvalidOutput "cat-file batch" _))) -> pure ()
+      withNativeObservation temporary (observeRawRepositorySnapshotAt wrapped) >>= \case
+        Left (RepositorySnapshotGitError (GitInvalidOutput "cat-file batch" _)) -> pure ()
         result -> assertFailure ("expected native late batch failure, got " <> show result)
       linesSeen <- lines <$> readFile (temporary </> "fixture-requests")
       length linesSeen @?= 3
-      helperPid <- read <$> readFile (temporary </> "fixture-helper.pid")
-      waitForExactFixturePidAbsence helperPid 50
       requireSnapshot discovered "HEAD" >>= \snapshot -> length (repositorySnapshotEntries snapshot) @?= 2
 
-waitForExactFixturePidAbsence :: Int -> Int -> IO ()
-waitForExactFixturePidAbsence pid attempts = do
-  (_, output, _) <- readProcess (proc "powershell.exe" ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; try { [void][Diagnostics.Process]::GetProcessById(" <> show pid <> "); [Console]::Out.Write('present') } catch [ArgumentException] { [Console]::Out.Write('absent') }"])
-  if LBS.toStrict output == "absent"
-    then pure ()
-    else if attempts <= 0
-      then assertFailure "exact native Repository helper PID remained after cleanup"
-      else threadDelay 100000 >> waitForExactFixturePidAbsence pid (attempts - 1)

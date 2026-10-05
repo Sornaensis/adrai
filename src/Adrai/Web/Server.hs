@@ -90,9 +90,12 @@ import Network.Wai.Handler.Warp
 import qualified Network.Wai.Handler.Warp.Internal as WarpInternal
 import Network.Wai.Handler.WebSockets (websocketsOr)
 import qualified Network.WebSockets as WebSockets
-import System.Directory (getCurrentDirectory)
+import System.Directory (doesFileExist, executable, findFileWith, getCurrentDirectory, getPermissions, makeAbsolute)
+import System.Environment (lookupEnv)
+import System.FilePath (splitSearchPath)
 import System.Exit (ExitCode (ExitSuccess))
 import System.IO (hFlush, hPutStrLn, stderr, stdout)
+import System.Info (os)
 import System.Process (proc, terminateProcess, waitForProcess, withCreateProcess)
 import System.Timeout (timeout)
 
@@ -330,9 +333,13 @@ withListener requested use = do
       pure listener
 
 openBrowser :: Text -> IO (Either Text ())
+openBrowser _ | os /= "mingw32" && os /= "linux" = pure (Left "browser opener is unsupported on this platform")
 openBrowser url = do
-  outcome <- trySynchronous $
-    withCreateProcess (proc "rundll32.exe" ["url.dll,FileProtocolHandler", Text.unpack url]) $ \_ _ _ handle -> do
+  outcome <- trySynchronous $ do
+    directories <- maybe [] splitSearchPath <$> lookupEnv "PATH"
+    selected <- findFileWith isExecutable directories command
+      >>= maybe (ioError (userError "browser opener not found")) makeAbsolute
+    withCreateProcess (proc selected arguments) $ \_ _ _ handle -> do
       completed <- race (threadDelay 5000000) (waitForProcess handle)
       case completed of
         Left () -> terminateProcess handle >> pure (Left "browser opener timed out")
@@ -342,6 +349,13 @@ openBrowser url = do
     Right (Left problem) -> Left problem
     Right (Right ExitSuccess) -> Right ()
     Right (Right code) -> Left ("browser opener exited " <> Text.pack (show code))
+  where
+    isExecutable path = do
+      regular <- doesFileExist path
+      if regular then executable <$> getPermissions path else pure False
+    (command, arguments)
+      | os == "mingw32" = ("rundll32.exe", ["url.dll,FileProtocolHandler", Text.unpack url])
+      | otherwise = ("xdg-open", [Text.unpack url])
 
 trySynchronous :: IO value -> IO (Either SomeException value)
 trySynchronous action = do

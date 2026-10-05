@@ -6,30 +6,29 @@ module Adrai.GitBatchTest (tests) where
 import Adrai.Git
 import Adrai.GitTestSupport
 import Adrai.Provenance (mkGitOid)
+import Adrai.RetainedNative.NativeFixture (nativeProgramName, configureNativeFixture, constantNativeFixture)
+import Adrai.NativeProcessObservation (withNativeObservation, withPinnedProcess, awaitNativeReadiness)
 import Adrai.Types (RepoPath, repoPathText)
 import qualified Control.Concurrent.Async as Async
-import Control.Concurrent (MVar, modifyMVar_, newEmptyMVar, newMVar, putMVar, readMVar, takeMVar, threadDelay, tryPutMVar, withMVar)
-import Control.Exception (SomeException, finally, fromException, onException, throwIO, throwTo, try)
+import Control.Concurrent (MVar, modifyMVar_, newEmptyMVar, newMVar, putMVar, readMVar, takeMVar, threadDelay, tryPutMVar, tryTakeMVar, withMVar)
+import Control.Exception (SomeException, bracket_, finally, fromException, onException, throwIO, throwTo, try)
 import Control.Monad (forM_, void)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
-import qualified Data.ByteString.Lazy as LBS
 import Data.Either (isLeft)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import GHC.Clock (getMonotonicTimeNSec)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Directory (copyFile, createDirectoryIfMissing, createFileLink, doesDirectoryExist, doesFileExist, listDirectory, removeFile, removePathForcibly)
+import System.Directory (copyFile, createDirectoryIfMissing, createFileLink, doesDirectoryExist, doesFileExist, executable, getPermissions, listDirectory, removeFile, removePathForcibly, setPermissions)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (..))
-import System.FilePath (isRelative, makeRelative, normalise, splitDirectories, (</>))
+import System.FilePath (isRelative, makeRelative, normalise, splitDirectories, takeDirectory, (</>))
 import System.IO.Error (tryIOError)
 import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory, withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
-import System.Process.Typed (proc, readProcess)
 import System.Timeout (timeout)
 import Text.Read (readMaybe)
 import Test.Tasty (TestTree, testGroup, withResource)
@@ -225,10 +224,9 @@ tests =
       testCase "multi-revision tree observations reject malformed child output" $
         withSharedRepository $ \_repository discovered ->
           withSystemTempDirectory "adrai malformed tree cat-file" $ \temporary -> do
-            let fakeGit = temporary </> "malformed-git.cmd"
-                malformedRepository = discovered {repositoryClient = GitClient fakeGit}
+            fakeGit <- constantNativeFixture temporary "malformed\n" "" 0
+            let malformedRepository = discovered {repositoryClient = GitClient fakeGit}
                 path = requireRepoPath "missing.md"
-            BS.writeFile fakeGit "@echo off\r\necho malformed\r\n"
             revision <- resolveHead discovered
             lookupTreeObjectInfoAtRevisions malformedRepository (Map.singleton revision (Set.singleton path)) [] >>= \case
                Left (GitInvalidOutput "cat-file batch-check" _) -> pure ()
@@ -253,14 +251,12 @@ tests =
       testCase "persistent batch-check nonzero early exit fails closed and reaps" $
         withSharedRepository $ \_repository discovered ->
           withSystemTempDirectory "adrai persistent batch-check failures" $ \temporary -> do
-            let nonzeroGit = temporary </> "nonzero-git.cmd"
-                path = requireRepoPath "missing.md"
+            nonzeroGit <- constantNativeFixture temporary "" "nonzero fixture\n" 23
+            let path = requireRepoPath "missing.md"
             revision <- resolveHead discovered
-            BS.writeFile nonzeroGit "@echo off\r\nexit /b 23\r\n"
-            timeout (5 * 1000000) (lookupTreeObjectInfoAtRevisions (discovered {repositoryClient = GitClient nonzeroGit}) (Map.singleton revision (Set.singleton path)) []) >>= \case
-              Nothing -> assertFailure "nonzero persistent batch-check child was not reaped promptly"
-              Just (Left _) -> pure ()
-              Just result -> assertFailure ("expected nonzero child failure, got " <> show result),
+            lookupTreeObjectInfoAtRevisions (discovered {repositoryClient = GitClient nonzeroGit}) (Map.singleton revision (Set.singleton path)) [] >>= \case
+              Left _ -> pure ()
+              result -> assertFailure ("expected nonzero child failure, got " <> show result),
       testCase "multi-revision tree lookup cancellation reaps a silent native child and retry succeeds" directTreeCancellationReapsNativeChild,
       testCase "persistent native batch cancellation reaps a silent writer-blocking child and retries" persistentNativeBatchCancellation,
       testCase "persistent native batch-check cancellation reaps a silent writer-blocking child and retries" persistentNativeBatchCheckCancellation,
@@ -268,9 +264,8 @@ tests =
       testCase "normal runGit completion has a bounded real success sentinel" $
         withSharedRepository $ \_ discovered ->
           withSystemTempDirectory "adrai bounded git completion" $ \temporary -> do
-            let fakeGit = temporary </> "bounded-success.cmd"
-                slowRepository = discovered {repositoryClient = GitClient fakeGit}
-            BS.writeFile fakeGit "@echo off\r\necho bounded-success\r\n"
+            fakeGit <- constantNativeFixture temporary "bounded-success\r\n" "" 0
+            let slowRepository = discovered {repositoryClient = GitClient fakeGit}
             runRepository slowRepository "bounded successful command" [] BS.empty >>= \case
               Right result -> do
                 processExitCode result @?= ExitSuccess
@@ -447,7 +442,10 @@ nativeHelperTimingFixtureLock :: MVar ()
 nativeHelperTimingFixtureLock = unsafePerformIO (newMVar ())
 
 copyNativeHelper :: FilePath -> FilePath -> IO ()
-copyNativeHelper source destination = withMVar nativeHelperCopyLock $ \_ -> copyFile source destination
+copyNativeHelper source destination = withMVar nativeHelperCopyLock $ \_ -> do
+  copyFile source destination
+  permissions <- getPermissions destination
+  setPermissions destination permissions {executable=True}
 
 data RepositorySeed = RepositorySeed
   { repositorySeedRoot :: FilePath,
@@ -641,31 +639,12 @@ publicBlobFoldsUseOnePersistentChild :: IO ()
 publicBlobFoldsUseOnePersistentChild =
   withSharedRepository $ \_ discovered ->
     withSystemTempDirectory "adrai public persistent blob folds" $ \temporary -> do
-      let fakeGit = temporary </> "persistent-blob-folds.cmd"
-          helper = temporary </> "persistent-blob-folds.ps1"
-          launches = temporary </> "launches.txt"
+      fakeGit <- configureNativeFixture temporary "valid-blobs"
+      let launches = temporary </> "launches.txt"
           arguments = temporary </> "arguments.txt"
           fakeRepository = discovered {repositoryClient = GitClient fakeGit}
           oids = [requireOid (Text.justifyRight 40 '0' (Text.pack (show number))) | number <- [1 :: Int .. 257]]
           ordered = take 255 oids <> [requireLast "persistent fold fixture" oids, requireHead "persistent fold fixture" oids, requireLast "persistent fold fixture" oids]
-          launcher =
-            "@echo off\r\n"
-              <> "echo launch>> \"" <> BS8.pack launches <> "\"\r\n"
-              <> "echo %*>> \"" <> BS8.pack arguments <> "\"\r\n"
-              <> "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" <> BS8.pack helper <> "\"\r\n"
-          protocol =
-            "$output = [Console]::OpenStandardOutput()\n"
-              <> "$ascii = [System.Text.Encoding]::ASCII\n"
-              <> "while (($line = [Console]::In.ReadLine()) -ne $null) {\n"
-              <> "  $oid = $line.Split(' ')[0]\n"
-              <> "  $header = $ascii.GetBytes($oid + ' blob 1' + [char]10)\n"
-              <> "  $output.Write($header, 0, $header.Length)\n"
-              <> "  $output.WriteByte([byte][char]'x')\n"
-              <> "  $output.WriteByte(10)\n"
-              <> "  $output.Flush()\n"
-              <> "}\n"
-      BS.writeFile fakeGit launcher
-      BS.writeFile helper protocol
       foldBlobBatch fakeRepository (reverse oids <> take 4 oids) [] (\seen blob -> pure (gitBlobOid blob : seen)) >>= \case
         Left problem -> assertFailure (show problem)
         Right seen -> Map.keys (Map.fromList [(oid, ()) | oid <- seen]) @?= oids
@@ -692,7 +671,7 @@ persistentSessionFailureLatchIsolated =
     withSystemTempDirectory "adrai latched header eof" $ \temporary -> do
       executable <- getExecutablePath
       blobOid <- requireOid <$> hashObject repository "latched fresh blob"
-      let helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+      let helper = temporary </> nativeGitFixtureBatchHelperProgram
           requests = temporary </> "fixture-requests"
           pidFile = temporary </> "fixture-helper.pid"
           fixtureRepository = discovered {repositoryClient = GitClient helper}
@@ -702,7 +681,7 @@ persistentSessionFailureLatchIsolated =
       writeFile (temporary </> "fixture-mode") "eof-response"
       BS.writeFile (temporary </> "fixture-blob-" <> Text.unpack (gitOidText blobOid)) "latched fresh blob"
       outcome <-
-        withBlobBatchSession fixtureRepository $ \session -> do
+        withNativeObservation temporary $ withBlobBatchSession fixtureRepository $ \session -> do
           firstFailure <- readBlobBatchFromSession session [blobOid]
           laterAttempt <- readBlobBatchFromSession session [blobOid]
           pure $ case (firstFailure, laterAttempt) of
@@ -710,8 +689,7 @@ persistentSessionFailureLatchIsolated =
             pair -> Right pair
       outcome @?= Left expected
       BS.readFile requests >>= (\observed -> map (BS8.filter (/= '\r')) (BS8.lines observed) @?= [TextEncoding.encodeUtf8 (gitOidText blobOid)])
-      pid <- waitForNativeHelperPid pidFile 50 >>= maybe (assertFailure "header-EOF helper PID was not recorded" >> fail "unreachable") pure
-      waitForWindowsProcessAbsence pid 50 >>= either (assertFailure . ("header-EOF helper remained: " <>)) pure
+      _pid <- requireNativeHelperPid pidFile
       withBlobBatchSession discovered (\freshSession -> readBlobBatchFromSession freshSession [blobOid])
         >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "latched fresh blob")))
 
@@ -719,17 +697,15 @@ persistentSessionTrailingClose :: IO ()
 persistentSessionTrailingClose =
   withRepository $ \repository discovered ->
     withSystemTempDirectory "adrai persistent trailing bytes" $ \temporary -> do
-      let fakeGit = temporary </> "trailing-git.cmd"
-          fakeRepository = discovered {repositoryClient = GitClient fakeGit}
-      BS.writeFile fakeGit "@echo off\r\nset /p oid=\r\npowershell.exe -NoProfile -NonInteractive -Command \"[Console]::Out.Write($env:oid + ' blob 1' + [char]10 + 'x' + [char]10 + 'trailing'); [Console]::Out.Flush()\"\r\n"
+      fakeGit <- configureNativeFixture temporary "trailing-blob"
+      let fakeRepository = discovered {repositoryClient = GitClient fakeGit}
       blobOid <- requireOid <$> hashObject repository "trailing retry"
       captured <- newEmptyMVar :: IO (MVar (IO (Either GitError (Map.Map GitOid GitBlob))))
-      timeout (5 * 1000000) (withBlobBatchSession fakeRepository (\session -> do
+      withBlobBatchSession fakeRepository (\session -> do
         putMVar captured (readBlobBatchFromSession session [blobOid])
-        readBlobBatchFromSession session [blobOid])) >>= \case
-        Nothing -> assertFailure "trailing persistent child did not complete promptly"
-        Just (Left (GitInvalidOutput "cat-file batch" (GitUnexpectedTrailingBytes _))) -> pure ()
-        Just result -> assertFailure ("expected trailing persistent protocol failure, got " <> show result)
+        readBlobBatchFromSession session [blobOid]) >>= \case
+        Left (GitInvalidOutput "cat-file batch" (GitUnexpectedTrailingBytes _)) -> pure ()
+        result -> assertFailure ("expected trailing persistent protocol failure, got " <> show result)
       escaped <- takeMVar captured
       escaped >>= \case
         Left (GitInvalidOutput "cat-file batch" (GitUnexpectedTrailingBytes _)) -> pure ()
@@ -751,7 +727,7 @@ persistentSessionPostCallbackCancellationIsolated =
       captured <- newEmptyMVar :: IO (MVar (IO (Either GitError (Map.Map GitOid GitBlob))))
       entered <- newEmptyMVar
       release <- newEmptyMVar
-      let helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+      let helper = temporary </> nativeGitFixtureBatchHelperProgram
           pidFile = temporary </> "fixture-helper.pid"
           requests = temporary </> "fixture-requests"
           fixtureRepository = discovered {repositoryClient = GitClient helper}
@@ -760,29 +736,24 @@ persistentSessionPostCallbackCancellationIsolated =
       writeFile (temporary </> "fixture-malformed-after") "1"
       writeFile (temporary </> "fixture-mode") "withhold-eof"
       BS.writeFile (temporary </> "fixture-blob-" <> Text.unpack (gitOidText blobOid)) "post callback retry"
-      owner <- Async.async $
+      Async.withAsync (withNativeObservation temporary $
         withBlobBatchSessionWithFinalizationObserverForTest fixtureRepository (pure ()) afterCallback $ \session -> do
           putMVar captured (readBlobBatchFromSession session [blobOid])
-          pure (Right ())
-      timeout (5 * 1000000) (takeMVar entered) >>= (@?= Just ())
-      pid <- waitForNativeHelperPid pidFile 50 >>= \case
-        Just value -> pure value
-        Nothing -> assertFailure "post-callback helper PID was not recorded" >> fail "unreachable"
-      timeout (5 * 1000000) (throwTo (Async.asyncThreadId owner) Async.AsyncCancelled >> Async.waitCatch owner) >>= \case
-        Just (Left problem) -> fromException problem @?= Just Async.AsyncCancelled
-        other -> assertFailure ("post-callback cancellation did not arrive: " <> show other)
-      escaped <- takeMVar captured
-      escaped >>= (@?= Left GitBlobBatchSessionClosed)
-      exists <- doesFileExist requests
-      if exists then BS.readFile requests >>= (\contents -> BS8.lines contents @?= []) else pure ()
-      waitForWindowsProcessAbsence pid 50 >>= \case
-        Right () -> pure ()
-        Left problem -> assertFailure ("post-callback helper remained: " <> problem)
-      withBlobBatchSession discovered (\fresh -> readBlobBatchFromSession fresh [blobOid])
-        >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "post callback retry")))
+          pure (Right ())) $ \owner -> do
+        awaitNativeReadiness owner "post-callback entered" (tryTakeMVar entered)
+        _pid <- awaitNativeReadiness owner "post-callback helper identity" (readNativeHelperPid pidFile)
+        (throwTo (Async.asyncThreadId owner) Async.AsyncCancelled >> Async.waitCatch owner) >>= \case
+          Left problem -> fromException problem @?= Just Async.AsyncCancelled
+          other -> assertFailure ("post-callback cancellation did not arrive: " <> show other)
+        escaped <- takeMVar captured
+        escaped >>= (@?= Left GitBlobBatchSessionClosed)
+        exists <- doesFileExist requests
+        if exists then BS.readFile requests >>= (\contents -> BS8.lines contents @?= []) else pure ()
+        withBlobBatchSession discovered (\fresh -> readBlobBatchFromSession fresh [blobOid])
+          >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "post callback retry")))
 
 persistentSessionWithheldEofCancellation =
-  withMVar nativeHelperTimingFixtureLock (const persistentSessionWithheldEofCancellationIsolated)
+    withMVar nativeHelperTimingFixtureLock (const persistentSessionWithheldEofCancellationIsolated)
 
 persistentSessionWithheldEofCancellationIsolated :: IO ()
 persistentSessionWithheldEofCancellationIsolated =
@@ -791,7 +762,7 @@ persistentSessionWithheldEofCancellationIsolated =
       executable <- getExecutablePath
       blobOid <- requireOid <$> hashObject repository "fixture withheld eof retry"
       captured <- newEmptyMVar :: IO (MVar (IO (Either GitError (Map.Map GitOid GitBlob))))
-      let helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+      let helper = temporary </> nativeGitFixtureBatchHelperProgram
           phase = temporary </> "fixture-phase"
           pidFile = temporary </> "fixture-helper.pid"
           requests = temporary </> "fixture-requests"
@@ -800,26 +771,19 @@ persistentSessionWithheldEofCancellationIsolated =
       writeFile (temporary </> "fixture-malformed-after") "999"
       writeFile (temporary </> "fixture-mode") "withhold-eof"
       BS.writeFile (temporary </> "fixture-blob-" <> Text.unpack (gitOidText blobOid)) "fixture withheld eof retry"
-      owner <- Async.async $ withBlobBatchSession fixtureRepository $ \session -> do
+      Async.withAsync (withNativeObservation temporary $ withBlobBatchSession fixtureRepository $ \session -> do
         putMVar captured (readBlobBatchFromSession session [blobOid])
-        readBlobBatchFromSession session [blobOid]
-      reached <- waitForTreePhase phase 50
-      assertBool "fixture helper did not reach withheld-EOF phase" reached
-      pid <- waitForNativeHelperPid pidFile 50 >>= \case
-        Nothing -> assertFailure "fixture helper PID was not recorded" >> fail "unreachable"
-        Just value -> pure value
-      timeout (5 * 1000000) (throwTo (Async.asyncThreadId owner) Async.AsyncCancelled >> Async.waitCatch owner) >>= \case
-        Nothing -> assertFailure "withheld-EOF owner cancellation exceeded five seconds"
-        Just (Left exception) -> fromException exception @?= Just Async.AsyncCancelled
-        Just result -> assertFailure ("withheld-EOF owner unexpectedly returned " <> show result)
-      waitForWindowsProcessAbsence pid 50 >>= \case
-        Left problem -> assertFailure ("withheld-EOF helper remained: " <> problem)
-        Right () -> pure ()
-      escaped <- takeMVar captured
-      escaped >>= (@?= Left GitBlobBatchSessionClosed)
-      (map (BS8.filter (/= '\r')) . BS8.lines <$> BS.readFile requests) >>= (@?= [TextEncoding.encodeUtf8 (gitOidText blobOid)])
-      withBlobBatchSession discovered (\fresh -> readBlobBatchFromSession fresh [blobOid])
-        >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "fixture withheld eof retry")))
+        readBlobBatchFromSession session [blobOid]) $ \owner -> do
+        awaitTreePhase owner phase
+        _pid <- requireNativeHelperPid pidFile
+        (throwTo (Async.asyncThreadId owner) Async.AsyncCancelled >> Async.waitCatch owner) >>= \case
+          Left exception -> fromException exception @?= Just Async.AsyncCancelled
+          result -> assertFailure ("withheld-EOF owner unexpectedly returned " <> show result)
+        escaped <- takeMVar captured
+        escaped >>= (@?= Left GitBlobBatchSessionClosed)
+        (map (BS8.filter (/= '\r')) . BS8.lines <$> BS.readFile requests) >>= (@?= [TextEncoding.encodeUtf8 (gitOidText blobOid)])
+        withBlobBatchSession discovered (\fresh -> readBlobBatchFromSession fresh [blobOid])
+          >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "fixture withheld eof retry")))
 
 persistentOwnerFinalization :: Bool -> IO ()
 persistentOwnerFinalization shouldThrow =
@@ -842,7 +806,7 @@ persistentBlockedCallbackCleanupIsolated cleanupFailure =
       entered <- newEmptyMVar
       never <- newEmptyMVar
       workers <- newEmptyMVar
-      let helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+      let helper = temporary </> nativeGitFixtureBatchHelperProgram
           pidFile = temporary </> "fixture-helper.pid"
           requests = temporary </> "fixture-requests"
           fixtureRepository = discovered {repositoryClient = GitClient helper}
@@ -852,28 +816,21 @@ persistentBlockedCallbackCleanupIsolated cleanupFailure =
       copyNativeHelper executable helper
       writeFile (temporary </> "fixture-malformed-after") "999"
       BS.writeFile (temporary </> "fixture-blob-" <> Text.unpack (gitOidText blobOid)) "blocked fold callback retry"
-      outcome <- timeout (5 * 1000000) $ withBlobBatchSession fixtureRepository $ \session -> do
+      outcome <- withNativeObservation temporary $ withBlobBatchSession fixtureRepository $ \session -> do
         worker <- Async.async (foldBlobBatchFromSession session [blobOid] () blockCallback)
         putMVar workers worker
-        timeout (5 * 1000000) (takeMVar entered) >>= (@?= Just ())
+        awaitNativeReadiness worker "blocked callback entered" (tryTakeMVar entered)
         pure (Right ())
       case (cleanupFailure, outcome) of
-        (Nothing, Just (Left GitBlobBatchSessionClosed)) -> pure ()
-        (Just sentinel, Just (Left (GitCommandFailed operation (-1) stdout diagnostic))) -> do
+        (Nothing, Left GitBlobBatchSessionClosed) -> pure ()
+        (Just sentinel, Left (GitCommandFailed operation (-1) stdout diagnostic)) -> do
           operation @?= "cat-file batch"
           stdout @?= ""
           assertBool "registered reader cleanup failure lost its sentinel" (Text.pack sentinel `Text.isInfixOf` diagnostic)
         _ -> assertFailure ("unexpected blocked fold cleanup outcome: " <> show outcome)
       worker <- takeMVar workers
-      timeout (5 * 1000000) (Async.waitCatch worker) >>= \case
-        Nothing -> assertFailure "blocked fold worker was not reaped"
-        Just _ -> pure ()
-      pid <- waitForNativeHelperPid pidFile 50 >>= \case
-        Nothing -> assertFailure "blocked fold helper PID was not recorded" >> fail "unreachable"
-        Just value -> pure value
-      waitForWindowsProcessAbsence pid 50 >>= \case
-        Left problem -> assertFailure ("blocked fold helper remained: " <> problem)
-        Right () -> pure ()
+      void (Async.waitCatch worker)
+      _pid <- requireNativeHelperPid pidFile
       (map (BS8.filter (/= '\r')) . BS8.lines <$> BS.readFile requests) >>= (@?= [TextEncoding.encodeUtf8 (gitOidText blobOid)])
       withBlobBatchSession discovered (\fresh -> readBlobBatchFromSession fresh [blobOid])
         >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "blocked fold callback retry")))
@@ -885,7 +842,7 @@ persistentOwnerFinalizationIsolated shouldThrow =
       executable <- getExecutablePath
       blobOid <- requireOid <$> hashObject repository "fixture owner finalization retry"
       workers <- newEmptyMVar
-      let helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+      let helper = temporary </> nativeGitFixtureBatchHelperProgram
           phase = temporary </> "fixture-phase"
           pidFile = temporary </> "fixture-helper.pid"
           requests = temporary </> "fixture-requests"
@@ -894,25 +851,18 @@ persistentOwnerFinalizationIsolated shouldThrow =
       writeFile (temporary </> "fixture-malformed-after") "1"
       writeFile (temporary </> "fixture-mode") "withhold-response"
       BS.writeFile (temporary </> "fixture-blob-" <> Text.unpack (gitOidText blobOid)) "fixture owner finalization retry"
-      outcome <- timeout (5 * 1000000) (try (withBlobBatchSession fixtureRepository $ \session -> do
+      outcome <- (try (withNativeObservation temporary $ withBlobBatchSession fixtureRepository $ \session -> do
         worker <- Async.async (readBlobBatchFromSession session [blobOid])
         putMVar workers worker
-        reached <- waitForTreePhase phase 50
-        if not reached then assertFailure "fixture helper did not reach withheld-response phase" else pure ()
+        awaitTreePhase worker phase
         if shouldThrow then throwIO (userError "owner-finalization") else pure (Right ())) :: IO (Either SomeException (Either GitError ())))
-      pid <- waitForNativeHelperPid pidFile 50 >>= \case
-        Nothing -> assertFailure "fixture helper PID was not recorded" >> fail "unreachable"
-        Just value -> pure value
+      _pid <- requireNativeHelperPid pidFile
       case outcome of
-        Nothing -> assertFailure "owner finalization exceeded five seconds"
-        Just (Right (Left GitBlobBatchSessionClosed)) | not shouldThrow -> pure ()
-        Just (Left exception) | shouldThrow -> assertBool "owner exception changed" ("owner-finalization" `Text.isInfixOf` Text.pack (show exception))
-        Just other -> assertFailure ("unexpected owner finalization outcome: " <> show other)
+        Right (Left GitBlobBatchSessionClosed) | not shouldThrow -> pure ()
+        Left exception | shouldThrow -> assertBool "owner exception changed" ("owner-finalization" `Text.isInfixOf` Text.pack (show exception))
+        other -> assertFailure ("unexpected owner finalization outcome: " <> show other)
       worker <- takeMVar workers
-      timeout (5 * 1000000) (Async.wait worker) >>= (@?= Just (Left GitBlobBatchSessionClosed))
-      waitForWindowsProcessAbsence pid 50 >>= \case
-        Left problem -> assertFailure ("owner-finalization helper remained: " <> problem)
-        Right () -> pure ()
+      Async.wait worker >>= (@?= Left GitBlobBatchSessionClosed)
       (map (BS8.filter (/= '\r')) . BS8.lines <$> BS.readFile requests) >>= (@?= [TextEncoding.encodeUtf8 (gitOidText blobOid)])
       withBlobBatchSession discovered (\fresh -> readBlobBatchFromSession fresh [blobOid])
         >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "fixture owner finalization retry")))
@@ -931,7 +881,7 @@ persistentLaterWindowFailureIsolated =
       let plan = concat (canonicalObjectChunks oids)
           expectedOid = plan !! 256
           expectedError = GitObjectTypeMismatch expectedOid GitBlobObject GitTreeObject
-          helper = temporary </> "adrai-native-git-fixture-batch-p6133.exe"
+          helper = temporary </> nativeGitFixtureBatchHelperProgram
           phase = temporary </> "fixture-phase"
           pidFile = temporary </> "fixture-helper.pid"
           requests = temporary </> "fixture-requests"
@@ -942,27 +892,22 @@ persistentLaterWindowFailureIsolated =
       writeFile (temporary </> "fixture-malformed-after") "257"
       writeFile (temporary </> "fixture-mode") "wrong-type"
       forM_ (Map.elems blobs) $ \blob -> BS.writeFile (temporary </> "fixture-blob-" <> Text.unpack (gitOidText (gitBlobOid blob))) (gitBlobBytes blob)
-      worker <- Async.async (withBlobBatchSessionWithWindowObserver fixtureRepository observer (\session -> do
+      Async.withAsync (withNativeObservation temporary $ withBlobBatchSessionWithWindowObserver fixtureRepository observer (\session -> do
         first <- readBlobBatchFromSession session oids
         second <- readBlobBatchFromSession session [requireHead "later-window fixture" oids]
         case first of
           Left problem -> second @?= Left problem
           Right _ -> assertFailure "later-window fixture unexpectedly succeeded"
-        pure first))
-      timeout (5 * 1000000) (takeMVar boundary) >>= (@?= Just ())
-      Async.wait worker >>= (@?= Left expectedError)
-      lines <$> readFile phase >>= (@?= ["wrong-type"])
-      lines <$> readFile boundaries >>= (@?= ["256:False"])
-      pid <- waitForNativeHelperPid pidFile 50 >>= \case
-        Nothing -> assertFailure "late-window helper PID was not recorded" >> fail "unreachable"
-        Just value -> pure value
-      waitForWindowsProcessAbsence pid 50 >>= \case
-        Left problem -> assertFailure ("late-window helper remained: " <> problem)
-        Right () -> pure ()
-      (map (BS8.filter (/= '\r')) . BS8.lines <$> BS.readFile requests) >>= (@?= map (TextEncoding.encodeUtf8 . gitOidText) (take 257 plan))
-      withBlobBatchSession discovered (\fresh -> readBlobBatchFromSession fresh [requireHead "later-window fixture" oids]) >>= \case
-        Left problem -> assertFailure ("fresh late-window retry failed: " <> show problem)
-        Right _ -> pure ()
+        pure first)) $ \worker -> do
+        awaitNativeReadiness worker "later window boundary" (tryTakeMVar boundary)
+        Async.wait worker >>= (@?= Left expectedError)
+        lines <$> readFile phase >>= (@?= ["wrong-type"])
+        lines <$> readFile boundaries >>= (@?= ["256:False"])
+        _pid <- requireNativeHelperPid pidFile
+        (map (BS8.filter (/= '\r')) . BS8.lines <$> BS.readFile requests) >>= (@?= map (TextEncoding.encodeUtf8 . gitOidText) (take 257 plan))
+        withBlobBatchSession discovered (\fresh -> readBlobBatchFromSession fresh [requireHead "later-window fixture" oids]) >>= \case
+          Left problem -> assertFailure ("fresh late-window retry failed: " <> show problem)
+          Right _ -> pure ()
 
 -- | The operation gate is deliberately held for a complete fold, rather than
 -- one request window.  This blocks exactly after the first fully drained
@@ -1024,10 +969,9 @@ emptyPublicBlobFoldsLaunchNothing :: IO ()
 emptyPublicBlobFoldsLaunchNothing =
   withSharedRepository $ \_ discovered ->
     withSystemTempDirectory "adrai empty public blobs" $ \temporary -> do
-      let fakeGit = temporary </> "should-not-launch.cmd"
-          launches = temporary </> "launches.txt"
+      fakeGit <- constantNativeFixture temporary "" "" 99
+      let launches = temporary </> "launches.txt"
           fakeRepository = discovered {repositoryClient = GitClient fakeGit}
-      BS.writeFile fakeGit ("@echo launched>> \"" <> BS8.pack launches <> "\"\r\nexit /b 99\r\n")
       foldBlobBatch fakeRepository [] ("seed" :: Text) (\seen _ -> pure seen) >>= (@?= Right "seed")
       foldBlobBatchInOrder fakeRepository [] ("seed" :: Text) (\seen _ -> pure seen) >>= (@?= Right "seed")
       readBlobBatch fakeRepository [] >>= (@?= Right Map.empty)
@@ -1071,8 +1015,8 @@ persistentLargeFirstBlobContract repository discovered = do
 malformedPersistentOutputReapsChild :: Repository -> GitOid -> IO ()
 malformedPersistentOutputReapsChild discovered blobOid =
   withSystemTempDirectory "adrai malformed git" $ \temporary -> do
-    let fakeGit = temporary </> "malformed-git.cmd"
-        malformedRepository = discovered {repositoryClient = GitClient fakeGit}
+    fakeGit <- configureNativeFixture temporary "constant-block"
+    let malformedRepository = discovered {repositoryClient = GitClient fakeGit}
         -- Deliberately fill one legal persistent request window.  The fake
         -- child emits a malformed header without consuming stdin and loops,
         -- leaving the writer potentially blocked while the reader fails.
@@ -1083,12 +1027,11 @@ malformedPersistentOutputReapsChild discovered blobOid =
     -- Keep the batch process itself alive after emitting a malformed frame.
     -- A child process here would inherit stderr and obscure whether
     -- 'withGitPipes' reaped the actual protocol child.
-    BS.writeFile fakeGit "@echo off\r\necho malformed\r\n:loop\r\ngoto loop\r\n"
-    completed <- timeout (5 * 1000000) (withBlobBatchSession malformedRepository (\session -> readBlobBatchFromSession session blockedWindow))
+    BS.writeFile (temporary </> "fixture-stdout") "malformed\n"
+    completed <- withBlobBatchSession malformedRepository (\session -> readBlobBatchFromSession session blockedWindow)
     case completed of
-      Nothing -> assertFailure "malformed persistent child was not reaped promptly"
-      Just (Left (GitInvalidOutput "cat-file batch" _)) -> pure ()
-      Just result -> assertFailure ("expected malformed persistent protocol failure, got " <> show result)
+      Left (GitInvalidOutput "cat-file batch" _) -> pure ()
+      result -> assertFailure ("expected malformed persistent protocol failure, got " <> show result)
     withBlobBatchSession discovered (\freshSession -> readBlobBatchFromSession freshSession [blobOid])
       >>= (@?= Right (Map.singleton blobOid (GitBlob blobOid "malformed callback")))
 
@@ -1116,7 +1059,7 @@ directTreeCancellationReapsNativeChildIsolated =
           loopingRepository = discovered {repositoryClient = GitClient helper}
       assertBool "native helper path must not require cmd quoting" (not (any (`elem` [' ', '\t']) helper))
       copyNativeHelper executable helper
-      directTreeCancellationReapsChild repository discovered loopingRepository True (waitForTreePhase phaseFile 50) (waitForNativeHelperPid pidFile 50) (waitForTreePhase descendantPhaseFile 50) descendantExitFile (waitForNativeHelperPid descendantPidFile 50)
+      directTreeCancellationReapsChild repository discovered loopingRepository (doesFileExist phaseFile) (readNativeHelperPid pidFile) (doesFileExist descendantPhaseFile) descendantExitFile (readNativeHelperPid descendantPidFile)
 
 persistentNativeBatchCancellation :: IO ()
 persistentNativeBatchCancellation =
@@ -1162,35 +1105,17 @@ persistentFinishSuccessCancellationIsolated =
           phaseFile = temporary </> nativeGitHelperTreePhaseFile
           loopingRepository = discovered {repositoryClient = GitClient helper}
       copyNativeHelper executable helper
-      worker <- Async.async (batchObjectInfo loopingRepository [blobOid])
-      reached <- waitForTreePhase phaseFile 50
-      assertBool "finish-success native child did not close stdout and reach its alive phase" reached
-      childPid <- waitForNativeHelperPid pidFile 50
-      pid <- maybe (assertFailure "could not observe finish-success native child PID" >> fail "unreachable") pure childPid
-      deliveryStarted <- getMonotonicTimeNSec
-      cancelled <- timeout (5 * 1000000) $ do
+      Async.withAsync (withNativeObservation temporary (batchObjectInfo loopingRepository [blobOid])) $ \worker -> do
+        awaitTreePhase worker phaseFile
+        _pid <- awaitNativeReadiness worker "finish-success helper identity" (readNativeHelperPid pidFile)
         throwTo (Async.asyncThreadId worker) Async.AsyncCancelled
-        deliveryFinished <- getMonotonicTimeNSec
-        result <- Async.waitCatch worker
-        cleanupFinished <- getMonotonicTimeNSec
-        pure (deliveryFinished, cleanupFinished, result)
-      case cancelled of
-        Nothing -> assertFailure "finish-success cancellation exceeded five seconds"
-        Just (_, _, Right result) -> assertFailure ("cancelled finish-success operation unexpectedly returned: " <> show result)
-        Just (_, _, Left exception) -> fromException exception @?= Just Async.AsyncCancelled
-      case cancelled of
-        Just (deliveryFinished, cleanupFinished, _) -> do
-          let deliveryElapsed = fromIntegral (deliveryFinished - deliveryStarted) / 1000000000 :: Double
-              cleanupElapsed = fromIntegral (cleanupFinished - deliveryFinished) / 1000000000 :: Double
-          assertBool ("finish-success throwTo delivery exceeded 1.5s: " <> show deliveryElapsed) (deliveryElapsed < 1.5)
-          assertBool ("finish-success cleanup exceeded 1.5s: " <> show cleanupElapsed) (cleanupElapsed < 1.5)
-        Nothing -> pure ()
-      waitForWindowsProcessAbsence pid 50 >>= \case
-        Left problem -> assertFailure ("finish-success child remained after cleanup: " <> problem)
-        Right () -> pure ()
-      batchObjectInfo discovered [blobOid] >>= \case
-        Right infos -> assertBool "fresh batch-check retry omitted its requested object" (Map.member blobOid infos)
-        Left problem -> assertFailure ("fresh batch-check retry failed: " <> show problem)
+        cancelled <- Async.waitCatch worker
+        case cancelled of
+          Right result -> assertFailure ("cancelled finish-success operation unexpectedly returned: " <> show result)
+          Left exception -> fromException exception @?= Just Async.AsyncCancelled
+        batchObjectInfo discovered [blobOid] >>= \case
+          Right infos -> assertBool "fresh batch-check retry omitted its requested object" (Map.member blobOid infos)
+          Left problem -> assertFailure ("fresh batch-check retry failed: " <> show problem)
 
 -- | Both persistent protocols issue their bounded write before awaiting a
 -- response.  The native child deliberately never consumes that request: this
@@ -1205,113 +1130,64 @@ persistentNativeProtocolCancellation _ discovered _ launch retry =
         phaseFile = temporary </> nativeGitHelperTreePhaseFile
         loopingRepository = discovered {repositoryClient = GitClient helper}
     copyNativeHelper executable helper
-    worker <- Async.async (launch loopingRepository)
-    reached <- waitForTreePhase phaseFile 50
-    assertBool "silent persistent child did not reach the blocking phase" reached
-    childPid <- waitForNativeHelperPid pidFile 50
-    case childPid of
-      Nothing -> assertFailure "could not observe silent persistent child PID" >> fail "unreachable"
-      Just _ -> pure ()
-    started <- getMonotonicTimeNSec
-    cancelled <- timeout (5 * 1000000) $ do
+    Async.withAsync (withNativeObservation temporary (launch loopingRepository)) $ \worker -> do
+      awaitTreePhase worker phaseFile
+      _pid <- awaitNativeReadiness worker "silent helper identity" (readNativeHelperPid pidFile)
       throwTo (Async.asyncThreadId worker) Async.AsyncCancelled
-      Async.waitCatch worker
-    finished <- getMonotonicTimeNSec
-    case cancelled of
-      Nothing -> assertFailure "persistent cancellation exceeded five seconds"
-      Just (Right ()) -> assertFailure "cancelled persistent operation unexpectedly succeeded"
-      Just (Left exception) -> fromException exception @?= Just Async.AsyncCancelled
-    let elapsed = fromIntegral (finished - started) / 1000000000 :: Double
-    assertBool ("persistent cancellation cleanup exceeded 1.5s: " <> show elapsed) (elapsed < 1.5)
-    case childPid of
-      Nothing -> pure ()
-      Just pid -> waitForWindowsProcessAbsence pid 50 >>= \case
-        Left problem -> assertFailure ("silent persistent child remained after cleanup: " <> problem)
-        Right () -> pure ()
-    retry
+      cancelled <- Async.waitCatch worker
+      case cancelled of
+        Right () -> assertFailure "cancelled persistent operation unexpectedly succeeded"
+        Left exception -> fromException exception @?= Just Async.AsyncCancelled
+      retry
 
-directTreeCancellationReapsChild :: FilePath -> Repository -> Repository -> Bool -> IO Bool -> IO (Maybe Int) -> IO Bool -> FilePath -> IO (Maybe Int) -> IO ()
-directTreeCancellationReapsChild repository discovered loopingRepository requirePid awaitPhase awaitPid awaitDescendantPhase descendantExitFile awaitDescendantPid = do
+directTreeCancellationReapsChild :: FilePath -> Repository -> Repository -> IO Bool -> IO (Maybe Int) -> IO Bool -> FilePath -> IO (Maybe Int) -> IO ()
+directTreeCancellationReapsChild repository discovered loopingRepository awaitPhase awaitPid awaitDescendantPhase descendantExitFile awaitDescendantPid = do
   -- Deliberately retain this as a literal-pathspec fallback exercise.  The
   -- line-safe path protocol has its own persistent-session cancellation tests;
   -- this regression proves the native ls-tree descendant cleanup contract did
   -- not disappear when ordinary paths moved to cat-file.
   let path = requireRepoPath "tree cancellation.md"
   revision <- resolveHead discovered
-  worker <- Async.async (lookupTreeObjectInfoAtRevisions loopingRepository (Map.singleton revision (Set.singleton path)) [])
-  reachedTreePhase <- awaitPhase
-  assertBool "fake Git did not reach the unbuffered tree phase" reachedTreePhase
-  maybeChildPid <- awaitPid
-  reachedDescendantPhase <- awaitDescendantPhase
-  maybeDescendantPid <- awaitDescendantPid
-  case (requirePid, maybeChildPid) of
-    (True, Nothing) -> assertFailure "could not observe the silent tree lookup child PID" >> fail "unreachable"
-    _ -> pure ()
-  assertBool "cooperative descendant did not retain inherited pipes" reachedDescendantPhase
-  case (requirePid, maybeDescendantPid) of
-    (True, Nothing) -> assertFailure "could not observe the cooperative descendant PID" >> fail "unreachable"
-    _ -> pure ()
-  case (maybeChildPid, maybeDescendantPid) of
-    (Just rootPid, Just descendantPid) -> assertBool "root and descendant are distinct processes" (rootPid /= descendantPid)
-    _ -> pure ()
-  deliveryStarted <- getMonotonicTimeNSec
-  cancelled <- timeout (5 * 1000000) $ do
-    throwTo (Async.asyncThreadId worker) Async.AsyncCancelled
-    deliveryFinished <- getMonotonicTimeNSec
-    Async.waitCatch worker
-      >>= \result -> do
-        cleanupFinished <- getMonotonicTimeNSec
-        pure (deliveryFinished, cleanupFinished, result)
-  case cancelled of
-    Nothing -> assertFailure "Async.cancel did not reap the tree lookup child within five seconds"
-    Just (_, _, Right result) -> assertFailure ("cancelled tree lookup unexpectedly returned: " <> show result)
-    Just (_, _, Left exception) -> fromException exception @?= Just Async.AsyncCancelled
-  case cancelled of
-    Just (deliveryFinished, cleanupFinished, _) -> do
-      let deliveryElapsedSeconds = fromIntegral (deliveryFinished - deliveryStarted) / 1000000000 :: Double
-          cleanupElapsedSeconds = fromIntegral (cleanupFinished - deliveryFinished) / 1000000000 :: Double
-      assertBool ("throwTo delivery exceeded 1.5s: " <> show deliveryElapsedSeconds) (deliveryElapsedSeconds < 1.5)
-      assertBool ("cleanup exceeded 1.5s: " <> show cleanupElapsedSeconds) (cleanupElapsedSeconds < 1.5)
-    Nothing -> pure ()
-  didSelfExit <- doesFileExist descendantExitFile
-  assertBool "cancellation returned after descendant self-exit marker" (not didSelfExit)
-  case maybeDescendantPid of
-    Nothing -> pure ()
-    Just descendantPid ->
-      windowsProcessPresent descendantPid >>= \case
-        Right True -> pure ()
-        Right False -> pure ()
-        Left problem -> assertFailure ("could not query stubborn descendant PID after cancellation: " <> problem)
-  forM_ [maybeChildPid, maybeDescendantPid] $ \case
-    Nothing -> pure ()
-    Just childPid -> do
-      waitForWindowsProcessAbsence childPid 50 >>= \case
-        Left problem -> assertFailure ("could not query exact cancelled child PID: " <> problem)
-        Right () -> pure ()
-  _ <- commitFile repository "tree cancellation.md" "retry bytes\n"
-  freshRevision <- resolveHead discovered
-  expected <- lookupTreeEntriesAt discovered freshRevision [path]
-  blobOid <- case expected of
-    Right entries -> case Map.lookup path entries of
-      Just (Just entry) -> pure (gitTreeOid entry)
-      other -> assertFailure ("retry fixture missing exact entry: " <> show other) >> fail "unreachable"
-    Left problem -> assertFailure (show problem) >> fail "unreachable"
-  lookupTreeObjectInfoAtRevisions discovered (Map.singleton freshRevision (Set.singleton path)) [blobOid]
-    >>= (@?= Right (Map.singleton freshRevision (Map.singleton path (Just (GitObjectInfo blobOid GitBlobObject 12)))))
+  Async.withAsync (withNativeObservation (case repositoryClient loopingRepository of GitClient helperPath -> takeDirectory helperPath) $ lookupTreeObjectInfoAtRevisions loopingRepository (Map.singleton revision (Set.singleton path)) []) $ \worker -> do
+    let releaseDescendant = case repositoryClient loopingRepository of GitClient helperPath -> writeFile (takeDirectory helperPath </> "fixture-descendant-pinned") "pinned-or-unwinding"
+    bracket_ (pure ()) releaseDescendant $ do
+      awaitNativeReadiness worker "tree phase" (awaitPhase >>= \ready -> pure (if ready then Just () else Nothing))
+      childPid <- awaitNativeReadiness worker "tree helper identity" awaitPid
+      awaitNativeReadiness worker "descendant phase" (awaitDescendantPhase >>= \ready -> pure (if ready then Just () else Nothing))
+      descendantPid <- awaitNativeReadiness worker "descendant identity" awaitDescendantPid
+      assertBool "root and descendant are distinct processes" (childPid /= descendantPid)
+      let terminateAndCheck = do
+            throwTo (Async.asyncThreadId worker) Async.AsyncCancelled
+            cancelled <- Async.waitCatch worker
+            case cancelled of
+              Right result -> assertFailure ("cancelled tree lookup unexpectedly returned: " <> show result)
+              Left exception -> fromException exception @?= Just Async.AsyncCancelled
+            didSelfExit <- doesFileExist descendantExitFile
+            assertBool "cancellation returned after descendant self-exit marker" (not didSelfExit)
+      withPinnedProcess descendantPid ((releaseDescendant >> terminateAndCheck) `finally` Async.cancel worker)
+      _ <- commitFile repository "tree cancellation.md" "retry bytes\n"
+      freshRevision <- resolveHead discovered
+      expected <- lookupTreeEntriesAt discovered freshRevision [path]
+      blobOid <- case expected of
+        Right entries -> case Map.lookup path entries of
+          Just (Just entry) -> pure (gitTreeOid entry)
+          other -> assertFailure ("retry fixture missing exact entry: " <> show other) >> fail "unreachable"
+        Left problem -> assertFailure (show problem) >> fail "unreachable"
+      lookupTreeObjectInfoAtRevisions discovered (Map.singleton freshRevision (Set.singleton path)) [blobOid]
+        >>= (@?= Right (Map.singleton freshRevision (Map.singleton path (Just (GitObjectInfo blobOid GitBlobObject 12)))))
 
 treePathProtocolFailure :: String -> BS.ByteString -> IO ()
 treePathProtocolFailure label response =
   withSharedRepository $ \_ discovered ->
     withSystemTempDirectory ("adrai tree-path " <> label) $ \temporary -> do
-      let fakeGit = temporary </> "tree-path-protocol-git.cmd"
-          fakeRepository = discovered {repositoryClient = GitClient fakeGit}
+      fakeGit <- configureNativeFixture temporary "tree-response"
+      let fakeRepository = discovered {repositoryClient = GitClient fakeGit}
           path = requireRepoPath "safe-token.md"
-      BS.writeFile fakeGit (treePathProtocolScript response)
+      BS.writeFile (temporary </> "fixture-response") (response <> "\n")
       revision <- resolveHead discovered
-      timeout (5 * 1000000) (lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.singleton path)) []) >>= \case
-        Nothing -> assertFailure ("tree-path " <> label <> " child did not fail promptly")
-        Just (Left _) -> pure ()
-        Just result -> assertFailure ("expected " <> label <> " tree protocol failure, got " <> show result)
+      lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.singleton path)) [] >>= \case
+        Left _ -> pure ()
+        result -> assertFailure ("expected " <> label <> " tree protocol failure, got " <> show result)
 
 treePathRealGitParity :: IO ()
 treePathRealGitParity =
@@ -1366,30 +1242,20 @@ assertTreePathParity repository plan = do
                   objectInfoType info @?= gitTreeObjectType entry
                 pair -> assertFailure ("tree-path parity mismatch for " <> show (revision, path, pair))
 
-treePathProtocolScript :: BS.ByteString -> BS.ByteString
-treePathProtocolScript response =
-  "@echo off\r\nset /p first=\r\necho %first% | findstr /c:\":\" >nul\r\nif not errorlevel 1 goto tree\r\necho %first% commit 1\r\nexit /b 0\r\n:tree\r\n"
-    <> response
-    <> "\r\n"
-
 treePathBatchFailureShortCircuitsFallback :: IO ()
 treePathBatchFailureShortCircuitsFallback =
   withSharedRepository $ \_repository discovered ->
     withSystemTempDirectory "adrai tree-path short-circuit" $ \temporary -> do
-      let fakeGit = temporary </> "tree-path-short-circuit-git.cmd"
-          fallbackMarker = temporary </> "fallback-launched"
+      fakeGit <- configureNativeFixture temporary "tree-short-circuit"
+      let fallbackMarker = temporary </> "fallback-launched"
           fakeRepository = discovered {repositoryClient = GitClient fakeGit}
           safePath = requireRepoPath "safe.md"
           fallbackPath = requireRepoPath "spaced path.md"
-          script =
-            "@echo off\r\necho %* | findstr /c:\"ls-tree\" >nul\r\nif not errorlevel 1 goto fallback\r\nset /p first=\r\necho %first% | findstr /c:\":\" >nul\r\nif not errorlevel 1 goto batch\r\necho %first% commit 1\r\nexit /b 0\r\n:batch\r\necho wrong-expression missing\r\nexit /b 0\r\n:fallback\r\necho launched> \"" <> BS8.pack fallbackMarker <> "\"\r\n:loop\r\ngoto loop\r\n"
-      BS.writeFile fakeGit script
       revision <- resolveHead discovered
-      result <- timeout (5 * 1000000) (lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.fromList [safePath, fallbackPath])) [])
+      result <- lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.fromList [safePath, fallbackPath])) []
       case result of
-        Nothing -> assertFailure "correlated batch failure did not return within five seconds"
-        Just (Left _) -> pure ()
-        Just response -> assertFailure ("expected correlated batch failure, got " <> show response)
+        Left _ -> pure ()
+        response -> assertFailure ("expected correlated batch failure, got " <> show response)
       launched <- doesFileExist fallbackMarker
       assertBool "ineligible ls-tree fallback launched after a correlated batch failure" (not launched)
       lookupTreeObjectInfoAtRevisions discovered (Map.singleton revision (Set.fromList [safePath, fallbackPath])) [] >>= \case
@@ -1400,35 +1266,27 @@ treePathReorderedFailure :: IO ()
 treePathReorderedFailure =
   withSharedRepository $ \_ discovered ->
     withSystemTempDirectory "adrai tree-path reordered" $ \temporary -> do
-      let fakeGit = temporary </> "tree-path-reordered-git.cmd"
-          fakeRepository = discovered {repositoryClient = GitClient fakeGit}
+      fakeGit <- configureNativeFixture temporary "tree-reordered"
+      let fakeRepository = discovered {repositoryClient = GitClient fakeGit}
           firstPath = requireRepoPath "first-safe.md"
           secondPath = requireRepoPath "second-safe.md"
-          script =
-            "@echo off\r\nset /p first=\r\necho %first% | findstr /c:\":\" >nul\r\nif not errorlevel 1 goto tree\r\necho %first% commit 1\r\nexit /b 0\r\n:tree\r\nset /p second=\r\nfor /f \"tokens=1\" %%a in (\"%second%\") do echo %%a missing\r\n"
-      BS.writeFile fakeGit script
       revision <- resolveHead discovered
-      timeout (5 * 1000000) (lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.fromList [firstPath, secondPath])) []) >>= \case
-        Nothing -> assertFailure "reordered tree-path child did not fail promptly"
-        Just (Left _) -> pure ()
-        Just result -> assertFailure ("expected reordered tree protocol failure, got " <> show result)
+      lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.fromList [firstPath, secondPath])) [] >>= \case
+        Left _ -> pure ()
+        result -> assertFailure ("expected reordered tree protocol failure, got " <> show result)
 
 treePathDuplicateExpressionFailure :: IO ()
 treePathDuplicateExpressionFailure =
   withSharedRepository $ \_ discovered ->
     withSystemTempDirectory "adrai tree-path duplicate expression" $ \temporary -> do
-      let fakeGit = temporary </> "tree-path-duplicate-expression-git.cmd"
-          fakeRepository = discovered {repositoryClient = GitClient fakeGit}
+      fakeGit <- configureNativeFixture temporary "tree-duplicate"
+      let fakeRepository = discovered {repositoryClient = GitClient fakeGit}
           firstPath = requireRepoPath "first-duplicate.md"
           secondPath = requireRepoPath "second-duplicate.md"
-          script =
-            "@echo off\r\nset /p first=\r\necho %first% | findstr /c:\":\" >nul\r\nif not errorlevel 1 goto tree\r\necho %first% commit 1\r\nexit /b 0\r\n:tree\r\nset /p second=\r\nfor /f \"tokens=1\" %%a in (\"%first%\") do echo %%a missing\r\nfor /f \"tokens=1\" %%a in (\"%first%\") do echo %%a missing\r\n"
-      BS.writeFile fakeGit script
       revision <- resolveHead discovered
-      timeout (5 * 1000000) (lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.fromList [firstPath, secondPath])) []) >>= \case
-        Nothing -> assertFailure "duplicate-expression tree-path child did not fail promptly"
-        Just (Left _) -> pure ()
-        Just result -> assertFailure ("expected duplicate-expression tree protocol failure, got " <> show result)
+      lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.fromList [firstPath, secondPath])) [] >>= \case
+        Left _ -> pure ()
+        result -> assertFailure ("expected duplicate-expression tree protocol failure, got " <> show result)
 
 treePathCrossWindowReplayFailure :: IO ()
 treePathCrossWindowReplayFailure =
@@ -1460,10 +1318,11 @@ treePathCrossWindowReplayFailureIsolated =
             ]
           replayedExpression = BS8.takeWhile (/= ' ') (requireHead "cross-window requests" expectedRequests)
           expectedError = GitInvalidOutput "cat-file tree paths" (GitMalformedObjectHeader (replayedExpression <> " missing"))
-      timeout (5 * 1000000) (lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision paths) []) >>= \case
-        Nothing -> assertFailure "cross-window replay tree-path child did not fail promptly"
-        Just (Left problem) -> problem @?= expectedError
-        Just result -> assertFailure ("expected cross-window replay tree protocol failure, got " <> show result)
+      -- The typed replay failure and retained helper exit are causal oracles;
+      -- the canonical process owner supplies containment for a hung operation.
+      withNativeObservation temporary (lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision paths) []) >>= \case
+        Left problem -> problem @?= expectedError
+        result -> assertFailure ("expected cross-window replay tree protocol failure, got " <> show result)
       observedRequests <- map (BS8.filter (/= '\r')) . BS8.lines <$> BS.readFile requestsFile
       length observedRequests @?= 257
       observedRequests @?= expectedRequests
@@ -1471,8 +1330,7 @@ treePathCrossWindowReplayFailureIsolated =
         "cross-window replay fixture did not distinguish its first and later-window requests"
         (requireHead "observed cross-window requests" observedRequests /= requireLast "observed cross-window requests" observedRequests)
       lines <$> readFile phaseFile >>= (@?= ["replayed-first-window-expression"])
-      pid <- waitForNativeHelperPid pidFile 50 >>= maybe (assertFailure "cross-window replay helper PID was not recorded" >> fail "unreachable") pure
-      waitForWindowsProcessAbsence pid 50 >>= either (assertFailure . ("cross-window replay helper remained: " <>)) pure
+      _pid <- requireNativeHelperPid pidFile
       lookupTreeObjectInfoAtRevisions discovered (Map.singleton revision paths) [] >>= \case
         Left problem -> assertFailure ("fresh real-Git cross-window retry failed: " <> show problem)
         Right _ -> pure ()
@@ -1481,29 +1339,25 @@ treePathTrailingFailure :: IO ()
 treePathTrailingFailure =
   withSharedRepository $ \_ discovered ->
     withSystemTempDirectory "adrai tree-path trailing" $ \temporary -> do
-      let fakeGit = temporary </> "tree-path-trailing-git.cmd"
-          fakeRepository = discovered {repositoryClient = GitClient fakeGit}
+      fakeGit <- configureNativeFixture temporary "tree-trailing"
+      let fakeRepository = discovered {repositoryClient = GitClient fakeGit}
           path = requireRepoPath "safe-trailing.md"
-          script =
-            "@echo off\r\nset /p first=\r\necho %first% | findstr /c:\":\" >nul\r\nif not errorlevel 1 goto tree\r\necho %first% commit 1\r\nexit /b 0\r\n:tree\r\nfor /f \"tokens=1\" %%a in (\"%first%\") do echo %%a missing\r\necho trailing\r\n"
-      BS.writeFile fakeGit script
       revision <- resolveHead discovered
-      timeout (5 * 1000000) (lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.singleton path)) []) >>= \case
-        Nothing -> assertFailure "trailing tree-path child did not fail promptly"
-        Just (Left _) -> pure ()
-        Just result -> assertFailure ("expected trailing tree protocol failure, got " <> show result)
+      lookupTreeObjectInfoAtRevisions fakeRepository (Map.singleton revision (Set.singleton path)) [] >>= \case
+        Left _ -> pure ()
+        result -> assertFailure ("expected trailing tree protocol failure, got " <> show result)
 
 nativeGitHelperProgram :: FilePath
-nativeGitHelperProgram = "adrai-native-git-helper-p6115.exe"
+nativeGitHelperProgram = nativeProgramName "adrai-native-git-helper-p6115"
 
 nativeGitPersistentHelperProgram :: FilePath
-nativeGitPersistentHelperProgram = "adrai-native-git-persistent-helper-p6115.exe"
+nativeGitPersistentHelperProgram = nativeProgramName "adrai-native-git-persistent-helper-p6115"
 
 nativeGitFixtureBatchHelperProgram :: FilePath
-nativeGitFixtureBatchHelperProgram = "adrai-native-git-fixture-batch-p6133.exe"
+nativeGitFixtureBatchHelperProgram = nativeProgramName "adrai-native-git-fixture-batch-p6133"
 
 nativeGitPersistentFinishHelperProgram :: FilePath
-nativeGitPersistentFinishHelperProgram = "adrai-native-git-persistent-finish-helper-p6115.exe"
+nativeGitPersistentFinishHelperProgram = nativeProgramName "adrai-native-git-persistent-finish-helper-p6115"
 
 nativeGitHelperPidFile :: FilePath
 nativeGitHelperPidFile = "adrai-native-git-helper-p6115.pid"
@@ -1520,62 +1374,19 @@ nativeGitHelperDescendantPhaseFile = "adrai-native-git-helper-p6115.descendant-p
 nativeGitHelperDescendantExitFile :: FilePath
 nativeGitHelperDescendantExitFile = "adrai-native-git-helper-p6115.descendant-exit"
 
-waitForTreePhase :: FilePath -> Int -> IO Bool
-waitForTreePhase phaseFile attempts
-  | attempts <= 0 = doesFileExist phaseFile
-  | otherwise = do
-      exists <- doesFileExist phaseFile
-      if exists
-        then pure True
-        else threadDelay 100000 >> waitForTreePhase phaseFile (attempts - 1)
+awaitTreePhase :: Async.Async value -> FilePath -> IO ()
+awaitTreePhase worker phaseFile = awaitNativeReadiness worker "native helper phase" $ do
+  exists <- doesFileExist phaseFile
+  pure (if exists then Just () else Nothing)
 
-waitForNativeHelperPid :: FilePath -> Int -> IO (Maybe Int)
-waitForNativeHelperPid pidFile attempts
-  | attempts <= 0 = pure Nothing
-  | otherwise = do
-      exists <- doesFileExist pidFile
-      if not exists
-        then threadDelay 100000 >> waitForNativeHelperPid pidFile (attempts - 1)
-        else do
-          value <- readMaybe <$> readFile pidFile
-          case value of
-            Just pid -> pure (Just pid)
-            Nothing -> threadDelay 100000 >> waitForNativeHelperPid pidFile (attempts - 1)
+readNativeHelperPid :: FilePath -> IO (Maybe Int)
+readNativeHelperPid pidFile = do
+  exists <- doesFileExist pidFile
+  if exists then readMaybe <$> readFile pidFile else pure Nothing
 
-waitForWindowsProcessAbsence :: Int -> Int -> IO (Either String ())
-waitForWindowsProcessAbsence childPid attempts = do
-  let boundedAttempts = max 0 attempts
-      script =
-        "$ErrorActionPreference = 'Stop'; "
-          <> "$observedPid = " <> show childPid <> "; "
-          <> "$remaining = " <> show boundedAttempts <> "; "
-          <> "while ($true) { "
-          <> "$present = $true; "
-          <> "try { [void][Diagnostics.Process]::GetProcessById($observedPid) } "
-          <> "catch [ArgumentException] { $present = $false }; "
-          <> "if (-not $present) { [Console]::Out.Write('absent'); exit 0 }; "
-          <> "if ($remaining -le 0) { [Console]::Out.Write('present'); exit 0 }; "
-          <> "$remaining -= 1; Start-Sleep -Milliseconds 100 "
-          <> "}"
-  runWindowsProcessQuery script >>= \case
-    Left problem -> pure (Left problem)
-    Right True -> pure (Left "the exact child PID remained present after bounded retries")
-    Right False -> pure (Right ())
-
-windowsProcessPresent :: Int -> IO (Either String Bool)
-windowsProcessPresent childPid = do
-  let script =
-        "$ErrorActionPreference = 'Stop'; try { [void][Diagnostics.Process]::GetProcessById(" <> show childPid <> "); [Console]::Out.Write('present') } "
-          <> "catch [ArgumentException] { [Console]::Out.Write('absent') }"
-  runWindowsProcessQuery script
-
-runWindowsProcessQuery :: String -> IO (Either String Bool)
-runWindowsProcessQuery script = do
-  attempted <- try (readProcess (proc "powershell.exe" ["-NoProfile", "-NonInteractive", "-Command", script]))
-  pure $
-    case attempted of
-      Left (problem :: IOError) -> Left ("PowerShell spawn/query failure: " <> show problem)
-      Right (exitCode, stdoutBytes, stderrBytes) -> classifyWindowsProcessQuery exitCode (LBS.toStrict stdoutBytes) (LBS.toStrict stderrBytes)
+requireNativeHelperPid :: FilePath -> IO Int
+requireNativeHelperPid pidFile = readNativeHelperPid pidFile >>=
+  maybe (assertFailure "observed native helper PID was not recorded" >> fail "unreachable") pure
 
 classifyWindowsProcessQuery :: ExitCode -> BS.ByteString -> BS.ByteString -> Either String Bool
 classifyWindowsProcessQuery exitCode stdoutBytes stderrBytes

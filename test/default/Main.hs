@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
@@ -109,17 +110,25 @@ import System.Environment
   )
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
 import System.FilePath ((</>), takeDirectory, takeFileName)
-import System.IO (hClose, hFlush, hIsEOF, hWaitForInput, stdin, stdout)
-import System.Process (StdStream (Inherit), createProcess, proc, std_in)
+import System.IO (hClose, hFlush, hIsEOF, hSetBinaryMode, hWaitForInput, stdin, stdout, stderr)
+import System.Process (StdStream (Inherit), createProcess, proc, std_in, waitForProcess, withCreateProcess)
+import Adrai.RetainedNative.NativeFixture (nativeProgramName)
+import Adrai.Integration.CLI (requireExecutable)
+#if defined(mingw32_HOST_OS)
 import System.Win32 (getCurrentProcessId)
+#else
+import System.Posix.Process (getProcessID)
+#endif
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.Hedgehog (testProperty)
 import Test.Tasty.HUnit (testCase)
-import Data.List (intercalate, isPrefixOf)
-import Data.Maybe (catMaybes)
+import Data.List (isPrefixOf)
+import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy.Char8 as LBS8
 
 main :: IO ()
 main = do
+  setLocaleEncoding utf8
   arguments <- getArgs
   program <- getProgName
   marker <- lookupEnv "ADRAI_TEST_REFERENCE_TRANSACTION_HOOK"
@@ -128,11 +137,14 @@ main = do
     persistentHelper | persistentHelper == nativeGitPersistentHelperProgram -> nativeGitPersistentHelper arguments
     fixtureHelper | fixtureHelper == nativeGitFixtureBatchHelperProgram -> nativeGitFixtureBatchHelper arguments
     helperProgram | helperProgram == nativeGitHelperProgram -> nativeGitHelper arguments
+    "xdg-open" -> nativeBrowserOpener arguments
+    "rundll32.exe" -> nativeBrowserOpener arguments
     "reference-transaction" ->
       case marker of
         Just "p6-03f-0a-native-hook-v1" -> referenceTransactionHook arguments
         _ -> exitWith (ExitFailure 64)
     _ | "--integration-cli-path-probe" `elem` arguments -> integrationCliPathProbe
+    _ | "--integration-cli-environment-probe" `elem` arguments -> integrationCliEnvironmentProbe arguments
     _ -> normalMain arguments
 
 -- | Native test-only Git child.  The exact executable basename is the
@@ -141,20 +153,36 @@ main = do
 -- parent test a direct, unambiguous cancellation target without a shell
 -- wrapper or process-list search.
 nativeGitHelperProgram :: FilePath
-nativeGitHelperProgram = "adrai-native-git-helper-p6115.exe"
+nativeGitHelperProgram = nativeProgramName "adrai-native-git-helper-p6115"
+
+currentProcessPid :: IO Int
+#if defined(mingw32_HOST_OS)
+currentProcessPid = fromIntegral <$> getCurrentProcessId
+#else
+currentProcessPid = fromIntegral <$> getProcessID
+#endif
+
+nativeBrowserOpener :: [String] -> IO ()
+nativeBrowserOpener arguments = do
+  directory <- takeDirectory <$> getExecutablePath
+  expected <- Aeson.eitherDecode <$> LBS8.readFile (directory </> "opener-expected.json")
+  unless (expected == Right arguments) (exitWith (ExitFailure 64))
+  writeFile (directory </> "opener-validated") "single argv validated"
+  code <- read <$> readFile (directory </> "opener-exit")
+  exitWith (if code == (0 :: Int) then ExitSuccess else ExitFailure code)
 
 nativeGitPersistentHelperProgram :: FilePath
-nativeGitPersistentHelperProgram = "adrai-native-git-persistent-helper-p6115.exe"
+nativeGitPersistentHelperProgram = nativeProgramName "adrai-native-git-persistent-helper-p6115"
 
 nativeGitFixtureBatchHelperProgram :: FilePath
-nativeGitFixtureBatchHelperProgram = "adrai-native-git-fixture-batch-p6133.exe"
+nativeGitFixtureBatchHelperProgram = nativeProgramName "adrai-native-git-fixture-batch-p6133"
 
 -- | A distinct test-only persistent helper which completes one batch-check
 -- exchange, closes stdout after the caller closes stdin, then deliberately
 -- remains alive.  This positions the parent exactly in the post-protocol
 -- process-wait path without changing the silent-pipe fixture's behaviour.
 nativeGitPersistentFinishHelperProgram :: FilePath
-nativeGitPersistentFinishHelperProgram = "adrai-native-git-persistent-finish-helper-p6115.exe"
+nativeGitPersistentFinishHelperProgram = nativeProgramName "adrai-native-git-persistent-finish-helper-p6115"
 
 nativeGitHelperPidFile :: FilePath
 nativeGitHelperPidFile = "adrai-native-git-helper-p6115.pid"
@@ -189,7 +217,8 @@ nativeGitHelper arguments
         serveBareObjectInfo
     blockTreeLookup = do
       executable <- getExecutablePath
-      processId <- getCurrentProcessId
+      awaitFixtureObservation (takeDirectory executable)
+      processId <- currentProcessPid
       -- The root deliberately never consumes stdin. Its cooperative descendant
       -- shares that input and exits only when the production cleanup closes the
       -- captured writer; no PID-based descendant termination is involved.
@@ -200,9 +229,15 @@ nativeGitHelper arguments
       block
     cooperativeDescendant = do
       executable <- getExecutablePath
-      processId <- getCurrentProcessId
+      processId <- currentProcessPid
       writeFile (takeDirectory executable </> nativeGitHelperDescendantPidFile) (show processId)
       writeFile (takeDirectory executable </> nativeGitHelperDescendantPhaseFile) "holding-inherited-pipes"
+      -- Remain alive until the parent has pinned this exact descendant. The
+      -- inherited self-exit oracle begins only after that causal handoff.
+      let awaitPin = do
+            pinned <- doesFileExist (takeDirectory executable </> "fixture-descendant-pinned")
+            unless pinned (threadDelay 10000 >> awaitPin)
+      awaitPin
       -- Keep inherited stdout/stderr live beyond cancellation of the root.
       -- This exits deterministically without any PID-directed cleanup.
       threadDelay 3000000
@@ -212,8 +247,9 @@ nativeGitHelper arguments
 nativeGitPersistentHelper :: [String] -> IO ()
 nativeGitPersistentHelper arguments
   | "--batch" `elem` arguments || "--batch-check" `elem` arguments = do
-      processId <- getCurrentProcessId
       executable <- getExecutablePath
+      awaitFixtureObservation (takeDirectory executable)
+      processId <- currentProcessPid
       writeFile (takeDirectory executable </> nativeGitHelperPidFile) (show processId)
       writeFile (takeDirectory executable </> nativeGitHelperTreePhaseFile) "silent-batch"
       let block = threadDelay 1000000 >> block
@@ -225,8 +261,73 @@ nativeGitPersistentHelper arguments
 -- the helper itself never launches Git or any other child process.
 nativeGitFixtureBatchHelper :: [String] -> IO ()
 nativeGitFixtureBatchHelper arguments = do
+  hSetBinaryMode stdin True
+  hSetBinaryMode stdout True
+  hSetBinaryMode stderr True
   executable <- getExecutablePath
   let directory = takeDirectory executable
+      fixture name = directory </> name
+  exists <- doesFileExist (fixture "fixture-mode")
+  mode <- if exists then lines <$> readFile (fixture "fixture-mode") else pure []
+  case mode of
+    "constant" : _ -> do
+      appendFile (fixture "launches.txt") "launch\n"
+      emitIfPresent stdout (fixture "fixture-stdout")
+      emitIfPresent stderr (fixture "fixture-stderr")
+      code <- read <$> readFile (fixture "fixture-exit")
+      exitWith (if code == (0 :: Int) then ExitSuccess else ExitFailure code)
+    "trace-real-git" : _ -> do
+      selectedGit <- readFile (fixture "fixture-real-git")
+      trace <- readFile (fixture "fixture-trace-path")
+      appendFile trace (unwords arguments <> "\n")
+      when ("cat-file" `elem` arguments) (appendFile (fixture "blob-sessions.txt") "blob\n")
+      withCreateProcess (proc selectedGit arguments) $ \_ _ _ child -> waitForProcess child >>= exitWith
+    "constant-block" : _ -> do
+      emitIfPresent stdout (fixture "fixture-stdout")
+      hFlush stdout
+      let block = threadDelay 1000000 >> block
+      block
+    "valid-blobs" : _ -> do
+      appendFile (fixture "launches.txt") "launch\n"
+      appendFile (fixture "arguments.txt") (unwords arguments <> "\n")
+      serveUnitBlobs False
+    "trailing-blob" : _ -> serveUnitBlobs True
+    value : _ | value `elem` ["tree-response", "tree-reordered", "tree-duplicate", "tree-trailing", "tree-short-circuit"] -> do
+      if "ls-tree" `elem` arguments then do
+        writeFile (fixture "fallback-launched") "launched"
+        let block = threadDelay 1000000 >> block
+        block
+      else serveTreeScript directory value
+    _ -> nativeGitFixtureConfigured directory arguments
+  where
+    emitIfPresent handle path = do
+      exists <- doesFileExist path
+      when exists (BS8.readFile path >>= BS8.hPutStr handle)
+    serveUnitBlobs trailing = do
+      atEnd <- hIsEOF stdin
+      unless atEnd $ do
+        request <- BS8.getLine
+        BS8.putStr (requestExpression request <> " blob 1\nx\n")
+        when trailing (BS8.putStr "trailing")
+        hFlush stdout
+        unless trailing (serveUnitBlobs trailing)
+    requestExpression = BS8.takeWhile (/= ' ')
+    serveTreeScript directory mode = do
+      first <- BS8.getLine
+      if not (BS8.elem ':' first) then BS8.putStrLn (first <> " commit 1") else
+        case mode of
+          "tree-reordered" -> BS8.getLine >>= BS8.putStrLn . (<> " missing") . requestExpression
+          "tree-duplicate" -> do
+            _ <- BS8.getLine
+            mapM_ BS8.putStrLn (replicate 2 (requestExpression first <> " missing"))
+          "tree-trailing" -> BS8.putStr (requestExpression first <> " missing\ntrailing\n")
+          "tree-short-circuit" -> BS8.putStrLn "wrong-expression missing"
+          _ -> BS8.readFile (directory </> "fixture-response") >>= BS8.putStr
+      hFlush stdout
+
+nativeGitFixtureConfigured :: FilePath -> [String] -> IO ()
+nativeGitFixtureConfigured rootDirectory arguments = do
+  let directory = rootDirectory
       fixture name = directory </> name
   if any ("--batch-check" `isPrefixOf`) arguments
     then do
@@ -238,7 +339,8 @@ nativeGitFixtureBatchHelper arguments = do
     else
       if "--batch" `elem` arguments
         then do
-          processId <- getCurrentProcessId
+          awaitFixtureObservation directory
+          processId <- currentProcessPid
           writeFile (fixture "fixture-helper.pid") (show processId)
           threshold <- (read <$> readFile (fixture "fixture-malformed-after") :: IO Int)
           modeFile <- doesFileExist (fixture "fixture-mode")
@@ -266,7 +368,8 @@ nativeGitFixtureBatchHelper arguments = do
       if not (BS8.elem ':' first)
         then BS8.putStrLn (first <> " commit 1") >> hFlush stdout
         else do
-          processId <- getCurrentProcessId
+          awaitFixtureObservation directory
+          processId <- currentProcessPid
           writeFile (directory </> "fixture-helper.pid") (show processId)
           firstWindow <- (first :) <$> replicateM 255 BS8.getLine
           mapM_ (recordRequest directory) firstWindow
@@ -322,8 +425,9 @@ nativeGitFixtureBatchHelper arguments = do
 nativeGitPersistentFinishHelper :: [String] -> IO ()
 nativeGitPersistentFinishHelper arguments
   | "--batch-check" `elem` arguments = do
-      processId <- getCurrentProcessId
       executable <- getExecutablePath
+      awaitFixtureObservation (takeDirectory executable)
+      processId <- currentProcessPid
       request <- BS8.getLine
       BS8.putStrLn (request <> " missing")
       hFlush stdout
@@ -339,6 +443,17 @@ nativeGitPersistentFinishHelper arguments
       atEnd <- hIsEOF stdin
       unless atEnd (BS8.getLine >> drainInput)
 
+-- | Hold the native fixture until its exact process has been pinned.
+awaitFixtureObservation :: FilePath -> IO ()
+awaitFixtureObservation directory = do
+  enabled <- doesFileExist (directory </> "fixture-observer-enabled")
+  when enabled $ do
+    currentProcessPid >>= writeFile (directory </> "fixture-observer.pid") . show
+    let wait = do
+          ready <- doesFileExist (directory </> "fixture-observer-ready")
+          unless ready (threadDelay 10000 >> wait)
+    wait
+
 -- | Test-only child probe used to verify the scrubbed integration environment.
 -- It runs before normal test-runner initialization so the observed PATH is the
 -- one supplied by 'spawnAdrai'.
@@ -349,18 +464,16 @@ integrationCliPathProbe = do
     Just path -> putStr path
     Nothing -> exitWith (ExitFailure 64)
 
+integrationCliEnvironmentProbe :: [String] -> IO ()
+integrationCliEnvironmentProbe arguments = do
+  values <- mapM (\key -> (key,) <$> lookupEnv key) (drop 1 (dropWhile (/= "--integration-cli-environment-probe") arguments))
+  LBS8.putStr (Aeson.encode values)
+
 normalMain :: [String] -> IO ()
 normalMain arguments = do
   setLocaleEncoding utf8
-  -- Ensure git and adrai are discoverable on PATH for subprocesses.
-  -- Stack test subprocesses may have a minimal PATH.
-  let extraPaths =
-        [ "C:\\Program Files\\Git\\cmd",
-          "D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin"
-        ]
-  currentPath <- lookupEnv "PATH"
-  let newPath = intercalate ";" (catMaybes [currentPath] ++ extraPaths)
-  setEnv "PATH" newPath
+  -- Resolve actual selected tools before any deliberately scrubbed test child.
+  _ <- requireExecutable "git"
   -- Preserve an executable selected by the caller.  Several integration
   -- contracts intentionally exercise the exact binary named by ADRAI_EXE;
   -- replacing it here with this machine's Stack install would silently test

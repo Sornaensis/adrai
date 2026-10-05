@@ -39,7 +39,8 @@ import qualified Adrai.Service.Runtime as Runtime
 import Adrai.Types (ViewMode (CollapsedView))
 import qualified Adrai.Types as Types
 import qualified Adrai.Web.Events as Events
-import Adrai.Web.Server (RunningServer (..), ServerDependencies (..), withWebServer)
+import Adrai.Web.Server (RunningServer (..), ServerDependencies (..), defaultServerDependencies, withWebServer)
+import Adrai.RetainedNative.NativeFixture (copyNativeFixture)
 import qualified Adrai.Web.Security as Security
 import Adrai.Web.Socket (unavailableEventsTransport)
 import qualified Adrai.Web.Watch as Watch
@@ -68,8 +69,8 @@ import Network.Socket.ByteString (recv, sendAll)
 import qualified Network.WebSockets as WS
 import System.Directory (Permissions (writable), copyFile, createDirectory, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, doesFileExist, getCurrentDirectory, getPermissions, listDirectory, removeDirectoryLink, removeDirectoryRecursive, removeFile, renameDirectory, setPermissions)
 import System.Info (os)
-import System.Environment (lookupEnv)
-import System.FilePath ((</>))
+import System.Environment (lookupEnv, setEnv, unsetEnv)
+import System.FilePath ((</>), searchPathSeparator)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (CreateProcess (..), StdStream (CreatePipe, Inherit), callProcess, createProcess, getProcessExitCode, proc, readCreateProcessWithExitCode, readProcess, shell, terminateProcess, waitForProcess)
 import System.Exit (ExitCode (ExitSuccess))
@@ -964,7 +965,24 @@ testExecutableAndBindings = withSeededRepository $ \root -> do
     assertBool "linked worktree serves repository" ("HTTP/1.1 200" `BS.isPrefixOf` response)
   either (assertFailure . Text.unpack) pure linkedResult
   exerciseBuiltWeb executable linked
-  exerciseBuiltWeb executable root
+  withSystemTempDirectory "adrai native opener fixture" $ \temporary -> do
+    let opener = if os == "mingw32" then "rundll32.exe" else "xdg-open"
+        url = "http://127.0.0.1:32123/?fixture=two spaces Ω"
+        expected = if os == "mingw32" then ["url.dll,FileProtocolHandler", Text.unpack url] else [Text.unpack url]
+        proof = temporary </> "opener-validated"
+    copyNativeFixture (temporary </> opener)
+    LBS.writeFile (temporary </> "opener-expected.json") (Aeson.encode expected)
+    writeFile (temporary </> "opener-exit") "0"
+    inherited <- lookupEnv "PATH"
+    let selectedPath = temporary <> [searchPathSeparator] <> maybe "" id inherited
+        restorePath () = maybe (unsetEnv "PATH") (setEnv "PATH") inherited
+    bracket (setEnv "PATH" selectedPath) restorePath $ \() -> do
+      exerciseBuiltWeb executable root
+      doesFileExist proof >>= (@?= False)
+      serverOpenBrowser defaultServerDependencies url >>= (@?= Right ())
+      readFile proof >>= (@?= "single argv validated")
+      writeFile (temporary </> "opener-exit") "7"
+      serverOpenBrowser defaultServerDependencies url >>= (@?= Left "browser opener exited ExitFailure 7")
 
 assertBuiltRejected :: FilePath -> FilePath -> [String] -> IO ()
 assertBuiltRejected executable cwdPath arguments = do

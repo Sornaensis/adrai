@@ -20,7 +20,7 @@ import Adrai.Provenance.Git.Lock
     releaseGitLock,
     withGitLock,
   )
-import Control.Exception (finally, try)
+import Control.Exception (catch, finally, try)
 import Control.Monad (forM, forM_)
 import System.Exit (ExitCode (..))
 import qualified Data.Aeson
@@ -29,6 +29,7 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
+import Data.Char (toUpper)
 import Data.List (sort)
 import Data.Maybe (listToMaybe)
 import Data.Text (Text, strip, unpack, pack)
@@ -42,18 +43,20 @@ import Database.SQLite.Simple
   )
 import System.Directory
   ( canonicalizePath,
+    createDirectoryLink,
     createDirectoryIfMissing,
     doesDirectoryExist,
     doesFileExist,
     listDirectory,
     pathIsSymbolicLink,
-    removeDirectory,
+    removeDirectoryLink,
   )
-import System.Environment (lookupEnv)
+import System.Environment (getEnvironment, lookupEnv)
 import System.FilePath (isAbsolute, makeRelative, takeDirectory, (</>))
 import System.Info (os)
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process.Typed (proc, readProcess, runProcess, shell)
+import System.IO.Error (isDoesNotExistError)
+import System.Process.Typed (proc, readProcess, runProcess, setEnv, shell)
 #if defined(mingw32_HOST_OS)
 import System.Win32 (getCurrentProcessId)
 #else
@@ -113,10 +116,9 @@ extractCreated v = do
   o <- _Object v
   o .: "created"
 
--- | Run the real executable while preserving the inherited process
--- environment.  The shared integration runner intentionally installs a
--- minimal Git fixture environment, which removes Windows PATH and prevents
--- the production executable from locating Git.
+-- | Run the real executable with the fixture's explicit Git identity while
+-- preserving inherited tool routing and caller context. No host Git identity
+-- or global configuration is required.
 realSpawnAdrai :: FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
 realSpawnAdrai repo arguments = do
   executable <- requireRealAdraiExecutable
@@ -125,12 +127,16 @@ realSpawnAdrai repo arguments = do
 requireRealAdraiExecutable :: IO FilePath
 requireRealAdraiExecutable =
   lookupEnv "ADRAI_EXE" >>= \case
-    Just path | not (null path) && isAbsolute path -> pure path
+    Just path | not (null path) && isAbsolute path -> requireExecutable path
     _ -> fail "EnvironmentTest requires ADRAI_EXE to name an absolute executable under test"
 
 realSpawnAdraiWith :: FilePath -> FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
-realSpawnAdraiWith executable repo arguments =
-  readProcess (proc executable (adraiTestArgs repo arguments))
+realSpawnAdraiWith executable repo arguments = do
+  inherited <- getEnvironment
+  let keyIdentity key = if os == "mingw32" then map toUpper key else key
+      selectedKeys = map (keyIdentity . fst) gitEnv
+      environment = gitEnv <> filter (\(key, _) -> keyIdentity key `notElem` selectedKeys) inherited
+  readProcess (setEnv environment (proc executable (adraiTestArgs repo arguments)))
 
 realAdraiJsonOrThrow :: FilePath -> [String] -> IO Data.Aeson.Value
 realAdraiJsonOrThrow repo arguments = do
@@ -578,11 +584,13 @@ testSymlinkedManagedParentCannotEscapeRepository =
           case result of
             ExitSuccess -> pure ()
             ExitFailure code -> assertFailure ("failed to create Windows junction, exit " <> show code)
-      | otherwise = assertFailure "this Windows-only junction containment proof requires mingw32"
+      | os == "linux" = createDirectoryLink target link
+      | otherwise = assertFailure "managed-parent redirect fixture requires Windows or Linux"
 
     removeManagedParentJunction link = do
-      isLink <- pathIsSymbolicLink link
-      if isLink then removeDirectory link else pure ()
+      isLink <- pathIsSymbolicLink link `catch` \problem ->
+        if isDoesNotExistError problem then pure False else ioError problem
+      if isLink then removeDirectoryLink link else pure ()
 
 -- =====================================================================
 -- Test 10: Upstream hint survives integration

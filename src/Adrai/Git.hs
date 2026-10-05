@@ -113,6 +113,7 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS8
 import Data.List (sortOn)
+import Data.Char (toUpper)
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
 import Data.Maybe (mapMaybe)
@@ -128,6 +129,7 @@ import System.Exit (ExitCode (..))
 import System.FilePath (equalFilePath)
 import System.IO (Handle, hClose, hFlush)
 import System.IO.Error (ioeGetErrorString)
+import System.Info (os)
 import qualified System.Process as Process
 import System.Process (CreateProcess (env, std_err, std_in, std_out), ProcessHandle, StdStream (CreatePipe))
 import Text.Read (readMaybe)
@@ -411,8 +413,13 @@ spawnGitProcess executable commandDirectory environment arguments = do
 
 runGit :: GitClient -> FilePath -> Map String String -> Text -> [String] -> ByteString -> IO (Either GitError GitProcessResult)
 runGit (GitClient executable) commandDirectory environment operation arguments stdinBytes = do
-  inheritedEnvironment <- Map.fromList <$> getEnvironment
-  let effectiveEnvironment = Map.toList (environment `Map.union` inheritedEnvironment)
+  inheritedEnvironment <- getEnvironment
+  let keyIdentity key = if os == "mingw32" then map toUpper key else key
+      -- Windows variable names are case insensitive. Collapse explicit aliases
+      -- deterministically before overriding inheritance; Linux keys stay exact.
+      selectedEnvironment = Map.elems (Map.fromList [(keyIdentity key, (key, value)) | (key, value) <- Map.toList environment])
+      selectedKeys = Set.fromList (map (keyIdentity . fst) selectedEnvironment)
+      effectiveEnvironment = selectedEnvironment <> filter (\(key, _) -> not (Set.member (keyIdentity key) selectedKeys)) inheritedEnvironment
   spawned <- try @IOException (spawnGitProcess executable commandDirectory (Just effectiveEnvironment) arguments)
   case spawned of
     Left _ -> pure (Left (GitExecutableUnavailable executable))

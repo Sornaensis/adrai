@@ -15,6 +15,8 @@
 -- issue-recorded edge cases.
 module Adrai.ProvenanceOverlayTest (tests) where
 
+import Adrai.RetainedNative.NativeFixture (constantNativeFixture)
+
 import Adrai.Git
   ( GitClient (..),
     GitError (..),
@@ -1057,9 +1059,8 @@ testsWithRepositorySeed getRepositorySeed getMergePlacementSeed =
            writableAfterFailure <- open overlayPath
            execute_ writableAfterFailure "DROP TRIGGER fail_target_classification"
            close writableAfterFailure
-           let failingGit = repoDir </> "fail-discovery.cmd"
-               failingRepository = (resolvedRepository target) {repositoryClient = GitClient failingGit}
-           writeFile failingGit "@echo off\r\nexit /b 1\r\n"
+           failingGit <- constantNativeFixture (temp </> "failed-discovery") "" "discovery fixture failure\n" 1
+           let failingRepository = (resolvedRepository target) {repositoryClient = GitClient failingGit}
            discoveryFailure <- runEnsureForConfig failingRepository currentDb mkTestConfig [document] [operation] (resolvedCommitOid target)
            case discoveryFailure of
              Left _ -> pure ()

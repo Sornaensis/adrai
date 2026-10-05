@@ -6,6 +6,7 @@ module Adrai.Integration.CLI
     gitStdout,
     gitSuccess,
     prependExtraPathParts,
+    requireExecutable,
     adraiTestArgs,
     spawnAdrai,
     spawnAdraiWith,
@@ -42,6 +43,7 @@ import Adrai.Cli
     DoctorCacheAccess (..),
     DoctorDatabaseBuild (..),
   )
+import Adrai.Git (boundedDiagnostic)
 import Control.Monad (forM)
 import Data.Aeson
   ( FromJSON,
@@ -56,6 +58,7 @@ import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Lazy as LBS
 import Data.List (intercalate, sortOn)
+import Data.Char (toUpper)
 import Data.Text (Text, pack, strip, unpack)
 import qualified Data.Text as DT
 import qualified Data.Text.Encoding as TE
@@ -69,10 +72,11 @@ import Database.SQLite.Simple.FromRow
   ( FromRow (..),
     field,
   )
-import System.Directory (createDirectoryIfMissing)
-import System.Environment (lookupEnv)
+import System.Directory (createDirectoryIfMissing, doesFileExist, executable, findExecutable, getPermissions, makeAbsolute)
+import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath ((</>), searchPathSeparator, takeDirectory)
+import System.Info (os)
 import System.Process.Typed
   ( byteStringInput,
     proc,
@@ -87,13 +91,6 @@ newtype SqliteByteString = SqliteByteString BS.ByteString
 instance FromRow SqliteByteString where
   fromRow = SqliteByteString <$> field
 
--- | Extra paths to prepend to PATH so subprocesses find git and adrai.
-extraPathParts :: [FilePath]
-extraPathParts =
-  [ "C:\\Program Files\\Git\\cmd",
-    "D:\\Projects\\adrai\\.stack-work\\install\\0fc81caf\\bin"
-  ]
-
 -- | Current PATH from the environment, or empty string if unset.
 currentPath :: IO String
 currentPath = maybe "" id <$> lookupEnv "PATH"
@@ -101,13 +98,19 @@ currentPath = maybe "" id <$> lookupEnv "PATH"
 -- | Prepend the configured paths to an inherited PATH without splitting it.
 -- Keeping the inherited value intact avoids both separator normalization and
 -- non-advancing recursive splitters.
-prependExtraPathParts :: String -> String
-prependExtraPathParts inheritedPath =
-  intercalate ";" (extraPathParts ++ [inheritedPath | not (null inheritedPath)])
+prependExtraPathParts :: [FilePath] -> String -> String
+prependExtraPathParts selectedDirectories inheritedPath =
+  intercalate [searchPathSeparator] (selectedDirectories ++ [inheritedPath | not (null inheritedPath)])
 
--- | Full PATH with extra directories prepended, using Windows semicolons.
-fullPath :: IO String
-fullPath = prependExtraPathParts <$> currentPath
+-- Resolve tools before scrubbing the child environment. An explicit selection
+-- must be a real executable, never silently replaced by another install tree.
+requireExecutable :: FilePath -> IO FilePath
+requireExecutable selected = do
+  resolved <- findExecutable selected >>= maybe (fail ("executable unavailable: " <> selected)) makeAbsolute
+  regular <- doesFileExist resolved
+  permissions <- getPermissions resolved
+  if regular && executable permissions then pure resolved
+  else fail ("selected tool is not an executable file: " <> resolved)
 
 -- | Standard Git test environment variables.
 gitEnv :: [(String, String)]
@@ -124,38 +127,67 @@ gitEnv =
   ]
 
 -- | Environment including git plus PATH with extra paths.
-fullEnv :: IO [(String, String)]
-fullEnv = do
-  fp <- fullPath
-  pure (fullEnvWithPath fp)
+fullEnvWithPath :: String -> IO [(String, String)]
+fullEnvWithPath path = do
+  inherited <- getEnvironment
+  -- Keep intentional Git identity/editor scrubbing, while respecting external
+  -- fixture routing and the native executable loader/locale requirements.
+  let identity key = if os == "mingw32" then map toUpper key else key
+      forwarded = filter (\(key, _) -> identity key `elem` ["TEMP", "TMP", "TMPDIR", "SYSTEMROOT", "WINDIR", "PATHEXT", "LANG", "LC_ALL", "LC_CTYPE"]) inherited
+  pure (("PATH", path) : gitEnv <> forwarded)
 
-fullEnvWithPath :: String -> [(String, String)]
-fullEnvWithPath path = ("PATH", path) : gitEnv
+-- Child failures retain useful command and bounded stderr context without
+-- exposing credential/header arguments. This does not alter the actual argv.
+diagnosticArguments :: [String] -> [String]
+diagnosticArguments [] = []
+diagnosticArguments (argument : rest)
+  | map toUpper argument `elem` ["--TOKEN", "--PASSWORD", "--CREDENTIAL", "--AUTHORIZATION", "--COOKIE"] =
+      "[redacted argument]" : case rest of
+        [] -> []
+        _ : remaining -> "[redacted value]" : diagnosticArguments remaining
+  | sensitive (DT.pack argument) = "[redacted argument]" : diagnosticArguments rest
+  | otherwise = argument : diagnosticArguments rest
+
+sensitive :: Text -> Bool
+sensitive value = any (`DT.isInfixOf` DT.toLower value) ["authorization", "cookie", "password", "credential", "token="]
+
+diagnosticErrors :: LBS.ByteString -> String
+diagnosticErrors errors = unpack (DT.intercalate "\n" (map redact (DT.lines (boundedDiagnostic bytes)))) <> truncation
+  where
+    bytes = LBS.toStrict errors
+    redact line = if sensitive line then "[redacted credential/header diagnostic]" else line
+    truncation = if BS.length bytes > 4096 then " [stderr truncated at 4096 bytes]" else ""
 
 -- | Run git in a directory with the standard test environment.
 -- Fails the test on non-success exit.
 git :: FilePath -> [String] -> IO ()
 git dir args = do
-  (exitCode, _, _) <-
+  selectedGit <- requireExecutable "git"
+  inheritedPath <- currentPath
+  environment <- fullEnvWithPath (prependExtraPathParts [takeDirectory selectedGit] inheritedPath)
+  (exitCode, _, errors) <-
     readProcess
-      (setEnv gitEnv (proc "git" ("-C" : dir : args)))
+      (setEnv environment (proc selectedGit ("-C" : dir : args)))
   case exitCode of
     ExitSuccess -> pure ()
     ExitFailure code ->
       fail $
-        "git " <> unwords args <> " failed with code " <> show code
+        show (selectedGit, diagnosticArguments ("-C" : dir : args)) <> " failed with code " <> show code <> ": " <> diagnosticErrors errors
 
 -- | Run git and return stdout, failing on non-success.
 gitStdout :: FilePath -> [String] -> IO LBS.ByteString
 gitStdout dir args = do
-  (exitCode, stdout, _) <-
+  selectedGit <- requireExecutable "git"
+  inheritedPath <- currentPath
+  environment <- fullEnvWithPath (prependExtraPathParts [takeDirectory selectedGit] inheritedPath)
+  (exitCode, stdout, errors) <-
     readProcess
-      (setEnv gitEnv (proc "git" ("-C" : dir : args)))
+      (setEnv environment (proc selectedGit ("-C" : dir : args)))
   case exitCode of
     ExitSuccess -> pure stdout
     ExitFailure code ->
       fail $
-        "git " <> unwords args <> " failed with code " <> show code
+        show (selectedGit, diagnosticArguments ("-C" : dir : args)) <> " failed with code " <> show code <> ": " <> diagnosticErrors errors
 
 -- | Same as 'git' but with a name that signals success expectation.
 gitSuccess :: FilePath -> [String] -> IO ()
@@ -163,12 +195,11 @@ gitSuccess = git
 
 -- | Find the adrai executable. In CI/test mode this is on PATH
 -- after 'stack build'; the @ADRAI_EXE@ environment variable
--- can override for debugging. Falls back to the Stack local
--- install root if the binary is not on PATH.
+-- can select the exact current build. There is no machine-local install fallback.
 findAdraiExe :: IO FilePath
 findAdraiExe = do
   maybePath <- lookupEnv "ADRAI_EXE"
-  pure $ maybe "adrai" id maybePath
+  requireExecutable (maybe "adrai" id maybePath)
 
 -- | Arguments for a real @adrai@ child launched by the test suite.
 --
@@ -183,7 +214,7 @@ adraiTestArgs repoPath arguments =
   ["--repo", repoPath] <> arguments <> rtsArgs
   where
     rtsArgs
-      | "--integration-cli-path-probe" `elem` arguments = []
+      | any (`elem` arguments) ["--integration-cli-path-probe", "--integration-cli-environment-probe"] = []
       | otherwise = ["+RTS", "-N1", "-RTS"]
 
 -- | Spawn the adrai CLI with arguments in a repository directory.
@@ -197,9 +228,12 @@ spawnAdrai repoPath args = do
 -- supplied inherited value.  This is primarily useful for harness contracts
 -- that must not mutate the test process environment.
 spawnAdraiWith :: FilePath -> String -> FilePath -> [String] -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
-spawnAdraiWith exe inheritedPath repoPath args =
+spawnAdraiWith exe inheritedPath repoPath args = do
+  selected <- requireExecutable exe
+  selectedGit <- requireExecutable "git"
+  environment <- fullEnvWithPath (prependExtraPathParts [takeDirectory selectedGit, takeDirectory selected] inheritedPath)
   readProcess
-    (setEnv (fullEnvWithPath (prependExtraPathParts inheritedPath)) (proc exe (adraiTestArgs repoPath args)))
+    (setEnv environment (proc selected (adraiTestArgs repoPath args)))
 
 -- | Spawn with stdin input.
 spawnAdraiStdin
@@ -209,7 +243,9 @@ spawnAdraiStdin
   -> IO (ExitCode, LBS.ByteString, LBS.ByteString)
 spawnAdraiStdin repoPath args input = do
   exe <- findAdraiExe
-  env <- fullEnv
+  selectedGit <- requireExecutable "git"
+  inheritedPath <- currentPath
+  env <- fullEnvWithPath (prependExtraPathParts [takeDirectory selectedGit, takeDirectory exe] inheritedPath)
   readProcess
     ( setEnv env
         ( setStdin (byteStringInput input)
