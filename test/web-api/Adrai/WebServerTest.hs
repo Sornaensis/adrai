@@ -1051,7 +1051,14 @@ exerciseBuiltWeb executable root = do
       else failWith "authenticated request returned non-200"
 
 testEventRuntime :: IO ()
-testEventRuntime = withSeededServer $ \root running -> do
+testEventRuntime = withSeededRepository $ \root -> do
+  started <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ ->
+    verifyMainEventRuntime root running
+  either (assertFailure . Text.unpack) pure started
+  verifySlowNetworkSubscriber root
+
+verifyMainEventRuntime :: FilePath -> RunningServer -> IO ()
+verifyMainEventRuntime root running = do
   let authority = runningAuthority running
       token = bootstrapToken running
       headers =
@@ -1267,7 +1274,6 @@ testEventRuntime = withSeededServer $ \root running -> do
         closeOwnedSocket blockedPeer
         _ <- waitCatch reader
         assertFailure ("server shutdown did not physically end its blocked unauthenticated peer: " <> show other)
-  verifySlowNetworkSubscriber root
 
 verifySlowNetworkSubscriber :: FilePath -> IO ()
 verifySlowNetworkSubscriber root = do
