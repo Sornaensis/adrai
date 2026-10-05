@@ -823,12 +823,18 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive = do
     either (assertFailure . Text.unpack) pure started
 
 testBoundsAndStale :: IO ()
-testBoundsAndStale = withSeededServer $ \root running -> do
+testBoundsAndStale = withSeededRepository $ \root -> do
+  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  (adr, committed) <- seedRelevantDecision repository
+  _ <- Runtime.ensureExactArchive repository committed >>= either (assertFailure . Text.unpack) pure
+  started <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ ->
+    assertBoundsAndStale root adr running
+  either (assertFailure . Text.unpack) pure started
+
+assertBoundsAndStale :: FilePath -> Text -> RunningServer -> IO ()
+assertBoundsAndStale root adr running = do
   huge <- bearerRequest running ("GET /app.css?" <> Text.replicate 5000 "x") []
   assertBool "encoded query bound applies to assets" ("HTTP/1.1 413" `BS.isPrefixOf` huge)
-  basis0 <- repositoryBasis running
-  created <- postJsonLabeled 60000000 "bounds create" running "/api/v1/adrs" (createBody basis0)
-  adr <- textAt ["data", "adr"] created
   shown <- getJson running ("/api/v1/adrs/" <> adr)
   state <- valueAt ["data", "state_token"] shown
   basis <- repositoryBasis running
@@ -2539,11 +2545,6 @@ testCompilationRuntime = withSeededRepository $ \root -> do
       _ <- getJson running "/api/v1/doctor"
       readIORef failures >>= (@?= 2)
     either (assertFailure . Text.unpack) pure failedStarted
-
-withSeededServer :: (FilePath -> RunningServer -> IO value) -> IO value
-withSeededServer action = withSeededRepository $ \root -> do
-  started <- withWebServer dependencies root (Api.WebOptions Nothing False) (\running _ -> action root running)
-  either (assertFailure . Text.unpack) pure started
 
 withSeededRepository :: (FilePath -> IO value) -> IO value
 withSeededRepository action = withSystemTempDirectory "adrai-p7-02-web" $ \temporary -> do
