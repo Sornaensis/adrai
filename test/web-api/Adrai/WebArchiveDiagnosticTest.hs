@@ -107,7 +107,7 @@ testMixedExactArchiveConsumers = Server.withSeededRepository $ \root -> do
             execute_ connection "PRAGMA query_only=ON"
             putMVar holderEntered ()
             takeMVar releaseHolder
-      request running path = rawJsonRequest running "GET" path Nothing ByteString.empty
+      request running path = rawJsonRequestWith rawMixedExchange running "GET" path Nothing ByteString.empty
       releaseMixedGates = do
         _ <- tryPutMVar releaseProducer ()
         _ <- tryPutMVar releaseJoiners ()
@@ -208,7 +208,7 @@ recoverExact running target label path = go (0 :: Int)
     go attempts
       | attempts >= 6 = assertFailure (label <> " recovery exhausted typed busy attempts")
       | otherwise = do
-          result@(status, value) <- rawJsonRequest running "GET" path Nothing ByteString.empty
+          result@(status, value) <- rawJsonRequestWith rawMixedExchange running "GET" path Nothing ByteString.empty
           if status == 200
             then do
               assertExactSuccess target result
@@ -245,7 +245,7 @@ safeAsOfKind _ = "other"
 
 awaitHttp :: Async (Int, Aeson.Value) -> String -> IO (Int, Aeson.Value)
 awaitHttp worker label = do
-  -- rawJsonRequest retains its bounded socket/body protocol and owned cleanup.
+  -- The mixed requests retain response-size bounds and owned socket cleanup.
   result <- waitCatch worker
   case result of
     Left exception -> rethrowAsync exception >> assertFailure (label <> " failed: " <> show exception)
@@ -458,7 +458,10 @@ bootstrapCookie running = do
     _ -> assertFailure "bootstrap did not return one session cookie"
 
 rawJsonRequest :: RunningServer -> Text -> Text -> Maybe Text -> ByteString.ByteString -> IO (Int, Aeson.Value)
-rawJsonRequest running method path maybeCookie body = do
+rawJsonRequest = rawJsonRequestWith rawExchange
+
+rawJsonRequestWith :: (RunningServer -> ByteString.ByteString -> IO ByteString.ByteString) -> RunningServer -> Text -> Text -> Maybe Text -> ByteString.ByteString -> IO (Int, Aeson.Value)
+rawJsonRequestWith exchange running method path maybeCookie body = do
   let host = Security.authorityHost (runningAuthority running)
       token = Text.drop (Text.length "token=") (snd (Text.breakOn "token=" (runningBootstrapUrl running)))
       optionalCookie = maybe "" ("\r\nCookie: " <>) maybeCookie
@@ -468,7 +471,7 @@ rawJsonRequest running method path maybeCookie body = do
           <> "\r\nAuthorization: Bearer " <> token <> optionalCookie
           <> "\r\nContent-Type: application/json\r\nContent-Length: " <> Text.pack (show (ByteString.length body))
           <> "\r\nConnection: close\r\n\r\n")
-  response <- rawExchange running (requestHead <> body)
+  response <- exchange running (requestHead <> body)
   assertBool "HTTP response does not disclose the process credential"
     (not (TextEncoding.encodeUtf8 token `ByteString.isInfixOf` response))
   status <- case ByteString8.words (ByteString8.takeWhile (/= '\r') response) of
@@ -484,7 +487,19 @@ rawJsonRequest running method path maybeCookie body = do
   pure (status, value)
 
 rawExchange :: RunningServer -> ByteString.ByteString -> IO ByteString.ByteString
-rawExchange running requestBytes = do
+rawExchange = rawExchangeWith $ \worker -> do
+  bounded <- timeout 8000000 (waitCatch worker)
+  maybe (assertFailure "bounded raw HTTP request timed out") pure bounded
+
+-- Only the mixed contention leaf deliberately parks admitted requests. Its
+-- client still connects, sends and reads immediately: early completion remains
+-- visible to poll/readiness races. The enclosing owned run bounds completion;
+-- response-size and finite socket close/join bounds remain shared below.
+rawMixedExchange :: RunningServer -> ByteString.ByteString -> IO ByteString.ByteString
+rawMixedExchange = rawExchangeWith waitCatch
+
+rawExchangeWith :: (Async ByteString.ByteString -> IO (Either SomeException ByteString.ByteString)) -> RunningServer -> ByteString.ByteString -> IO ByteString.ByteString
+rawExchangeWith awaitResponse running requestBytes = do
   let host = Security.authorityHost (runningAuthority running)
       rawPort = snd (Text.breakOnEnd ":" host)
   port <- maybe (assertFailure "invalid reported loopback port") pure (readMaybe (Text.unpack rawPort) :: Maybe Int)
@@ -497,11 +512,10 @@ rawExchange running requestBytes = do
       connect client (SockAddrInet (fromIntegral port) (tupleToHostAddress (127, 0, 0, 1)))
       sendAll client requestBytes
       receiveAll client [] 0) cleanup $ \worker -> do
-        bounded <- timeout 8000000 (waitCatch worker)
-        case bounded of
-          Nothing -> assertFailure "bounded raw HTTP request timed out"
-          Just (Left exception) -> rethrowAsync exception >> assertFailure "bounded raw HTTP socket failed"
-          Just (Right response) -> pure response
+        response <- awaitResponse worker
+        case response of
+          Left exception -> rethrowAsync exception >> assertFailure "bounded raw HTTP socket failed"
+          Right bytes -> pure bytes
   where
     receiveAll client chunks size = do
       bytes <- recv client 4096
