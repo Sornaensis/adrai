@@ -45,9 +45,10 @@ import Database.SQLite.Simple
     query,
   )
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit ((@?=), assertBool, testCase)
+import Test.Tasty.HUnit ((@?=), assertBool, assertEqual, testCase)
 import Test.Tasty.HUnit (assertFailure)
 import System.Exit (ExitCode (..))
+import System.Info (os)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Directory (doesDirectoryExist, doesFileExist, removeFile, removePathForcibly)
 import System.FilePath ((</>))
@@ -71,6 +72,8 @@ p602iRealExecutableCompile :: IO ()
 p602iRealExecutableCompile =
   withSystemTempDirectory "adrai p6-02i compile ü" $ \temporary -> do
     repository <- createTestRepo (temporary </> "repo parent with spaces")
+    _ <- gitStdout repository ["config", "user.name", "ADRAI Test"]
+    _ <- gitStdout repository ["config", "user.email", "adrai-test@example.invalid"]
     initialBasis <- GitOid <$> headOid repository
     (_, initialDocuments) <- requireRight "seal initial compiler fixture" (healthySimpleCompilerFiles initialBasis)
     historicalRevision <-
@@ -183,7 +186,16 @@ p602iRealExecutableCompile =
     headOid repository = Text.strip . TextEncoding.decodeUtf8 . LBS.toStrict <$> gitStdout repository ["rev-parse", "HEAD"]
     compileJson repository arguments = do
       (exitCode, stdoutBytes, stderrBytes) <- p602iRaw repository arguments
-      exitCode @?= ExitSuccess
+      selectedExecutable <- lookupEnv "ADRAI_EXE"
+      let bounded bytes =
+            show (LBS.take 4096 bytes)
+              <> if LBS.length bytes > 4096 then " (truncated after 4096 bytes)" else ""
+          context =
+            "compile invocation " <> show arguments <> " in " <> show repository
+              <> " using " <> show selectedExecutable
+              <> "\nstdout: " <> bounded stdoutBytes
+              <> "\nstderr: " <> bounded stderrBytes
+      assertEqual context ExitSuccess exitCode
       stderrBytes @?= ""
       value <- case Aeson.eitherDecode stdoutBytes of
         Left problem -> assertFailure ("compile JSON decode failed: " <> problem) >> fail "unreachable"
@@ -237,11 +249,13 @@ p602iEnvironment :: [(String, String)] -> [(String, String)]
 p602iEnvironment inherited =
   gitEnv
     <> filter
-      (\(key, _) -> folded key `elem` required && all ((/= folded key) . folded . fst) gitEnv)
+      (\(key, _) -> identity key `elem` required && all ((/= identity key) . identity . fst) gitEnv)
       inherited
   where
-    required = map folded ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"]
-    folded = Text.toCaseFold . Text.pack
+    required = map identity ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"]
+    identity key
+      | os == "mingw32" = Text.toCaseFold (Text.pack key)
+      | otherwise = Text.pack key
 
 schemaRollbackContract :: IO ()
 schemaRollbackContract = withMemory $ \connection -> do
