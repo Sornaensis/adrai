@@ -2,7 +2,7 @@ module Main (main) where
 
 import Control.Monad (forM_)
 import Data.Char (isSpace)
-import Data.List (isInfixOf, isPrefixOf, isSuffixOf, tails)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, stripPrefix, tails)
 import System.Directory (doesFileExist, listDirectory)
 import Test.Tasty (defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase)
@@ -26,6 +26,9 @@ benchmarkComponentRegistration = do
     assertContains packageBenchmark needle ("adrai-bench package.yaml stanza is missing: " <> needle)
   forM_ cabalRegistrationRequirements $ \needle ->
     assertContains cabalBenchmark needle ("adrai-bench Cabal stanza is missing: " <> needle)
+  forM_ ["adrai:internal", "criterion", "deepseq"] $ \dependency ->
+    assertBool ("adrai-bench build-depends is missing: " <> dependency) (dependency `elem` cabalDependencyNames cabalBenchmark)
+  dependencyTokenExamples cabalBenchmarkStanza "benchmark adrai-bench"
   assertNotContains packageBenchmark "-eventlog" "adrai-bench package registration must rely on the RTS eventlog support enabled by profiling"
   assertNotContains cabalBenchmark "-eventlog" "adrai-bench Cabal registration must not force eventlog instrumentation into ordinary timing"
 
@@ -41,6 +44,8 @@ profileDriverRegistration = do
     assertContains packageExecutable needle ("adrai-profile package.yaml stanza is missing: " <> needle)
   forM_ profileCabalRegistrationRequirements $ \needle ->
     assertContains cabalExecutable needle ("adrai-profile Cabal stanza is missing: " <> needle)
+  assertBool "adrai-profile build-depends is missing: adrai:internal" ("adrai:internal" `elem` cabalDependencyNames cabalExecutable)
+  dependencyTokenExamples cabalExecutableStanza "executable adrai-profile"
   assertNotContains packageExecutable "-eventlog" "adrai-profile package registration must leave eventlog collection to an explicit RTS invocation"
   assertNotContains cabalExecutable "-eventlog" "adrai-profile Cabal registration must leave eventlog collection to an explicit RTS invocation"
   assertContains profileMain "ProfileDriver.main" "adrai-profile must delegate to the profile driver"
@@ -190,9 +195,6 @@ cabalRegistrationRequirements =
   [ "type: exitcode-stdio-1.0",
     "main-is: Main.hs",
     "hs-source-dirs:\n      bench\n      test/support",
-    ", adrai:internal",
-    ", criterion",
-    ", deepseq",
     "ghc-options: -threaded -rtsopts -with-rtsopts=-N1"
   ]
 
@@ -211,7 +213,6 @@ profileCabalRegistrationRequirements =
     "Adrai.Benchmark.CurrentSearch",
     "Adrai.Benchmark.ProfileDriver",
     "hs-source-dirs:\n      bench\n      test/support",
-    ", adrai:internal",
     "ghc-options: -threaded -rtsopts -with-rtsopts=-N1"
   ]
 
@@ -326,6 +327,42 @@ packageExecutableStanza = requiredStanza "executables:" "  adrai-profile:" isYam
 
 cabalExecutableStanza :: String -> String
 cabalExecutableStanza = requiredStanza "executable adrai-profile" "executable adrai-profile" isCabalStanzaBoundary . lines
+
+cabalDependencyNames :: String -> [String]
+cabalDependencyNames = concatMap (map dependencyName . splitDependencies) . fields . lines
+  where
+    fields [] = []
+    fields (line : rest) =
+      case stripPrefix "build-depends:" (dropWhile isSpace line) of
+        Nothing -> fields rest
+        Just first ->
+          let (continued, remaining) = span (\next -> all isSpace next || indentation next > indentation line) rest
+           in unlines (first : continued) : fields remaining
+    indentation = length . takeWhile isSpace
+    splitDependencies [] = []
+    splitDependencies body =
+      let (entry, remaining) = break (== ',') body
+       in entry : case remaining of
+            [] -> []
+            _ : rest -> splitDependencies rest
+    dependencyName = takeWhile (\character -> not (isSpace character) && character `notElem` "<>=^") . dropWhile isSpace
+
+dependencyTokenExamples :: (String -> String) -> String -> Assertion
+dependencyTokenExamples componentStanza header = do
+  let containsInternal = elem "adrai:internal" . cabalDependencyNames . componentStanza
+      component body = header <> "\n" <> body
+  forM_
+    [ "  build-depends: adrai:internal >= 1, base",
+      "  build-depends: base, adrai:internal",
+      "  build-depends:\n      base\n    , adrai:internal >= 1"
+    ] $ \body -> assertBool "exact internal dependency accepts first, later, and wrapped entries" (containsInternal (component body))
+  forM_
+    [ "  build-depends: base",
+      "  build-depends: xadrai:internal, adrai:internal-extra",
+      "  ghc-options: adrai:internal\n  build-depends: base",
+      "  build-depends: base\n  other-modules: adrai:internal",
+      "  build-depends: base\nexecutable another-component\n  build-depends: adrai:internal"
+    ] $ \body -> assertBool "internal dependency cannot come from a missing, similar, outside-field, or other-component token" (not (containsInternal (component body)))
 
 requiredStanza :: String -> String -> (String -> Bool) -> [String] -> String
 requiredStanza parentHeader stanzaHeader boundary lines' =
