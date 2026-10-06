@@ -5,6 +5,7 @@ module Adrai.WebServerTest
   ( tests,
     generationExhaustionTest,
     testEventRuntime,
+    testIdleEventLiveness,
     testWatchRuntime,
     testCompilationRuntime,
     dependencies,
@@ -42,11 +43,11 @@ import qualified Adrai.Web.Events as Events
 import Adrai.Web.Server (RunningServer (..), ServerDependencies (..), defaultServerDependencies, withWebServer)
 import Adrai.RetainedNative.NativeFixture (copyNativeFixture)
 import qualified Adrai.Web.Security as Security
-import Adrai.Web.Socket (unavailableEventsTransport)
+import Adrai.Web.Socket (SocketTimings (..), defaultSocketTimings, unavailableEventsTransport)
 import qualified Adrai.Web.Watch as Watch
 import Control.Concurrent (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay, tryPutMVar, tryTakeMVar)
 import Control.Concurrent.Async (Async, async, cancel, poll, race, wait, waitCatch, withAsync)
-import Control.Concurrent.STM (atomically, check, newEmptyTMVarIO, newTVarIO, orElse, putTMVar, readTVar, takeTMVar, writeTVar)
+import Control.Concurrent.STM (atomically, check, modifyTVar', newEmptyTMVarIO, newTQueueIO, newTVarIO, orElse, putTMVar, readTQueue, readTVar, takeTMVar, writeTQueue, writeTVar)
 import Control.Exception (SomeAsyncException, SomeException, bracket, bracketOnError, finally, fromException, onException, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
 import qualified Data.ByteString as BS
@@ -189,6 +190,8 @@ dependencies = ServerDependencies
     serverEventCoordinatorReady = const (pure ()),
     serverWatcherPublished = const (pure ()),
     serverEventSendDeadline = pure (),
+    serverSocketTimings = defaultSocketTimings,
+    serverSocketSnapshot = Watch.repositorySnapshot,
     serverApplicationServices = defaultApplicationServices,
     serverEventsTransport = unavailableEventsTransport
   }
@@ -1087,6 +1090,143 @@ exerciseBuiltWeb executable root = do
     if "HTTP/1.1 200" `BS.isPrefixOf` response
       then writeIORef phaseRef "authenticated repository returned HTTP 200"
       else failWith "authenticated request returned non-200"
+
+-- No application heartbeat is sent by the healthy client. Every acknowledged
+-- ping is an actual frame on its own connection; the other peer stops replying
+-- after the real watcher confirms its active-file lease.
+testIdleEventLiveness :: IO ()
+testIdleEventLiveness = withSeededRepository $ \root -> do
+  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  bound <- either (assertFailure . show) pure (Api.validateRepositoryBinding (Right repository))
+  registry <- Watch.newActiveFileRegistry
+  observer <- Watch.observerForRegistry registry bound
+  captured <- Watch.repositorySnapshot observer bound
+  case captured of
+    Watch.RepositorySnapshot _ _ -> pure ()
+    Watch.RepositorySnapshotFailed _ problem -> assertFailure ("liveness fixture snapshot failed: " <> show problem)
+  initialReads <- newIORef (0 :: Int)
+  coordinatorReady <- newEmptyMVar
+  let initialSnapshot actualObserver actualRepo = do
+        ordinal <- atomicModifyIORef' initialReads (\count -> (count + 1, count))
+        if ordinal < 2 then pure captured else Watch.repositorySnapshot actualObserver actualRepo
+      injected = dependencies
+        { serverSocketTimings = SocketTimings 1 4000000,
+          -- Only two unchanged, epoch-zero handshakes reuse the real capture.
+          -- Production HEAD/ref/generation/epoch validation is still applied.
+          serverSocketSnapshot = initialSnapshot,
+          serverEventCoordinatorReady = putMVar coordinatorReady
+        }
+  started <- withWebServer injected root (Api.WebOptions Nothing False) $ \running _ -> do
+    let authority = runningAuthority running
+        token = bootstrapToken running
+    pongs <- newTVarIO (0 :: Int)
+    events <- newTQueueIO
+    bracket (openRawSlowSubscriber authority token) closeOwnedSocket $ \healthy -> do
+      let respond :: IO ()
+          respond = readLivenessFrame healthy >>= \case
+            Nothing -> assertFailure "healthy idle client was disconnected despite answering transport pings"
+            Just (9, payload) -> do
+              sendAll healthy (maskedFrame True 10 payload)
+              atomically (modifyTVar' pongs (+ 1))
+              respond
+            Just (1, payload) -> do
+              assertBool "healthy idle session received no repeated full resync" (not ("\"head\"" `BS.isInfixOf` payload && "\"common-refs\"" `BS.isInfixOf` payload))
+              atomically (writeTQueue events payload)
+              respond
+            Just (opcode, _) -> assertFailure ("healthy idle client received unexpected opcode " <> show opcode)
+      withAsync respond $ \healthyWorker -> do
+        bracket (openRawSlowSubscriber authority token) closeOwnedSocket $ \silent -> do
+          sendAll silent (maskedFrame True 1 (LBS.toStrict (Aeson.encode (Aeson.object ["type" Aeson..= ("active-files" :: Text), "paths" Aeson..= (["seed.txt"] :: [Text])]))))
+          replying <- newTVarIO True
+          let drainSilent = readLivenessFrame silent >>= \case
+                Nothing -> pure ()
+                Just (9, payload) -> do
+                  enabled <- atomically (readTVar replying)
+                  when enabled (sendAll silent (maskedFrame True 10 payload))
+                  drainSilent
+                Just _ -> drainSilent
+          withAsync drainSilent $ \silentWorker -> do
+            -- Establish the real lease before silence; otherwise a slower
+            -- watcher may correctly coalesce its addition and expiration.
+            let awaitInterest = atomically (readTQueue events) >>= \payload ->
+                  if "relevant-worktree-file" `BS.isInfixOf` payload then pure () else awaitInterest
+            added <- timeout 30000000 (race awaitInterest (waitCatch healthyWorker))
+            case added of
+              Just (Left ()) -> pure ()
+              Just (Right outcome) -> assertFailure ("healthy idle client stopped before the lease was observed: " <> show outcome)
+              Nothing -> assertFailure "watcher did not observe the registered lease before silence"
+            beforeSilence <- atomically (readTVar pongs)
+            atomically (writeTVar replying False)
+            released <- timeout 12000000 (waitCatch silentWorker)
+            case released of
+              Just (Right ()) -> pure ()
+              Just (Left failure) -> throwIO failure
+              Nothing -> assertFailure "another client's pongs kept the silent peer alive"
+            afterSilence <- atomically (readTVar pongs)
+            assertBool "healthy client answered pings while its peer expired" (afterSilence >= beforeSilence + 2)
+          let verifyReleased attempts
+                | attempts <= (0 :: Int) = assertFailure "expired peer retained its active-file interests"
+                | otherwise = do
+                    BS.writeFile (root </> "seed.txt") (BS8.pack (show attempts))
+                    BS.appendFile (root </> ".adrai.toml") "\n"
+                    let awaitConfiguration = atomically (readTQueue events) >>= \payload ->
+                          if "configuration" `BS.isInfixOf` payload then pure payload else awaitConfiguration
+                    observed <- timeout 30000000 (race awaitConfiguration (waitCatch healthyWorker))
+                    case observed of
+                      Just (Left payload) | not ("relevant-worktree-file" `BS.isInfixOf` payload) -> pure ()
+                      Just (Left _) -> verifyReleased (attempts - 1)
+                      Just (Right outcome) -> assertFailure ("healthy idle client stopped during lease cleanup: " <> show outcome)
+                      Nothing -> assertFailure "watcher did not confirm expired-peer lease cleanup"
+          verifyReleased 3
+        survived <- timeout 20000000 (race (atomically (readTVar pongs >>= check . (>= 10))) (waitCatch healthyWorker))
+        case survived of
+          Just (Left ()) -> pure ()
+          Just (Right outcome) -> assertFailure ("healthy client failed before multiple silence periods elapsed: " <> show outcome)
+          Nothing -> assertFailure "healthy idle client did not answer ten transport pings"
+        readIORef initialReads >>= (@?= 2)
+        coordinator <- readMVar coordinatorReady
+        bracket
+          (forM [1 :: Int .. 15] (\_ -> Events.registerSubscriberWithInitial coordinator (Events.EventAsOfUnavailable "liveness-capacity-check")))
+          (mapM_ (either (const (pure ())) (Events.unregisterSubscriber coordinator))) $ \slots ->
+            assertBool "silent peer released its subscriber while the healthy subscriber remains" (all (either (const False) (const True)) slots)
+        -- Joined cancellation must finish without needing an application frame.
+        cancelled <- timeout 2000000 (cancel healthyWorker >> waitCatch healthyWorker)
+        assertBool "idle transport receiver joins on cancellation" (maybe False (const True) cancelled)
+    -- Even continual pre-authentication pongs cannot renew the five-second
+    -- authenticate-first deadline or cause any repository event to be sent.
+    bracket (openRawPendingPeer authority token) closeOwnedSocket $ \unauthenticated -> do
+      let floodPongs :: IO ()
+          floodPongs = sendAll unauthenticated (maskedFrame True 10 "pre-auth-pong") >> threadDelay 250000 >> floodPongs
+      withAsync floodPongs $ \_ -> do
+        expired <- timeout 10000000 (recv unauthenticated 1)
+        assertBool "pre-auth pongs do not extend authentication or receive repository data" (expired == Just BS.empty)
+  either (assertFailure . Text.unpack) pure started
+
+readLivenessFrame :: Socket -> IO (Maybe (Word8, BS.ByteString))
+readLivenessFrame client = do
+  first <- recv client 1
+  if BS.null first then pure Nothing else do
+    second <- exact 1
+    let flags = BS.head first
+        lengthByte = BS.head second
+        shortLength = lengthByte .&. 0x7f
+    assertBool "liveness server frames are complete, unmasked and uncompressed" (flags .&. 0xf0 == 0x80 && lengthByte .&. 0x80 == 0)
+    extra <- case shortLength of
+      126 -> exact 2
+      127 -> exact 8
+      _ -> pure BS.empty
+    let size = if BS.null extra then fromIntegral shortLength else BS.foldl' (\total byte -> total * 256 + fromIntegral byte) (0 :: Integer) extra
+    assertBool "liveness frame payload remains bounded" (size <= 256 * 1024)
+    payload <- exact (fromIntegral size)
+    pure (Just (flags .&. 0x0f, payload))
+  where
+    exact count = go count []
+    go remaining chunks
+      | remaining == 0 = pure (BS.concat (reverse chunks))
+      | otherwise = do
+          bytes <- recv client (min remaining 4096)
+          if BS.null bytes then assertFailure "liveness peer ended inside a frame"
+            else go (remaining - BS.length bytes) (bytes : chunks)
 
 testEventRuntime :: IO ()
 testEventRuntime = withSeededRepository $ \root -> do

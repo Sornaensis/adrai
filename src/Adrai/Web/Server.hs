@@ -29,7 +29,7 @@ import Adrai.Web.Application
   )
 import qualified Adrai.Web.Security as Security
 import qualified Adrai.Web.Events as Events
-import Adrai.Web.Socket (EventsTransport, eventsServerApplication, newSocketRuntime, unavailableEventsTransport)
+import Adrai.Web.Socket (EventsTransport, SocketTimings, defaultSocketTimings, eventsServerApplication, newSocketRuntimeWithTimings, unavailableEventsTransport)
 import Adrai.Web.Watch (Observer (..), awaitWatcher, observerForRegistry, stopWatching)
 import qualified Adrai.Web.Watch as Watch
 import Control.Concurrent (threadDelay)
@@ -108,6 +108,8 @@ data ServerDependencies = ServerDependencies
     serverEventCoordinatorReady :: Events.EventCoordinator -> IO (),
     serverWatcherPublished :: GitOid -> IO (),
     serverEventSendDeadline :: IO (),
+    serverSocketTimings :: SocketTimings,
+    serverSocketSnapshot :: Observer -> Api.Repo -> IO Watch.RepositorySnapshot,
     serverApplicationServices :: ApplicationServices,
     serverEventsTransport :: EventsTransport
   }
@@ -219,6 +221,8 @@ defaultServerDependencies =
       serverEventCoordinatorReady = const (pure ()),
       serverWatcherPublished = const (pure ()),
       serverEventSendDeadline = pure (),
+      serverSocketTimings = defaultSocketTimings,
+      serverSocketSnapshot = repositorySnapshot,
       serverApplicationServices = defaultApplicationServices,
       serverEventsTransport = unavailableEventsTransport
     }
@@ -263,7 +267,7 @@ withWebServer dependencies startDirectory options consume = do
                         WebSockets.connectionMessageDataSizeLimit = WebSockets.SizeLimit (fromIntegral Security.websocketAuthFrameBytes)
                       }
               observer <- observerForRegistry registry bound
-              socketRuntime <- newSocketRuntime authority secret (applicationEventCoordinator runtime) registry (subscribeApplicationEvents runtime (repositorySnapshot observer)) (serverEventSendDeadline dependencies)
+              socketRuntime <- newSocketRuntimeWithTimings (serverSocketTimings dependencies) authority secret (applicationEventCoordinator runtime) registry (subscribeApplicationEvents runtime (serverSocketSnapshot dependencies observer)) (serverEventSendDeadline dependencies)
               owners <- newSocketOwners
               let application request respond =
                     if webSocketUpgradeAdmitted runtime request

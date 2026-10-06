@@ -700,6 +700,7 @@ tests =
       , testGroup
           "P7-03"
           [ Adrai.WebEventsTest.tests,
+            Adrai.WebEventsTest.livenessTest,
             Adrai.WebWatchTest.tests,
             Adrai.WebCompilationTest.exactRevisionCompilationTest,
             Adrai.WebCompilationTest.tests

@@ -156,9 +156,15 @@ after such a refresh; it is never silently rebased or resubmitted.
 
 The runtime admits at most 16 pending/authenticated sockets and 16 subscribers.
 Each subscriber queue holds 64 events; overflow closes that socket so it must
-reconnect and resync. Sends have a five-second bound, idle receives a
-60-second bound, and close frames a one-second bound. Slow subscribers cannot
-hold mutation publication or delay other subscribers.
+reconnect and resync. Sends have a five-second bound and close frames a
+one-second bound. After authentication the server pings every 30 seconds;
+received pongs and valid active-files messages renew a connection's own
+60-second silence deadline. A healthy idle browser needs no application
+heartbeat or repeated resync. Outgoing events and other clients' activity do
+not renew that deadline, and pre-authentication pongs cannot extend the fixed
+five-second authentication deadline. Silence expiry and disconnect cancel and
+join the session's workers and release its subscriber and active-file interests.
+Slow subscribers cannot hold mutation publication or delay other subscribers.
 
 ## Mutation and observation boundaries
 

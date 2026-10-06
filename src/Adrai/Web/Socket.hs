@@ -5,7 +5,8 @@
 -- | Authenticated bounded WebSocket transport for @adrai/events/v1@.
 module Adrai.Web.Socket
   ( EventsTransport (..), unavailableEventsTransport,
-    SocketRuntime, newSocketRuntime, eventsServerApplication,
+    SocketRuntime, SocketTimings (..), defaultSocketTimings,
+    newSocketRuntime, newSocketRuntimeWithTimings, eventsServerApplication,
   ) where
 
 import qualified Adrai.Web.Api as Api
@@ -21,12 +22,15 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Text (Text)
+import Data.Word (Word64)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextError
 import qualified Network.HTTP.Types.Header as Header
 import Network.Wai (Request, Response)
 import qualified Network.WebSockets as WS
+import qualified Network.WebSockets.Connection as WSConnection
+import GHC.Clock (getMonotonicTimeNSec)
 
 newtype EventsTransport = EventsTransport { runEventsTransport :: Request -> Api.ResponseMetadata -> IO (Maybe Response) }
 unavailableEventsTransport :: EventsTransport
@@ -39,12 +43,25 @@ data SocketRuntime = SocketRuntime
     socketActiveFiles :: Watch.ActiveFileRegistry,
     socketSubscribe :: IO (Either Text Events.EventSubscriber),
     socketOnSendDeadline :: IO (),
+    socketTimings :: SocketTimings,
     socketPending :: TVar Int
   }
 
+-- | Trusted transport timing injection; the executable uses the fixed defaults.
+data SocketTimings = SocketTimings
+  { socketPingSeconds :: Int,
+    socketSilenceMicros :: Int
+  }
+
+defaultSocketTimings :: SocketTimings
+defaultSocketTimings = SocketTimings 30 60000000
+
 newSocketRuntime :: Security.BoundAuthority -> Security.ProcessSecret -> Events.EventCoordinator -> Watch.ActiveFileRegistry -> IO (Either Text Events.EventSubscriber) -> IO () -> IO SocketRuntime
-newSocketRuntime authority secret coordinator active subscribe onSendDeadline =
-  SocketRuntime authority secret coordinator active subscribe onSendDeadline <$> newTVarIO 0
+newSocketRuntime = newSocketRuntimeWithTimings defaultSocketTimings
+
+newSocketRuntimeWithTimings :: SocketTimings -> Security.BoundAuthority -> Security.ProcessSecret -> Events.EventCoordinator -> Watch.ActiveFileRegistry -> IO (Either Text Events.EventSubscriber) -> IO () -> IO SocketRuntime
+newSocketRuntimeWithTimings timings authority secret coordinator active subscribe onSendDeadline =
+  SocketRuntime authority secret coordinator active subscribe onSendDeadline timings <$> newTVarIO 0
 
 eventsServerApplication :: SocketRuntime -> IO () -> WS.ServerApp
 eventsServerApplication runtime abort pending = do
@@ -53,25 +70,34 @@ eventsServerApplication runtime abort pending = do
     Left _ -> WS.rejectRequest pending "WebSocket admission rejected"
     Right () -> bracket (acquirePending runtime) (releasePending runtime) $ \admitted ->
       if not admitted then WS.rejectRequest pending "WebSocket client limit reached" else do
-        connection <- WS.acceptRequest pending
+        activity <- newTVarIO Nothing
+        let original = WSConnection.pendingOptions pending
+            options = original
+              { WS.connectionOnPong = WS.connectionOnPong original >> noteActivity activity }
+        connection <- WS.acceptRequest pending {WSConnection.pendingOptions = options}
         first <- receiveBeforeDeadline abort connection Security.websocketAuthTimeoutMicros
         case first >>= textMessage of
           Nothing -> pure ()
           Just bytes ->
             case Events.decodeClientFrame Security.websocketAuthFrameBytes bytes of
               Right (Events.AuthenticateFrame credential)
-                | Security.credentialMatches (socketSecret runtime) (Security.mkWebSocketCredential credential) -> authenticated runtime abort connection
+                | Security.credentialMatches (socketSecret runtime) (Security.mkWebSocketCredential credential) -> authenticated runtime abort connection activity
               _ -> boundedClose abort connection "authentication rejected"
 
-authenticated :: SocketRuntime -> IO () -> WS.Connection -> IO ()
-authenticated runtime abort connection =
+authenticated :: SocketRuntime -> IO () -> WS.Connection -> TVar (Maybe Word64) -> IO ()
+authenticated runtime abort connection activity =
   bracket (Watch.registerActiveClient registry) releaseActive $ \case
     Left _ -> boundedClose abort connection "client limit reached"
     Right activeClient ->
       bracket (socketSubscribe runtime) releaseSubscriber $ \case
         Left "generation-exhausted" -> boundedClose abort connection generationExhaustedCloseReason
         Left _ -> boundedClose abort connection "snapshot unavailable"
-        Right subscriber -> runOwnedSession abort (senderLoop subscriber) (WS.withPingThread connection 30 (pure ()) (receiveLoop activeClient))
+        Right subscriber -> do
+          now <- getMonotonicTimeNSec
+          atomically (writeTVar activity (Just now))
+          runOwnedSession abort (senderLoop subscriber)
+            (withSilenceWatchdog abort (socketSilenceMicros (socketTimings runtime)) activity
+              (WS.withPingThread connection (socketPingSeconds (socketTimings runtime)) (pure ()) (receiveLoop activeClient)))
   where
     registry = socketActiveFiles runtime
     releaseActive (Left _) = pure ()
@@ -87,16 +113,44 @@ authenticated runtime abort connection =
           Nothing -> pure ()
           Just () -> senderLoop subscriber
     receiveLoop activeClient = do
-      received <- receiveBeforeDeadline abort connection socketIdleTimeoutMicros
-      case received of
-        Nothing -> pure ()
-        Just message -> case textMessage message >>= either (const Nothing) Just . Events.decodeClientFrame Security.websocketAuthFrameBytes of
+      message <- WS.receiveDataMessage connection
+      case textMessage message >>= either (const Nothing) Just . Events.decodeClientFrame Security.websocketAuthFrameBytes of
           Just (Events.ActiveFilesFrame paths) -> do
             replaced <- Watch.replaceActiveFiles registry activeClient paths
             case replaced of
               Left _ -> boundedClose abort connection "invalid active files"
-              Right () -> receiveLoop activeClient
+              Right () -> noteActivity activity >> receiveLoop activeClient
           _ -> boundedClose abort connection "invalid or idle control stream"
+
+-- Pongs cannot extend authentication, revive an expired session, or update
+-- another connection. Outgoing pings/events never call this function.
+noteActivity :: TVar (Maybe Word64) -> IO ()
+noteActivity activity = do
+  now <- getMonotonicTimeNSec
+  atomically $ modifyTVar' activity (fmap (max now))
+
+withSilenceWatchdog :: IO () -> Int -> TVar (Maybe Word64) -> IO value -> IO value
+withSilenceWatchdog abort silenceMicros activity action = mask $ \restore -> do
+  watchdog <- asyncWithUnmask (\unmask -> unmask watch)
+  restore action `onException` abort `finally` (cancel watchdog >> void (waitCatch watchdog))
+  where
+    silenceNanos = fromIntegral silenceMicros * 1000 :: Word64
+    watch = readTVarIO activity >>= \case
+      Nothing -> pure ()
+      Just previous -> do
+        now <- getMonotonicTimeNSec
+        let elapsed = now - previous
+        if elapsed < silenceNanos
+          then threadDelay (fromIntegral ((silenceNanos - elapsed + 999) `div` 1000)) >> watch
+          else do
+            -- Confirm the observed deadline and mark expiration atomically:
+            -- a pong received while the timer woke may have renewed activity.
+            expired <- atomically $ do
+              current <- readTVar activity
+              if current == Just previous
+                then writeTVar activity Nothing >> pure True
+                else pure False
+            if expired then abort else watch
 
 receiveBeforeDeadline :: IO () -> WS.Connection -> Int -> IO (Maybe WS.DataMessage)
 receiveBeforeDeadline abort connection deadlineMicros =
@@ -149,11 +203,10 @@ boundedClose abort connection reason = void (runBeforeDeadline abort socketClose
 generationExhaustedCloseReason :: Text
 generationExhaustedCloseReason = "generation-exhausted; restart the web server"
 
-maximumPendingClients, socketSendTimeoutMicros, socketCloseTimeoutMicros, socketIdleTimeoutMicros :: Int
+maximumPendingClients, socketSendTimeoutMicros, socketCloseTimeoutMicros :: Int
 maximumPendingClients = 16
 socketSendTimeoutMicros = 5000000
 socketCloseTimeoutMicros = 1000000
-socketIdleTimeoutMicros = 60000000
 
 textMessage :: WS.DataMessage -> Maybe BS.ByteString
 textMessage = \case
