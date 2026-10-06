@@ -168,6 +168,16 @@ Slow subscribers cannot hold mutation publication or delay other subscribers.
 
 ## Mutation and observation boundaries
 
+Repository observations and CLI/web mutations share a two-second acquisition
+budget. Same-process callers queue in arrival order (up to 64 active/waiting
+callers per lock path); only the head attempts native ownership. Cross-process
+contention is retried within that same budget, without a global ordering
+guarantee. Sustained contention still returns the existing busy result.
+Cancellation retires waiting admission. Once acquired, the action runs once;
+its validation, commit, publication and cleanup are never replayed. Unexpected
+lock I/O failures return immediately, and an inconclusive close retains native
+ownership until explicit recovery.
+
 Repository responses issue a repository-state token derived from the immutable
 binding, exact observed HEAD commit, and attached-ref or detached basis. Create
 requires that token. Existing-ADR operations require it plus the existing ADR

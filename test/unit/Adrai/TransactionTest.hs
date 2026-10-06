@@ -55,9 +55,11 @@ import Adrai.Provenance.Git.Lock
     releaseGitLock,
     withGitLock,
     withGitLockWith,
+    GitLockWaitPolicy (..), defaultGitLockWaitPolicy, withGitLockWaitWith,
   )
 import Control.Concurrent (isEmptyMVar, newEmptyMVar, putMVar, readMVar, takeMVar)
-import Control.Concurrent.Async (async, cancel, wait, waitCatch)
+import Control.Concurrent.Async (async, cancel, wait, waitCatch, withAsync)
+import Control.Monad (forM_)
 import Adrai.Service.Transaction
   ( GeneratedFile (..),
     AppendOnlyDependencies (..),
@@ -95,7 +97,7 @@ import Adrai.Types
      gitRefText,
      repoPathText,
    )
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.Either (isLeft)
@@ -105,13 +107,14 @@ import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket,
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Directory (createDirectory, createDirectoryLink, createFileLink, doesDirectoryExist, doesFileExist, getModificationTime, listDirectory, pathIsSymbolicLink, removeDirectory, removeDirectoryLink, removeDirectoryRecursive, removeFile, setModificationTime)
+import System.Directory (Permissions (writable), createDirectory, createDirectoryLink, createFileLink, doesDirectoryExist, doesFileExist, getModificationTime, getPermissions, listDirectory, pathIsSymbolicLink, removeDirectory, removeDirectoryLink, removeDirectoryRecursive, removeFile, setModificationTime, setPermissions)
 import Data.List (isPrefixOf, sort)
 import qualified System.Exit as Exit
 import System.FilePath (isAbsolute, makeRelative, normalise, splitDirectories, (</>), takeDirectory)
 import System.Process.Typed (runProcess, shell)
 import System.Info (os)
 import System.IO.Error (isDoesNotExistError, tryIOError)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
 
@@ -767,7 +770,130 @@ tests =
 
 gitLockTests :: IO TransactionRepositorySeed -> [TestTree]
 gitLockTests getSeed =
-  [ testCase "persistent stale and noncanonical lock contents are recovered under native ownership" $
+  [ testCase "Windows access failures remain lock failures for acquisition and status" $
+      if os /= "mingw32" then pure () else
+        withTransactionRepositoryCopy getSeed "adrai readonly Git lock" $ \_ _ repository _ -> do
+          let path = repositoryCommonDir repository </> "adrai.lock"
+          BS.writeFile path "pid=123\n"
+          permissions <- getPermissions path
+          setPermissions path permissions {writable = False}
+          (`finally` (setPermissions path permissions >> removeFile path)) $ do
+            bracket (try @GitLockError (acquireGitLock repository)) (either (const (pure ())) releaseGitLock) assertNativePathFailure
+            gitLockStatus repository >>= assertNativePathFailure
+            entered <- newIORef False
+            failed <- try @GitLockError (withGitLock repository (writeIORef entered True))
+            assertNativePathFailure failed
+            readIORef entered >>= assertEqual "access-denied never enters or retries the action" False,
+    testCase "queued checked mutation revalidates changed HEAD ref before effects" $
+      withTransactionRepositoryCopy getSeed "adrai queued checked basis" $ \_ repositoryPath repository parentText -> do
+        parent <- requireGitOid parentText
+        ref <- either (assertFailure . show) pure (mkGitRef "refs/heads/main")
+        _ <- gitSuccess repositoryPath ["branch", "other", Text.unpack parentText] BS.empty
+        (operationText, generated) <- transactionGeneratedFile parent
+        let config = TransactionConfig operationText "adrai: queued checked basis" Map.empty parent [generated]
+            expected = ExpectedRepositoryBasis parent (GitHeadAttached ref)
+            generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+        indexBefore <- gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty
+        started <- newEmptyMVar
+        bracket (acquireGitLock repository) releaseGitLock $ \owner ->
+          withAsync (putMVar started () >> commitAppendOnlyOperationCheckedWithHooks defaultAppendOnlyDependencies defaultAppendOnlyTestHooks expected repository config) $ \mutation -> do
+            takeMVar started
+            early <- timeout 200000 (waitCatch mutation)
+            assertBool "checked mutation remains pending behind native ownership" (maybe True (const False) early)
+            _ <- gitSuccess repositoryPath ["symbolic-ref", "HEAD", "refs/heads/other"] BS.empty
+            releaseGitLock owner
+            result <- wait mutation
+            case result of
+              Left (Stage3ValidateState message) -> assertBool "queued mutation reports changed basis" ("expected repository HEAD/ref basis mismatch" `Text.isInfixOf` message)
+              other -> assertFailure ("expected locked basis rejection after waiting: " <> show other)
+        gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty >>= assertEqual "rejected queued mutation preserves index" indexBefore
+        forM_ ["refs/heads/main", "refs/heads/other"] $ \branch ->
+          gitSuccess repositoryPath ["rev-parse", branch] BS.empty >>= assertEqual "neither branch advances" (TextEncoding.encodeUtf8 (parentText <> "\n"))
+        doesFileExist generatedPath >>= assertBool "rejected queued mutation generates no file" . not,
+    testCase "bounded admission is FIFO and cancelled tickets retire" $
+      withTransactionRepositoryCopy getSeed "adrai FIFO Git lock" $ \_ _ repository _ -> do
+        order <- newIORef ([] :: [Int])
+        firstQueued <- newEmptyMVar
+        cancelledQueued <- newEmptyMVar
+        lastQueued <- newEmptyMVar
+        let dependencies = GitLockDependencies (\_ _ -> pure ())
+            waiter number ready = withGitLockWaitWith defaultGitLockWaitPolicy {gitLockAfterQueued = putMVar ready ()} dependencies repository $ \_ ->
+              atomicModifyIORef' order (\seen -> (seen <> [number], ()))
+            queued ready = timeout 1000000 (takeMVar ready) >>= assertBool "ticket reached admission before native owner release" . maybe False (const True)
+        bracket (acquireGitLock repository) releaseGitLock $ \owner ->
+          withAsync (waiter 1 firstQueued) $ \first -> do
+            queued firstQueued
+            withAsync (waiter 2 cancelledQueued) $ \cancelled -> do
+              queued cancelledQueued
+              withAsync (waiter 3 lastQueued) $ \lastWaiter -> do
+                queued lastQueued
+                cancel cancelled
+                waitCatch cancelled >>= assertBool "queued cancellation remains an exception" . isLeft
+                readIORef order >>= assertEqual "no waiter enters while native owner remains" []
+                releaseGitLock owner
+                wait first
+                wait lastWaiter
+                readIORef order >>= assertEqual "remaining tickets enter in their enqueue order" [1, 3]
+        withGitLock repository (pure ())
+        gitLockStatus repository >>= assertEqual "FIFO actions release native authority" (Right Nothing),
+    testCase "bounded admission timeout and capacity preserve the native owner" $
+      withTransactionRepositoryCopy getSeed "adrai bounded Git lock" $ \_ _ repository _ -> do
+        queued <- newEmptyMVar
+        actions <- newIORef (0 :: Int)
+        let dependencies = GitLockDependencies (\_ _ -> pure ())
+            policy = GitLockWaitPolicy 200000 1 (putMVar queued ())
+            entered _ = atomicModifyIORef' actions (\count -> (count + 1, ()))
+            isHeld (Left (LockHeld _ _)) = True
+            isHeld _ = False
+        bracket (acquireGitLock repository) releaseGitLock $ \owner ->
+          withAsync (try @GitLockError (withGitLockWaitWith policy dependencies repository entered)) $ \waiting -> do
+            timeout 1000000 (takeMVar queued) >>= assertBool "head ticket registered" . maybe False (const True)
+            full <- try @GitLockError (withGitLockWaitWith policy dependencies repository entered)
+            assertBool "bounded queue rejects excess admission truthfully" (isHeld full)
+            expired <- wait waiting
+            assertBool "sustained ownership expires with typed contention" (isHeld expired)
+            readIORef actions >>= assertEqual "expired and rejected actions never execute" 0
+            immediate <- try @GitLockError (acquireGitLock repository)
+            assertBool "timeout does not clear the original native reservation" (isHeld immediate)
+            releaseGitLock owner
+        withGitLockWaitWith policy {gitLockAfterQueued = pure ()} dependencies repository entered
+        readIORef actions >>= assertEqual "expired ticket does not block its successor" 1,
+    testCase "bounded acquisition never replays action or close failures" $
+      withTransactionRepositoryCopy getSeed "adrai no replay Git lock" $ \_ _ repository _ -> do
+        count <- newIORef (0 :: Int)
+        let entered = atomicModifyIORef' count (\seen -> (seen + 1, ()))
+            path = repositoryCommonDir repository </> "adrai.lock"
+        failure <- try @GitLockError (withGitLock repository (entered >> throwIO (LockHeld path 0) :: IO ()))
+        assertEqual "an action LockHeld is propagated, not acquisition-retried" (Left (LockHeld path 0)) failure
+        readIORef count >>= assertEqual "protected action runs once" 1
+        gitLockStatus repository >>= assertEqual "failed action releases authority" (Right Nothing)
+        removeFile path
+        createDirectory path
+        (`finally` removeDirectory path) $ do
+          failedOpen <- try @GitLockError (withGitLock repository entered)
+          assertNativePathFailure failedOpen
+          readIORef count >>= assertEqual "unexpected native open failure never executes action" 1
+        captured <- newIORef Nothing
+        failClose <- newIORef True
+        let dependencies = GitLockDependencies $ \_ operation -> case operation of
+              CloseOwnerRelease -> do
+                first <- atomicModifyIORef' failClose (\current -> (False, current))
+                if first then throwIO (userError "bounded close failure") else pure ()
+              CloseStatusProbe -> pure ()
+            policy = GitLockWaitPolicy 50000 1 (pure ())
+        closed <- try @GitLockError $ withGitLockWaitWith policy dependencies repository $ \lock -> writeIORef captured (Just lock)
+        assertBool "inconclusive close is surfaced" (isLeft closed)
+        nextQueued <- newIORef False
+        blocked <- try @GitLockError (withGitLockWaitWith policy {gitLockAfterQueued = writeIORef nextQueued True} dependencies repository (const entered))
+        readIORef nextQueued >>= assertEqual "failed cleanup retires only admission" True
+        case blocked of
+          Left (LockHeld _ _) -> pure ()
+          other -> assertFailure ("retained native authority must exclude successor: " <> show other)
+        lock <- readIORef captured >>= maybe (assertFailure "close failure did not capture owner" >> fail "unreachable") pure
+        releaseGitLock lock
+        withGitLockWaitWith policy dependencies repository (const entered)
+        readIORef count >>= assertEqual "successor runs once only after explicit native recovery" 2,
+    testCase "persistent stale and noncanonical lock contents are recovered under native ownership" $
       withTransactionRepositoryCopy getSeed "adrai stale Git lock" $ \_ _ repository _ -> do
         let path = repositoryCommonDir repository </> "adrai.lock"
         BS.writeFile path (BS8.pack ("pid=" <> show (maxBound :: Int) <> "\n"))

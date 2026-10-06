@@ -21,6 +21,7 @@ module Adrai.Provenance.Git.Lock
     releaseGitLock,
     withGitLock,
     withGitLockWith,
+    GitLockWaitPolicy (..), defaultGitLockWaitPolicy, withGitLockWaitWith,
     gitLockStatus,
     gitLockStatusWith,
   )
@@ -42,13 +43,16 @@ import Adrai.Provenance.Git.Lock.Native
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar)
-import Control.Exception (Exception, IOException, SomeAsyncException, SomeException, fromException, mask, throwIO, try, uninterruptibleMask_)
+import Control.Exception (Exception, IOException, SomeAsyncException, SomeException, finally, fromException, mask, throwIO, try, uninterruptibleMask_)
+import Control.Concurrent.STM
+import qualified Data.Sequence as Seq
+import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -274,10 +278,9 @@ readHeld path = go (0 :: Int)
           | attempts < maximumReadRetries -> threadDelay 2000 >> go (attempts + 1)
           | otherwise -> pure (LockHeld path 0)
 
-lockFailureOrHeld :: FilePath -> IOException -> IO a
+lockFailureOrHeld :: FilePath -> SomeException -> IO a
 lockFailureOrHeld path failure = do
-  exists <- doesFileExist path
-  if exists && nativeFailureIsContention failure
+  if nativeFailureIsContention failure
     then readHeld path >>= throwIO
     else throwIO (LockFailed path (Text.pack (show failure)))
 
@@ -302,12 +305,12 @@ statusWithReservation dependencies path token restoreAction = do
     if not exists
       then pure (Right Nothing)
       else do
-        probe <- try @IOException (openExistingNative path)
+        probe <- try @SomeException (openExistingNative path)
         case probe of
-          Left failure
-            | nativeFailureIsMissing failure -> pure (Right Nothing)
-            | nativeFailureIsContention failure -> restoreAction (Left <$> readHeld path)
-            | otherwise -> pure (Left (LockFailed path (Text.pack (show failure))))
+          Left failure -> rethrowAsync failure $
+            if nativeFailureIsMissing failure then pure (Right Nothing)
+            else if nativeFailureIsContention failure then restoreAction (Left <$> readHeld path)
+            else pure (Left (LockFailed path (Text.pack (show failure))))
           Right native -> closeFreshProbe dependencies path token native
   releaseProbeReservationUnlessBlocked path token
   case outcome of
@@ -366,10 +369,7 @@ acquireGitLockWith dependencies repository = mask $ \restore -> do
         Right owner -> pure owner
         Left failure -> do
           releaseLocal path token
-          rethrowAsync failure $
-            case fromException failure of
-              Just ioFailure -> lockFailureOrHeld path ioFailure
-              Nothing -> throwIO (LockFailed path (Text.pack (show failure)))
+          rethrowAsync failure (lockFailureOrHeld path failure)
       writeResult <- try @SomeException (restoreAction (writeOwnedNative path native pid))
       case writeResult of
         Left failure -> closeAfterFailedWrite dependencies path token native failure
@@ -438,13 +438,91 @@ withGitLock repository action = withGitLockWith defaultGitLockDependencies repos
 -- use 'withGitLock'; the acquired public value lets a test retry a deliberately
 -- retained pre-close failure without exposing the native handle.
 withGitLockWith :: GitLockDependencies -> Repository -> (GitLock -> IO a) -> IO a
-withGitLockWith dependencies repository action = mask $ \restore -> do
-  lock <- acquireGitLockWith dependencies repository
-  actionResult <- try @SomeException (restore (action lock))
-  cleanupResult <- try @SomeException (releaseGitLock lock)
-  case actionResult of
-    Left original -> throwIO original
-    Right value -> case cleanupResult of
-      Left cleanupFailure -> throwIO cleanupFailure
-      Right () -> pure value
+withGitLockWith = withGitLockWaitWith defaultGitLockWaitPolicy
+
+-- | Trusted policy and admission barrier for deterministic lifecycle tests.
+-- The executable always uses the fixed, bounded defaults.
+data GitLockWaitPolicy = GitLockWaitPolicy
+  { gitLockWaitMicros :: Int,
+    gitLockWaitQueueLimit :: Int,
+    gitLockAfterQueued :: IO ()
+  }
+
+defaultGitLockWaitPolicy :: GitLockWaitPolicy
+defaultGitLockWaitPolicy = GitLockWaitPolicy 2000000 64 (pure ())
+
+data Admissions = Admissions Integer (Map.Map FilePath (Seq.Seq Integer))
+
+localAdmissions :: TVar Admissions
+localAdmissions = unsafePerformIO (newTVarIO (Admissions 1 Map.empty))
+{-# NOINLINE localAdmissions #-}
+
+enqueueAdmission :: Int -> FilePath -> STM (Maybe Integer)
+enqueueAdmission capacity path = do
+  Admissions next queues <- readTVar localAdmissions
+  let queue = Map.findWithDefault Seq.empty path queues
+  if Seq.length queue >= capacity then pure Nothing else do
+    writeTVar localAdmissions (Admissions (next + 1) (Map.insert path (queue Seq.|> next) queues))
+    pure (Just next)
+
+retireAdmission :: FilePath -> Integer -> IO ()
+retireAdmission path ticket = atomically $ do
+  Admissions next queues <- readTVar localAdmissions
+  let remaining = Seq.filter (/= ticket) (Map.findWithDefault Seq.empty path queues)
+      updated = if Seq.null remaining then Map.delete path queues else Map.insert path remaining queues
+  writeTVar localAdmissions (Admissions next updated)
+
+awaitAdmission :: FilePath -> Integer -> TVar Bool -> STM Bool
+awaitAdmission path ticket expired = do
+  timedOut <- readTVar expired
+  if timedOut then pure False else do
+    Admissions _ queues <- readTVar localAdmissions
+    case Seq.lookup 0 =<< Map.lookup path queues of
+      Just headTicket | headTicket == ticket -> pure True
+      _ -> retry
+
+-- | One enqueue-through-acquisition deadline, FIFO within this process only.
+-- Native authority stays separate: failed close still retains its reservation.
+-- Only acquisition LockHeld is retried; action and cleanup execute exactly once.
+withGitLockWaitWith :: GitLockWaitPolicy -> GitLockDependencies -> Repository -> (GitLock -> IO a) -> IO a
+withGitLockWaitWith policy dependencies repository action = mask $ \restore -> do
+  let path = lockFilePathFor (repositoryCommonDir repository)
+      budget = gitLockWaitMicros policy
+  if budget <= 0 || gitLockWaitQueueLimit policy <= 0
+    then throwIO (LockFailed path "invalid Git lock wait policy") else pure ()
+  started <- getMonotonicTimeNSec
+  let deadline = started + fromIntegral budget * 1000
+  expired <- registerDelay budget
+  queued <- atomically (enqueueAdmission (gitLockWaitQueueLimit policy) path)
+  ticket <- maybe (readHeld path >>= throwIO) pure queued
+  (`finally` retireAdmission path ticket) $ do
+    restore (gitLockAfterQueued policy)
+    admitted <- restore (atomically (awaitAdmission path ticket expired))
+    if admitted then pure () else readHeld path >>= throwIO
+    lock <- acquireBeforeDeadline restore deadline path Nothing
+    actionResult <- try @SomeException (restore (action lock))
+    cleanupResult <- try @SomeException (releaseGitLock lock)
+    case actionResult of
+      Left original -> throwIO original
+      Right value -> case cleanupResult of
+        Left cleanupFailure -> throwIO cleanupFailure
+        Right () -> pure value
+  where
+    acquireBeforeDeadline :: (forall value. IO value -> IO value) -> Word64 -> FilePath -> Maybe GitLockError -> IO GitLock
+    acquireBeforeDeadline restoreAction deadline path prior = do
+      now <- getMonotonicTimeNSec
+      if now >= deadline then maybe (readHeld path >>= throwIO) throwIO prior else do
+        attempted <- try @GitLockError (acquireGitLockWith dependencies repository)
+        case attempted of
+          Right lock -> do
+            acquiredAt <- getMonotonicTimeNSec
+            if acquiredAt < deadline then pure lock else do
+              releaseGitLock lock
+              throwIO (LockHeld path (gitLockPid lock))
+          Left held@(LockHeld _ _) -> do
+            failedAt <- getMonotonicTimeNSec
+            if failedAt >= deadline then throwIO held else do
+              restoreAction (threadDelay (fromIntegral (min 20000 ((deadline - failedAt) `div` 1000))))
+              acquireBeforeDeadline restoreAction deadline path (Just held)
+          Left failure -> throwIO failure
 

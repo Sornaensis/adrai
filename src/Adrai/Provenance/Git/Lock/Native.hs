@@ -16,17 +16,19 @@ module Adrai.Provenance.Git.Lock.Native
   )
 where
 
-import Control.Exception (IOException, SomeException, throwIO)
+import Control.Exception (Exception, SomeException, fromException, throwIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 
 #if defined(mingw32_HOST_OS)
 import Control.Monad (unless)
+import Control.Concurrent (runInBoundThread)
+import Control.Exception (mask_)
 import Data.Bits ((.|.))
-import Foreign.Ptr (castPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import System.Win32 (getCurrentProcessId)
 import qualified System.Win32.File as Win32
-import System.Win32.Types (HANDLE)
+import System.Win32.Types (DWORD, HANDLE, LPCTSTR, getLastError, iNVALID_HANDLE_VALUE, withFilePath)
 import System.Directory (doesFileExist)
 
 newtype NativeLock = NativeLock HANDLE
@@ -35,16 +37,31 @@ getMyPid :: IO Int
 getMyPid = fromIntegral <$> getCurrentProcessId
 
 openOwnedNative :: FilePath -> IO NativeLock
-openOwnedNative path =
-  NativeLock <$> Win32.createFile path
-    (Win32.gENERIC_READ .|. Win32.gENERIC_WRITE) Win32.fILE_SHARE_READ
-    Nothing Win32.oPEN_ALWAYS Win32.fILE_ATTRIBUTE_NORMAL Nothing
+openOwnedNative path = openNative path Win32.oPEN_ALWAYS
 
 openExistingNative :: FilePath -> IO NativeLock
-openExistingNative path =
-  NativeLock <$> Win32.createFile path
-    (Win32.gENERIC_READ .|. Win32.gENERIC_WRITE) Win32.fILE_SHARE_READ
-    Nothing Win32.oPEN_EXISTING Win32.fILE_ATTRIBUTE_NORMAL Nothing
+openExistingNative path = openNative path Win32.oPEN_EXISTING
+
+-- GetLastError is thread-local. Capture it before error construction, on the
+-- same bound OS thread as the non-retrying open. Safe FFI keeps other workers
+-- runnable, and masked synchronous handoff cannot abandon an opened handle.
+data NativeOpenFailure = NativeOpenFailure FilePath DWORD deriving (Show)
+instance Exception NativeOpenFailure
+
+#if defined(i386_HOST_ARCH)
+foreign import stdcall safe "CreateFileW"
+#else
+foreign import ccall safe "CreateFileW"
+#endif
+  nativeCreateFile :: LPCTSTR -> DWORD -> DWORD -> Ptr () -> DWORD -> DWORD -> HANDLE -> IO HANDLE
+
+openNative :: FilePath -> DWORD -> IO NativeLock
+openNative path mode = mask_ $ runInBoundThread $ withFilePath path $ \name -> do
+  handle <- nativeCreateFile name (Win32.gENERIC_READ .|. Win32.gENERIC_WRITE)
+    Win32.fILE_SHARE_READ nullPtr mode Win32.fILE_ATTRIBUTE_NORMAL nullPtr
+  if handle == iNVALID_HANDLE_VALUE
+    then getLastError >>= throwIO . NativeOpenFailure path
+    else pure (NativeLock handle)
 
 writeOwnedNative :: FilePath -> NativeLock -> Int -> IO ()
 writeOwnedNative _ (NativeLock handle) pid = do
@@ -58,12 +75,15 @@ writeOwnedNative _ (NativeLock handle) pid = do
 releaseNative :: NativeLock -> IO ()
 releaseNative (NativeLock handle) = Win32.closeHandle handle
 
--- Preserve the established Windows sharing-violation/path probe policy.
-nativeFailureIsContention :: IOException -> Bool
-nativeFailureIsContention _ = True
+nativeFailureIsContention :: SomeException -> Bool
+nativeFailureIsContention failure = case fromException failure of
+  Just (NativeOpenFailure _ code) -> code == 32 || code == 33
+  Nothing -> False
 
-nativeFailureIsMissing :: IOException -> Bool
-nativeFailureIsMissing _ = False
+nativeFailureIsMissing :: SomeException -> Bool
+nativeFailureIsMissing failure = case fromException failure of
+  Just (NativeOpenFailure _ code) -> code == 2 || code == 3
+  Nothing -> False
 
 nativeStatusNeedsOpen :: FilePath -> IO Bool
 nativeStatusNeedsOpen = doesFileExist
@@ -72,7 +92,7 @@ nativeCloseCompleted :: SomeException -> Bool
 nativeCloseCompleted _ = False
 
 #elif defined(linux_HOST_OS)
-import Control.Exception (Exception, fromException, mask_, onException, try)
+import Control.Exception (IOException, mask_, onException, try)
 import Control.Monad (unless, void)
 import Foreign.C.Error (Errno (..), eAGAIN, eWOULDBLOCK, eNOENT, errnoToIOError)
 import Foreign.C.Types (CInt (..), CSize (..))
@@ -96,13 +116,16 @@ nativeCloseCompleted failure = case fromException failure :: Maybe CloseComplete
   Just _ -> True
   Nothing -> False
 
-nativeFailureIsContention :: IOException -> Bool
-nativeFailureIsContention failure =
-  ioe_errno failure `elem` [Just (errnoValue eAGAIN), Just (errnoValue eWOULDBLOCK)]
+nativeFailureIsContention :: SomeException -> Bool
+nativeFailureIsContention failure = case fromException failure of
+  Just ioFailure -> ioe_errno ioFailure `elem` [Just (errnoValue eAGAIN), Just (errnoValue eWOULDBLOCK)]
+  Nothing -> False
   where errnoValue (Errno value) = value
 
-nativeFailureIsMissing :: IOException -> Bool
-nativeFailureIsMissing failure = ioe_errno failure == Just value
+nativeFailureIsMissing :: SomeException -> Bool
+nativeFailureIsMissing failure = case fromException failure of
+  Just ioFailure -> ioe_errno ioFailure == Just value
+  Nothing -> False
   where Errno value = eNOENT
 
 -- Probe through the secure open itself: a directory or dangling symlink must

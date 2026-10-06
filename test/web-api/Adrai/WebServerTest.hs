@@ -42,6 +42,7 @@ import qualified Adrai.Types as Types
 import qualified Adrai.Web.Events as Events
 import Adrai.Web.Server (RunningServer (..), ServerDependencies (..), defaultServerDependencies, withWebServer)
 import Adrai.RetainedNative.NativeFixture (copyNativeFixture)
+import qualified Adrai.Integration.CLI as CLI
 import qualified Adrai.Web.Security as Security
 import Adrai.Web.Socket (SocketTimings (..), defaultSocketTimings, unavailableEventsTransport)
 import qualified Adrai.Web.Watch as Watch
@@ -70,6 +71,7 @@ import Network.Socket
 import Network.Socket.ByteString (recv, sendAll)
 import qualified Network.WebSockets as WS
 import System.Directory (Permissions (writable), copyFile, createDirectory, createDirectoryIfMissing, createDirectoryLink, doesDirectoryExist, doesFileExist, getCurrentDirectory, getPermissions, listDirectory, removeDirectoryLink, removeDirectoryRecursive, removeFile, renameDirectory, setPermissions)
+import qualified System.Directory as Directory
 import System.Info (os)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>), searchPathSeparator)
@@ -96,7 +98,9 @@ tests = testGroup "web server runtime"
     testCase "oversized inputs recover and stale repository bases preserve HEAD" testBoundsAndStale,
     testCase "built web command and repository bindings start and stop cleanly" testExecutableAndBindings,
     testCase "an occupied explicit port fails without stealing the listener" testOccupiedPort,
-    testCase "server shutdown releases the acquired port" testShutdownRelease
+    testCase "server shutdown releases the acquired port" testShutdownRelease,
+    testCase "transient sibling observations retain successful repository and inspection reads" testSiblingObservations,
+    testCase "real CLI and web observations preserve bounded cross process availability" testCliObservationOverlap
   ]
 
 generationExhaustionTest :: TestTree
@@ -343,6 +347,153 @@ testQueryRoutes = withSeededRepository $ \root -> do
   _ <- Runtime.ensureExactArchive repository committed >>= either (assertFailure . Text.unpack) pure
   started <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ ->
     assertQueryRouteSnapshots root repository adr (gitOidText committed) running
+  either (assertFailure . Text.unpack) pure started
+
+testSiblingObservations :: IO ()
+testSiblingObservations = withSeededRepository $ \root -> do
+  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  (adr, committed) <- seedRelevantDecision repository
+  _ <- Runtime.ensureExactArchive repository committed >>= either (assertFailure . Text.unpack) pure
+  gate <- newIORef Nothing
+  let services = defaultApplicationServices
+        { applicationAfterQueryResolution = do
+            claimed <- atomicModifyIORef' gate (\current -> (Nothing, current))
+            case claimed of
+              Nothing -> pure ()
+              Just (held, release) -> putMVar held () >> takeMVar release
+        }
+      oid = gitOidText committed
+      showPath view = "/api/v1/adrs/" <> adr <> "?at=" <> oid <> "&view=" <> view
+  started <- withWebServer dependencies {serverApplicationServices = services} root (Api.WebOptions Nothing False) $ \running _ -> do
+    forM_ [("/api/v1/repository", "/api/v1/search?q=Runtime&at=" <> oid), (showPath "collapsed", showPath "exploded")] $ \(firstPath, siblingPath) -> do
+      held <- newEmptyMVar
+      release <- newEmptyMVar
+      sent <- newEmptyMVar
+      writeIORef gate (Just (held, release))
+      let observe phase = when (phase == "request sent; awaiting first response byte") (void (tryPutMVar sent ()))
+      (`finally` void (tryPutMVar release ())) $
+        withAsync (getJsonStatus running firstPath) $ \first -> do
+          acquired <- timeout 5000000 (race (takeMVar held) (waitCatch first))
+          case acquired of
+            Just (Left ()) -> pure ()
+            other -> assertFailure ("first observation did not hold native ownership: " <> show other)
+          withAsync (getJsonStatusWith (requestRawWithStepAndDeadlineObserved observe 30000000 "sibling overlap") running siblingPath) $ \sibling -> do
+            timeout 2000000 (takeMVar sent) >>= assertBool "sibling request was sent while the first observation held its lock" . maybe False (const True)
+            early <- timeout 200000 (wait sibling)
+            putMVar release ()
+            firstResult <- wait first
+            siblingResult <- maybe (wait sibling) pure early
+            forM_ [firstResult, siblingResult] $ \(status, value) -> do
+              assertBool ("transient sibling overlap must recover, got HTTP " <> show status <> ": " <> show value) (status == 200)
+              textAt ["metadata", "as_of", "oid"] value >>= (@?= oid)
+  either (assertFailure . Text.unpack) pure started
+
+testCliObservationOverlap :: IO ()
+testCliObservationOverlap = withSeededRepository $ \root -> do
+  repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
+  gate <- newIORef Nothing
+  let services = defaultApplicationServices
+        { applicationAfterQueryResolution = do
+            claimed <- atomicModifyIORef' gate (\current -> (Nothing, current))
+            case claimed of
+              Nothing -> pure ()
+              Just (held, release) -> putMVar held () >> takeMVar release
+        }
+      arguments title = ["create", "--title", title, "--summary", "cross process contention", "--body", "bounded native overlap\n", "--actor", "human:test", "--domain", "core", "--applies-to", "seed.txt", "--json"]
+      runCli title = CLI.spawnAdrai root (arguments title)
+      requireCli result = case result of
+        (ExitSuccess, output, _) -> assertBool "real CLI emits valid result JSON" (maybe False (const True) (Aeson.decode output :: Maybe Aeson.Value))
+        (_, _, errors) -> assertFailure ("real CLI mutation failed: " <> BS8.unpack (BS.take 4096 (LBS.toStrict errors)))
+      oneCommit before = do
+        after <- gitHead root
+        assertBool "successful CLI advances HEAD" (after /= before)
+        Text.strip . Text.pack <$> readProcess "git" ["-C", root, "rev-list", "--count", Text.unpack before <> ".." <> Text.unpack after] "" >>= (@?= "1")
+        pure after
+      unlocked = gitLockStatus repository >>= \case
+        Right Nothing -> pure ()
+        Left (LockHeld _ _) -> threadDelay 20000 >> unlocked
+        other -> assertFailure ("unexpected native lock status after CLI completion: " <> show other)
+      requireUnlocked = timeout 5000000 unlocked >>= assertBool "CLI native ownership is released" . maybe False (const True)
+      holdObservation running consume = do
+        held <- newEmptyMVar
+        release <- newEmptyMVar
+        writeIORef gate (Just (held, release))
+        (`finally` void (tryPutMVar release ())) $
+          withAsync (getJsonStatus running "/api/v1/repository") $ \observation -> do
+            acquired <- timeout 5000000 (race (takeMVar held) (waitCatch observation))
+            case acquired of
+              Just (Left ()) -> pure ()
+              other -> assertFailure ("web observation did not acquire native ownership: " <> show other)
+            _ <- consume release
+            void (tryPutMVar release ())
+            (status, _) <- wait observation
+            status @?= 200
+  started <- withWebServer dependencies {serverApplicationServices = services} root (Api.WebOptions Nothing False) $ \running _ -> do
+    beforeBusy <- callerState root
+    holdObservation running $ \_ -> do
+      result <- timeout 25000000 (runCli "CLI sustained busy")
+      case result of
+        Just (code, _, errors) -> do
+          assertBool "sustained native ownership rejects the actual CLI mutation" (code /= ExitSuccess)
+          assertBool "typed Stage2 busy proves the actual CLI reached native acquisition" (all (`BS.isInfixOf` LBS.toStrict errors) ["Stage2AcquireLock", "LockHeld"])
+        Nothing -> assertFailure "sustained CLI did not finish within its bounded test guard"
+    callerState root >>= (@?= beforeBusy)
+    -- Launch/release overlap proves compatibility. The paired sustained case
+    -- above proves real acquisition; launch alone is not an attempt barrier.
+    beforeOverlap <- gitHead root
+    holdObservation running $ \release ->
+      withAsync (runCli "CLI transient overlap") $ \cli -> do
+        threadDelay 200000
+        putMVar release ()
+        completed <- timeout 60000000 (wait cli)
+        maybe (assertFailure "transient CLI completion timed out") requireCli completed
+    _ <- oneCommit beforeOverlap
+    requireUnlocked
+    let common = repositoryCommonDir repository
+        hooks = common </> "adrai-no-hooks"
+        hook = hooks </> "reference-transaction"
+        heldMarker = common </> "adrai-cli-held"
+        releaseMarker = common </> "adrai-cli-release"
+        quoted file = "'" <> Text.replace "'" "'\\''" (Text.replace "\\" "/" (Text.pack file)) <> "'"
+        script = Text.unlines
+          [ "#!/bin/sh", "if test \"$1\" = prepared; then", "  head_update=0",
+            "  while read old new ref; do", "    if test \"$ref\" = refs/heads/main; then head_update=1; fi", "  done",
+            "  if test \"$head_update\" = 1; then", "    : > " <> quoted heldMarker,
+            "    attempts=0", "    while ! test -f " <> quoted releaseMarker <> "; do",
+            "      attempts=$((attempts + 1))", "      if test \"$attempts\" -ge 1000; then exit 1; fi",
+            "      sleep 0.01", "    done", "  fi", "fi", "exit 0"
+          ]
+        awaitMarker = doesFileExist heldMarker >>= \present -> if present then pure () else threadDelay 10000 >> awaitMarker
+        cleanupHook = forM_ [hook, heldMarker, releaseMarker] $ \file -> doesFileExist file >>= \present -> when present (removeFile file)
+    createDirectoryIfMissing True hooks
+    CLI.git root ["config", "core.hooksPath", hooks]
+    BS.writeFile hook (TextEncoding.encodeUtf8 script)
+    hookPermissions <- getPermissions hook
+    setPermissions hook hookPermissions {Directory.executable = True}
+    beforeCliOwner <- gitHead root
+    (`finally` cleanupHook) $
+      withAsync (runCli "CLI native owner") $ \cli -> do
+        (`finally` BS.writeFile releaseMarker "release\n") $ do
+          prepared <- timeout 30000000 (race awaitMarker (waitCatch cli))
+          case prepared of
+            Just (Left ()) -> pure ()
+            other -> assertFailure ("actual CLI did not reach its protected ref update: " <> show other)
+          gitLockStatus repository >>= \case
+            Left (LockHeld _ pid) -> assertBool "actual CLI retains native ownership at prepared ref update" (pid > 0)
+            other -> assertFailure ("prepared CLI ref hook was not protected by native ownership: " <> show other)
+          sent <- newEmptyMVar
+          let observe phase = when (phase == "request sent; awaiting first response byte") (void (tryPutMVar sent ()))
+          withAsync (getJsonStatusWith (requestRawWithStepAndDeadlineObserved observe 30000000 "CLI-held observation") running "/api/v1/repository") $ \reading -> do
+            timeout 2000000 (takeMVar sent) >>= assertBool "web read was sent while real CLI held native ownership" . maybe False (const True)
+            threadDelay 100000
+            BS.writeFile releaseMarker "release\n"
+            completed <- timeout 60000000 (wait cli)
+            maybe (assertFailure "CLI owner completion timed out") requireCli completed
+            after <- oneCommit beforeCliOwner
+            (status, response) <- wait reading
+            status @?= 200
+            textAt ["metadata", "as_of", "oid"] response >>= (@?= after)
+    requireUnlocked
   either (assertFailure . Text.unpack) pure started
 
 assertQueryRouteSnapshots :: FilePath -> Repository -> Text -> Text -> RunningServer -> IO ()
