@@ -444,8 +444,9 @@ tests =
                                 retried = Tuple.first (Main.update (Main.RetryRead "ui-3" collapsed) sibling)
                                 settled = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-5" "rich_resolved")) retried)
                             in
-                            Expect.equal True
-                                (sibling.explodedReady
+                            Expect.all
+                                [ \_ -> Expect.equal True
+                                  (sibling.explodedReady
                                     && not sibling.collapsedReady
                                     && sibling.inspection /= Nothing
                                     && retried.epoch == selected.epoch
@@ -457,6 +458,11 @@ tests =
                                     && Maybe.map (.operations >> List.isEmpty) settled.inspection == Just False
                                     && settled.draft.title == "unsent inspection draft"
                                     && Dict.get "collapsed" settled.inspectionIssues == Nothing)
+                                , \_ -> Query.fromHtml (Main.view sibling) |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                                , \_ -> Query.fromHtml (Main.view retried) |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                                , \_ -> Query.fromHtml (Main.view settled) |> Query.hasNot [ Selector.text "Snapshot is loading or stale." ]
+                                ]
+                                ()
             , test "capped inspection busy error remains visible after sibling success and can be retried" <|
                 \_ ->
                     let
@@ -498,6 +504,101 @@ tests =
                                         , \_ -> rendered |> Query.has [ Selector.text "Retry decision inspection" ]
                                         ]
                                         ()
+            , test "query edits and current failures remain stale after inspection success" <|
+                \_ ->
+                    let
+                        inspected = inspectedAfter [ "rich_resolved", "exploded" ]
+                        edited = Tuple.first (Main.update (Main.EditQuery "text" "unloaded edit") inspected)
+                        toggled = Tuple.first (Main.update (Main.ToggleQuery "shallow" True) inspected)
+                        loaded = Tuple.first (Main.update Main.Load inspected)
+                        failed = Tuple.first (Main.update (Main.FromJs (transportTypedError "ui-5" 503 "repository-busy")) loaded)
+                    in
+                    case Dict.get "ui-3" (inspectedAfter []).pending of
+                        Nothing -> Expect.fail "inspection kind must be available"
+                        Just first ->
+                            let
+                                retried = Tuple.first (Main.update (Main.RetryInspection first.kind) failed)
+                                sibling = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-6" "rich_resolved")) retried)
+                            in
+                            Expect.all
+                                (List.map (\state -> \_ -> Query.fromHtml (Main.view state) |> Query.has [ Selector.text "Snapshot is loading or stale." ]) [ edited, toggled, failed, sibling ])
+                                ()
+            , test "a retried inspection loses readiness until its own valid current response" <|
+                \_ ->
+                    let
+                        inspected = inspectedAfter [ "rich_resolved", "exploded" ]
+                    in
+                    case Dict.get "ui-3" (inspectedAfter []).pending of
+                        Nothing -> Expect.fail "inspection kind must be available"
+                        Just first ->
+                            let
+                                waiting = Tuple.first (Main.update (Main.RetryInspection first.kind) inspected)
+                                malformed = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-5" "exploded")) waiting)
+                                retried = Tuple.first (Main.update (Main.RetryInspection first.kind) malformed)
+                                superseded = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-5" "rich_resolved")) retried)
+                                rejected = Tuple.first (Main.update (Main.FromJs (transportTypedError "ui-6" 401 "missing-credential")) superseded)
+                            in
+                            Expect.all
+                                [ \_ -> Expect.equal True (not waiting.collapsedReady && waiting.explodedReady && not malformed.collapsedReady && not superseded.collapsedReady && not rejected.collapsedReady)
+                                , \_ -> Query.fromHtml (Main.view waiting) |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                                , \_ -> Query.fromHtml (Main.view malformed) |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                                , \_ -> Query.fromHtml (Main.view superseded) |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                                , \_ -> Query.fromHtml (Main.view rejected) |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                                ]
+                                ()
+            , test "selected refresh and invalidation recover only after reloaded inspections" <|
+                \_ ->
+                    let
+                        inspected = inspectedAfter [ "rich_resolved", "exploded" ]
+                        recover stale =
+                            let
+                                repository = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-5" "repository")) stale)
+                                query = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-6" "search_blank")) repository)
+                                collapsed = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-7" "rich_resolved")) query)
+                                complete = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-8" "exploded")) collapsed)
+                            in
+                            Expect.all
+                                [ \_ -> Query.fromHtml (Main.view query) |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                                , \_ -> Query.fromHtml (Main.view collapsed) |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                                , \_ -> Query.fromHtml (Main.view complete) |> Query.hasNot [ Selector.text "Snapshot is loading or stale." ]
+                                ]
+                                ()
+                    in
+                    Expect.all
+                        [ \_ -> recover (Tuple.first (Main.update Main.Refresh inspected))
+                        , \_ -> recover (Tuple.first (Main.update (Main.FromJs (transportEvent "event_large")) inspected))
+                        ]
+                        ()
+            , test "historical inspections can be fresh and refresh preserves their exact selection" <|
+                \_ ->
+                    let
+                        inspected = inspectedAfter [ "rich_resolved", "exploded" ]
+                        chosen = Tuple.first (Main.update (Main.ChooseView Route.Compare) inspected)
+                        comparison = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-5" "compare")) chosen)
+                        revision = String.repeat 40 "2"
+                        selected = Tuple.first (Main.update (Main.SelectCompareAdr "A11111111111111111111111111" revision) comparison)
+                        collapsed = Tuple.first (Main.update (Main.FromJs (transportInspectionAt "ui-6" "rich_resolved" revision)) selected)
+                        settled = Tuple.first (Main.update (Main.FromJs (transportInspectionAt "ui-7" "exploded" revision)) collapsed)
+                        refreshed = Tuple.first (Main.update Main.Refresh settled)
+                        repository = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-8" "repository")) refreshed)
+                        paths = List.filterMap (\key -> Dict.get key repository.pending |> Maybe.map .context) [ "ui-10", "ui-11" ]
+                        queried = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-9" "compare")) repository)
+                        reloaded = queried
+                            |> Main.update (Main.FromJs (transportInspectionAt "ui-10" "rich_resolved" revision))
+                            |> Tuple.first
+                            |> Main.update (Main.FromJs (transportInspectionAt "ui-11" "exploded" revision))
+                            |> Tuple.first
+                    in
+                    Expect.all
+                        [ \_ -> Query.fromHtml (Main.view settled) |> Query.hasNot [ Selector.text "Snapshot is loading or stale." ]
+                        , \_ -> Expect.equal settled.selectedRevision repository.selectedRevision
+                        , \_ -> Expect.equal 2 (List.length paths)
+                        , \_ -> Expect.equal True (List.all (String.contains ("at=" ++ revision)) paths)
+                        , \_ -> Query.fromHtml (Main.view repository) |> Query.has [ Selector.text "Snapshot is loading or stale." ]
+                        , \_ -> Query.fromHtml (Main.view reloaded) |> Query.hasNot [ Selector.text "Snapshot is loading or stale." ]
+                        , \_ -> Expect.equal Forms.Create (Tuple.first (Main.update (Main.StartAction Forms.Amend) reloaded)).draft.action
+                        ]
+                        ()
             , test "delayed inspection retry drops superseded selection and invalidation" <|
                 \_ ->
                     let
@@ -990,6 +1091,26 @@ expectMode draft mode required =
 transportResponse : String -> String -> E.Value
 transportResponse requestId key =
     transportStatus requestId 200 key
+
+
+transportInspectionAt : String -> String -> String -> E.Value
+transportInspectionAt requestId key revision =
+    case fixtureValue key of
+        Just value ->
+            case D.decodeValue (D.map2 Tuple.pair (D.field "metadata" (D.dict D.value)) (D.field "data" (D.dict D.value))) value of
+                Ok ( metadata, data ) ->
+                    E.object
+                        [ ( "type", E.string "response" )
+                        , ( "request_id", E.string requestId )
+                        , ( "status", E.int 200 )
+                        , ( "body", E.object
+                            [ ( "schema", E.string "adrai/api/v1" )
+                            , ( "metadata", E.object (Dict.toList (Dict.insert "as_of" (E.object [ ( "kind", E.string "commit" ), ( "oid", E.string revision ) ]) metadata)) )
+                            , ( "data", E.object (Dict.toList (Dict.insert "as_of" (E.string revision) data)) )
+                            ] )
+                        ]
+                Err _ -> E.null
+        Nothing -> E.null
 
 
 transportStatus : String -> Int -> String -> E.Value

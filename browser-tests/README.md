@@ -10,11 +10,12 @@ Install the pinned npm dependencies here and in `web` first if they are absent.
 The suite uses the installed Playwright Chromium headless shell and Elm compiler.
 Use ordinary Playwright filtering, for example `npm test -- --grep amend`.
 
-Five independent workflows exercise production Elm `Main.init`, `update`, and
+Six independent workflows exercise production Elm `Main.init`, `update`, and
 `view`, the production bootstrap HTML, and the production JavaScript bridge:
 credential removal before asset requests and read-only reload, search and both
 inspection views, checked create and refreshed reads, edits made while an amend
-reply is pending, and explicit review after external invalidation. Each workflow
+reply is pending, explicit review after external invalidation, and busy inspection
+recovery that clears the snapshot banner while retaining the draft. Each workflow
 owns a small deterministic loopback HTTP fixture on an automatically chosen port.
 Mutation assertions inspect the actual method, route, authorization, and JSON
 fields emitted by the UI. A promise holds a reply to establish causal ordering.

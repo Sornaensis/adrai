@@ -260,7 +260,7 @@ module independently validates that receipt at compile time, including the
 recursive web source set. A warm Haskell Build must reject changed or newly
 added web source, bridge, or bootstrap inputs until the bundle is rebuilt. List, Focused, and
 Complete then reject any input drift relative to the Haskell build manifest.
-Run `npm test` from `browser-tests` for five independent production-Elm browser
+Run `npm test` from `browser-tests` for six independent production-Elm browser
 workflows. They use small deterministic HTTP fixtures and causal promises rather
 than real Git/server setup, per-case deadlines, or matrix admission receipts.
 The supported command disables Playwright case, expectation, action, and navigation

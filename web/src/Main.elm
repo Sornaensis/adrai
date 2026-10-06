@@ -40,6 +40,7 @@ type alias Model =
     { hasCredential : Bool
     , repository : Maybe Api.Repository
     , repositoryReady : Bool
+    , queryReady : Bool
     , collapsedReady : Bool
     , explodedReady : Bool
     , query : Route.Query
@@ -135,6 +136,7 @@ init flags =
             { hasCredential = flags.hasCredential
             , repository = Nothing
             , repositoryReady = False
+            , queryReady = False
             , collapsedReady = False
             , explodedReady = False
             , query = initialQuery
@@ -211,6 +213,33 @@ isHistorical model =
         || (model.selectedAdr /= Nothing && model.selectedRevision /= Maybe.map .head model.repository)
 
 
+snapshotStale : Model -> Bool
+snapshotStale model =
+    model.terminalExhausted
+        || model.observationUnavailable /= Nothing
+        || not model.repositoryReady
+        || not model.queryReady
+        || (model.selectedAdr /= Nothing
+                && (not model.collapsedReady
+                        || not model.explodedReady
+                        || not (Dict.isEmpty model.inspectionIssues)
+                        || Maybe.map .view model.inspection /= Just "collapsed"
+                        || model.selectedAdr /= Maybe.map .adr model.inspection
+                        || model.selectedRevision /= Maybe.map .asOf model.inspection
+                   )
+           )
+
+
+invalidateRead : RequestKind -> Model -> Model
+invalidateRead kind model =
+    case kind of
+        RepositoryRead -> { model | repositoryReady = False }
+        QueryRead -> { model | queryReady = False }
+        CollapsedRead -> { model | collapsedReady = False }
+        ExplodedRead -> { model | explodedReady = False }
+        MutationWrite -> model
+
+
 issue : RequestKind -> String -> String -> Maybe E.Value -> Model -> ( Model, Cmd Msg )
 issue kind method path body model =
     if model.terminalExhausted then
@@ -224,8 +253,11 @@ issue kind method path body model =
             pending =
                 { kind = kind, context = path, epoch = model.epoch, draftSerial = model.draftSerial }
 
+            waiting =
+                invalidateRead kind model
+
             next =
-                { model
+                { waiting
                     | nextRequest = model.nextRequest + 1
                     , pending = Dict.insert identifier pending model.pending
                     , latest = Dict.insert (requestKey kind) identifier model.latest
@@ -236,6 +268,15 @@ issue kind method path body model =
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update message model =
+    let
+        ( updated, command ) =
+            updateActive message model
+    in
+    ( { updated | viewStale = snapshotStale updated }, command )
+
+
+updateActive : Msg -> Model -> ( Model, Cmd Msg )
+updateActive message model =
     case message of
         FromJs value ->
             receive value model
@@ -272,7 +313,7 @@ update message model =
                         "compareTo" -> { current | compareTo = content }
                         _ -> current
             in
-            ( { model | query = query, page = 0, viewStale = True }, Cmd.none )
+            ( { model | query = query, page = 0, queryReady = False, viewStale = True }, Cmd.none )
 
         ToggleQuery key checked ->
             let
@@ -285,7 +326,7 @@ update message model =
                         "worktree" -> { current | worktree = checked }
                         _ -> current
             in
-            ( { model | query = query, page = 0, viewStale = True }, Cmd.none )
+            ( { model | query = query, page = 0, queryReady = False, viewStale = True }, Cmd.none )
 
         Load ->
             load model
@@ -426,7 +467,7 @@ loadActive : Model -> ( Model, Cmd Msg )
 loadActive model =
     case validateQuery model.query of
         Just problem ->
-            ( { model | error = Just problem, viewStale = True }, Cmd.none )
+            ( { model | error = Just problem, queryReady = False, viewStale = True }, Cmd.none )
 
         Nothing ->
             let
@@ -531,7 +572,7 @@ refreshActive : Model -> ( Model, Cmd Msg )
 refreshActive model =
     let
         stale =
-            { model | viewStale = True, draft = Forms.markStale model.draft, epoch = model.epoch + 1, repositoryReady = False, collapsedReady = False, explodedReady = False, busyRetries = Dict.empty, inspectionIssues = Dict.empty }
+            { model | viewStale = True, draft = Forms.markStale model.draft, epoch = model.epoch + 1, repositoryReady = False, queryReady = False, collapsedReady = False, explodedReady = False, busyRetries = Dict.empty, inspectionIssues = Dict.empty }
 
         ( withRepository, repositoryCommand ) =
             issue RepositoryRead "GET" Route.repository Nothing stale
@@ -673,7 +714,11 @@ receiveResponse requestId status body model =
                             ( readIssue pending.kind "The server returned an inconsistent error status." without, Cmd.none )
 
                         else if failure.status == 401 then
-                            ( { without | error = Just "Session unavailable. Reopen the process bootstrap URL.", viewStale = True, hasCredential = False, socketState = "unavailable" }
+                            let
+                                unavailable =
+                                    readIssue pending.kind "Session unavailable. Reopen the process bootstrap URL." without
+                            in
+                            ( { unavailable | hasCredential = False, socketState = "unavailable" }
                             , toJs (E.object [ ( "type", E.string "disconnect" ) ])
                             )
 
@@ -712,15 +757,19 @@ readPendingCurrent requestId pending model =
 
 readIssue : RequestKind -> String -> Model -> Model
 readIssue kind message model =
+    let
+        failed =
+            invalidateRead kind model
+    in
     case kind of
         CollapsedRead ->
-            { model | inspectionIssues = Dict.insert "collapsed" message model.inspectionIssues, viewStale = True }
+            { failed | inspectionIssues = Dict.insert "collapsed" message model.inspectionIssues, viewStale = True }
 
         ExplodedRead ->
-            { model | inspectionIssues = Dict.insert "exploded" message model.inspectionIssues, viewStale = True }
+            { failed | inspectionIssues = Dict.insert "exploded" message model.inspectionIssues, viewStale = True }
 
         _ ->
-            { model | error = Just message, viewStale = True }
+            { failed | error = Just message, viewStale = True }
 
 
 selectedPath : String -> Model -> String
@@ -806,8 +855,11 @@ readResponse kind body model =
                                 ( { model | error = Just "Repository response basis disagrees with its metadata.", viewStale = True }, Cmd.none )
 
                             else
-                                case ( model.selectedAdr, model.query.revision ) of
-                                    ( Just adr, "HEAD" ) -> selectAdrAt adr repository.head updated
+                                case ( model.selectedAdr, model.selectedRevision ) of
+                                    ( Just adr, Just revision ) ->
+                                        selectAdrAt adr
+                                            (if model.query.revision == "HEAD" && model.query.view /= Route.Compare && Just revision == Maybe.map .head model.repository then repository.head else revision)
+                                            updated
                                     _ -> ( updated, Cmd.none )
 
                         Api.AtComparison _ _ ->
@@ -931,10 +983,10 @@ accept decoder body set model =
                     ( { model | viewStale = True, error = Just ("Snapshot unavailable: " ++ reason) }, Cmd.none )
 
                 Api.AtCommit oid ->
-                    ( set envelope.data { model | error = Nothing, queryAsOf = Just oid }, Cmd.none )
+                    ( set envelope.data { model | error = Nothing, queryAsOf = Just oid, queryReady = True }, Cmd.none )
 
                 Api.AtComparison _ toOid ->
-                    ( set envelope.data { model | error = Nothing, queryAsOf = Just toOid }, Cmd.none )
+                    ( set envelope.data { model | error = Nothing, queryAsOf = Just toOid, queryReady = True }, Cmd.none )
 
         Err _ ->
             ( { model | viewStale = True, error = Just "Response has an unsupported shape." }, Cmd.none )

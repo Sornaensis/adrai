@@ -65,6 +65,46 @@ test('search sends the visible query and renders its returned decision', async (
   });
 });
 
+test('busy inspection recovery clears the stale banner and preserves the draft', async ({ browser }) => {
+  await withExplorer(browser, async (page, fixture) => {
+    let releaseRetry!: () => void;
+    const retryReleased = new Promise<void>(resolve => { releaseRetry = resolve; });
+    let receivedRetry!: () => void;
+    const retryReceived = new Promise<void>(resolve => { receivedRetry = resolve; });
+    let collapsedRequests = 0;
+    await page.route(`**/api/v1/adrs/${fixture.adr}?*`, async route => {
+      if (new URL(route.request().url()).searchParams.get('view') !== 'collapsed') {
+        await route.continue();
+      } else if (++collapsedRequests === 1) {
+        await route.fulfill({ status: 503, json: {
+          schema: 'adrai/api/v1',
+          metadata: { generation: String(fixture.state.generation), as_of: { kind: 'commit', oid: fixture.initialHead } },
+          error: { category: 'service', status: 503, code: 'repository-busy', message: 'repository is busy' },
+        } });
+      } else {
+        receivedRetry();
+        await retryReleased;
+        await route.continue();
+      }
+    });
+    try {
+      await page.getByLabel('Title', { exact: true }).fill('Draft across inspection recovery');
+      await page.locator('#context-pane .result-list button').first().click();
+      await retryReceived;
+      await expect(page.locator('#inspector-pane')).toContainText('decision.amend');
+      await expect(page.getByText('Snapshot is loading or stale.', { exact: true })).toBeVisible();
+      releaseRetry();
+      await expect(page.locator('#action option[value="amend"]')).toBeEnabled();
+      await expect(page.locator('#inspector-pane .body-text').first()).toHaveText(fixture.state.body);
+      expect(await page.getByText('Snapshot is loading or stale.', { exact: true }).count()).toBe(0);
+      await expect(page.getByLabel('Title', { exact: true })).toHaveValue('Draft across inspection recovery');
+      expect(fixture.mutations).toEqual([]);
+    } finally {
+      releaseRetry();
+    }
+  });
+});
+
 test('create posts reviewed fields and refreshes the visible repository and result', async ({ browser }) => {
   await withExplorer(browser, async (page, fixture) => {
     await page.getByLabel('Title', { exact: true }).fill('Browser-created decision');

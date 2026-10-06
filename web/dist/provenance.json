@@ -5,7 +5,7 @@
     "package-lock.json": "5f5c0a606f3355de0850f118daf5fe14e1e9ed240640550db2e98ce9dd315bca",
     "package.json": "5ba65e2055ae1f91e11e3f4b849f8cd76c573ad9437c491ecfbbd240825e80a4",
     "src/Api.elm": "39c572b8e2b7868a382eb19ac835e5c0bc2cf13f8e7dff841dd5ebddf4fa30a0",
-    "src/Main.elm": "f33783e286a3ca64c366de7f006e62b00bc35f4f704d2c19f1371535d3f3ab0c",
+    "src/Main.elm": "d823c5d9cd31c7042e4d56e01f4e4b2cfe284159b433c1f1989c7068d20e8bc2",
     "src/Route.elm": "a9f3be1ba500c1d57a87460cded82ba2da927f9bc1baff4773f8f739a6b2918d",
     "src/View/Forms.elm": "44cb3c7412ced2caa407822da5cc7b421eb758c565274fa16a1c565126747a8c",
     "static/app.css": "7edc8058b9b58301ab78c8492517e35d1f53e83815274e5f53fb4d454f98a1a3",
@@ -20,6 +20,6 @@
     "elm": "0.19.2"
   },
   "output": {
-    "dist/app.js": "1ce6789793a60a5c900f00b379598fff3195bf43fe026911a99653803a09ec29"
+    "dist/app.js": "58ba53b01da58fa5714f2725bbb713aa5c70d6ee43155fe106eb1aec085bd6e6"
   }
 }
