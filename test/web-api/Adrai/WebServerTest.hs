@@ -85,7 +85,7 @@ import Database.SQLite.Simple (Only (..))
 import qualified Database.SQLite.Simple as SQLite
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests = testGroup "web server runtime"
@@ -392,12 +392,20 @@ testCliObservationOverlap :: IO ()
 testCliObservationOverlap = withSeededRepository $ \root -> do
   repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
   gate <- newIORef Nothing
-  let services = defaultApplicationServices
+  dispatchObserver <- newIORef (const (pure ()))
+  let dispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+        notify <- readIORef dispatchObserver
+        notify "server dispatch entered"
+        result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+        notify "server dispatch returned"
+        pure result
+      services = defaultApplicationServices
         { applicationAfterQueryResolution = do
             claimed <- atomicModifyIORef' gate (\current -> (Nothing, current))
             case claimed of
               Nothing -> pure ()
-              Just (held, release) -> putMVar held () >> takeMVar release
+              Just (held, release) -> putMVar held () >> takeMVar release,
+          dispatchApplicationRequest = dispatch
         }
       arguments title = ["create", "--title", title, "--summary", "cross process contention", "--body", "bounded native overlap\n", "--actor", "human:test", "--domain", "core", "--applies-to", "seed.txt", "--json"]
       runCli title = CLI.spawnAdrai root (arguments title)
@@ -471,28 +479,110 @@ testCliObservationOverlap = withSeededRepository $ \root -> do
     hookPermissions <- getPermissions hook
     setPermissions hook hookPermissions {Directory.executable = True}
     beforeCliOwner <- gitHead root
-    (`finally` cleanupHook) $
+    overlapStarted <- getMonotonicTimeNSec
+    overlapPhases <- newIORef []
+    lastCliOwnedSample <- newIORef Nothing
+    dispatchEntered <- newEmptyMVar
+    dispatchReturned <- newEmptyMVar
+    let markOverlap phase = do
+          now <- getMonotonicTimeNSec
+          atomicModifyIORef' overlapPhases (\current -> (current <> [(now - overlapStarted, phase)], ()))
+        overlapEvidence = do
+          phases <- readIORef overlapPhases
+          pure (show [(at `div` 1000000, phase) | (at, phase) <- phases])
+        awaitCliRelease owner = do
+          sampleStarted <- getMonotonicTimeNSec
+          observed <- gitLockStatus repository
+          sampleEnded <- getMonotonicTimeNSec
+          case observed of
+            Left (LockHeld _ pid) | pid == owner -> do
+              writeIORef lastCliOwnedSample (Just (sampleStarted - overlapStarted, sampleEnded - overlapStarted))
+              threadDelay 20000
+              awaitCliRelease owner
+            Left (LockHeld _ _) -> markOverlap "first sampled non-CLI owner; next owner is held"
+            Right Nothing -> markOverlap "first sampled non-CLI owner; native lock is free"
+            other -> markOverlap ("native status failed: " <> show other)
+        field [] value = Just value
+        field (key : rest) (Aeson.Object values) = KeyMap.lookup (Key.fromText key) values >>= field rest
+        field _ _ = Nothing
+        safeResponse response = show
+          [(keys, field keys response) | keys <-
+            [["error", "category"], ["error", "status"], ["error", "code"], ["error", "message"],
+             ["metadata", "as_of", "kind"], ["metadata", "as_of", "reason"], ["metadata", "generation"]]]
+        reportOverlap = do
+          phases <- overlapEvidence
+          lastHeld <- readIORef lastCliOwnedSample
+          putStrLn ("CLI-held observation phases(ms): " <> phases
+            <> "; last CLI-owned native status interval(ms): "
+            <> show (fmap (\(begin, end) -> (begin `div` 1000000, end `div` 1000000)) lastHeld))
+    writeIORef dispatchObserver $ \phase -> do
+      markOverlap phase
+      when (phase == "server dispatch entered") $ getMonotonicTimeNSec >>= void . tryPutMVar dispatchEntered
+      when (phase == "server dispatch returned") $ getMonotonicTimeNSec >>= void . tryPutMVar dispatchReturned
+    (`finally` (reportOverlap `finally` cleanupHook)) $
       withAsync (runCli "CLI native owner") $ \cli -> do
         (`finally` BS.writeFile releaseMarker "release\n") $ do
           prepared <- timeout 30000000 (race awaitMarker (waitCatch cli))
           case prepared of
             Just (Left ()) -> pure ()
             other -> assertFailure ("actual CLI did not reach its protected ref update: " <> show other)
-          gitLockStatus repository >>= \case
-            Left (LockHeld _ pid) -> assertBool "actual CLI retains native ownership at prepared ref update" (pid > 0)
+          markOverlap "prepared ref hook reached"
+          cliOwner <- gitLockStatus repository >>= \case
+            Left (LockHeld _ pid) -> do
+              assertBool "actual CLI retains native ownership at prepared ref update" (pid > 0)
+              markOverlap "actual CLI native ownership verified"
+              pure pid
             other -> assertFailure ("prepared CLI ref hook was not protected by native ownership: " <> show other)
           sent <- newEmptyMVar
-          let observe phase = when (phase == "request sent; awaiting first response byte") (void (tryPutMVar sent ()))
-          withAsync (getJsonStatusWith (requestRawWithStepAndDeadlineObserved observe 30000000 "CLI-held observation") running "/api/v1/repository") $ \reading -> do
-            timeout 2000000 (takeMVar sent) >>= assertBool "web read was sent while real CLI held native ownership" . maybe False (const True)
-            threadDelay 100000
-            BS.writeFile releaseMarker "release\n"
-            completed <- timeout 60000000 (wait cli)
-            maybe (assertFailure "CLI owner completion timed out") requireCli completed
-            after <- oneCommit beforeCliOwner
-            (status, response) <- wait reading
-            status @?= 200
-            textAt ["metadata", "as_of", "oid"] response >>= (@?= after)
+          let observe phase = do
+                markOverlap ("HTTP " <> phase)
+                when (phase == "request sent; awaiting first response byte") (void (tryPutMVar sent ()))
+          withAsync (timeout 60000000 (awaitCliRelease cliOwner)) $ \nativeRelease ->
+            withAsync (getJsonStatusWith (requestRawWithStepAndDeadlineObserved observe 30000000 "CLI-held observation") running "/api/v1/repository") $ \reading -> do
+              timeout 2000000 (takeMVar sent) >>= assertBool "web read was sent while real CLI held native ownership" . maybe False (const True)
+              dispatchStarted <- timeout 2000000 (takeMVar dispatchEntered)
+                >>= maybe (assertFailure "CLI-held web read did not enter application dispatch") pure
+              threadDelay 100000
+              markOverlap "prepared hook release requested"
+              BS.writeFile releaseMarker "release\n"
+              markOverlap "prepared hook release marker written"
+              completed <- timeout 60000000 (wait cli)
+              markOverlap "actual CLI process completed"
+              maybe (assertFailure "CLI owner completion timed out") requireCli completed
+              after <- oneCommit beforeCliOwner
+              markOverlap "exactly one CLI commit verified"
+              (status, response) <- wait reading
+              dispatchFinished <- timeout 2000000 (takeMVar dispatchReturned)
+                >>= maybe (assertFailure "CLI-held read did not record its initial dispatch return") pure
+              markOverlap ("HTTP response decoded; status=" <> show status)
+              releaseObserved <- wait nativeRelease
+              markOverlap ("native release observation joined=" <> show (maybe False (const True) releaseObserved))
+              diagnostic <- overlapEvidence
+              let responseEvidence = "CLI-held observation; safe typed fields=" <> safeResponse response <> "; phases(ms)=" <> diagnostic
+              case status of
+                200 -> textAt ["metadata", "as_of", "oid"] response >>= (@?= after)
+                503 -> do
+                  let typedBusy =
+                        field ["error", "category"] response == Just (Aeson.String "service-failure")
+                          && field ["error", "status"] response == Just (Aeson.Number 503)
+                          && field ["error", "code"] response == Just (Aeson.String "repository-busy")
+                          && field ["error", "message"] response == Just (Aeson.String "repository observation is temporarily unavailable")
+                          && field ["metadata", "as_of", "kind"] response == Just (Aeson.String "unavailable")
+                          && field ["metadata", "as_of", "reason"] response == Just (Aeson.String "request-failed")
+                  assertBool responseEvidence typedBusy
+                  assertBool (responseEvidence <> "; accepted busy response must finish after the two-second admission budget")
+                    (dispatchFinished >= dispatchStarted + 2000000000)
+                  lastHeld <- readIORef lastCliOwnedSample
+                  assertBool (responseEvidence <> "; native CLI ownership must be observed beyond the two-second admission budget")
+                    (maybe False (\(begin, _) -> overlapStarted + begin >= dispatchStarted + 2000000000) lastHeld)
+                _ -> assertFailure responseEvidence
+              requireUnlocked
+              markOverlap "completed CLI and free native lock verified; fresh read launched"
+              (freshStatus, freshResponse) <- getJsonStatusWith
+                (requestRawWithStepAndDeadlineObserved observe 30000000 "after CLI native release") running "/api/v1/repository"
+              assertEqual ("fresh read after definitive CLI release; safe typed fields=" <> safeResponse freshResponse) 200 freshStatus
+              textAt ["metadata", "as_of", "oid"] freshResponse >>= (@?= after)
+              markOverlap "fresh read at exactly one new CLI commit verified"
     requireUnlocked
   either (assertFailure . Text.unpack) pure started
 
