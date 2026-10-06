@@ -228,7 +228,12 @@ or cleanup that cannot be confirmed makes the result fail or incomplete.
 List mode has a 60-second maximum deadline. Focused mode has a 600-second
 default and maximum deadline. Both use the same artifact and registration
 checks. Focused mode accepts one exact ledger test name rather than a free-form
-Tasty selector:
+Tasty selector.
+
+The P7-03 snapshot HEAD leaves check real Git invocation counts and supported
+HEAD forms, plus malformed/failed response rejection and fresh recovery. The
+count assertion measures subprocess work; the existing authenticated WebSocket
+and watcher controls separately check the unchanged observation bounds. For example:
 
 ```powershell
 .\tools\RunRetainedTests.ps1 -Mode Focused `

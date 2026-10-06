@@ -13,9 +13,9 @@ module Adrai.Web.Watch
   ) where
 
 import Adrai.Format.Config (parseConfigText)
-import Adrai.Git (GitHeadState, GitOid, RevisionSpec (..), repositoryHeadState, resolveRevision)
-import Adrai.Provenance (encodeBase64Url, sha256Digest)
-import Adrai.Types (Config (..), ManagedPaths (..), RepoPath, defaultConfig, digestBytes, repoPathText)
+import Adrai.Git (GitHeadState (..), GitOid, GitProcessResult (..), runRepository)
+import Adrai.Provenance (encodeBase64Url, mkGitOid, sha256Digest)
+import Adrai.Types (Config (..), ManagedPaths (..), RepoPath, defaultConfig, digestBytes, mkGitRef, repoPathText)
 import Adrai.Web.Api (Repo (..))
 import Adrai.Web.Events (Invalidation (..))
 import Adrai.Web.Watch.Native
@@ -36,6 +36,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>), isAbsolute, joinPath, makeRelative, normalise, splitDirectories)
 import System.FSNotify (eventPath, watchTree, withManager)
 
@@ -192,8 +193,7 @@ snapshotRepository registry expectedRoots afterHandleOpen repo = do
     actualRoots <- identitiesOf roots
     when (actualRoots /= expectedRoots) (throwIO (userError "permanently bound repository root identity changed"))
     budget <- ObservationBudget <$> newIORef (0 :: Int, 0 :: Int) <*> pure afterHandleOpen
-    headState <- repositoryHeadState (repoRepository repo) >>= either (throwIO . userError . show) pure
-    headOid <- resolveRevision (repoRepository repo) (RevisionSpec "HEAD") >>= either (throwIO . userError . show) (pure . Just)
+    (headOid, headState) <- snapshotHead repo
     configBytes <- observedFile budget (rootHandle roots WorktreeRoot) [".adrai.toml"]
     config <- loadWorktreeConfig configBytes
     indexIdentity <- fileIdentity budget (rootHandle roots GitRoot) ["index"]
@@ -204,12 +204,42 @@ snapshotRepository registry expectedRoots afterHandleOpen repo = do
     reflogs <- directoryIdentity budget CommonRoot (rootHandle roots CommonRoot) ["logs"]
     worktreeMeta <- directoryIdentity budget GitRoot (rootHandle roots GitRoot) []
     relevantFiles <- relevantIdentity budget roots relevant
-    pure (RepositoryFacts headOid (Just headState) indexIdentity sequencer (digest <$> configBytes) managed commonRefs packedRefs reflogs worktreeMeta relevantFiles)
+    pure (RepositoryFacts (Just headOid) (Just headState) indexIdentity sequencer (digest <$> configBytes) managed commonRefs packedRefs reflogs worktreeMeta relevantFiles)
   case captured of
     Right facts -> pure (RepositorySnapshot epoch facts)
     Left exception -> case fromException exception of
       Just cancellation -> throwIO (cancellation :: SomeAsyncException)
       Nothing -> pure (RepositorySnapshotFailed epoch (ObservationVerificationFailure (Text.pack (displayException exception))))
+
+-- One fixed invocation validates and peels HEAD to a commit, then reports its
+-- resolved symbolic identity. This reduces process startup during each scan;
+-- the existing publication checks still revalidate these non-atomic facts.
+snapshotHead :: Repo -> IO (GitOid, GitHeadState)
+snapshotHead repo = do
+  response <- runRepository (repoRepository repo) "snapshot HEAD"
+    ["rev-parse", "HEAD^{commit}", "--symbolic-full-name", "HEAD"] BS.empty
+    >>= either (throwIO . userError . show) pure
+  when (processExitCode response /= ExitSuccess)
+    (throwIO (userError "repository HEAD cannot be validated as a commit"))
+  either (throwIO . userError . Text.unpack) pure (decodeSnapshotHead (processStdout response))
+
+decodeSnapshotHead :: BS.ByteString -> Either Text (GitOid, GitHeadState)
+decodeSnapshotHead bytes = case BS.split 10 bytes of
+  [rawOid, rawIdentity, ending] | BS.null ending -> do
+    let oidBytes = withoutCarriageReturn rawOid
+    when (BS.any (> 127) oidBytes) (Left "snapshot HEAD OID is not ASCII")
+    oidText <- decodeRecord oidBytes
+    oid <- either (const (Left "snapshot HEAD OID is malformed")) Right (mkGitOid oidText)
+    identity <- decodeRecord (withoutCarriageReturn rawIdentity)
+    state <- if identity == "HEAD" then Right GitHeadDetached
+      else GitHeadAttached <$> either (const (Left "snapshot HEAD ref is malformed")) Right (mkGitRef identity)
+    pure (oid, state)
+  _ -> Left "snapshot HEAD requires exactly two terminated records"
+  where
+    decodeRecord = either (const (Left "snapshot HEAD record is not UTF8")) Right . TextEncoding.decodeUtf8'
+    withoutCarriageReturn value
+      | not (BS.null value) && BS.last value == 13 = BS.init value
+      | otherwise = value
 
 activeObservation :: ActiveFileRegistry -> IO (ObservationEpoch, [RepoPath])
 activeObservation (ActiveFileRegistry state) = atomically $ do

@@ -686,6 +686,14 @@
     }
   ],
   "runtimeDesign": {
+    "snapshotHeadObservation": {
+      "retained": [
+        "ADRAI.P7-03.snapshot HEAD facts use one validated Git invocation",
+        "ADRAI.P7-03.snapshot HEAD responses reject malformed and failed observations"
+      ],
+      "boundary": "Real attached, detached, recursive symbolic, annotated-tag and linked-worktree HEAD facts match the independent Git routes with one observed invocation; unborn, missing and noncommit HEAD fail closed. Strict response fixtures cover malformed, failed and recovered observations.",
+      "limitation": "Invocation counts prove reduced startup work, not a latency guarantee or an atomic snapshot of external writes."
+    },
     "targetSeconds": 1800,
     "allocationsAreUnvalidated": true,
     "proposedCountsAreNotClaims": true,

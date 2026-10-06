@@ -10,7 +10,7 @@
   "components": [
     {
       "name": "adrai-test",
-      "registrationCount": 919,
+      "registrationCount": 921,
       "registrationState": "source-declared; the canonical retained runner List checks exact registration equality",
       "staticEvidence": {
         "nativeHelperRootProcessesRound6": 12,

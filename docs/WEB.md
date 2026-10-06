@@ -200,6 +200,9 @@ watchRepository :: Repo -> (RepositoryEvent -> IO ()) -> IO WatchHandle
 It reports HEAD OID and ref identity, index, sequencer, configuration,
 managed-source, common-ref, packed-ref, reflog, linked-worktree metadata, and
 registered relevant-worktree-file facts or explicit observation failures. It
+validates HEAD as a commit and reads its symbolic identity in one Git invocation
+per scan, reducing repeated process startup. Failed or malformed HEAD responses
+remain observation failures; existing publication checks revalidate freshness. It
 does not reduce graphs, rank search, infer invalidation semantics, or alter
 `Adrai.Repository.repositorySnapshot`. Filesystem notifications only request
 verification; the process worker also verifies every 250 ms, including when

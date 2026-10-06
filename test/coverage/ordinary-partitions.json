@@ -1054,6 +1054,8 @@
         "ADRAI.P7-03.authenticated bounded websocket runtime",
         "ADRAI.P7-03.idle pong liveness is isolated and silent leases are released",
         "ADRAI.P7-03.fact watcher verifies and retries bounded changes",
+        "ADRAI.P7-03.snapshot HEAD facts use one validated Git invocation",
+        "ADRAI.P7-03.snapshot HEAD responses reject malformed and failed observations",
         "ADRAI.P7-03.exact revision compilation is one physical flight",
         "ADRAI.P7-03.web exact compilation.real repository namespaces compile independently",
         "ADRAI.P7-03.web exact compilation.server shutdown cancels the physical compiler and cleans its candidate",

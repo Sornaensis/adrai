@@ -702,6 +702,8 @@ tests =
           [ Adrai.WebEventsTest.tests,
             Adrai.WebEventsTest.livenessTest,
             Adrai.WebWatchTest.tests,
+            Adrai.WebWatchTest.headObservationTest,
+            Adrai.WebWatchTest.headResponseTest,
             Adrai.WebCompilationTest.exactRevisionCompilationTest,
             Adrai.WebCompilationTest.tests
           ]
