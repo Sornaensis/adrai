@@ -38,9 +38,10 @@ absolute `compilerPath`, lowercase `compilerSha256` and `compilerVersion`.
 Build manifests bind the runner/provider/helper sources, helper binary and this
 record independently of the five product artifacts. Finite cleanup that cannot
 verify namespace reaping and reader joins remains a cleanup failure; disposing
-an object is not a tree-absence assertion. Full Linux product/frontend support
-requires the final available-host verification; local owner checks alone do
-not establish it.
+an object is not a tree-absence assertion. Windows and Linux x86_64 (amd64)
+are supported with the stated toolchain and ownership facilities. The POSIX
+implementation boundary does not promise other Unix systems or architectures;
+local owner checks alone do not establish complete-host acceptance.
 
 For reviewed exported validation inputs, `-SourceReferencePath` explicitly binds
 the canonical repository root, workspace UUID, commit and exact exported file

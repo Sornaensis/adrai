@@ -1,26 +1,30 @@
 # Installation
 
-ADRAI is currently installed from source.
+ADRAI supports source installation on Windows and Linux on x86_64 (amd64).
 
 The native runtime has Windows and Linux backends for repository locking,
 verified filesystem observation, cache publication, and process ownership.
 The retained and frontend launchers use Windows PowerShell 5.1 on Windows or
 an explicitly selected PowerShell 7 executable on Linux. Linux process ownership
 requires the native helper and permission to create an unprivileged user/PID
-namespace; a process group alone does not satisfy that requirement. macOS is
-not a supported installation target for these backends.
+namespace; a process group alone does not satisfy that requirement. POSIX is
+an implementation boundary, not a support promise for other Unix systems or
+architectures. macOS is not a supported installation target for these backends.
 
 ## Requirements
 
 - Git 2.31 or newer
 - Stack 3.11.1
+- On Linux, a C compiler and toolchain compatible with the selected GHC for
+  source compilation, native runtime components, and the process-ownership helper
 
-On Linux, use a filesystem that supports advisory `flock` and file/directory
-`fsync`. Cache publication requests those synchronization operations; their
+On Linux, use a filesystem that supports verified descriptor-based file and
+directory access, advisory `flock`, and file/directory `fsync`.
+Cache publication requests those synchronization operations; their
 completion is not a universal power-loss guarantee. The browser opener uses
-`xdg-open`, which requires a desktop session; `adrai web --no-open` works without
-an opener. See [Testing](TESTING.md) for test-runner prerequisites and the
-separate complete-host acceptance gate.
+`xdg-open` from the caller's `PATH`, which requires a desktop session;
+`adrai web --no-open` works without an opener. See [Testing](TESTING.md) for
+test-runner prerequisites and the separate complete-host acceptance gate.
 
 The project pins its compiler and package set in `stack.yaml` (`lts-24.52`). Stack downloads the matching GHC toolchain when needed. Python and libgit2 are not runtime dependencies.
 
