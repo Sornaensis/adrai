@@ -4,6 +4,14 @@ ADRAI is a native Haskell project built with Stack. The executable entry point i
 
 ## Build and test
 
+On a fresh checkout, use Node 24.15.0 and npm 11.12.1 to generate the web assets
+before any Stack build or install:
+
+```console
+npm --prefix web ci
+npm --prefix web run build
+```
+
 Use [Testing](TESTING.md) for the canonical retained-test runner and its
 artifact-binding workflow. The complete gate executes every registered test
 in the ordinary, cache-selection, stress, and benchmark-registration
@@ -66,7 +74,7 @@ Integration and E2E tests create temporary real Git repositories. They cover nor
 
 Deterministic fixture plans live in `test/support`. Keep logical plans independent from their Git or service interpreters, record counts and invariants near the fixture, and treat generator tags, seeds, and canonical digests as reviewed contract changes.
 
-The web page embeds checked-in HTML, CSS, and the generated Elm/bridge bundle
+The web page embeds source HTML, CSS, and the generated Elm/bridge bundle
 during the Haskell build. Use Node 24.15.0 and npm 11.12.1, then run from
 `web/`:
 
@@ -80,10 +88,12 @@ npm run test:components
 
 `npm run build` compiles `src/Main.elm` with the pinned Elm 0.19.2 compiler and
 `--optimize`, then appends `static/bridge.js` and publishes `dist/app.js` plus
-`dist/provenance.json`. The receipt hashes every Elm source, the web manifests,
+`dist/provenance.json`. These generated files are ignored by Git; build them
+before compiling Haskell or creating a source distribution. The receipt hashes
+every Elm source, the web manifests,
 build and verification scripts, bridge, bootstrap HTML, CSS, and the exact
 bundle bytes. It also records the pinned Node, npm, and compiler versions.
-`verify:assets` rebuilds in a temporary directory and fails if either checked-in
+`verify:assets` rebuilds in a temporary directory and fails if either generated
 file differs. Run it before the canonical Haskell build to prove the generated
 bytes match a fresh optimized compile. `Adrai.Web.Assets` separately checks the
 receipt's complete input path set, source and bundle hashes, and toolchain pins

@@ -55,6 +55,16 @@ and hash are frozen at admission and checked again after execution.
 
 ## Build and artifact manifest
 
+Generate the ignored web assets before Build mode on a fresh checkout:
+
+```console
+npm --prefix web ci
+npm --prefix web run build
+```
+
+Use the pinned Node 24.15.0 and npm 11.12.1 toolchain; see
+[Development](DEVELOPMENT.md) for reproducibility and asset tests.
+
 Builds and test execution use separate deadlines. Build mode compiles every
 component with pedantic checks while disabling test and benchmark execution:
 

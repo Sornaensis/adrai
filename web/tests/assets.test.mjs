@@ -26,7 +26,7 @@ const assertCompletionWithinAllocation = () => assert.ok(
 test('optimized assets rebuild identically and copied source drift is rejected', async () => {
   const root = await mkdtemp(join(tmpdir(), 'adrai-asset-test-'));
   try {
-    for (const name of ['src', 'static', 'tools', 'dist', 'elm.json', 'package.json', 'package-lock.json']) {
+    for (const name of ['src', 'static', 'tools', 'elm.json', 'package.json', 'package-lock.json']) {
       await cp(join(webRoot, name), join(root, name), { recursive: true });
     }
     const first = await buildAsset({ root, compilerPath, signal: aggregateSignal });

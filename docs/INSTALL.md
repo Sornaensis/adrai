@@ -15,6 +15,7 @@ architectures. macOS is not a supported installation target for these backends.
 
 - Git 2.31 or newer
 - Stack 3.11.1
+- Node 24.15.0 and npm 11.12.1 to build the web assets (the Elm 0.19.2 compiler is installed by `npm ci`)
 - On Linux, a C compiler and toolchain compatible with the selected GHC for
   source compilation, native runtime components, and the process-ownership helper
 
@@ -33,6 +34,8 @@ The project pins its compiler and package set in `stack.yaml` (`lts-24.52`). Sta
 From the repository root:
 
 ```console
+npm --prefix web ci
+npm --prefix web run build
 stack build
 stack exec adrai -- --help
 ```
@@ -46,11 +49,14 @@ adrai --help
 
 If Stack's binary directory is not on `PATH`, use `stack path --local-bin` to locate the installed executable.
 
-The source-built executable embeds the checked-in `web/static/index.html`,
-`web/static/app.css`, optimized Elm/bridge bundle `web/dist/app.js`, and its
-`web/dist/provenance.json` receipt. The build checks the receipt against the
-web sources and bundle. Node and Elm are needed only to rebuild or verify web
-assets, not to run the installed executable; see [Development](DEVELOPMENT.md).
+The source-built executable embeds `web/static/index.html`, `web/static/app.css`,
+the generated optimized Elm/bridge bundle `web/dist/app.js`, and its
+`web/dist/provenance.json` receipt. The generated files are ignored by Git;
+build them before `stack build` or `stack install` on a fresh checkout, and
+rebuild them when web inputs change. The Haskell build checks the receipt
+against the web sources and bundle. Source distributions must include these
+generated files. Node and Elm are not needed to run the installed executable;
+see [Development](DEVELOPMENT.md) for asset verification.
 
 From the target Git worktree, start the browser explorer, HTTP API, and event
 WebSocket:
