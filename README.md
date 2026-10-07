@@ -2,8 +2,6 @@
 
 ADRAI stores and searches Architecture Decision Records (ADRs) in Git. It is for developers and teams who want to record software decisions and find them later, using a command-line, terminal, or web interface.
 
-Suppose a team chooses PostgreSQL because orders and payments need consistent transactions. Recording that choice, its reasons, and the files it applies to gives the next developer context when changing storage code. An LLM agent can read the same decisions through JSON search results before proposing changes, so it can account for existing constraints instead of guessing from the code alone.
-
 ## Install and set up
 
 Use Git 2.31 or newer, Stack 3.11.1, Node 24.15.0, and npm 11.12.1. Linux also needs a C toolchain; see [Installation](docs/INSTALL.md) for platform requirements.
@@ -26,6 +24,8 @@ adrai init
 ```
 
 ## Examples
+
+Suppose a team chooses PostgreSQL because orders and payments need consistent transactions. Recording that choice, its reasons, and the files it applies to gives the next developer context when changing storage code. An LLM agent can read the same decisions through JSON search results before proposing changes, so it can account for existing constraints instead of guessing from the code alone.
 
 Run these examples in that repository. They use PowerShell; see [Usage](docs/USAGE.md) for more options.
 
