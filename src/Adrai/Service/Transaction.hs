@@ -84,7 +84,11 @@ import Adrai.Provenance
   )
 import Adrai.Provenance.Git.Lock
   ( GitLockError (LockHeld),
+    GitLockDependencies (GitLockDependencies),
+    GitLockWaitPolicy (..),
+    defaultGitLockWaitPolicy,
     withGitLock,
+    withGitLockWaitWith,
   )
 import Adrai.ManagedPath
   ( ManagedPathError (..),
@@ -386,18 +390,19 @@ defaultAppendOnlyDependencies =
       appendOnlyAfterSuccessfulCas = pure ()
     }
 
--- | Additive, timing-specific containment hooks used only by transaction
+-- | Additive transaction-boundary hooks used only by transaction
 -- tests.  They intentionally do not alter the long-standing public
 -- 'AppendOnlyDependencies' constructor.
 data AppendOnlyTestHooks = AppendOnlyTestHooks
-  { appendOnlyAfterLockAcquiredHook :: IO (),
+  { appendOnlyAfterLockQueuedHook :: IO (),
+    appendOnlyAfterLockAcquiredHook :: IO (),
     appendOnlyAfterGeneratedParentCreationHook :: GeneratedFile -> IO (),
     appendOnlyBeforeRefUpdateHook :: IO (),
     appendOnlyBeforePostCasIndexRefreshHook :: IO ()
   }
 
 defaultAppendOnlyTestHooks :: AppendOnlyTestHooks
-defaultAppendOnlyTestHooks = AppendOnlyTestHooks (pure ()) (\_ -> pure ()) (pure ()) (pure ())
+defaultAppendOnlyTestHooks = AppendOnlyTestHooks (pure ()) (pure ()) (\_ -> pure ()) (pure ()) (pure ())
 
 -- | Narrow test seam for the bootstrap write/rollback boundaries. Production
 -- uses 'defaultBootstrapDependencies'; it has no observable effect there.
@@ -1197,7 +1202,9 @@ commitAppendOnlyOperationMaybeCheckedWithHooks dependencies hooks expectedBasis 
     Just _ -> do
       durableWitness <- newIORef Nothing
       -- Stage 2: Acquire lock
-      lockResult <- try @SomeException $ withGitLock repository $ do
+      let waitPolicy = defaultGitLockWaitPolicy {gitLockAfterQueued = appendOnlyAfterLockQueuedHook hooks}
+          lockDependencies = GitLockDependencies (\_ _ -> pure ())
+      lockResult <- try @SomeException $ withGitLockWaitWith waitPolicy lockDependencies repository $ \_ -> do
         appendOnlyAfterLockAcquiredHook hooks
         -- Establish physical containment before probing, snapshotting, or
         -- writing a generated destination, and repeat it at later boundaries.

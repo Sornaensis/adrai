@@ -58,7 +58,7 @@ import Adrai.Provenance.Git.Lock
     GitLockWaitPolicy (..), defaultGitLockWaitPolicy, withGitLockWaitWith,
   )
 import Control.Concurrent (isEmptyMVar, newEmptyMVar, putMVar, readMVar, takeMVar)
-import Control.Concurrent.Async (async, cancel, wait, waitCatch, withAsync)
+import Control.Concurrent.Async (async, cancel, poll, wait, waitCatch, withAsync)
 import Control.Monad (forM_)
 import Adrai.Service.Transaction
   ( GeneratedFile (..),
@@ -819,23 +819,29 @@ gitLockTests getSeed =
         let config = TransactionConfig operationText "adrai: queued checked basis" Map.empty parent [generated]
             expected = ExpectedRepositoryBasis parent (GitHeadAttached ref)
             generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
-        indexBefore <- gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty
-        started <- newEmptyMVar
+            indexPath = repositoryGitDir repository </> "index"
+            headPath = repositoryGitDir repository </> "HEAD"
+            changedHeadBytes = "ref: refs/heads/other\n"
+        indexBefore <- BS.readFile indexPath
+        queued <- newEmptyMVar
+        -- The admission hook runs after ticket registration while the parent
+        -- still owns the native lock. Avoid a Git child inside its wait budget.
+        let hooks = defaultAppendOnlyTestHooks
+              { appendOnlyAfterLockQueuedHook = BS.writeFile headPath changedHeadBytes >> putMVar queued () }
         bracket (acquireGitLock repository) releaseGitLock $ \owner ->
-          withAsync (putMVar started () >> commitAppendOnlyOperationCheckedWithHooks defaultAppendOnlyDependencies defaultAppendOnlyTestHooks expected repository config) $ \mutation -> do
-            takeMVar started
-            early <- timeout 200000 (waitCatch mutation)
-            assertBool "checked mutation remains pending behind native ownership" (maybe True (const False) early)
-            _ <- gitSuccess repositoryPath ["symbolic-ref", "HEAD", "refs/heads/other"] BS.empty
+          withAsync (commitAppendOnlyOperationCheckedWithHooks defaultAppendOnlyDependencies hooks expected repository config) $ \mutation -> do
+            takeMVar queued
+            poll mutation >>= assertBool "registered checked mutation remains pending behind native ownership" . maybe True (const False)
             releaseGitLock owner
             result <- wait mutation
             case result of
               Left (Stage3ValidateState message) -> assertBool "queued mutation reports changed basis" ("expected repository HEAD/ref basis mismatch" `Text.isInfixOf` message)
               other -> assertFailure ("expected locked basis rejection after waiting: " <> show other)
-        gitSuccess repositoryPath ["ls-files", "--stage"] BS.empty >>= assertEqual "rejected queued mutation preserves index" indexBefore
+        BS.readFile indexPath >>= assertEqual "rejected queued mutation preserves exact index bytes" indexBefore
         forM_ ["refs/heads/main", "refs/heads/other"] $ \branch ->
           gitSuccess repositoryPath ["rev-parse", branch] BS.empty >>= assertEqual "neither branch advances" (TextEncoding.encodeUtf8 (parentText <> "\n"))
-        doesFileExist generatedPath >>= assertBool "rejected queued mutation generates no file" . not,
+        doesFileExist generatedPath >>= assertBool "rejected queued mutation generates no file" . not
+        gitLockStatus repository >>= assertEqual "rejected queued mutation releases native ownership" (Right Nothing),
     testCase "bounded admission is FIFO and cancelled tickets retire" $
       withTransactionRepositoryCopy getSeed "adrai FIFO Git lock" $ \_ _ repository _ -> do
         order <- newIORef ([] :: [Int])
