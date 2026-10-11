@@ -94,6 +94,7 @@
         "ADRAI.Transaction contract.repository-common mutation lock.owner close failure restores exclusion until a successful retry",
         "ADRAI.Transaction contract.repository-common mutation lock.withGitLock owner pre-close failure preserves action precedence and permits retry",
         "ADRAI.Transaction contract.repository-common mutation lock.withGitLock cleans up after synchronous and asynchronous actions",
+        "ADRAI.Transaction contract.preview validation rejects malformed bytes occupied paths and pinned ref drift without effects",
         "ADRAI.Transaction contract.checked basis rejects a same-OID branch switch after lock acquisition before effects",
         "ADRAI.Transaction contract.Git plumbing accepts one bare 40- or 64-hex OID with trailing stdout framing",
         "ADRAI.Transaction contract.Git plumbing rejects non-bare or malformed OID output",
@@ -458,7 +459,13 @@
         "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.init adds a newline boundary to unterminated rules",
         "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.init recognizes complete CRLF and unterminated rules",
         "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-02 compact real executable command wiring.init does not mistake comments or longer patterns for rules",
-        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads"
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).P6-03A.0 real executable ordinary amend reconciliation.ordinary amend reconciles merged decision heads",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).mutation previews.both aliases review init create amend and scope without effects",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).mutation previews.both aliases review domain obsolete and reactivate without effects",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).mutation previews.unborn init reviews exact merged rules before ordinary commit",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).mutation previews.rejected previews preserve dirty state and linked Git operation state",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).mutation previews.shared preparation validates and commits the exact reviewed bytes",
+        "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).mutation previews.partial clone previews refuse missing promised blobs without lazy fetch"
       ],
       "rationale": "Keep compact real command wiring and merged-head reconciliation in one isolated process.",
       "costProvenance": "Source-defined retained selection and fixture setup; current elapsed cost requires matching external execution evidence."
@@ -952,6 +959,7 @@
         "ADRAI.P4-06.cli-contracts.JSON schema contracts.history render outcome is exact canonical JSON or the established text renderer",
         "ADRAI.P4-06.cli-contracts.JSON schema contracts.all JSON output types have sorted keys (deterministic serialization)",
         "ADRAI.P4-06.cli-contracts.init/create CLI contracts.global repo defaults before init",
+        "ADRAI.P4-06.cli-contracts.init/create CLI contracts.preview aliases wrap only mutations and bypass normal dispatch",
         "ADRAI.P4-06.cli-contracts.init/create CLI contracts.explore is the one option-free public terminal command",
         "ADRAI.P4-06.cli-contracts.init/create CLI contracts.compile accepts only frozen revision and JSON options and dispatches the typed request",
         "ADRAI.P4-06.cli-contracts.init/create CLI contracts.doctor accepts only revision and JSON, renders exact health exits, and dispatches typed intent",

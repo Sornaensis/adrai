@@ -48,6 +48,13 @@ adrai amend ADR_ID `
 
 Both commands create Git commits. `amend` replaces the current body and keeps the omitted title and summary. Earlier versions remain in Git; `adrai history ADR_ID` shows the change history.
 
+Add `--preview` or `--dry-run` to any of `init`, `create`, `amend`, `scope`,
+`domain`, `obsolete`, and `reactivate` to review proposed files without writes
+or commits. For example, append `--preview --json` to the create command above.
+The proposal reports its repository basis and full file bytes. IDs and
+timestamps are provisional; rerun without the flag to commit. See
+[preview output and validation](docs/USAGE.md#review-before-committing).
+
 Search by topic, find decisions whose declared scopes match a file, or rank decisions against the file's current contents:
 
 ```powershell

@@ -980,6 +980,19 @@ mutationCliContractTests =
   testGroup "init/create CLI contracts"
     [ testCase "global repo defaults before init" $ do
         parseCli ["init"] @?= Right (CliInvocation defaultCliConfig (CmdInit (InitCommand False)))
+    , testCase "preview aliases wrap only mutations and bypass normal dispatch" $ do
+        let adr = "A0123456789ABCDEFGHJKMNPQRS"
+            commands = [["init"], ["create", "--body", "Review"], ["amend", adr, "--body", "Review"], ["scope", adr], ["domain", adr]
+              , ["obsolete", adr, "--reason", "Review"], ["reactivate", adr, "--reason", "Review"]]
+        mapM_ (\arguments -> case parseCli arguments of
+          Left problem -> assertFailure (show problem)
+          Right (CliInvocation config command) -> mapM_ (\flags ->
+            parseCli (arguments <> flags) @?= Right (CliInvocation config (CmdPreview command)))
+            [["--preview"], ["--dry-run"], ["--preview", "--dry-run"]]) commands
+        mapM_ assertParserFailure [["compile", "--preview"], ["show", adr, "--dry-run"], ["explore", "--preview"]]
+        withSystemTempDirectory "adrai preview missing repo" $ \temporary -> do
+          let config = defaultCliConfig {configRepo = temporary </> "missing"}
+          dispatchWith unsupportedCliDispatchDependencies (CliInvocation config (CmdPreview (CmdInit (InitCommand False)))) >>= (@?= ExitFailure 2)
     , testCase "explore is the one option-free public terminal command" $ do
         parseCli ["explore"] @?= Right (CliInvocation defaultCliConfig CmdExplore)
         parseCli ["--repo", "selected repository", "explore"]

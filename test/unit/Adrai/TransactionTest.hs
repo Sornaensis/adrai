@@ -82,6 +82,8 @@ import Adrai.Service.Transaction
     defaultAppendOnlyTestHooks,
     nullOid,
     parseSingleOidFromOutput,
+    observePreviewBasis,
+    validatePreviewTransaction,
   )
 import Adrai.Types
   ( ActorKind (HumanActor),
@@ -107,7 +109,7 @@ import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket,
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Directory (Permissions (writable), createDirectory, createDirectoryLink, createFileLink, doesDirectoryExist, doesFileExist, getModificationTime, getPermissions, listDirectory, pathIsSymbolicLink, removeDirectory, removeDirectoryLink, removeDirectoryRecursive, removeFile, setModificationTime, setPermissions)
+import System.Directory (Permissions (writable), createDirectory, createDirectoryIfMissing, createDirectoryLink, createFileLink, doesDirectoryExist, doesFileExist, getModificationTime, getPermissions, listDirectory, pathIsSymbolicLink, removeDirectory, removeDirectoryLink, removeDirectoryRecursive, removeFile, setModificationTime, setPermissions)
 import Data.List (isPrefixOf, sort)
 import qualified System.Exit as Exit
 import System.FilePath (isAbsolute, makeRelative, normalise, splitDirectories, (</>), takeDirectory)
@@ -126,6 +128,30 @@ tests =
        in testGroup
             "Transaction contract"
             [ testGroup "repository-common mutation lock" (gitLockTests getTransactionSeed),
+      testCase "preview validation rejects malformed bytes occupied paths and pinned ref drift without effects" $
+        withSeed "adrai preview validation" $ \_ repositoryPath repository parentText -> do
+          parent <- requireGitOid parentText
+          basis <- requireRight =<< observePreviewBasis repository
+          (operationText, generated) <- transactionGeneratedFile parent
+          let config = TransactionConfig operationText "adrai: reviewed" Map.empty parent [generated]
+              indexPath = repositoryPath </> ".git" </> "index"
+              generatedPath = repositoryPath </> Text.unpack (repoPathText (genFilePath generated))
+          makeTrackedFileStatStale repositoryPath "seed.txt"
+          indexBefore <- BS.readFile indexPath
+          withGitLock repository $ validatePreviewTransaction repository basis False config >>= assertEqual "preview needs no mutation lock" (Right ())
+          validatePreviewTransaction repository basis False config {configGenerated = [generated {genFileBytes = "invalid"}]} >>= assertBool "malformed proposed bytes are rejected" . isLeft
+          validatePreviewTransaction repository basis False config {configGenerated = [generated, generated]} >>= assertBool "duplicate proposed paths are rejected" . isLeft
+          createDirectoryIfMissing True (takeDirectory generatedPath)
+          BS.writeFile generatedPath "caller occupied bytes"
+          validatePreviewTransaction repository basis False config >>= assertBool "occupied append-only destination is rejected" . isLeft
+          BS.readFile generatedPath >>= assertEqual "occupied caller bytes survive" "caller occupied bytes"
+          removeFile generatedPath
+          _ <- gitSuccess repositoryPath ["branch", "preview-other", Text.unpack parentText] BS.empty
+          _ <- gitSuccess repositoryPath ["symbolic-ref", "HEAD", "refs/heads/preview-other"] BS.empty
+          validatePreviewTransaction repository basis False config >>= assertBool "same-OID different-ref drift is rejected" . isLeft
+          BS.readFile indexPath >>= assertEqual "all preview probes preserve stale caller index bytes" indexBefore
+          gitSuccess repositoryPath ["rev-parse", "HEAD"] BS.empty >>= assertEqual "no preview commits" (TextEncoding.encodeUtf8 parentText <> "\n")
+      ,
       testCase "checked basis rejects a same-OID branch switch after lock acquisition before effects" $ do
         withSeed "adrai checked basis ref race" $ \_ repositoryPath repository parentText -> do
             parent <- requireGitOid parentText

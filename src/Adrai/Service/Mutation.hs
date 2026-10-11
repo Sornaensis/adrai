@@ -23,6 +23,18 @@
 
 module Adrai.Service.Mutation
   ( InitResult (..),
+    PreparedMutation,
+    preparedTransaction,
+    preparedBootstrap,
+    prepareInitCommand,
+    prepareCreateAdrCommand,
+    prepareAmendCurrentAdrCommand,
+    prepareScopeCommand,
+    prepareDomainCommand,
+    prepareObsoleteCommand,
+    prepareReactivateCommand,
+    previewPreparedMutation,
+    previewAdrState,
     initCommand,
     CreateResult (..),
     createAdrCommand,
@@ -60,7 +72,6 @@ where
 
 import Adrai.Git
   ( Repository (..),
-    runRepository,
     resolveRevision,
     repositoryWorktreeRoot,
     GitHeadState (..),
@@ -70,8 +81,6 @@ import Adrai.Git
     gitOidText,
     GitBlob (..),
     GitTreeEntry (..),
-    processExitCode,
-    processStdout,
   )
 import Adrai.Service.Transaction
   ( TransactionConfig (..),
@@ -83,7 +92,9 @@ import Adrai.Service.Transaction
     commitAppendOnlyOperation,
     commitAppendOnlyOperationChecked,
     commitAppendOnlyOperationCheckedPublishing,
-    nullOid,
+    observeTransactionBasis,
+    validateBootstrapDestinations,
+    validatePreviewTransaction,
   )
 import Adrai.Provenance
   ( ProvenanceCapsuleInput (..),
@@ -176,7 +187,6 @@ import Adrai.Graph
   )
 
 import Data.Bifunctor (first)
-import Data.Char (isDigit)
 import qualified Data.ByteString as BS
 import Data.Word (Word8)
 import qualified Data.Map.Strict as Map
@@ -184,11 +194,9 @@ import Data.List (intercalate, sort)
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
-import Data.Text.Encoding.Error (lenientDecode)
+import Data.Text.Encoding (encodeUtf8)
 import Control.Exception (try, IOException)
 import System.IO.Error (isDoesNotExistError)
-import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Random (StdGen, getStdRandom, uniformR)
@@ -197,6 +205,77 @@ data MutationBasis = MutationBasis
   { mutationExpectedBasis :: ExpectedRepositoryBasis,
     mutationCommitPublisher :: Maybe (GitOid -> IO ())
   }
+
+-- | The single generation boundary shared by preview and transactional writes.
+-- The result projection is used only after a real transaction succeeds.
+data PreparedMutation a = PreparedMutation
+  { preparedTransaction :: TransactionConfig,
+    preparedBasis :: Maybe MutationBasis,
+    preparedBootstrap :: Bool,
+    preparedProjectResult :: TransactionResult -> IO (Either TransactionError a)
+  }
+
+preparedResult :: Maybe MutationBasis -> Bool -> TransactionConfig -> (TransactionResult -> IO (Either TransactionError a)) -> IO (Either TransactionError (PreparedMutation a))
+preparedResult basis bootstrap config project = pure (Right (PreparedMutation config basis bootstrap project))
+
+executePreparation :: Repository -> IO (Either TransactionError (PreparedMutation a)) -> IO (Either TransactionError a)
+executePreparation repository preparation = preparation >>= \case
+  Left err -> pure (Left err)
+  Right prepared -> do
+    let config = preparedTransaction prepared
+    result <- if preparedBootstrap prepared
+      then commitBootstrapFiles repository config
+      else commitAppendOnlyWithBasis (preparedBasis prepared) repository config
+    case result of
+      Left err -> pure (Left err)
+      Right transaction -> preparedProjectResult prepared transaction
+
+mapPrepared :: (a -> b) -> PreparedMutation a -> PreparedMutation b
+mapPrepared f prepared = PreparedMutation
+  (preparedTransaction prepared) (preparedBasis prepared) (preparedBootstrap prepared)
+  (fmap (fmap f) . preparedProjectResult prepared)
+
+previewPreparedMutation :: Repository -> ExpectedRepositoryBasis -> PreparedMutation a -> IO (Either TransactionError TransactionConfig)
+previewPreparedMutation repository basis prepared =
+  fmap (fmap (const (preparedTransaction prepared))) $
+    validatePreviewTransaction repository basis (preparedBootstrap prepared) (preparedTransaction prepared)
+
+previewAdrState :: Repository -> ExpectedRepositoryBasis -> AdrId -> IO (Either TransactionError StateToken)
+previewAdrState repository basis adr = repositorySnapshot repository (RevisionSpec (gitOidText (expectedBasisHead basis))) >>= \case
+  Left err -> pure (Left (Stage3ValidateState (T.pack (show err))))
+  Right snapshot -> pure $ do
+    documents <- committedDocuments (repositorySnapshotManagedPaths snapshot) snapshot
+    reduced <- maybe (Left (Stage3ValidateState "preview target ADR is unknown")) Right $
+      lookupReducedAdr adr (reduceManagedGraph (map parsedManagedRecord documents))
+    Right (reducedStateToken reduced)
+
+prepareCreateAdrCommand :: ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> RecordId -> T.Text -> T.Text -> T.Text -> [Domain] -> [ScopePattern] -> Maybe Digest -> Maybe Digest -> Maybe Digest -> IO (Either TransactionError (PreparedMutation CreateResult))
+prepareCreateAdrCommand basis = prepareCreateWithBasis (Just (MutationBasis basis Nothing))
+
+prepareAmendCurrentAdrCommand :: ExpectedRepositoryBasis -> Repository -> Actor -> AdrId -> Maybe StateToken -> T.Text -> T.Text -> T.Text -> T.Text -> ProvenanceInputs -> IO (Either TransactionError (PreparedMutation AmendResult))
+prepareAmendCurrentAdrCommand basis repository actor adr expected rationale title summary body inputs =
+  case normalizeChangeSummary rationale of
+    Left err -> pure (Left err)
+    Right normalized -> prepareAmendWithSource (Just (MutationBasis basis Nothing)) repository actor adr (selectCurrentAmendmentSource adr expected title summary body) normalized title summary body inputs
+
+prepareScopeCommand :: ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> ScopeChangeRequest -> ProvenanceInputs -> IO (Either TransactionError (PreparedMutation ScopeChangeResult))
+prepareScopeCommand basis = prepareScopeWithBasis (Just (MutationBasis basis Nothing))
+
+prepareDomainCommand :: ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> DomainChangeRequest -> ProvenanceInputs -> IO (Either TransactionError (PreparedMutation DomainChangeResult))
+prepareDomainCommand basis = prepareDomainWithBasis (Just (MutationBasis basis Nothing))
+
+prepareObsoleteCommand :: ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> ObsoleteRequest -> ProvenanceInputs -> IO (Either TransactionError (PreparedMutation ObsoleteResult))
+prepareObsoleteCommand basis repository paths actor adr request inputs =
+  case normalizeObsoleteRequest request of
+    Left err -> pure (Left err)
+    Right normalized -> prepareStatusTransition (Just (MutationBasis basis Nothing)) repository paths actor adr normalized StatusObsolete inputs
+
+prepareReactivateCommand :: ExpectedRepositoryBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> ReactivateRequest -> ProvenanceInputs -> IO (Either TransactionError (PreparedMutation ReactivateResult))
+prepareReactivateCommand basis repository paths actor adr request inputs =
+  case normalizeReactivateRequest request of
+    Left err -> pure (Left err)
+    Right normalized -> fmap (fmap (mapPrepared toReactivateResult)) $
+      prepareStatusTransition (Just (MutationBasis basis Nothing)) repository paths actor adr (asObsoleteRequest normalized) StatusActive inputs
 
 -- | Result of the 'initCommand' bootstrap operation.
 data InitResult
@@ -212,7 +291,20 @@ data InitResult
 -- | Bootstrap a fresh repository with default configuration, gitattributes,
 -- and gitignore files.
 initCommand :: Repository -> IO (Either TransactionError InitResult)
-initCommand repository =
+initCommand repository = executePreparation repository (prepareInitCommand repository)
+
+prepareInitCommand :: Repository -> IO (Either TransactionError (PreparedMutation InitResult))
+prepareInitCommand repository = observeTransactionBasis repository >>= \case
+  Left err -> pure (Left err)
+  Right basis -> do
+    let destinations = [GeneratedFile (RepoPath path) BS.empty | path <- [".adrai.toml", ".gitattributes", ".gitignore"]]
+        config = TransactionConfig "init" "adrai: initialize repository" Map.empty (expectedBasisHead basis) destinations
+    validateBootstrapDestinations repository config >>= \case
+      Left err -> pure (Left err)
+      Right () -> prepareInitContents repository
+
+prepareInitContents :: Repository -> IO (Either TransactionError (PreparedMutation InitResult))
+prepareInitContents repository =
   case repositoryWorktreeRoot repository of
     Nothing ->
       pure (Left (Stage1ResolveRepo "worktree root is missing"))
@@ -240,10 +332,7 @@ initCommand repository =
                     configExpectedHead = oldHead,
                     configGenerated = generated
                   }
-          commitBootstrapFiles repository config >>= \case
-            Left transactionError ->
-              pure (Left transactionError)
-            Right TransactionResult {..} ->
+          preparedResult Nothing True config $ \TransactionResult {..} ->
               pure
                 ( Right
                     InitResult
@@ -278,26 +367,7 @@ initCommand repository =
       | not (BS.null line) && BS.last line == 13 = BS.init line
       | otherwise = line
     resolveHeadOrEmpty :: Repository -> IO (Either T.Text GitOid)
-    resolveHeadOrEmpty repo = do
-      result <-
-        runRepository repo "resolve HEAD"
-          ["rev-parse", "--verify", "HEAD^{commit}"] BS.empty
-      pure $ case result of
-        Left _ -> Right nullOid
-        Right procResult
-          | processExitCode procResult /= ExitSuccess -> Right nullOid
-          | otherwise ->
-              let output = T.strip (decodeUtf8With lenientDecode (processStdout procResult))
-               in case mkGitOid output of
-                    Left _ -> Right nullOid
-                    Right oid -> Right oid
-      where
-        mkGitOid :: T.Text -> Either T.Text GitOid
-        mkGitOid v
-          | T.length v == 40 && T.all isHex v = Right (GitOid v)
-          | T.length v == 64 && T.all isHex v = Right (GitOid v)
-          | otherwise = Left (T.pack "not a valid git OID")
-        isHex c = isDigit c || c >= 'a' && c <= 'f'
+    resolveHeadOrEmpty repo = fmap (first (T.pack . show) . fmap expectedBasisHead) (observeTransactionBasis repo)
 
 -- ---------------------------------------------------------------------------
 -- Utility helpers
@@ -430,7 +500,10 @@ createAdrCommandAutoCheckedPublishing publisher basis repository managedPaths ac
     _ -> pure (Left (Stage3ValidateState "failed to generate sortable create identifiers"))
 
 createAdrCommandWithBasis :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> RecordId -> T.Text -> T.Text -> T.Text -> [Domain] -> [ScopePattern] -> Maybe Digest -> Maybe Digest -> Maybe Digest -> IO (Either TransactionError CreateResult)
-createAdrCommandWithBasis expectedBasis repository managedPaths actor adrId _recordId title summary body domains patterns inputDigest promptDigest contextDigest = do
+createAdrCommandWithBasis expectedBasis repository managedPaths actor adrId _recordId title summary body domains patterns inputDigest promptDigest contextDigest = executePreparation repository (prepareCreateWithBasis expectedBasis repository managedPaths actor adrId _recordId title summary body domains patterns inputDigest promptDigest contextDigest)
+
+prepareCreateWithBasis :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> RecordId -> T.Text -> T.Text -> T.Text -> [Domain] -> [ScopePattern] -> Maybe Digest -> Maybe Digest -> Maybe Digest -> IO (Either TransactionError (PreparedMutation CreateResult))
+prepareCreateWithBasis expectedBasis repository managedPaths actor adrId _recordId title summary body domains patterns inputDigest promptDigest contextDigest = do
     oldHeadResult <- case expectedBasis of
       Nothing -> resolveRevision repository (RevisionSpec "HEAD")
       Just basis -> pure (Right (expectedBasisHead (mutationExpectedBasis basis)))
@@ -541,10 +614,7 @@ createAdrCommandWithBasis expectedBasis repository managedPaths actor adrId _rec
                         , configExpectedHead = oldHead
                         , configGenerated = generated
                         }
-                commitAppendOnlyWithBasis expectedBasis repository config >>= \case
-                  Left transactionError ->
-                    pure (Left transactionError)
-                  Right TransactionResult {..} ->
+                preparedResult expectedBasis False config $ \TransactionResult {..} ->
                     pure
                       ( Right
                           CreateResult
@@ -711,7 +781,10 @@ amendCurrentAdrCommandWithBasis expectedBasis repository actor adrId expectedSta
       amendWithSource expectedBasis repository actor adrId (selectCurrentAmendmentSource adrId expectedState newTitle newSummary newBody) rationale newTitle newSummary newBody inputs
 
 amendWithSource :: Maybe MutationBasis -> Repository -> Actor -> AdrId -> ([ParsedManagedDocument] -> Either TransactionError (Maybe DecisionRecord, [RecordId], [Domain])) -> T.Text -> T.Text -> T.Text -> T.Text -> ProvenanceInputs -> IO (Either TransactionError AmendResult)
-amendWithSource expectedBasis repository actor adrId selectSource rationale newTitle newSummary newBody inputs =
+amendWithSource expectedBasis repository actor adrId selectSource rationale newTitle newSummary newBody inputs = executePreparation repository (prepareAmendWithSource expectedBasis repository actor adrId selectSource rationale newTitle newSummary newBody inputs)
+
+prepareAmendWithSource :: Maybe MutationBasis -> Repository -> Actor -> AdrId -> ([ParsedManagedDocument] -> Either TransactionError (Maybe DecisionRecord, [RecordId], [Domain])) -> T.Text -> T.Text -> T.Text -> T.Text -> ProvenanceInputs -> IO (Either TransactionError (PreparedMutation AmendResult))
+prepareAmendWithSource expectedBasis repository actor adrId selectSource rationale newTitle newSummary newBody inputs =
   mutationReadContext expectedBasis repository >>= \case
     Left err -> pure (Left err)
     Right (branchName, revision) -> do
@@ -756,9 +829,7 @@ amendWithSource expectedBasis repository actor adrId selectSource rationale newT
                   config = TransactionConfig operationText ("adrai: amend " <> adrIdText adrId)
                     (Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", intercalate "," [T.unpack (recordIdText amendedId), T.unpack (connectionIdText connectionId)])])
                     (resolvedCommitOid (repositorySnapshotRevision snapshot)) generated
-              commitAppendOnlyWithBasis expectedBasis repository config >>= \case
-                Left transactionError -> pure (Left transactionError)
-                Right TransactionResult {..} -> case (sourceHeads, transactionCreatedPaths) of
+              preparedResult expectedBasis False config $ \TransactionResult {..} -> case (sourceHeads, transactionCreatedPaths) of
                   (_ : _, decisionPath : _) -> pure (Right AmendResult
                     { amendOperationId = transactionOperationId, amendAdrId = adrId, amendRecordId = amendedId, amendAmends = sourceHeads,
                       amendConnectionId = connectionId, amendCommitOid = transactionCommitOid, amendUpdatedPath = decisionPath,
@@ -978,7 +1049,10 @@ changeScopeCommandCheckedPublishing :: (GitOid -> IO ()) -> ExpectedRepositoryBa
 changeScopeCommandCheckedPublishing publisher basis = changeScopeCommandWithBasis (Just (MutationBasis basis (Just publisher)))
 
 changeScopeCommandWithBasis :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> ScopeChangeRequest -> ProvenanceInputs -> IO (Either TransactionError ScopeChangeResult)
-changeScopeCommandWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs =
+changeScopeCommandWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs = executePreparation repository (prepareScopeWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs)
+
+prepareScopeWithBasis :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> ScopeChangeRequest -> ProvenanceInputs -> IO (Either TransactionError (PreparedMutation ScopeChangeResult))
+prepareScopeWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs =
     case normalizeScopeReason reason of
       Left err -> pure (Left err)
       Right rationale ->
@@ -1022,9 +1096,7 @@ changeScopeCommandWithBasis expectedBasis repository _managedPaths actor adrId e
                     , configExpectedHead = resolvedCommitOid (repositorySnapshotRevision snapshot)
                     , configGenerated = [generated]
                     }
-              commitAppendOnlyWithBasis expectedBasis repository config >>= \case
-                Left transactionError -> pure (Left transactionError)
-                Right TransactionResult {..} -> case transactionCreatedPaths of
+              preparedResult expectedBasis False config $ \TransactionResult {..} -> case transactionCreatedPaths of
                   [newPath] -> pure (Right ScopeChangeResult
                     { scopeChangeOperationId = transactionOperationId
                     , scopeChangeAdrId = adrId
@@ -1222,7 +1294,10 @@ changeDomainCommandCheckedPublishing :: (GitOid -> IO ()) -> ExpectedRepositoryB
 changeDomainCommandCheckedPublishing publisher basis = changeDomainCommandWithBasis (Just (MutationBasis basis (Just publisher)))
 
 changeDomainCommandWithBasis :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> DomainChangeRequest -> ProvenanceInputs -> IO (Either TransactionError DomainChangeResult)
-changeDomainCommandWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs =
+changeDomainCommandWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs = executePreparation repository (prepareDomainWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs)
+
+prepareDomainWithBasis :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> Maybe StateToken -> T.Text -> DomainChangeRequest -> ProvenanceInputs -> IO (Either TransactionError (PreparedMutation DomainChangeResult))
+prepareDomainWithBasis expectedBasis repository _managedPaths actor adrId expectedState reason request inputs =
     case normalizeDomainReason reason of
       Left err -> pure (Left err)
       Right rationale -> mutationReadContext expectedBasis repository >>= \case
@@ -1242,12 +1317,10 @@ changeDomainCommandWithBasis expectedBasis repository _managedPaths actor adrId 
                       paths = repositorySnapshotManagedPaths snapshot
                   case sealDomainUpdate opId (repositorySnapshotRevision snapshot) branchName actor timestampMs parents inputs paths record of
                     Left err -> pure (Left err)
-                    Right generated -> commitAppendOnlyWithBasis expectedBasis repository TransactionConfig
+                    Right generated -> preparedResult expectedBasis False TransactionConfig
                       { configOperationId = T.unpack (operationIdText opId), configSubject = "adrai: domain " <> adrIdText adrId
                       , configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))]
-                      , configExpectedHead = resolvedCommitOid (repositorySnapshotRevision snapshot), configGenerated = [generated] } >>= \case
-                        Left err -> pure (Left err)
-                        Right TransactionResult {..} -> case transactionCreatedPaths of
+                      , configExpectedHead = resolvedCommitOid (repositorySnapshotRevision snapshot), configGenerated = [generated] } $ \TransactionResult {..} -> case transactionCreatedPaths of
                           [newPath] -> pure (Right DomainChangeResult
                             { domainChangeOperationId = transactionOperationId, domainChangeAdrId = adrId, domainChangeConnectionId = connId
                             , domainChangeParents = parents, domainChangeMode = mode, domainChangeAdded = added, domainChangeRemoved = removed
@@ -1570,7 +1643,10 @@ normalizeStatusReason operation raw
     normalized = T.strip (normalizeLineEndings raw)
 
 statusTransition :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> ObsoleteRequest -> StatusState -> ProvenanceInputs -> IO (Either TransactionError ObsoleteResult)
-statusTransition expectedBasis repository _managedPaths actor adrId request desiredState inputs =
+statusTransition expectedBasis repository _managedPaths actor adrId request desiredState inputs = executePreparation repository (prepareStatusTransition expectedBasis repository _managedPaths actor adrId request desiredState inputs)
+
+prepareStatusTransition :: Maybe MutationBasis -> Repository -> ManagedPaths -> Actor -> AdrId -> ObsoleteRequest -> StatusState -> ProvenanceInputs -> IO (Either TransactionError (PreparedMutation ObsoleteResult))
+prepareStatusTransition expectedBasis repository _managedPaths actor adrId request desiredState inputs =
   mutationReadContext expectedBasis repository >>= \case
     Left err -> pure (Left err)
     Right (branchName, revision) ->
@@ -1595,15 +1671,13 @@ statusTransition expectedBasis repository _managedPaths actor adrId request desi
                   case sealStatusTransition opId (repositorySnapshotRevision snapshot) branchName actor timestampMs parents recordHeads inputs paths record of
                     Left err -> pure (Left err)
                     Right generated ->
-                      commitAppendOnlyWithBasis expectedBasis repository TransactionConfig
+                      preparedResult expectedBasis False TransactionConfig
                         { configOperationId = T.unpack (operationIdText opId)
                         , configSubject = "adrai: " <> statusOperationLabel desiredState <> " " <> adrIdText adrId
                         , configTrailers = Map.fromList [("ADR", T.unpack (adrIdText adrId)), ("Objects", T.unpack (connectionIdText connId))]
                         , configExpectedHead = resolvedCommitOid (repositorySnapshotRevision snapshot)
                         , configGenerated = [generated]
-                        } >>= \case
-                          Left err -> pure (Left err)
-                          Right TransactionResult {..} -> case transactionCreatedPaths of
+                        } $ \TransactionResult {..} -> case transactionCreatedPaths of
                             [newPath] -> pure (Right ObsoleteResult
                               { obsoleteOperationId = transactionOperationId
                               , obsoleteAdrId = adrId

@@ -62,6 +62,46 @@ Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands 
 
 CLI mutation commands require an actor in `kind:identifier` form and create Git commits. Pass `--actor` or set `ADRAI_ACTOR`; valid kinds are `human`, `llm`, and `service`. Options such as `--expect STATE_TOKEN` provide optimistic concurrency checks when a caller is acting on previously read state. The option-free terminal explorer instead defaults to `human:terminal-explorer` and changes its actor through the `:actor` session control.
 
+### Review before committing
+
+Add `--preview` or its synonymous `--dry-run` to `init`, `create`, `amend`,
+`scope`, `domain`, `obsolete`, or `reactivate` to review the validated proposed
+files without changing repository files, the caller's index, caches, Git objects,
+refs, or commits. Both spellings work with readable output and `--json`:
+
+```console
+adrai --repo ../project init --preview
+adrai create --title "Use PostgreSQL" --summary "Store application data" --body "Require transactions." --actor human:alice --dry-run --json
+adrai amend ADR_ID --body "Require transactions and compatible migrations." --change-summary "Document migrations" --actor human:alice --preview
+```
+
+The proposal is bound to the observed attached branch and HEAD. Existing ADRs
+and configuration come from that committed revision; dirty managed files do not
+become proposal inputs. Unrelated staged or unstaged changes are preserved.
+`init` can preview an existing unborn Git repository, merges the caller's rule
+file bytes, and displays previous and proposed bootstrap bytes. Unsafe or
+occupied generated destinations, detached or bare repositories, active Git
+operations, stale `--expect` tokens, and invalid lifecycle changes are rejected.
+Preview also refuses partial-clone or promisor repositories before reading
+objects: Git can otherwise fetch missing promised objects and write its object
+store during a read. This conservative preview-only refusal includes promisor
+configuration (with included config files), partial-clone filters, and existing
+`.promisor` pack markers. Ordinary commands retain their existing behavior.
+
+JSON uses the dedicated `adrai/preview/v1` schema with `preview: true`,
+`committed: false`, `operation`, `basis` (a commit OID, or `null` for unborn
+init), `head_ref`, `adr_id`, `state_token`, `operation_id`, `commit_subject`,
+`commit_trailers`, and `files`. Each file has a repository-relative `path`, full
+`content`, exact `bytes_hex`, and `previous_bytes_hex` for existing init inputs
+(`null` otherwise). Content is displayed as UTF-8; hex preserves exact bytes
+even for rule files containing non-UTF-8 data. No commit OID or indexing success
+is claimed. Success exits 0; request errors exit 2 and state conflicts exit 3.
+
+Generated identifiers and timestamps are provisional (`provisional: true`).
+Rerun the same command without either flag to commit: it generates fresh IDs
+and timestamps and validates the current repository again. A preview is not an
+apply token and does not reserve paths or hold a lock.
+
 In the option-free terminal explorer, `:help` lists the syntax. Use `search QUERY`
 (or free text), `show ADR_ID`, `view ADR_ID [collapsed|exploded]`,
 `history [ADR_ID]`, and `conflicts` for repository data. Session controls are

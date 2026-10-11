@@ -115,6 +115,7 @@ import Adrai.Repository (RepositorySnapshot, repositoryObservedConfig, repositor
 import Adrai.Scope (mkScopePattern, scopePatternErrorText, scopePatternText)
 import Adrai.Explorer.Interactive (interactiveSession)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..), amendCurrentAdrCommand, changeDomainCommand, changeScopeCommand, createAdrCommand, initCommand, obsoleteCommand, reactivateCommand)
+import qualified Adrai.Service.Mutation as Mutation
 import Adrai.Service.Query
   ( CompareRequest (..),
     HistoryRequest (..),
@@ -142,7 +143,7 @@ import Adrai.Service.PostCommitIndex
     compilePostCommitIndexWithAttributionAndRefresh,
   )
 import Adrai.Service.PostCommitIndex.Internal (clonePostCommitIndexTrustedSource)
-import Adrai.Service.Transaction (TransactionError (..))
+import Adrai.Service.Transaction (TransactionError (..), TransactionConfig (..), GeneratedFile (..), ExpectedRepositoryBasis (..), observePreviewBasis, nullOid)
 import qualified Adrai.Service.Runtime as Runtime
 import Adrai.Compiler.CacheSync (syncProvenanceSnapshot)
 import Adrai.Compiler.Attribution
@@ -192,6 +193,8 @@ import Adrai.Types
      configManagedPaths,
      logicalLineId,
      repoPathText,
+     StateToken,
+     stateTokenText,
   )
 import Adrai.Query
   ( CompareProjection,
@@ -222,6 +225,9 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Set as Set
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Text.Encoding.Error (lenientDecode)
+import Numeric (showHex)
+import System.IO.Error (isDoesNotExistError)
 import qualified Data.Text.Read as TextRead
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize, removeFile)
@@ -230,7 +236,7 @@ import System.FilePath ((</>), takeDirectory)
 import System.IO (Handle, hGetContents, stderr, stdin, stdout)
 import System.Random (randomRIO)
 import Control.Monad (replicateM, when)
-import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, finally, fromException, throwIO, try)
+import Control.Exception (IOException, SomeAsyncException, SomeException, bracket, displayException, finally, fromException, throwIO, try)
 import Database.SQLite.Simple (Connection, Only (..), close, execute, open, query_, withTransaction)
 import qualified Options.Applicative as Opt
 import Options.Applicative
@@ -428,6 +434,7 @@ data CliCommand
   | CmdReactivate ReactivateCommand
   | CmdScope ScopeCommand
   | CmdDomain DomainCommand
+  | CmdPreview CliCommand
   | CmdWeb WebApi.WebOptions
   | CmdExplore
   deriving (Eq, Show)
@@ -441,8 +448,8 @@ parser =
   CliInvocation <$> globalConfigParser <*>
     ( subparser
         ( Opt.commandGroup "Get started (these commands create Git commits):"
-     <> Opt.command "init" (info (Opt.helper <*> (CmdInit <$> initParser)) (progDesc "initialize ADRAI in an existing Git repository" <> Opt.footer "Example: adrai init"))
-     <> Opt.command "create" (info (Opt.helper <*> (CmdCreate <$> createParser)) (progDesc "create an ADR (requires content and an actor)" <> Opt.footer "Example: adrai create --title 'Use PostgreSQL' --summary 'Store application data' --body 'PostgreSQL provides transactions.' --actor human:alice"))
+     <> Opt.command "init" (info (Opt.helper <*> (previewParser (CmdInit <$> initParser))) (progDesc "initialize ADRAI in an existing Git repository" <> Opt.footer "Example: adrai init"))
+     <> Opt.command "create" (info (Opt.helper <*> (previewParser (CmdCreate <$> createParser))) (progDesc "create an ADR (requires content and an actor)" <> Opt.footer "Example: adrai create --title 'Use PostgreSQL' --summary 'Store application data' --body 'PostgreSQL provides transactions.' --actor human:alice"))
         )
    <|> subparser
         ( Opt.commandGroup "Read and inspect (no Git commits):"
@@ -456,11 +463,11 @@ parser =
         )
    <|> subparser
         ( Opt.commandGroup "Change decisions (these commands create Git commits):"
-     <> Opt.command "amend" (commandInfo (CmdAmend <$> amendParser) "amend an ADR; provide ADR, changed content, and --actor")
-     <> Opt.command "scope" (commandInfo (CmdScope <$> scopeParser) "change file scope; provide ADR, --add/--remove/--set, --reason, --actor")
-     <> Opt.command "domain" (commandInfo (CmdDomain <$> domainParser) "change domains; provide ADR, change option, --reason, --actor")
-     <> Opt.command "obsolete" (commandInfo (CmdObsolete <$> obsoleteParser) "mark ADR obsolete; provide ADR, --reason, --actor")
-     <> Opt.command "reactivate" (commandInfo (CmdReactivate <$> reactivateParser) "reactivate ADR; provide ADR, --reason, --actor")
+     <> Opt.command "amend" (commandInfo (previewParser (CmdAmend <$> amendParser)) "amend an ADR; provide ADR, changed content, and --actor")
+     <> Opt.command "scope" (commandInfo (previewParser (CmdScope <$> scopeParser)) "change file scope; provide ADR, --add/--remove/--set, --reason, --actor")
+     <> Opt.command "domain" (commandInfo (previewParser (CmdDomain <$> domainParser)) "change domains; provide ADR, change option, --reason, --actor")
+     <> Opt.command "obsolete" (commandInfo (previewParser (CmdObsolete <$> obsoleteParser)) "mark ADR obsolete; provide ADR, --reason, --actor")
+     <> Opt.command "reactivate" (commandInfo (previewParser (CmdReactivate <$> reactivateParser)) "reactivate ADR; provide ADR, --reason, --actor")
         )
    <|> subparser
         ( Opt.commandGroup "Interfaces:"
@@ -468,6 +475,13 @@ parser =
      <> Opt.command "explore" (commandInfo (pure CmdExplore) "open the terminal explorer for revision-local reads and checked edits")
         )
     )
+
+-- Both spellings (including using both together) select the same read-only path.
+previewParser :: Parser CliCommand -> Parser CliCommand
+previewParser commandParser =
+  (\flags command -> if null flags then command else CmdPreview command)
+    <$> many (flag' () (long "preview" <> long "dry-run" <> help "review proposed files without writes or commits"))
+    <*> commandParser
 
 commandInfo :: Parser a -> String -> Opt.ParserInfo a
 commandInfo commandParser description = info (Opt.helper <*> commandParser) (progDesc description)
@@ -775,6 +789,7 @@ dispatch :: CliInvocation -> IO ExitCode
 dispatch = dispatchWith productionCliDependencies
 
 dispatchWith :: CliDispatchDependencies -> CliInvocation -> IO ExitCode
+dispatchWith dependencies (CliInvocation config (CmdPreview command)) = dispatchPreview dependencies config command
 dispatchWith dependencies (CliInvocation config (CmdInit command)) = do
   result <- cliRunInit dependencies config
   case result of
@@ -1476,6 +1491,145 @@ runProductionRelevant config request = do
       pure $ case result of
         Left failure -> Left (CliUserFailure (relevantFailureText failure))
         Right projection -> Right projection
+
+-- | Dedicated review output: no commit/index result is manufactured.
+data MutationPreview = MutationPreview
+  { previewOperation :: Text,
+    previewBasis :: ExpectedRepositoryBasis,
+    previewConfig :: TransactionConfig,
+    previewState :: Maybe StateToken,
+    previewBefore :: [Maybe ByteString.ByteString]
+  }
+
+dispatchPreview :: CliDispatchDependencies -> CliConfig -> CliCommand -> IO ExitCode
+dispatchPreview dependencies config command = case command of
+  CmdInit cmd -> emitPreview (initJson cmd) $ runPreviewAction "init" config Nothing $ \repo _ -> Mutation.prepareInitCommand repo
+  CmdCreate cmd -> materializePreview (createJson cmd) (cliMaterializeCreate dependencies cmd) $ \request ->
+    runPreviewAction "create" config Nothing $ \repo basis -> withPreviewSnapshot repo basis $ \snapshot -> do
+      identifiers <- freshCreateIdentifiers
+      case identifiers of
+        Left err -> pure (Left (Stage3ValidateState err))
+        Right (adr, record) -> Mutation.prepareCreateAdrCommand basis repo (repositorySnapshotManagedPaths snapshot)
+          (requestActor request) adr record (requestTitle request) (requestSummary request) (requestBody request)
+          (requestDomains request) (requestScopes request) (requestInputDigest request) (requestPromptDigest request) (requestContextDigest request)
+  CmdAmend cmd -> materializePreview (amendJson cmd) (cliMaterializeAmend dependencies cmd) $ \request ->
+    runPreviewAction "amend" config (Just (amendRequestAdr request)) $ \repo basis ->
+      Mutation.prepareAmendCurrentAdrCommand basis repo (amendRequestActor request) (amendRequestAdr request)
+        (amendRequestExpectedState request) (amendRequestChangeSummary request) (amendRequestTitle request)
+        (amendRequestSummary request) (amendRequestBody request)
+        (ProvenanceInputs (amendRequestInputDigest request) (amendRequestPromptDigest request) (amendRequestContextDigest request))
+  CmdScope cmd -> materializePreview (scopeJson cmd) (cliMaterializeScope dependencies cmd) $ \request ->
+    runPreviewAction "scope" config (Just (scopeRequestAdr request)) $ \repo basis -> withPreviewSnapshot repo basis $ \snapshot ->
+      Mutation.prepareScopeCommand basis repo (repositorySnapshotManagedPaths snapshot) (scopeRequestActor request)
+        (scopeRequestAdr request) (scopeRequestExpectedState request) (scopeRequestReason request) (scopeRequestChange request)
+        (ProvenanceInputs (scopeRequestInputDigest request) (scopeRequestPromptDigest request) (scopeRequestContextDigest request))
+  CmdDomain cmd -> materializePreview (domainJson cmd) (cliMaterializeDomain dependencies cmd) $ \request ->
+    runPreviewAction "domain" config (Just (domainRequestAdr request)) $ \repo basis -> withPreviewSnapshot repo basis $ \snapshot ->
+      Mutation.prepareDomainCommand basis repo (repositorySnapshotManagedPaths snapshot) (domainRequestActor request)
+        (domainRequestAdr request) (domainRequestExpectedState request) (domainRequestReason request) (domainRequestChange request)
+        (ProvenanceInputs (domainRequestInputDigest request) (domainRequestPromptDigest request) (domainRequestContextDigest request))
+  CmdObsolete cmd -> materializePreview (obsoleteJson cmd) (cliMaterializeObsolete dependencies cmd) $ \request ->
+    case mkAdrId (obsoleteAdrSpec cmd) of
+      Left err -> pure (Left (CliUserFailure (Text.pack (show err))))
+      Right adr -> runPreviewAction "obsolete" config (Just adr) $ \repo basis -> withPreviewSnapshot repo basis $ \snapshot ->
+        Mutation.prepareObsoleteCommand basis repo (repositorySnapshotManagedPaths snapshot) (obsoleteRequestActor request)
+          adr (obsoleteIntent request) (obsoleteRequestInputs request)
+  CmdReactivate cmd -> materializePreview (reactivateJson cmd) (cliMaterializeReactivate dependencies cmd) $ \request ->
+    case mkAdrId (reactivateAdrSpec cmd) of
+      Left err -> pure (Left (CliUserFailure (Text.pack (show err))))
+      Right adr -> runPreviewAction "reactivate" config (Just adr) $ \repo basis -> withPreviewSnapshot repo basis $ \snapshot ->
+        Mutation.prepareReactivateCommand basis repo (repositorySnapshotManagedPaths snapshot) (reactivateRequestActor request)
+          adr (reactivateIntent request) (reactivateRequestInputs request)
+  _ -> renderFailure (CliUserFailure "preview requires a mutation command")
+
+materializePreview :: Bool -> IO (Either Text a) -> (a -> IO (Either CliFailure MutationPreview)) -> IO ExitCode
+materializePreview json materialize prepare = materialize >>= \case
+  Left err -> renderFailure (CliUserFailure err)
+  Right request -> emitPreview json (prepare request)
+
+emitPreview :: Bool -> IO (Either CliFailure MutationPreview) -> IO ExitCode
+emitPreview json action = action >>= \case
+  Left err -> renderFailure err
+  Right preview -> emitRendered (renderMutationPreview json preview)
+
+withPreviewSnapshot :: Repository -> ExpectedRepositoryBasis -> (RepositorySnapshot -> IO (Either TransactionError a)) -> IO (Either TransactionError a)
+withPreviewSnapshot repository basis action = repositorySnapshot repository (RevisionSpec (gitOidText (expectedBasisHead basis))) >>= \case
+  Left err -> pure (Left (Stage3ValidateState (Text.pack (show err))))
+  Right snapshot -> action snapshot
+
+runPreviewAction :: Text -> CliConfig -> Maybe AdrId -> (Repository -> ExpectedRepositoryBasis -> IO (Either TransactionError (Mutation.PreparedMutation a))) -> IO (Either CliFailure MutationPreview)
+runPreviewAction operation config adr prepare = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left err -> pure (Left (CliUserFailure (Text.pack (show err))))
+    Right repository -> observePreviewBasis repository >>= \case
+      Left err -> pure (Left (transactionFailure err))
+      Right basis -> prepare repository basis >>= \case
+        Left err -> pure (Left (transactionFailure err))
+        Right prepared -> Mutation.previewPreparedMutation repository basis prepared >>= \case
+          Left err -> pure (Left (transactionFailure err))
+          Right proposed -> do
+            state <- case adr of
+              Nothing -> pure (Right Nothing)
+              Just target -> fmap (fmap Just) (Mutation.previewAdrState repository basis target)
+            before <- if Mutation.preparedBootstrap prepared
+              then traverse (readPreviewBefore repository) (configGenerated proposed)
+              else pure (replicate (length (configGenerated proposed)) (Right Nothing))
+            final <- Mutation.previewPreparedMutation repository basis prepared
+            pure $ do
+              currentState <- first transactionFailure state
+              oldBytes <- sequence before
+              _ <- first transactionFailure final
+              Right (MutationPreview operation basis proposed currentState oldBytes)
+
+readPreviewBefore :: Repository -> GeneratedFile -> IO (Either CliFailure (Maybe ByteString.ByteString))
+readPreviewBefore repository generated = case repositoryWorktreeRoot repository of
+  Nothing -> pure (Left (CliUserFailure "worktree root is missing"))
+  Just root -> do
+    result <- try @IOException (ByteString.readFile (root </> Text.unpack (repoPathText (genFilePath generated))))
+    pure $ case result of
+      Right bytes -> Right (Just bytes)
+      Left err | isDoesNotExistError err -> Right Nothing
+               | otherwise -> Left (CliUserFailure (Text.pack (show err)))
+
+renderMutationPreview :: Bool -> MutationPreview -> CliRendered
+renderMutationPreview json MutationPreview{..} = CliRendered output "" ExitSuccess
+  where
+    basisOid = if expectedBasisHead previewBasis == nullOid then JsonNull else JsonString (gitOidText (expectedBasisHead previewBasis))
+    ref = case expectedBasisHeadState previewBasis of
+      GitHeadAttached branch -> gitRefText branch
+      GitHeadDetached -> "HEAD"
+    config = previewConfig
+    proposed = zip (configGenerated config) previewBefore
+    decode = TextEncoding.decodeUtf8With lenientDecode
+    hex = Text.pack . concatMap (\byte -> let digits = showHex byte "" in if length digits == 1 then '0' : digits else digits) . ByteString.unpack
+    maybeBytes = maybe JsonNull (JsonString . hex)
+    value = JsonObject
+      [ ("schema", JsonString "adrai/preview/v1"), ("preview", JsonBool True), ("committed", JsonBool False)
+      , ("operation", JsonString previewOperation), ("basis", basisOid), ("head_ref", JsonString ref)
+      , ("adr_id", maybe JsonNull (JsonString . Text.pack) (Map.lookup "ADR" (configTrailers config)))
+      , ("state_token", maybe JsonNull (JsonString . stateTokenText) previewState)
+      , ("operation_id", JsonString (Text.pack (configOperationId config)))
+      , ("provisional", JsonBool True)
+      , ("commit_subject", JsonString (configSubject config))
+      , ("commit_trailers", JsonObject [(Text.pack key, JsonString (Text.pack content)) | (key, content) <- Map.toAscList (configTrailers config)])
+      , ("files", JsonArray [JsonObject
+          [("path", JsonString (repoPathText (genFilePath file))), ("content", JsonString (decode (genFileBytes file)))
+          , ("bytes_hex", JsonString (hex (genFileBytes file))), ("previous_bytes_hex", maybeBytes previous)] | (file, previous) <- proposed])
+      ]
+    output | json = renderCanonicalJson value
+           | otherwise = Text.unlines
+               [ "Preview: " <> previewOperation <> " (committed: false)"
+               , "Basis: " <> (if expectedBasisHead previewBasis == nullOid then "unborn" else gitOidText (expectedBasisHead previewBasis)) <> " (" <> ref <> ")"
+               , "Commit intent: " <> configSubject config
+               , "ADR: " <> maybe "none" Text.pack (Map.lookup "ADR" (configTrailers config))
+               , "State: " <> maybe "none" stateTokenText previewState
+               , "Identifiers and timestamps are provisional. Rerun without --preview/--dry-run to commit."
+               ] <> Text.concat
+                 [ "\n--- " <> repoPathText (genFilePath file) <> " ---\n"
+                   <> maybe "" (\bytes -> "Previous content:\n" <> decode bytes <> "\nPrevious bytes (hex): " <> hex bytes <> "\n") previous
+                   <> "Proposed content:\n" <> decode (genFileBytes file) <> "\nProposed bytes (hex): " <> hex (genFileBytes file) <> "\n"
+                 | (file, previous) <- proposed ]
 
 runProductionInit :: CliConfig -> IO (Either CliFailure (InitResult, PostCommitIndexResult))
 runProductionInit config = do

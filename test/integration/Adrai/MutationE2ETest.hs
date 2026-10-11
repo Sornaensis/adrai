@@ -26,7 +26,7 @@ import Adrai.Format.Document
     sealManagedDocument,
   )
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
-import Adrai.Git (GitOid (..), Repository, discoverRepository, gitOidText, systemGit)
+import Adrai.Git (GitOid (..), Repository, discoverRepository, gitOidText, systemGit, runRepository, processExitCode)
 import Adrai.Graph (AxisResolution (..), ReducedAdr (..), lookupReducedAdr, reduceManagedGraph, reducedStateToken)
 import Adrai.Provenance
   ( ProvenanceCapsule,
@@ -77,7 +77,11 @@ import Adrai.Service.PostCommitIndex
   ( PostCommitIndexResult (..),
     compilePostCommitIndex,
   )
+import qualified Adrai.Service.Mutation as Mutation
+import Adrai.Service.Transaction (GeneratedFile (..), TransactionConfig (..), TransactionResult (..), commitAppendOnlyOperationChecked, observePreviewBasis)
+import Control.Monad (forM_)
 import Control.Exception (bracket)
+import GHC.Clock (getMonotonicTimeNSec)
 import Data.List (sort)
 import Data.Text (Text, strip, unpack)
 import qualified Data.Text as T
@@ -92,9 +96,11 @@ import System.Directory
   ( createDirectoryIfMissing,
      doesDirectoryExist,
      listDirectory,
+     removeFile,
   )
 import System.FilePath ((</>), takeDirectory)
 import System.IO.Temp (withSystemTempDirectory)
+import qualified System.IO as IO
 import System.Exit (ExitCode (..))
 import System.Environment (getEnvironment, lookupEnv)
 import System.Process.Typed
@@ -964,5 +970,253 @@ tests =
   testGroup
     "Mutation E2E across hostile environments (P5-05)"
     [ testP602ARealExecutable,
-      testP603A0RealExecutable
+      testP603A0RealExecutable,
+      testGroup "mutation previews"
+        [ testCase "both aliases review init create amend and scope without effects" (previewOperationMatrix True)
+        , testCase "both aliases review domain obsolete and reactivate without effects" (previewOperationMatrix False)
+        , testCase "unborn init reviews exact merged rules before ordinary commit" previewUnbornInit
+        , testCase "rejected previews preserve dirty state and linked Git operation state" previewFailures
+        , testCase "shared preparation validates and commits the exact reviewed bytes" previewPreparedParity
+        , testCase "partial clone previews refuse missing promised blobs without lazy fetch" previewPromisorRefusal
+        ]
     ]
+
+-- Include every worktree/Git/cache file and directory in the footprint. This
+-- catches object creation, raw index refreshes, locks and empty cache parents.
+previewFootprint :: FilePath -> IO [(FilePath, Maybe BS.ByteString)]
+previewFootprint root = walk ""
+  where
+    walk relative = do
+      names <- sort <$> listDirectory (root </> relative)
+      fmap concat $ mapM (entry relative) names
+    entry relative name = do
+      let path = if null relative then name else relative </> name
+      directory <- doesDirectoryExist (root </> path)
+      if directory then ((path, Nothing) :) <$> walk path
+      else do
+        bytes <- BS.readFile (root </> path)
+        pure [(path, Just bytes)]
+
+withPreviewRepo :: String -> (FilePath -> IO a) -> IO a
+withPreviewRepo label action = withSystemTempDirectory label $ \repo -> do
+  git repo ["init", "--initial-branch=main"]
+  configureDeterministicGit repo
+  action repo
+
+seedPreviewRepo :: FilePath -> IO ()
+seedPreviewRepo repo = do
+  BS.writeFile (repo </> "seed.txt") "seed\n"
+  git repo ["add", "seed.txt"]
+  git repo ["commit", "-m", "seed"]
+  _ <- assertExitSuccess "preview setup init" =<< adraiRequiredRaw repo ["init", "--json"]
+  pure ()
+
+previewCreateArgs :: [String]
+previewCreateArgs = ["create", "--title", "Reviewed", "--summary", "Review proposal", "--body", "Reviewed body\n", "--domain", "compiler", "--applies-to", "src/**", "--actor", "human:e2e"]
+
+assertPreview :: FilePath -> [String] -> String -> Bool -> IO Data.Aeson.Value
+assertPreview repo args flag json = do
+  baseline <- previewFootprint repo
+  output <- assertExitSuccess "preview" =<< adraiRequiredRaw repo (args <> [flag] <> ["--json" | json])
+  previewFootprint repo >>= (@?= baseline)
+  if json then do
+    result <- decodeCanonicalJson "preview" output
+    (requireJsonField "preview" result "schema" :: IO Text) >>= (@?= "adrai/preview/v1")
+    (requireJsonField "preview" result "committed" :: IO Bool) >>= (@?= False)
+    (requireJsonField "preview" result "preview" :: IO Bool) >>= (@?= True)
+    (requireJsonField "preview" result "provisional" :: IO Bool) >>= (@?= True)
+    case result of
+      Data.Aeson.Object fields -> do
+        assertBool "preview never claims indexing or an authoritative commit" (all (\key -> not (KM.member key fields)) ["commit", "indexed", "index_updated"])
+      _ -> assertFailure "preview is not an object"
+    files <- requireJsonField "preview" result "files" :: IO [Data.Aeson.Value]
+    assertBool "full proposed files are present" (not (null files))
+    forM_ files $ \file -> do
+      content <- requireJsonField "preview file" file "content" :: IO Text
+      bytesHex <- requireJsonField "preview file" file "bytes_hex" :: IO Text
+      assertBool "exact bytes and reviewable content are present" (not (T.null content) && not (T.null bytesHex))
+    pure result
+  else do
+    let rendered = decodeUtf8 (LBS.toStrict output)
+    assertBool "plain output labels preview and proposed files" (all (`T.isInfixOf` rendered) ["Preview:", "committed: false", "Basis:", "Commit intent:", "Proposed content:", "provisional"])
+    pure Data.Aeson.Null
+
+previewPhase :: String -> IO a -> IO a
+previewPhase label action = bracket begin end (const action)
+  where
+    begin = do
+      started <- getMonotonicTimeNSec
+      putStrLn ("preview phase begin: " <> label)
+      IO.hFlush IO.stdout
+      pure started
+    end started = do
+      finished <- getMonotonicTimeNSec
+      putStrLn ("preview phase end: " <> label <> " (" <> show ((finished - started) `div` 1000000) <> " ms)")
+      IO.hFlush IO.stdout
+
+previewOperationMatrix :: Bool -> IO ()
+previewOperationMatrix contentSlice = previewPhase "matrix fixture lifetime including cleanup" $ withPreviewRepo "adrai preview matrix" $ \repo -> do
+  previewPhase "fixture setup" $ do
+    seedPreviewRepo repo
+    BS.writeFile (repo </> "staged.bin") (BS.pack [0, 222, 173, 10, 255])
+    git repo ["add", "staged.bin"]
+    BS.writeFile (repo </> "seed.txt") "caller dirty bytes\n"
+  let operation args = case args of name : _ -> name; [] -> "unknown"
+      review args = previewPhase ("review " <> operation args) $ forM_ ["--preview", "--dry-run"] $ \flag -> forM_ [True, False] $ \json -> do
+        _ <- assertPreview repo args flag json
+        pure ()
+      commit args = previewPhase ("ordinary commit " <> operation args) $ decodeCanonicalJson "ordinary command after preview" =<< (assertExitSuccess "ordinary command after preview" =<< adraiRequiredRaw repo (args <> ["--json"]))
+  if contentSlice then do
+    review ["init"]
+    review previewCreateArgs
+    previewPhase "both aliases together" $ do
+      both <- assertPreview repo (previewCreateArgs <> ["--preview"]) "--dry-run" True
+      (requireJsonField "both flags" both "operation" :: IO Text) >>= (@?= "create")
+  else pure ()
+  created <- commit previewCreateArgs
+  adr <- requireJsonField "create" created "adr" :: IO Text
+  let operations =
+        [ ["amend", unpack adr, "--change-summary", "Reviewed amendment", "--body", "Changed body", "--actor", "human:e2e"]
+        , ["scope", unpack adr, "--add", "test/**", "--reason", "Expand", "--actor", "human:e2e"]
+        , ["domain", unpack adr, "--add", "ops", "--reason", "Expand", "--actor", "human:e2e"]
+        , ["obsolete", unpack adr, "--reason", "Retire", "--actor", "human:e2e"]
+        , ["reactivate", unpack adr, "--reason", "Restore", "--actor", "human:e2e"] ]
+  forM_ (if contentSlice then take 2 operations else drop 2 operations) $ \args -> do
+    review args
+    _ <- commit args
+    pure ()
+  BS.readFile (repo </> "staged.bin") >>= (@?= BS.pack [0, 222, 173, 10, 255])
+  BS.readFile (repo </> "seed.txt") >>= (@?= "caller dirty bytes\n")
+  putStrLn "preview matrix checks completed; fixture cleanup follows"
+  IO.hFlush IO.stdout
+
+previewUnbornInit :: IO ()
+previewUnbornInit = withPreviewRepo "adrai preview unborn" $ \repo -> do
+  let attrs = "# caller\r\narchitecture/adrai/decisions/** text eol=lf"
+      ignore = "caller-build/"
+  BS.writeFile (repo </> ".gitattributes") attrs
+  BS.writeFile (repo </> ".gitignore") ignore
+  result <- assertPreview repo ["init"] "--dry-run" True
+  (requireJsonField "unborn" result "basis" :: IO (Maybe Text)) >>= (@?= Nothing)
+  (requireJsonField "unborn" result "head_ref" :: IO Text) >>= (@?= "refs/heads/main")
+  files <- requireJsonField "unborn" result "files" :: IO [Data.Aeson.Value]
+  _ <- assertExitSuccess "init after unborn preview" =<< adraiRequiredRaw repo ["init", "--json"]
+  forM_ files $ \file -> do
+    path <- requireJsonField "init file" file "path" :: IO Text
+    content <- requireJsonField "init file" file "content" :: IO Text
+    BS.readFile (repo </> unpack path) >>= (@?= encodeUtf8 content)
+  BS.readFile (repo </> ".gitattributes") >>= (@?= attrs <> "\r\narchitecture/adrai/connections/** text eol=lf\r\n")
+  BS.readFile (repo </> ".gitignore") >>= (@?= ignore <> "\n.adrai/\n")
+
+previewFailures :: IO ()
+previewFailures = withPreviewRepo "adrai preview rejection" $ \repo -> do
+  seedPreviewRepo repo
+  created <- decodeCanonicalJson "create failure fixture" =<< (assertExitSuccess "create failure fixture" =<< adraiRequiredRaw repo (previewCreateArgs <> ["--json"]))
+  adr <- requireJsonField "create" created "adr" :: IO Text
+  let reject location args expected = do
+        baseline <- previewFootprint repo
+        (code, output, errors) <- adraiRequiredRaw location (args <> ["--preview", "--json"])
+        code @?= ExitFailure expected
+        output @?= ""
+        assertBool "rejection explains its cause" (not (LBS.null errors))
+        previewFootprint repo >>= (@?= baseline)
+      status command = [command, unpack adr, "--reason", "Review", "--actor", "human:e2e"]
+  reject repo (previewCreateArgs <> ["--input-digest", "invalid"]) 2
+  reject repo (status "reactivate") 3
+  reject repo (status "obsolete" <> ["--expect", "S0123456789ABCDEFGHJKMN"]) 3
+  -- Dirty committed managed bytes are never inputs to the reviewed graph.
+  paths <- requireJsonField "create" created "created" :: IO [Text]
+  case paths of
+    path : _ -> BS.writeFile (repo </> unpack path) "caller invalid dirty managed bytes"
+    [] -> assertFailure "create returned no managed paths"
+  _ <- assertPreview repo (status "obsolete") "--dry-run" True
+  -- Occupying a generated parent with a file must fail before any writes.
+  let blocked = repo </> "blocked"
+  BS.writeFile blocked "caller file"
+  BS.writeFile (repo </> ".adrai.toml") (encodeUtf8 (T.replace "architecture/adrai/decisions" "blocked/decisions" defaultConfigText))
+  -- The configuration is read from HEAD, so dirty config cannot redirect output.
+  _ <- assertPreview repo previewCreateArgs "--preview" True
+  git repo ["add", ".adrai.toml"]
+  git repo ["commit", "-m", "blocked managed configuration"]
+  reject repo previewCreateArgs 2
+  git repo ["checkout", "HEAD~1", "--", ".adrai.toml"]
+  git repo ["commit", "-m", "restore managed configuration"]
+  -- A linked worktree stores operation markers in its own gitDir.
+  let linked = repo </> "linked"
+  git repo ["worktree", "add", "-b", "preview-linked", linked]
+  gitDir <- gitText linked ["rev-parse", "--absolute-git-dir"]
+  BS.writeFile (unpack gitDir </> "MERGE_HEAD") "marker\n"
+  reject linked previewCreateArgs 2
+  removeFile (unpack gitDir </> "MERGE_HEAD")
+  -- Populate a real unmerged index without relying on a marker.
+  blob <- gitText repo ["rev-parse", "HEAD:seed.txt"]
+  linkedRepository <- requireRepository linked
+  indexResult <- runRepository linkedRepository "fixture unmerged index" ["update-index", "--index-info"] (encodeUtf8 ("100644 " <> blob <> " 1\tunmerged.txt\n100644 " <> blob <> " 2\tunmerged.txt\n"))
+  case indexResult of
+    Left err -> assertFailure (show err)
+    Right outcome -> processExitCode outcome @?= ExitSuccess
+  reject linked previewCreateArgs 2
+  git repo ["checkout", "--detach"]
+  reject repo previewCreateArgs 2
+
+previewPreparedParity :: IO ()
+previewPreparedParity = withPreviewRepo "adrai preview prepared parity" $ \repo -> do
+  seedPreviewRepo repo
+  repository <- requireRepository repo
+  basis <- requireRight "preview preparation" =<< observePreviewBasis repository
+  let paths = configManagedPaths defaultConfig
+  actor <- requireRight "preview preparation" (mkActor HumanActor "e2e" Nothing)
+  adr <- requireRight "preview preparation" (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
+  record <- requireRight "preview preparation" (mkRecordId "R0123456789ABCDEFGHJKMNPQRS")
+  domain <- requireRight "preview preparation" (mkDomain "compiler")
+  scope <- requireRight "preview preparation" (mkScopePattern "src/**")
+  before <- previewFootprint repo
+  prepared <- requireRight "preview preparation" =<< Mutation.prepareCreateAdrCommand basis repository paths actor adr record "Reviewed" "Summary" "Body\n" [domain] [scope] Nothing Nothing Nothing
+  proposed <- requireRight "preview preparation" =<< Mutation.previewPreparedMutation repository basis prepared
+  proposed @?= Mutation.preparedTransaction prepared
+  previewFootprint repo >>= (@?= before)
+  committed <- requireRight "preview preparation" =<< commitAppendOnlyOperationChecked basis repository proposed
+  forM_ (configGenerated proposed) $ \file -> do
+    let path = repoPathText (genFilePath file)
+    actual <- LBS.toStrict <$> gitStdout repo ["show", unpack (gitOidText (transactionCommitOid committed) <> ":" <> path)]
+    actual @?= genFileBytes file
+
+previewPromisorRefusal :: IO ()
+previewPromisorRefusal = withSystemTempDirectory "adrai preview promisor" $ \temporary -> do
+  let source = temporary </> "remote"
+      clone = temporary </> "clone"
+      sourcePath = T.replace "\\" "/" (T.pack source)
+      sourceUrl = (if "/" `T.isPrefixOf` sourcePath then "file://" else "file:///") <> sourcePath
+  createDirectoryIfMissing True source
+  git source ["init", "--initial-branch=main"]
+  configureDeterministicGit source
+  seedPreviewRepo source
+  created <- decodeCanonicalJson "promisor source" =<< (assertExitSuccess "promisor source" =<< adraiRequiredRaw source (previewCreateArgs <> ["--json"]))
+  git source ["config", "uploadpack.allowFilter", "true"]
+  git source ["config", "uploadpack.allowAnySHA1InWant", "true"]
+  git temporary ["clone", "--filter=blob:none", "--no-checkout", unpack sourceUrl, clone]
+  missing <- gitText clone ["rev-list", "--objects", "--missing=print", "HEAD"]
+  configBlob <- gitText clone ["rev-parse", "HEAD:.adrai.toml"]
+  assertBool "fixture really lacks the promised config blob" (("?" <> configBlob) `elem` T.lines missing)
+  paths <- requireJsonField "promisor source" created "created" :: IO [Text]
+  forM_ paths $ \path -> do
+    blob <- gitText clone ["rev-parse", unpack ("HEAD:" <> path)]
+    assertBool "fixture really lacks the promised ADR blobs" (("?" <> blob) `elem` T.lines missing)
+  let reject expectedMessage = do
+        before <- previewFootprint clone
+        (code, output, errors) <- adraiRequiredRaw clone (previewCreateArgs <> ["--preview", "--json"])
+        code @?= ExitFailure 2
+        output @?= ""
+        assertBool "refusal explains the specific preview limitation" (expectedMessage `T.isInfixOf` decodeUtf8 (LBS.toStrict errors))
+        previewFootprint clone >>= (@?= before)
+  reject "partial-clone or promisor repositories"
+  -- Presence of a filter alone is sufficient; values must not weaken refusal.
+  git clone ["config", "--unset", "remote.origin.promisor"]
+  reject "partial-clone or promisor repositories"
+  git clone ["config", "--unset", "remote.origin.partialCloneFilter"]
+  -- The .promisor pack marker is authoritative even with both keys removed.
+  reject "promisor object packs"
+  let included = temporary </> "included-config"
+  BS.writeFile included "[remote \"included\"]\n\tpromisor = false\n"
+  git clone ["config", "include.path", included]
+  reject "partial-clone or promisor repositories"

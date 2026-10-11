@@ -51,6 +51,10 @@ module Adrai.Service.Transaction
     commitAppendOnlyOperationCheckedWithHooks,
     commitBootstrapFiles,
     commitBootstrapFilesWith,
+    validatePreviewTransaction,
+    observePreviewBasis,
+    observeTransactionBasis,
+    validateBootstrapDestinations,
   )
 where
 
@@ -102,6 +106,7 @@ import qualified Data.Set as Set
 
 import Control.Exception
   ( Exception,
+    IOException,
     SomeException,
     SomeAsyncException,
      fromException,
@@ -115,6 +120,7 @@ import Control.Exception
 import System.Exit (ExitCode (ExitSuccess, ExitFailure))
 import Control.Monad (when, void, unless, forM, forM_, filterM)
 import Data.Char (toLower)
+import Data.List (isSuffixOf)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
@@ -140,6 +146,7 @@ import System.FilePath
     takeDirectory,
   )
 import System.IO (hClose, openTempFile)
+import System.IO.Error (isDoesNotExistError)
 
 -- ---------------------------------------------------------------------------
 -- Data types
@@ -239,6 +246,107 @@ data ExpectedRepositoryBasis = ExpectedRepositoryBasis
     expectedBasisHeadState :: GitHeadState
   }
   deriving (Eq, Show)
+
+-- | A genuinely read-only observation, including an attached unborn branch.
+observePreviewBasis :: Repository -> IO (Either TransactionError ExpectedRepositoryBasis)
+observePreviewBasis repository = rejectPreviewPromisor repository >>= \case
+  Left err -> pure (Left err)
+  Right () -> observeTransactionBasis repository
+
+-- | Ordinary mutation observation does not impose preview-only admission.
+observeTransactionBasis :: Repository -> IO (Either TransactionError ExpectedRepositoryBasis)
+observeTransactionBasis repository = do
+  case repositoryWorktreeRoot repository of
+    Nothing -> pure (Left (Stage1ResolveRepo "worktree root is missing"))
+    Just _ -> repositoryHeadState repository >>= \case
+      Left err -> pure (Left (Stage3ValidateState (T.pack (show err))))
+      Right GitHeadDetached -> pure (Left (Stage3ValidateState "HEAD is detached; attach a branch first"))
+      Right state -> do
+        result <- runRepository repository "preview HEAD" ["rev-parse", "--verify", "HEAD^{commit}"] BS.empty
+        case result of
+          Left err -> pure (Left (Stage3ValidateState (T.pack (show err))))
+          Right res | processExitCode res == ExitSuccess ->
+            pure (first Stage3ValidateState (ExpectedRepositoryBasis <$> parseSingleOidFromOutput "preview HEAD" (processStdout res) <*> pure state))
+          Right _ -> do
+            -- Distinguish a genuinely unborn branch from a broken ref.
+            let GitHeadAttached ref = state
+            refResult <- runRepository repository "preview unborn branch" ["show-ref", "--verify", "--quiet", T.unpack (gitRefText ref)] BS.empty
+            pure $ case refResult of
+              Right res | processExitCode res == ExitFailure 1 -> Right (ExpectedRepositoryBasis nullOid state)
+              _ -> Left (Stage3ValidateState "HEAD cannot be resolved and is not an unborn branch")
+
+-- Git 2.31 has no portable per-child no-lazy-fetch switch. Refuse promisor
+-- repositories before resolving any object, including on every revalidation.
+-- Config values are deliberately irrelevant: key presence is conservative.
+rejectPreviewPromisor :: Repository -> IO (Either TransactionError ())
+rejectPreviewPromisor repository = do
+  config <- runRepository repository "preview promisor configuration"
+    ["config", "--includes", "--null", "--name-only", "--get-regexp", "^(extensions\\.partialclone|remote\\..*\\.(promisor|partialclonefilter))$"] BS.empty
+  case config of
+    Left err -> pure (Left (Stage3ValidateState ("cannot inspect preview promisor configuration: " <> T.pack (show err))))
+    Right res | processExitCode res == ExitFailure 1 && BS.null (processStdout res) -> checkMarkers
+    Right res | processExitCode res == ExitSuccess -> pure (Left (Stage3ValidateState "preview is unavailable for partial-clone or promisor repositories"))
+    Right _ -> pure (Left (Stage3ValidateState "cannot inspect preview promisor configuration"))
+  where
+    checkMarkers = do
+      resolved <- runRepository repository "preview object directory" ["rev-parse", "--path-format=absolute", "--git-path", "objects/pack"] BS.empty
+      case resolved of
+        Left err -> pure (Left (Stage3ValidateState (T.pack (show err))))
+        Right res | processExitCode res /= ExitSuccess -> pure (Left (Stage3ValidateState "cannot inspect preview object directory"))
+        Right res -> case TE.decodeUtf8' (processStdout res) of
+          Left _ -> pure (Left (Stage3ValidateState "invalid preview object directory"))
+          Right raw -> do
+            let path = T.unpack (T.dropWhileEnd (`elem` ['\r', '\n']) raw)
+            if null path || '\n' `elem` path || '\r' `elem` path
+              then pure (Left (Stage3ValidateState "invalid preview object directory"))
+              else do
+                inventory <- try @IOException (getDirectoryContents path) >>= \case
+                  Left err | isDoesNotExistError err -> do
+                    parent <- try @IOException (getDirectoryContents (takeDirectory path))
+                    pure $ case parent of
+                      Right names | "pack" `notElem` names -> Right []
+                      _ -> Left err
+                  result -> pure result
+                pure $ case inventory of
+                  Left err -> Left (Stage3ValidateState ("cannot inspect preview promisor packs: " <> T.pack (show err)))
+                  Right names | any (".promisor" `isSuffixOf`) names -> Left (Stage3ValidateState "preview is unavailable for promisor object packs")
+                              | otherwise -> Right ()
+
+validateBootstrapDestinations :: Repository -> TransactionConfig -> IO (Either TransactionError ())
+validateBootstrapDestinations repository config = case validateGeneratedPaths config of
+  Left err -> pure (Left err)
+  Right () -> fmap (fmap (const ())) (resolveGeneratedDestinations repository True (configGenerated config))
+
+-- | Reuse generated-byte and physical-containment validation without entering
+-- the lock, write, index, object-creation or ref-update stages.
+validatePreviewTransaction :: Repository -> ExpectedRepositoryBasis -> Bool -> TransactionConfig -> IO (Either TransactionError ())
+validatePreviewTransaction repository basis bootstrap config = do
+  outcome <- try @TransactionError $ do
+    current <- observePreviewBasis repository >>= either throwIO pure
+    unless (current == basis && configExpectedHead config == expectedBasisHead basis) $
+      throwIO (Stage3ValidateState "expected head mismatch during preview")
+    active <- checkPreviewGitOperations repository
+    either (throwIO . Stage3ValidateState) pure active
+    either throwIO pure (validateGeneratedPaths config)
+    void (resolveGeneratedDestinations repository bootstrap (configGenerated config) >>= either throwIO pure)
+    unless bootstrap (validateGeneratedContents config)
+    final <- observePreviewBasis repository >>= either throwIO pure
+    unless (final == basis) $ throwIO (Stage3ValidateState "expected head mismatch during preview")
+  pure outcome
+
+checkPreviewGitOperations :: Repository -> IO (Either Text ())
+checkPreviewGitOperations repository = do
+  result <- runRepository repository "preview unmerged paths" ["--no-optional-locks", "ls-files", "--unmerged"] BS.empty
+  case result of
+    Left err -> pure (Left (T.pack (show err)))
+    Right res | processExitCode res /= ExitSuccess -> pure (Left "cannot inspect unmerged paths")
+    Right res | not (BS.null (processStdout res)) -> pure (Left "unresolved paths in the index")
+    Right _ -> do
+      -- Operation state is per-worktree; commonDir alone misses linked trees.
+      let dirs = Set.toList (Set.fromList [repositoryGitDir repository, repositoryCommonDir repository])
+      markers <- filterM (\p -> (||) <$> doesFileExist p <*> doesDirectoryExist p)
+        [dir </> name | dir <- dirs, name <- ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-apply", "rebase-merge", "sequencer"]]
+      pure $ if null markers then Right () else Left ("active Git operations: " <> T.intercalate ", " (map T.pack markers))
 
 -- | The caller-visible state which an append-only transaction may touch before
 -- its ref CAS becomes authoritative.  Keeping this as bytes (rather than
@@ -535,6 +643,31 @@ validateGeneratedPaths TransactionConfig{..} = do
 -- * Then write files to the worktree (append-only).
 validateGeneratedFiles :: AppendOnlyDependencies -> AppendOnlyTestHooks -> Repository -> TransactionConfig -> IORef [GeneratedFile] -> IO (Either TransactionError ())
 validateGeneratedFiles dependencies hooks repository TransactionConfig{..} writtenFilesRef = do
+  validateGeneratedContents TransactionConfig{..}
+
+  -- Write files only after the shared, non-writing validation succeeds.
+  forM_ configGenerated $ \GeneratedFile{..} -> do
+    let p = repoPathText genFilePath
+    resolved <- resolveGeneratedDestination repository False (GeneratedFile genFilePath genFileBytes)
+    case resolved of
+      Left err -> throwIO err
+      Right path -> mask $ \restore -> do
+        exists <- doesFileExist path
+        when exists $ throwIO (Stage5ValidateGenerated ("append-only path already exists: " <> p))
+        createDirectoryIfMissing True (takeDirectory path)
+        appendOnlyAfterGeneratedParentCreationHook hooks (GeneratedFile genFilePath genFileBytes)
+        resolvedAfterParentCreation <- resolveGeneratedDestination repository False (GeneratedFile genFilePath genFileBytes)
+        writePath <- either throwIO pure resolvedAfterParentCreation
+        writeExists <- doesFileExist writePath
+        when writeExists $ throwIO (Stage5ValidateGenerated ("append-only path already exists after parent creation: " <> p))
+        modifyIORef' writtenFilesRef (GeneratedFile genFilePath genFileBytes :)
+        restore (appendOnlyWriteGeneratedFile dependencies writePath genFileBytes)
+        appendOnlyAfterGeneratedFileWrite dependencies (GeneratedFile genFilePath genFileBytes)
+  return (Right ())
+
+-- | Validate the proposed bytes without writing files or creating Git objects.
+validateGeneratedContents :: TransactionConfig -> IO ()
+validateGeneratedContents TransactionConfig{..} = do
   let genFiles = configGenerated
   when (null genFiles) $
     throwIO (Stage5ValidateGenerated "an operation must create at least one file")
@@ -593,32 +726,7 @@ validateGeneratedFiles dependencies hooks repository TransactionConfig{..} writt
   when (Set.size actorsSet' /= 1) $
     throwIO (Stage5ValidateGenerated "all files in one operation must share one semantic actor")
 
-  -- Write files to worktree (append-only)
-  forM_ genFiles $ \GeneratedFile{..} -> do
-    let p = repoPathText genFilePath
-    resolved <- resolveGeneratedDestination repository False (GeneratedFile genFilePath genFileBytes)
-    case resolved of
-      Left err -> throwIO err
-      Right path -> do
-        -- Ownership is recorded before the unmasked write.  That lets rollback
-        -- remove a prefix left by a failed/truncated write, while the snapshot
-        -- still proves that no caller file existed before we touched the path.
-        mask $ \restore -> do
-           exists <- doesFileExist path
-           when exists $
-             throwIO (Stage5ValidateGenerated (T.pack "append-only path already exists: " <> p))
-           createDirectoryIfMissing True (takeDirectory path)
-           appendOnlyAfterGeneratedParentCreationHook hooks (GeneratedFile genFilePath genFileBytes)
-           resolvedAfterParentCreation <- resolveGeneratedDestination repository False (GeneratedFile genFilePath genFileBytes)
-           writePath <- either throwIO pure resolvedAfterParentCreation
-           writeExists <- doesFileExist writePath
-           when writeExists $
-             throwIO (Stage5ValidateGenerated (T.pack "append-only path already exists after parent creation: " <> p))
-           modifyIORef' writtenFilesRef (GeneratedFile genFilePath genFileBytes :)
-           restore (appendOnlyWriteGeneratedFile dependencies writePath genFileBytes)
-           appendOnlyAfterGeneratedFileWrite dependencies (GeneratedFile genFilePath genFileBytes)
-
-  return (Right ())
+  pure ()
 
 -- ---------------------------------------------------------------------------
 -- Stage 6: Create temporary index
