@@ -489,7 +489,7 @@
         "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).mutation previews.shared preparation validates and commits the exact reviewed bytes",
         "ADRAI.P5-05.Mutation E2E across hostile environments (P5-05).mutation previews.partial clone previews refuse missing promised blobs without lazy fetch"
       ],
-      "rationale": "Keep compact real command wiring and merged-head reconciliation in one isolated process.",
+      "rationale": "Start the intact real CLI command and preview group in the first normal wave after all three exclusive barriers, allowing its case-local work to overlap other normal roots under the unchanged ceiling.",
       "costProvenance": "Source-defined retained selection and fixture setup; current elapsed cost requires matching external execution evidence."
     },
     {
@@ -1117,6 +1117,10 @@
       "classification": "exclusive"
     },
     {
+      "id": "MutationE2E",
+      "classification": "normal"
+    },
+    {
       "id": "O",
       "classification": "normal"
     },
@@ -1150,10 +1154,6 @@
     },
     {
       "id": "K",
-      "classification": "normal"
-    },
-    {
-      "id": "MutationE2E",
       "classification": "normal"
     },
     {

@@ -1273,8 +1273,8 @@ function Read-And-VerifyOrdinaryPartitions {
     Assert-OrdinalSetEquality -Expected $ordinaryNames -Actual $unionNames -Label 'Ordinary partition union'
 
     [string[]]$requiredQueueOrder = @(
-        'WebMutations', 'PhysicalFlight', 'Rest', 'O', 'Q', 'N', 'R', 'T', 'Env', 'A', 'CompilerSearch', 'K',
-        'MutationE2E', 'D', 'cache', 'C', 'stress', 'E', 'registration',
+        'WebMutations', 'PhysicalFlight', 'Rest', 'MutationE2E', 'O', 'Q', 'N', 'R', 'T', 'Env', 'A', 'CompilerSearch', 'K',
+        'D', 'cache', 'C', 'stress', 'E', 'registration',
         'Krace', 'repeat-001-001'
     )
     $queue = @($overlay.queue)
@@ -1648,9 +1648,9 @@ switch -CaseSensitive ($Mode) {
         (New-ControlledSchedulerJob 'scheduler-exclusive-first' 'exclusive-success' 1),
         (New-ControlledSchedulerJob 'scheduler-exclusive-second' 'exclusive-success' 1),
         (New-ControlledSchedulerJob 'scheduler-exclusive-third' 'exclusive-success' 1),
-        (New-ControlledSchedulerJob 'scheduler-exclusive-peer-1' 'after-exclusive' 1),
-        (New-ControlledSchedulerJob 'scheduler-exclusive-peer-2' 'after-exclusive' 1),
-        (New-ControlledSchedulerJob 'scheduler-exclusive-peer-3' 'after-exclusive' 1)
+        (New-ControlledSchedulerJob 'scheduler-exclusive-peer-MutationE2E' 'after-exclusive' 1),
+        (New-ControlledSchedulerJob 'scheduler-exclusive-peer-O' 'after-exclusive' 1),
+        (New-ControlledSchedulerJob 'scheduler-exclusive-peer-Q' 'after-exclusive' 1)
     )
     $schedulerExclusiveJobs[0].classification = 'exclusive'
     $schedulerExclusiveJobs[1].classification = 'exclusive'
@@ -1673,7 +1673,12 @@ switch -CaseSensitive ($Mode) {
         throw 'The third exclusive job was admitted before the second owned tree was finalized.'
     }
     $exclusiveCompletedUtc = [DateTime]::Parse($exclusiveRecord.startedUtc).AddSeconds([double]$exclusiveRecord.durationSeconds)
-    foreach ($peerRecord in @($script:Evidence.invocations | Where-Object { ([string]$_.id).StartsWith('scheduler-exclusive-peer-', [StringComparison]::Ordinal) })) {
+    # Invocation records finalize in completion order; their timestamps capture admission.
+    $peerRecords = @($script:Evidence.invocations | Where-Object { ([string]$_.id).StartsWith('scheduler-exclusive-peer-', [StringComparison]::Ordinal) } | Sort-Object { [DateTime]::Parse($_.startedUtc) })
+    if ($peerRecords.Count -ne 3 -or $peerRecords[0].id -cne 'scheduler-exclusive-peer-MutationE2E' -or $peerRecords[1].id -cne 'scheduler-exclusive-peer-O' -or $peerRecords[2].id -cne 'scheduler-exclusive-peer-Q') {
+        throw 'The first normal wave was not admitted in MutationE2E/O/Q order.'
+    }
+    foreach ($peerRecord in $peerRecords) {
         if ([DateTime]::Parse($peerRecord.startedUtc) -lt $exclusiveCompletedUtc) {
             throw 'Normal peer was admitted before the exclusive owned tree was finalized.'
         }

@@ -200,14 +200,20 @@ remain concurrent; its owned tree completes before the next exclusive job starts
 This isolates its resource group from external scheduler load; it is not a proven
 fix or a runtime promise. All test guards and internal concurrency remain unchanged.
 
-The remaining queue has sixteen normal jobs in this exact order: `O`, `Q`, `N`,
-`R`, `T`, `Env`, `A`, `CompilerSearch`, `K`, `MutationE2E`, `D`, cache-selection,
+The remaining queue has sixteen normal jobs in this exact order: `MutationE2E`, `O`, `Q`, `N`,
+`R`, `T`, `Env`, `A`, `CompilerSearch`, `K`, `D`, cache-selection,
 `C`, stress, `E`, and benchmark-registration. The initial normal wave follows this source-defined order after all three initial exclusive jobs. `Krace` and the unchanged
 named reliability repeat are the final two exclusive jobs. Each exclusive job
 is a barrier: the coordinator drains active jobs before launching it and does
 not launch another job until its complete descendant tree exits. Cache, stress
 (with `--run-stress`), and benchmark-registration remain whole-component jobs
 in the same bounded queue.
+The first normal wave is `MutationE2E`/`O`/`Q`. The intact CLI mutation and
+preview group starts early so its fixture work can overlap other normal roots.
+All internal concurrency and test guards remain unchanged. Past durations inform
+admission priority; only a matching Complete establishes actual runtime and
+acceptance, and a cancelled duration remains censored.
+
 The current queue has 21 selected jobs and 21 registration-listing processes,
 for a direct process lower bound of 42. The unchanged ledger has 972 unique
 tests and the named repeat gives 973 planned executions. These are source counts;
