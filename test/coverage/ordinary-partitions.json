@@ -495,7 +495,7 @@
     {
       "id": "Rest",
       "component": "adrai-test",
-      "classification": "normal",
+      "classification": "exclusive",
       "selector": "!($3 == \"P6-02A mutation service results\" || $3 == \"P6-02C scope mutation service\" || $3 == \"P6-02D domain mutation service\" || $3 == \"P6-02E status mutation service\" || $2 == \"Transaction contract\" || $2 == \"P4-01\" || $3 == \"Cache integration (P4-07)\" || $3 == \"Provenance overlay topology\" || $2 == \"P4-02\" || $2 == \"P4-03\" || $2 == \"P4-05\" || $3 == \"Query integration (history / search / compare)\" || $3 == \"Environment (branch / worktree / sparse / unicode)\" || $3 == \"Mutation E2E across hostile environments (P5-05)\" || $3 == \"P3-03 compiled search SQLite\" || $0 == \"ADRAI.P7-02.web server runtime.all six HTTP mutations commit through checked shared services\" || $0 == \"ADRAI.P7-03.exact revision compilation is one physical flight\")",
       "tests": [
         "ADRAI.scaffold.Hedgehog is wired into the test suite",
@@ -1099,7 +1099,7 @@
         "ADRAI.P7-05.initial event reports watcher failure and a later reconnect observes recovery",
         "ADRAI.P7-05.initial event retries when publication lands between watcher sample and registration"
       ],
-      "rationale": "The checked complement of anchored resource groups and the two exact exclusive HTTP singletons.",
+      "rationale": "The checked complement runs as the third exclusive resource group, preserving all internal concurrency and guards while excluding unrelated scheduler load; isolation is not a proven behavior remedy.",
       "costProvenance": "Current static Rest count 600 after extracting the exclusive six-route HTTP mutation and physical-flight singletons; elapsed cost requires a matching complete snapshot."
     }
   ],
@@ -1113,11 +1113,11 @@
       "classification": "exclusive"
     },
     {
-      "id": "O",
-      "classification": "normal"
+      "id": "Rest",
+      "classification": "exclusive"
     },
     {
-      "id": "Rest",
+      "id": "O",
       "classification": "normal"
     },
     {

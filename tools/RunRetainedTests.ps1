@@ -1240,7 +1240,7 @@ function Read-And-VerifyOrdinaryPartitions {
 
     $union = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($partition in $partitions) {
-        $expectedPartitionClass = if ([string]$partition.id -in @('Krace', 'WebMutations', 'PhysicalFlight')) { 'exclusive' } else { 'normal' }
+        $expectedPartitionClass = if ([string]$partition.id -in @('Krace', 'WebMutations', 'PhysicalFlight', 'Rest')) { 'exclusive' } else { 'normal' }
         if ([string]$partition.classification -cne $expectedPartitionClass) {
             throw "Ordinary partition '$($partition.id)' must be a $expectedPartitionClass queued job."
         }
@@ -1273,7 +1273,7 @@ function Read-And-VerifyOrdinaryPartitions {
     Assert-OrdinalSetEquality -Expected $ordinaryNames -Actual $unionNames -Label 'Ordinary partition union'
 
     [string[]]$requiredQueueOrder = @(
-        'WebMutations', 'PhysicalFlight', 'O', 'Rest', 'Q', 'N', 'R', 'T', 'Env', 'A', 'CompilerSearch', 'K',
+        'WebMutations', 'PhysicalFlight', 'Rest', 'O', 'Q', 'N', 'R', 'T', 'Env', 'A', 'CompilerSearch', 'K',
         'MutationE2E', 'D', 'cache', 'C', 'stress', 'E', 'registration',
         'Krace', 'repeat-001-001'
     )
@@ -1284,7 +1284,7 @@ function Read-And-VerifyOrdinaryPartitions {
         if ([string]$queue[$index].id -cne $requiredQueueOrder[$index]) {
             throw "Scheduler queue order differs at index $index."
         }
-        $expectedClass = if ($requiredQueueOrder[$index] -in @('WebMutations', 'PhysicalFlight', 'Krace', 'repeat-001-001')) { 'exclusive' } else { 'normal' }
+        $expectedClass = if ($requiredQueueOrder[$index] -in @('WebMutations', 'PhysicalFlight', 'Rest', 'Krace', 'repeat-001-001')) { 'exclusive' } else { 'normal' }
         if ([string]$queue[$index].classification -cne $expectedClass) {
             throw "Scheduler queue classification is invalid for '$($queue[$index].id)'."
         }
@@ -1647,23 +1647,30 @@ switch -CaseSensitive ($Mode) {
     $schedulerExclusiveJobs = @(
         (New-ControlledSchedulerJob 'scheduler-exclusive-first' 'exclusive-success' 1),
         (New-ControlledSchedulerJob 'scheduler-exclusive-second' 'exclusive-success' 1),
+        (New-ControlledSchedulerJob 'scheduler-exclusive-third' 'exclusive-success' 1),
         (New-ControlledSchedulerJob 'scheduler-exclusive-peer-1' 'after-exclusive' 1),
         (New-ControlledSchedulerJob 'scheduler-exclusive-peer-2' 'after-exclusive' 1),
         (New-ControlledSchedulerJob 'scheduler-exclusive-peer-3' 'after-exclusive' 1)
     )
     $schedulerExclusiveJobs[0].classification = 'exclusive'
     $schedulerExclusiveJobs[1].classification = 'exclusive'
+    $schedulerExclusiveJobs[2].classification = 'exclusive'
     Invoke-OwnedProcessQueue -Jobs $schedulerExclusiveJobs -MaximumActiveJobs 3 -RunId 'selfcheck-scheduler-exclusive'
-    Assert-ControlledSchedulerCleanup 'scheduler-exclusive-' 5
+    Assert-ControlledSchedulerCleanup 'scheduler-exclusive-' 6
     $exclusiveRun = @($script:Evidence.schedulerRuns | Where-Object { $_.id -ceq 'selfcheck-scheduler-exclusive' })[-1]
-    if ($exclusiveRun.completed[0] -cne 'scheduler-exclusive-first' -or $exclusiveRun.completed[1] -cne 'scheduler-exclusive-second' -or $exclusiveRun.peakActiveJobs -ne 3) {
-        throw 'The two exclusive jobs did not drain in order before the three-job normal wave.'
+    if ($exclusiveRun.completed[0] -cne 'scheduler-exclusive-first' -or $exclusiveRun.completed[1] -cne 'scheduler-exclusive-second' -or $exclusiveRun.completed[2] -cne 'scheduler-exclusive-third' -or $exclusiveRun.peakActiveJobs -ne 3) {
+        throw 'The three exclusive jobs did not drain in order before the three-job normal wave.'
     }
     $exclusiveRecord = @($script:Evidence.invocations | Where-Object { $_.id -ceq 'scheduler-exclusive-first' })[-1]
     $exclusiveFirstCompletedUtc = [DateTime]::Parse($exclusiveRecord.startedUtc).AddSeconds([double]$exclusiveRecord.durationSeconds)
     $exclusiveRecord = @($script:Evidence.invocations | Where-Object { $_.id -ceq 'scheduler-exclusive-second' })[-1]
     if ([DateTime]::Parse($exclusiveRecord.startedUtc) -lt $exclusiveFirstCompletedUtc) {
         throw 'The second exclusive job was admitted before the first owned tree was finalized.'
+    }
+    $exclusiveSecondCompletedUtc = [DateTime]::Parse($exclusiveRecord.startedUtc).AddSeconds([double]$exclusiveRecord.durationSeconds)
+    $exclusiveRecord = @($script:Evidence.invocations | Where-Object { $_.id -ceq 'scheduler-exclusive-third' })[-1]
+    if ([DateTime]::Parse($exclusiveRecord.startedUtc) -lt $exclusiveSecondCompletedUtc) {
+        throw 'The third exclusive job was admitted before the second owned tree was finalized.'
     }
     $exclusiveCompletedUtc = [DateTime]::Parse($exclusiveRecord.startedUtc).AddSeconds([double]$exclusiveRecord.durationSeconds)
     foreach ($peerRecord in @($script:Evidence.invocations | Where-Object { ([string]$_.id).StartsWith('scheduler-exclusive-peer-', [StringComparison]::Ordinal) })) {

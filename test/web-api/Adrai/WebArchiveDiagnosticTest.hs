@@ -21,7 +21,7 @@ import qualified Adrai.Web.Security as Security
 import qualified Adrai.WebServerTest as Server
 import Control.Concurrent (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay, tryPutMVar)
 import Control.Concurrent.Async (Async, async, mapConcurrently, poll, race, waitCatch, withAsync)
-import Control.Exception (SomeAsyncException, SomeException, bracket, finally, fromException, throwIO, try)
+import Control.Exception (SomeAsyncException, SomeException, bracket, finally, fromException, onException, throwIO, try)
 import Control.Monad (forM_)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -40,7 +40,7 @@ import Network.Socket (Family (AF_INET), ShutdownCmd (ShutdownBoth), SockAddr (S
 import Network.Socket.ByteString (recv, sendAll)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
-import System.IO (hFlush, stdout)
+import System.IO (hFlush, hPutStrLn, stderr, stdout)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase)
@@ -265,11 +265,22 @@ assertTypedBusy (status, response) = do
 testCommittedBusyIndexWarning :: IO ()
 testCommittedBusyIndexWarning = do
   bounded <- timeout 45000000 $ Server.withSeededRepository $ \root -> do
+    phases <- newIORef []
+    startedAt <- getMonotonicTimeNSec
+    let record phase = do
+          now <- getMonotonicTimeNSec
+          atomicModifyIORef' phases (\events -> (take 64 ((phase, (now - startedAt) `div` 1000000) : events), ()))
+        observed label action =
+          (record (label <> " started") >> action <* record (label <> " returned")) `onException` do
+            record (label <> " failed")
+            events <- reverse <$> readIORef phases
+            _ <- try (hPutStrLn stderr (take 4095 ("injected archive busy request failure: " <> label <> "; phases_ms=" <> show events))) :: IO (Either SomeException ())
+            pure ()
     let services = defaultApplicationServices
           { applicationCompileExact = \_ _ -> throwIO Cache.ExactArchiveBusy }
         dependencies = Server.dependencies {serverApplicationServices = services}
     started <- withWebServer dependencies root (Api.WebOptions Nothing False) $ \running _ -> do
-      repositoryResult <- Server.getJson running "/api/v1/repository"
+      repositoryResult <- observed "repository basis" (Server.getJson running "/api/v1/repository")
       basis <- Server.valueAt ["data", "repository_state"] repositoryResult
       before <- Server.gitHead root
       let body = Aeson.object
@@ -282,8 +293,8 @@ testCommittedBusyIndexWarning = do
               "actor" Aeson..= Aeson.object
                 ["kind" Aeson..= ("human" :: Text), "id" Aeson..= ("archive-busy-test" :: Text)]
             ]
-      cookie <- bootstrapCookie running
-      (mutationStatus, mutation) <- rawJsonRequest running "POST" "/api/v1/adrs" (Just cookie) (LazyByteString.toStrict (Aeson.encode body))
+      cookie <- observed "bootstrap cookie" (bootstrapCookie running)
+      (mutationStatus, mutation) <- observed "POST mutation" (rawJsonRequest running "POST" "/api/v1/adrs" (Just cookie) (LazyByteString.toStrict (Aeson.encode body)))
       assertBool "injected postcommit archive busy retains HTTP 200" (mutationStatus == 200)
       committed <- Server.valueAt ["data", "committed"] mutation
       assertBool "the response reports a durable committed operation" (committed == Aeson.Bool True)
@@ -299,9 +310,9 @@ testCommittedBusyIndexWarning = do
       case dataValue of
         Aeson.Object fields -> assertBool "successful publication has no publication warning" (not (KeyMap.member "publication_warning" fields))
         _ -> assertFailure "mutation data is not an object"
-      (readStatus, busy) <- rawJsonRequest running "GET"
+      (readStatus, busy) <- observed "GET exact search" (rawJsonRequest running "GET"
         ("/api/v1/search?q=&mode=hybrid&view=collapsed&limit=100&include_obsolete=false&shallow=false&at=" <> after)
-        Nothing ByteString.empty
+        Nothing ByteString.empty)
       assertBool "injected pre-read archive busy is HTTP 503" (readStatus == 503)
       code <- Server.textAt ["error", "code"] busy
       assertBool "the read error has the typed repository-busy code" (code == "repository-busy")

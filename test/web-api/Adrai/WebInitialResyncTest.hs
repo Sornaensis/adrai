@@ -16,6 +16,7 @@ import Control.Exception (bracket, finally)
 import Control.Monad (when)
 import qualified Data.ByteString as ByteString
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import GHC.Clock (getMonotonicTimeNSec)
 import System.Directory (doesFileExist, removeFile)
 import System.FilePath ((</>))
 import System.Timeout (timeout)
@@ -66,22 +67,45 @@ testPublicationDuringSubscription = do
       sampled <- newEmptyMVar
       release <- newEmptyMVar
       attempts <- newIORef (0 :: Int)
-      let takeSnapshot bound = do
+      phases <- newIORef []
+      startedAt <- getMonotonicTimeNSec
+      let record phase = do
+            now <- getMonotonicTimeNSec
+            atomicModifyIORef' phases (\events -> (take 64 ((phase, (now - startedAt) `div` 1000000) : events), ()))
+          failureDetail outcome = do
+            count <- readIORef attempts
+            events <- reverse <$> readIORef phases
+            pure (take 4096 ("; outcome=" <> outcome <> "; attempts=" <> show count <> "; phases_ms=" <> show events))
+          takeSnapshot bound = do
+            record ("sample started" :: String)
             snapshot <- Watch.repositorySnapshot observer bound
             number <- atomicModifyIORef' attempts (\count -> let next = count + 1 in (next, next))
+            record "sample returned"
             when (number == 1) (putMVar sampled () >> takeMVar release)
+            record "sample released"
             pure snapshot
       withAsync (Application.subscribeApplicationEvents runtime takeSnapshot) $ \worker ->
         (do
           reached <- timeout 3000000 (takeMVar sampled)
           assertBool "the first real watcher snapshot completed before registration" (reached == Just ())
+          record "first sample observed"
           published <- Events.publishInvalidation (Application.applicationEventCoordinator runtime)
             (Events.EventAsOfUnavailable "test-interleaving") [minBound .. maxBound]
+          record "publication returned"
           putMVar release ()
+          record "first sample release sent"
           result <- timeout 8000000 (waitCatch worker)
+          record "subscription wait returned"
+          let outcome = case result of
+                Nothing -> "timeout"
+                Just (Left _) -> "worker exception"
+                Just (Right (Left _)) -> "API rejection"
+                Just (Right (Right _)) -> "subscriber acquired"
           subscriber <- case result of
             Just (Right (Right active)) -> pure active
-            _ -> assertFailure "subscription did not retry the intervening publication"
+            _ -> do
+              detail <- failureDetail outcome
+              assertFailure (take 4096 ("subscription did not retry the intervening publication" <> detail))
           bracket (pure subscriber) (Events.unregisterSubscriber (Application.applicationEventCoordinator runtime)) $ \active -> do
             initial <- readInitial active
             assertBool "new initial generation follows the intervening publication"
