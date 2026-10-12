@@ -163,8 +163,11 @@ complement with the other anchored ordinary groups.
 
 ## Running the gate
 
-Complete mode defaults to one monotonic 1,800-second deadline; an explicit
-`-DeadlineSeconds` may allocate up to 3,600 seconds. One coordinator runs with
+Standalone native Complete mode defaults to one monotonic 1,800-second deadline;
+an explicit `-DeadlineSeconds` may allocate up to 7,200 seconds. This ceiling
+does not change the separate combined native/frontend outer-owner budget of
+3,600 seconds described in [Development](DEVELOPMENT.md), and does not guarantee
+completion. One coordinator runs with
 at most three active owned test roots. Every root is still an isolated
 `TASTY_NUM_THREADS=1`, `GHCRTS=-N1` process with its own platform ownership scope; retained
 concurrency inside an individual test remains unchanged. The timer starts before

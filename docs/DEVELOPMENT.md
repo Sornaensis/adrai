@@ -17,8 +17,9 @@ artifact-binding workflow. The complete gate executes every registered test
 in the ordinary, cache-selection, stress, and benchmark-registration
 components, enables the stress cases with `--run-stress`, and includes the
 named reliability repeats, fixture setup, and owned-descendant cleanup within
-one aggregate deadline (1,800 seconds by default, up to an explicit 3,600
-seconds). A timeout, omitted test, or surviving descendant fails the gate.
+one aggregate standalone native deadline (1,800 seconds by default, up to an
+explicit 7,200 seconds). Selecting that ceiling does not guarantee completion.
+A timeout, omitted test, or surviving descendant fails the gate.
 For combined native and frontend acceptance, one outer owner allocates a single
 3,600-second host execution budget and passes its remaining allocation to each
 stage; stages do not start a new hour. Dependency setup and compilation precede

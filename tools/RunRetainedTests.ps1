@@ -1801,7 +1801,7 @@ try {
             'Build' { 1200 }
         }
     }
-    if (($Mode -eq 'Complete' -and $DeadlineSeconds -gt 3600) -or
+    if (($Mode -eq 'Complete' -and $DeadlineSeconds -gt 7200) -or
         ($Mode -eq 'List' -and $DeadlineSeconds -gt 60) -or
         ($Mode -eq 'Focused' -and $DeadlineSeconds -gt 600)) {
         throw "DeadlineSeconds exceeds the maximum for mode '$Mode'."
