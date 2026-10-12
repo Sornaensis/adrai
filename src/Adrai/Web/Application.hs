@@ -101,9 +101,10 @@ import Network.Wai
   )
 
 data ApplicationServices = ApplicationServices
-  { dispatchApplicationRequest :: Compilation.CompilationCoordinator -> (Repository -> GitOid -> IO (Either Text FilePath)) -> IO () -> Api.Generation -> IO Api.Generation -> IO () -> (GitOid -> IO Api.Generation) -> Api.Repo -> Api.ApiRequest -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation)),
+  { dispatchApplicationRequest :: Compilation.CompilationCoordinator -> (Repository -> GitOid -> IO (Either Text FilePath)) -> IO () -> Api.Generation -> IO Api.Generation -> IO () -> IO () -> (GitOid -> IO Api.Generation) -> Api.Repo -> Api.ApiRequest -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation)),
     applicationCompileExact :: Repository -> GitOid -> IO (Either Text FilePath),
     applicationAfterCompilationJoin :: IO (),
+    applicationAfterQueryLockAcquired :: IO (),
     applicationAfterQueryResolution :: IO (),
     applicationBeforeCommitPublication :: GitOid -> IO ()
   }
@@ -137,7 +138,7 @@ applicationActiveFileRegistry :: ApplicationRuntime -> Watch.ActiveFileRegistry
 applicationActiveFileRegistry = applicationActiveFiles
 
 defaultApplicationServices :: ApplicationServices
-defaultApplicationServices = ApplicationServices dispatchProduction Runtime.ensureExactArchive (pure ()) (pure ()) (const (pure ()))
+defaultApplicationServices = ApplicationServices dispatchProduction Runtime.ensureExactArchive (pure ()) (pure ()) (pure ()) (const (pure ()))
 
 -- | Decide from the original WAI request whether it may enter the WebSocket
 -- adapter.  Rejected upgrade attempts stay in the ordinary application so its
@@ -209,7 +210,7 @@ handleApi runtime request respond = do
                                 applicationBeforeCommitPublication services oid
                                 envelope <- Events.publishInvalidation (applicationCoordinator runtime) (Events.EventAt oid) [minBound .. maxBound]
                                 pure (Api.mkGeneration (Events.eventGeneration envelope))
-                          dispatched <- trySynchronous (dispatchApplicationRequest services (applicationCompilation runtime) (applicationCompileExact services) (applicationAfterCompilationJoin services) generation (nextGeneration runtime) (applicationAfterQueryResolution services) publish (applicationRepo runtime) decoded)
+                          dispatched <- trySynchronous (dispatchApplicationRequest services (applicationCompilation runtime) (applicationCompileExact services) (applicationAfterCompilationJoin services) generation (nextGeneration runtime) (applicationAfterQueryLockAcquired services) (applicationAfterQueryResolution services) publish (applicationRepo runtime) decoded)
                           case dispatched of
                             Left exception -> case fromException exception of
                               Just Events.GenerationExhausted -> respond (generationExhaustedResponse metadata)
@@ -221,16 +222,16 @@ handleApi runtime request respond = do
                               let responseMetadata = Api.ResponseMetadata observedGeneration asOf
                                in respond (jsonResponse Http.status200 (Api.responseJson (Api.ApiResponse responseMetadata payload)) (Api.responseHeaders responseMetadata))
 
-dispatchProduction :: Compilation.CompilationCoordinator -> (Repository -> GitOid -> IO (Either Text FilePath)) -> IO () -> Api.Generation -> IO Api.Generation -> IO () -> (GitOid -> IO Api.Generation) -> Api.Repo -> Api.ApiRequest -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation))
-dispatchProduction compilation compileExact afterCompilationJoin fallbackGeneration allocateGeneration afterResolution publishGeneration bound request = case request of
+dispatchProduction :: Compilation.CompilationCoordinator -> (Repository -> GitOid -> IO (Either Text FilePath)) -> IO () -> Api.Generation -> IO Api.Generation -> IO () -> IO () -> (GitOid -> IO Api.Generation) -> Api.Repo -> Api.ApiRequest -> IO (Either Api.ApiError (Api.ApiResult, Api.ResponseAsOf, Api.Generation))
+dispatchProduction compilation compileExact afterCompilationJoin fallbackGeneration allocateGeneration afterLockAcquired afterResolution publishGeneration bound request = case request of
   Api.ApiRepositoryRequest -> do
-    basis <- captureObservation repository afterResolution allocateGeneration (observeRepositoryBasis bound)
+    basis <- captureObservation repository afterLockAcquired afterResolution allocateGeneration (observeRepositoryBasis bound)
     case basis of
       Left problem -> pure (Left problem)
       Right (observed, generation) -> do
         pure (Right (Api.ApiRepositoryResult (Api.repositoryResult bound (Api.basisHead observed) (Api.basisHeadRef observed)), Api.AsOfCommit (Api.basisHead observed), generation))
   Api.ApiShowRequest value -> do
-    exact <- captureRevision repository afterResolution allocateGeneration (Query.showRequestRevision value)
+    exact <- captureRevision repository afterLockAcquired afterResolution allocateGeneration (Query.showRequestRevision value)
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
@@ -239,14 +240,14 @@ dispatchProduction compilation compileExact afterCompilationJoin fallbackGenerat
           Left failure -> Left (showApiError failure)
           Right projection -> Right (Api.ApiShowResult projection, Api.AsOfCommit oid, generation)
   Api.ApiHistoryRequest value -> do
-    exact <- captureRevision repository afterResolution allocateGeneration (Query.historyRequestRevision value)
+    exact <- captureRevision repository afterLockAcquired afterResolution allocateGeneration (Query.historyRequestRevision value)
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
         result <- Query.runHistory repository value {Query.historyRequestRevision = gitOidText oid}
         pure (either (Left . historyApiError) (\projection -> Right (Api.ApiHistoryResult projection, Api.AsOfCommit oid, generation)) result)
   Api.ApiCompareRequest value -> do
-    exact <- captureObservation repository afterResolution allocateGeneration $ do
+    exact <- captureObservation repository afterLockAcquired afterResolution allocateGeneration $ do
       before <- exactRevision repository (Query.compareRequestFrom value)
       after <- exactRevision repository (Query.compareRequestTo value)
       pure ((,) <$> before <*> after)
@@ -256,7 +257,7 @@ dispatchProduction compilation compileExact afterCompilationJoin fallbackGenerat
         pure (either (Left . compareApiError) (\projection -> Right (Api.ApiCompareResult projection, Api.AsOfComparison fromOid toOid, generation)) result)
       Left problem -> pure (Left problem)
   Api.ApiSearchRequest value -> do
-    exact <- captureRevision repository afterResolution allocateGeneration (Query.searchServiceRevision value)
+    exact <- captureRevision repository afterLockAcquired afterResolution allocateGeneration (Query.searchServiceRevision value)
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
@@ -267,7 +268,7 @@ dispatchProduction compilation compileExact afterCompilationJoin fallbackGenerat
           Right projection -> Right (Api.ApiSearchResult projection, Api.AsOfCommit oid, generation)
   Api.ApiRelevantRequest value -> do
     let requested = case relevantRequestRevision value of AtRevision revision -> revision; WorkingRevision -> "HEAD"
-    exact <- captureRevision repository afterResolution allocateGeneration requested
+    exact <- captureRevision repository afterLockAcquired afterResolution allocateGeneration requested
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
@@ -277,7 +278,7 @@ dispatchProduction compilation compileExact afterCompilationJoin fallbackGenerat
           Right _ -> Query.runRelevantQueryExact repository oid value
         pure (either (Left . relevantApiError) (\projection -> Right (Api.ApiRelevantResult projection, Api.AsOfCommit oid, generation)) result)
   Api.ApiConflictsRequest value -> do
-    exact <- captureRevision repository afterResolution allocateGeneration (Api.revisionRequestRevision value)
+    exact <- captureRevision repository afterLockAcquired afterResolution allocateGeneration (Api.revisionRequestRevision value)
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
@@ -286,7 +287,7 @@ dispatchProduction compilation compileExact afterCompilationJoin fallbackGenerat
           Left _ -> Left (Api.serviceFailure "unable to read repository conflicts")
           Right observed -> Right (Api.ApiConflictsResult (Api.ConflictsResult (mapMaybe Graph.classifyAdrConflict (Graph.graphReductionAdrs (readSnapshotReduction observed)))), Api.AsOfCommit oid, generation)
   Api.ApiDoctorRequest value -> do
-    exact <- captureRevision repository afterResolution allocateGeneration (Api.revisionRequestRevision value)
+    exact <- captureRevision repository afterLockAcquired afterResolution allocateGeneration (Api.revisionRequestRevision value)
     case exact of
       Left problem -> pure (Left problem)
       Right (oid, generation) -> do
@@ -396,13 +397,14 @@ exactRevision repository requested = do
   resolved <- resolveRevision repository (RevisionSpec requested)
   pure (either (Left . revisionApiError) Right resolved)
 
-captureRevision :: Repository -> IO () -> IO Api.Generation -> Text -> IO (Either Api.ApiError (GitOid, Api.Generation))
-captureRevision repository afterResolution allocate requested =
-  captureObservation repository afterResolution allocate (exactRevision repository requested)
+captureRevision :: Repository -> IO () -> IO () -> IO Api.Generation -> Text -> IO (Either Api.ApiError (GitOid, Api.Generation))
+captureRevision repository afterLockAcquired afterResolution allocate requested =
+  captureObservation repository afterLockAcquired afterResolution allocate (exactRevision repository requested)
 
-captureObservation :: Repository -> IO () -> IO Api.Generation -> IO (Either Api.ApiError observed) -> IO (Either Api.ApiError (observed, Api.Generation))
-captureObservation repository afterResolution allocate observe = do
+captureObservation :: Repository -> IO () -> IO () -> IO Api.Generation -> IO (Either Api.ApiError observed) -> IO (Either Api.ApiError (observed, Api.Generation))
+captureObservation repository afterLockAcquired afterResolution allocate observe = do
   captured <- trySynchronous $ withGitLock repository $ do
+    afterLockAcquired
     observation <- observe
     case observation of
       Left problem -> pure (Left problem)

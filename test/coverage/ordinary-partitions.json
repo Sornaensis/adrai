@@ -4,6 +4,28 @@
   "maximumActiveJobs": 3,
   "partitions": [
     {
+      "id": "WebMutations",
+      "component": "adrai-test",
+      "classification": "exclusive",
+      "selector": "$0 == \"ADRAI.P7-02.web server runtime.all six HTTP mutations commit through checked shared services\"",
+      "tests": [
+        "ADRAI.P7-02.web server runtime.all six HTTP mutations commit through checked shared services"
+      ],
+      "rationale": "Run the real six-route HTTP mutation fixture before other owned roots to control unrelated process load while retaining all commits and exact archive compilation.",
+      "costProvenance": "One unchanged retained test; isolation makes no runtime promise."
+    },
+    {
+      "id": "PhysicalFlight",
+      "component": "adrai-test",
+      "classification": "exclusive",
+      "selector": "$0 == \"ADRAI.P7-03.exact revision compilation is one physical flight\"",
+      "tests": [
+        "ADRAI.P7-03.exact revision compilation is one physical flight"
+      ],
+      "rationale": "Preserve real internal HTTP consumer/producer concurrency and original guards while excluding unrelated scheduler load during Git resolution and immutable archive compilation.",
+      "costProvenance": "One unchanged retained test; isolation makes no runtime promise."
+    },
+    {
       "id": "A",
       "component": "adrai-test",
       "classification": "normal",
@@ -474,7 +496,7 @@
       "id": "Rest",
       "component": "adrai-test",
       "classification": "normal",
-      "selector": "!($3 == \"P6-02A mutation service results\" || $3 == \"P6-02C scope mutation service\" || $3 == \"P6-02D domain mutation service\" || $3 == \"P6-02E status mutation service\" || $2 == \"Transaction contract\" || $2 == \"P4-01\" || $3 == \"Cache integration (P4-07)\" || $3 == \"Provenance overlay topology\" || $2 == \"P4-02\" || $2 == \"P4-03\" || $2 == \"P4-05\" || $3 == \"Query integration (history / search / compare)\" || $3 == \"Environment (branch / worktree / sparse / unicode)\" || $3 == \"Mutation E2E across hostile environments (P5-05)\" || $3 == \"P3-03 compiled search SQLite\")",
+      "selector": "!($3 == \"P6-02A mutation service results\" || $3 == \"P6-02C scope mutation service\" || $3 == \"P6-02D domain mutation service\" || $3 == \"P6-02E status mutation service\" || $2 == \"Transaction contract\" || $2 == \"P4-01\" || $3 == \"Cache integration (P4-07)\" || $3 == \"Provenance overlay topology\" || $2 == \"P4-02\" || $2 == \"P4-03\" || $2 == \"P4-05\" || $3 == \"Query integration (history / search / compare)\" || $3 == \"Environment (branch / worktree / sparse / unicode)\" || $3 == \"Mutation E2E across hostile environments (P5-05)\" || $3 == \"P3-03 compiled search SQLite\" || $0 == \"ADRAI.P7-02.web server runtime.all six HTTP mutations commit through checked shared services\" || $0 == \"ADRAI.P7-03.exact revision compilation is one physical flight\")",
       "tests": [
         "ADRAI.scaffold.Hedgehog is wired into the test suite",
         "ADRAI.scaffold.SQLite has FTS5 enabled",
@@ -1052,7 +1074,6 @@
         "ADRAI.P7-02.web server runtime.authenticated events report unavailable snapshot metadata",
         "ADRAI.P7-02.web server runtime.relevant v2 HTTP route serves the current projection",
         "ADRAI.P7-02.web server runtime.shared query routes retain exact response snapshots",
-        "ADRAI.P7-02.web server runtime.all six HTTP mutations commit through checked shared services",
         "ADRAI.P7-02.web server runtime.oversized inputs recover and stale repository bases preserve HEAD",
         "ADRAI.P7-02.web server runtime.built web command and repository bindings start and stop cleanly",
         "ADRAI.P7-02.web server runtime.an occupied explicit port fails without stealing the listener",
@@ -1064,7 +1085,6 @@
         "ADRAI.P7-03.fact watcher verifies and retries bounded changes",
         "ADRAI.P7-03.snapshot HEAD facts use one validated Git invocation",
         "ADRAI.P7-03.snapshot HEAD responses reject malformed and failed observations",
-        "ADRAI.P7-03.exact revision compilation is one physical flight",
         "ADRAI.P7-03.web exact compilation.real repository namespaces compile independently",
         "ADRAI.P7-03.web exact compilation.server shutdown cancels the physical compiler and cleans its candidate",
         "ADRAI.P7-03.web exact compilation.outstanding HTTP compilation retains its revision across CLI publication",
@@ -1079,11 +1099,19 @@
         "ADRAI.P7-05.initial event reports watcher failure and a later reconnect observes recovery",
         "ADRAI.P7-05.initial event retries when publication lands between watcher sample and registration"
       ],
-      "rationale": "Exact complement of the thirteen anchored intact groups, proved against the full current ordinary registration before dispatch.",
-      "costProvenance": "Static Rest count 596 after the seven relevance and web registrations; elapsed cost requires a matching complete snapshot."
+      "rationale": "The checked complement of anchored resource groups and the two exact exclusive HTTP singletons.",
+      "costProvenance": "Current static Rest count 600 after extracting the exclusive six-route HTTP mutation and physical-flight singletons; elapsed cost requires a matching complete snapshot."
     }
   ],
   "queue": [
+    {
+      "id": "WebMutations",
+      "classification": "exclusive"
+    },
+    {
+      "id": "PhysicalFlight",
+      "classification": "exclusive"
+    },
     {
       "id": "O",
       "classification": "normal"

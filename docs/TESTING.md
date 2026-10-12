@@ -149,7 +149,7 @@ compares exact names before scheduling it. Missing, added, or duplicate
 registration fails the gate. Source counts are never treated as run evidence.
 
 `test/coverage/ordinary-partitions.json` is a checked scheduling overlay for
-the ordinary component. It lists fifteen disjoint ordinary jobs, their compact
+the ordinary component. It lists seventeen disjoint ordinary jobs, their compact
 Tasty selectors, every exact expected test name, and the complete queue order.
 Complete mode proves that the partition lists are pairwise disjoint and that
 their union equals the full ordinary registration. It then runs each selector
@@ -187,14 +187,28 @@ descendant teardown, evidence finalization, and cleanup verification:
   -BenchmarkRegistrationTestExe C:\path\to\adrai-benchmark-registration-test.exe
 ```
 
-The queue has seventeen normal jobs in this exact order: `O`, `Rest`, `Q`, `N`,
+The first job is the exclusive `WebMutations` singleton, selecting only
+`all six HTTP mutations commit through checked shared services`. It completes
+all descendants before any normal peer starts. This controls unrelated process
+load while preserving its real commits, exact archive compilation and test guards.
+`PhysicalFlight`, selecting exactly `exact revision compilation is one physical
+flight`, is the second exclusive job. Its real internal consumers and producer
+remain concurrent; its owned tree completes before the normal wave starts.
+`Rest` excludes both exact leaves and contains 600 tests; `WebMutations` and `PhysicalFlight` each contain one.
+
+The remaining queue has seventeen normal jobs in this exact order: `O`, `Rest`, `Q`, `N`,
 `R`, `T`, `Env`, `A`, `CompilerSearch`, `K`, `MutationE2E`, `D`, cache-selection,
-`C`, stress, `E`, and benchmark-registration. The initial wave follows this source-defined order. `Krace` and the unchanged
+`C`, stress, `E`, and benchmark-registration. The initial normal wave follows this source-defined order after both initial exclusive jobs. `Krace` and the unchanged
 named reliability repeat are the final two exclusive jobs. Each exclusive job
 is a barrier: the coordinator drains active jobs before launching it and does
 not launch another job until its complete descendant tree exits. Cache, stress
 (with `--run-stress`), and benchmark-registration remain whole-component jobs
 in the same bounded queue.
+The current queue has 21 selected jobs and 21 registration-listing processes,
+for a direct process lower bound of 42. The unchanged ledger has 972 unique
+tests and the named repeat gives 973 planned executions. These are source counts;
+a matching Complete result establishes actual execution and wall time.
+
 The runner derives the required job-ID
 multiset from the verified partitions, retained components, and expanded repeat
 counts and requires exact equality with the configured queue before dispatch.

@@ -10,7 +10,7 @@
   "components": [
     {
       "name": "adrai-test",
-      "registrationCount": 921,
+      "registrationCount": 929,
       "registrationState": "source-declared; the canonical retained runner List checks exact registration equality",
       "staticEvidence": {
         "nativeHelperRootProcessesRound6": 12,
@@ -203,6 +203,8 @@
   ],
   "completeQueueDerivation": {
     "queueOrder": [
+      "WebMutations",
+      "PhysicalFlight",
       "O",
       "Rest",
       "Q",
@@ -219,18 +221,38 @@
       "C",
       "stress",
       "E",
-      "registration"
+      "registration",
+      "Krace",
+      "repeat-001-001"
     ],
     "maximumActiveJobs": 3,
     "registrationProcessesBeforeDispatch": {
-      "exactCount": 19,
-      "derivation": "Four full-component --list-tests processes plus fifteen ordinary partition --list-tests processes; stress listing includes --run-stress."
+      "exactCount": 21,
+      "derivation": "Four full-component --list-tests processes plus seventeen ordinary partition --list-tests processes; stress listing includes --run-stress."
     },
     "queuedSelectedProcesses": {
-      "exactCount": 19,
-      "derivation": "Fifteen disjoint ordinary partitions, three whole non-ordinary components, and one singleton ordinary repeat each launch one selected test process."
+      "exactCount": 21,
+      "derivation": "Seventeen disjoint ordinary partitions, three whole non-ordinary components, and one singleton ordinary repeat each launch one selected test process."
     },
     "jobs": [
+      {
+        "id": "WebMutations",
+        "component": "adrai-test",
+        "selectedTests": 1,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The unchanged six-route HTTP mutation test creates its real case-local repositories and exact archives as the first exclusive job.",
+        "privateCopies": "No scheduling change to its fixture construction.",
+        "childProcesses": "Unmeasured; every real HTTP mutation, Git commit and exact archive compilation is preserved."
+      },
+      {
+        "id": "PhysicalFlight",
+        "component": "adrai-test",
+        "selectedTests": 1,
+        "selectedProcessLaunches": 1,
+        "resourceSeeds": "The unchanged physical-flight leaf retains genuine cold archive, HTTP, mutation and cancellation fixtures as the second exclusive job.",
+        "privateCopies": "No scheduling change to its fixture construction.",
+        "childProcesses": "Unmeasured; real Git resolution and immutable archive compilation remain enabled."
+      },
       {
         "id": "A",
         "component": "adrai-test",
@@ -297,7 +319,7 @@
       {
         "id": "MutationE2E",
         "component": "adrai-test",
-        "selectedTests": 7,
+        "selectedTests": 13,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "The intact compact real-command group remains in one selected process; repository setup is case-local.",
         "privateCopies": "Fixture-local and unmeasured.",
@@ -324,7 +346,7 @@
       {
         "id": "T",
         "component": "adrai-test",
-        "selectedTests": 48,
+        "selectedTests": 54,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "Exactly two shared resources are acquired in the selected process: the committed transaction seed and the unborn-repository seed.",
         "privateCopies": "Exactly 51 private copies remain after the checked-basis and publication regressions: 49 copies of the committed transaction seed and two copies of the unborn-repository seed.",
@@ -360,7 +382,7 @@
       {
         "id": "Rest",
         "component": "adrai-test",
-        "selectedTests": 596,
+        "selectedTests": 600,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "Selected-resource constructors outside the thirteen anchored groups are input dependent; the P7-02/P7-03 runtime, P7-04 API, and P7-05 exact-archive diagnostic cases acquire bounded loopback, watcher, exact-compilation and archive-validation fixtures; exact construction count elsewhere is unmeasured.",
         "privateCopies": "Unmeasured; fixture-local private copies and temporary repositories are created by the selected cases.",
@@ -411,8 +433,8 @@
       "additionalVersusSingleOrdinaryProcess": 3,
       "explanation": "A, C, D and E are separate selected processes and each acquires one mutation seed. Only A acquires the post-commit seed, for five total constructions rather than the two resources constructed once in a single ordinary process. Round six relocated audited seed identity into private copies. Round eight consolidates three A amend-rejection registrations into one while retaining all four rejection routes and their complete caller-state assertions."
     },
-    "knownDirectProcessLowerBound": 38,
-    "knownDirectProcessLowerBoundDerivation": "Four full-component listings plus fifteen ordinary partition listings plus nineteen queued selected processes. Owned helper/Git/CLI descendants are additional and only the explicitly stated counts above are exact.",
+    "knownDirectProcessLowerBound": 42,
+    "knownDirectProcessLowerBoundDerivation": "Four full-component listings plus seventeen ordinary partition listings plus twenty-one queued selected processes. Owned helper/Git/CLI descendants are additional and only the explicitly stated counts above are exact.",
     "realCliExitCoverage": {
       "realProcess": [
         0,

@@ -393,14 +393,14 @@ testCliObservationOverlap = withSeededRepository $ \root -> do
   repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
   gate <- newIORef Nothing
   dispatchObserver <- newIORef (const (pure ()))
-  let dispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+  let dispatch compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue = do
         notify <- readIORef dispatchObserver
         notify "server dispatch entered"
-        result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+        result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue
         notify "server dispatch returned"
         pure result
       services = defaultApplicationServices
-        { applicationAfterQueryResolution = do
+        { applicationAfterQueryLockAcquired = do
             claimed <- atomicModifyIORef' gate (\current -> (Nothing, current))
             case claimed of
               Nothing -> pure ()
@@ -542,8 +542,27 @@ testCliObservationOverlap = withSeededRepository $ \root -> do
               timeout 2000000 (takeMVar sent) >>= assertBool "web read was sent while real CLI held native ownership" . maybe False (const True)
               dispatchStarted <- timeout 2000000 (takeMVar dispatchEntered)
                 >>= maybe (assertFailure "CLI-held web read did not enter application dispatch") pure
-              threadDelay 100000
-              markOverlap "prepared hook release requested"
+              (status, response) <- wait reading
+              dispatchFinished <- timeout 2000000 (takeMVar dispatchReturned)
+                >>= maybe (assertFailure "CLI-held read did not record its initial dispatch return") pure
+              markOverlap ("HTTP response decoded; status=" <> show status)
+              diagnostic <- overlapEvidence
+              let responseEvidence = "CLI-held observation; safe typed fields=" <> safeResponse response <> "; phases(ms)=" <> diagnostic
+                  typedBusy =
+                    field ["error", "category"] response == Just (Aeson.String "service-failure")
+                      && field ["error", "status"] response == Just (Aeson.Number 503)
+                      && field ["error", "code"] response == Just (Aeson.String "repository-busy")
+                      && field ["error", "message"] response == Just (Aeson.String "repository observation is temporarily unavailable")
+                      && field ["metadata", "as_of", "kind"] response == Just (Aeson.String "unavailable")
+                      && field ["metadata", "as_of", "reason"] response == Just (Aeson.String "request-failed")
+              assertEqual responseEvidence 503 status
+              assertBool responseEvidence typedBusy
+              assertBool (responseEvidence <> "; sustained busy response must finish after the two-second admission budget")
+                (dispatchFinished >= dispatchStarted + 2000000000)
+              gitLockStatus repository >>= \case
+                Left (LockHeld _ owner) -> assertEqual "the actual CLI still owns the native lock after bounded web refusal" cliOwner owner
+                other -> assertFailure ("CLI ownership was lost before release: " <> show other <> "; " <> responseEvidence)
+              markOverlap "actual CLI native ownership verified after bounded web refusal"
               BS.writeFile releaseMarker "release\n"
               markOverlap "prepared hook release marker written"
               completed <- timeout 60000000 (wait cli)
@@ -551,31 +570,8 @@ testCliObservationOverlap = withSeededRepository $ \root -> do
               maybe (assertFailure "CLI owner completion timed out") requireCli completed
               after <- oneCommit beforeCliOwner
               markOverlap "exactly one CLI commit verified"
-              (status, response) <- wait reading
-              dispatchFinished <- timeout 2000000 (takeMVar dispatchReturned)
-                >>= maybe (assertFailure "CLI-held read did not record its initial dispatch return") pure
-              markOverlap ("HTTP response decoded; status=" <> show status)
               releaseObserved <- wait nativeRelease
-              markOverlap ("native release observation joined=" <> show (maybe False (const True) releaseObserved))
-              diagnostic <- overlapEvidence
-              let responseEvidence = "CLI-held observation; safe typed fields=" <> safeResponse response <> "; phases(ms)=" <> diagnostic
-              case status of
-                200 -> textAt ["metadata", "as_of", "oid"] response >>= (@?= after)
-                503 -> do
-                  let typedBusy =
-                        field ["error", "category"] response == Just (Aeson.String "service-failure")
-                          && field ["error", "status"] response == Just (Aeson.Number 503)
-                          && field ["error", "code"] response == Just (Aeson.String "repository-busy")
-                          && field ["error", "message"] response == Just (Aeson.String "repository observation is temporarily unavailable")
-                          && field ["metadata", "as_of", "kind"] response == Just (Aeson.String "unavailable")
-                          && field ["metadata", "as_of", "reason"] response == Just (Aeson.String "request-failed")
-                  assertBool responseEvidence typedBusy
-                  assertBool (responseEvidence <> "; accepted busy response must finish after the two-second admission budget")
-                    (dispatchFinished >= dispatchStarted + 2000000000)
-                  lastHeld <- readIORef lastCliOwnedSample
-                  assertBool (responseEvidence <> "; native CLI ownership must be observed beyond the two-second admission budget")
-                    (maybe False (\(begin, _) -> overlapStarted + begin >= dispatchStarted + 2000000000) lastHeld)
-                _ -> assertFailure responseEvidence
+              assertBool "the native CLI release observer joined" (maybe False (const True) releaseObserved)
               requireUnlocked
               markOverlap "completed CLI and free native lock verified; fresh read launched"
               (freshStatus, freshResponse) <- getJsonStatusWith
@@ -760,7 +756,7 @@ testMutationRoutes = withSeededRepository $ \root -> do
         result <- Runtime.ensureExactArchive repository oid
         recordPhase "exact archive compilation returned"
         pure result
-      dispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+      dispatch compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue = do
         let operation = case requestValue of
               Api.ApiCreateRequest _ _ -> "create"
               Api.ApiAmendRequest _ -> "amend"
@@ -770,7 +766,7 @@ testMutationRoutes = withSeededRepository $ \root -> do
               Api.ApiReactivateRequest _ -> "reactivate"
               _ -> "read"
         recordPhase ("dispatch entered " <> operation)
-        result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+        result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue
         recordPhase ("dispatch returned " <> operation)
         pure result
       services = defaultApplicationServices {applicationCompileExact = compileExact, dispatchApplicationRequest = dispatch}
@@ -847,9 +843,9 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive awaitPub
           result <- Runtime.ensureExactArchive repository oid
           recordPhase compilePhase "exact archive compilation returned"
           pure result
-        delayedDispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+        delayedDispatch compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue = do
           recordPhase dispatchPhase "dispatch entered"
-          outcome <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+          outcome <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue
           recordPhase dispatchPhase "dispatch returned"
           case (requestValue, outcome) of
             (Api.ApiCreateRequest _ _, Right _) -> do
@@ -952,9 +948,9 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive awaitPub
           result <- Runtime.ensureExactArchive repository oid
           recordPhase "post-commit exact archive compilation returned"
           pure result
-        dispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+        dispatch compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue = do
           recordPhase "create dispatch entered"
-          result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+          result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue
           recordPhase "create dispatch returned"
           pure result
         beforePublication _ = do
@@ -1060,9 +1056,9 @@ testMutationRoutesOnServer root running blockNextArchive blockedArchive awaitPub
           result <- Runtime.ensureExactArchive repository oid
           recordPhase "post-commit exact archive compilation returned"
           pure result
-        dispatch compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue = do
+        dispatch compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue = do
           recordPhase "server dispatch entered"
-          result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterResolve publisher repo requestValue
+          result <- dispatchApplicationRequest defaultApplicationServices compilation compileExactService afterJoin fallback allocate afterAcquire afterResolve publisher repo requestValue
           recordPhase "server dispatch returned"
           pure result
         services = defaultApplicationServices
@@ -2669,13 +2665,35 @@ testCompilationRuntime = withSeededRepository $ \root -> do
   joined <- newEmptyMVar
   producerEntered <- newEmptyMVar
   releaseProducer <- newEmptyMVar
-  let compileExact repository oid = do
+  firstPhaseOrigin <- getMonotonicTimeNSec
+  firstPhases <- newIORef ([] :: [(Word64, String)])
+  let recordFirstPhase label = do
+        now <- getMonotonicTimeNSec
+        atomicModifyIORef' firstPhases (\events -> (take 64 ((now - firstPhaseOrigin, label) : events), ()))
+      firstPhaseEvidence = do
+        events <- reverse <$> readIORef firstPhases
+        pure (show [(at `div` 1000000, label) | (at, label) <- events])
+      traceFirstDispatch coordinator compileForDispatch afterJoin fallback allocate afterAcquire afterResolution publish bound apiRequest = do
+        recordFirstPhase "server dispatch entered"
+        outcome <- dispatchApplicationRequest defaultApplicationServices coordinator compileForDispatch afterJoin fallback allocate afterAcquire afterResolution publish bound apiRequest
+          `onException` recordFirstPhase "server dispatch failed or cancelled"
+        recordFirstPhase "server dispatch returned"
+        pure outcome
+      compileExact repository oid = do
         count <- atomicModifyIORef' starts (\value -> let next = value + 1 in (next, next))
+        recordFirstPhase ("physical producer " <> show count <> " entered")
         if count == 1 then putMVar producerEntered () >> takeMVar releaseProducer else pure ()
-        Runtime.ensureExactArchive repository oid
+        recordFirstPhase ("physical producer " <> show count <> " released; exact archive entered")
+        result <- Runtime.ensureExactArchive repository oid
+          `onException` recordFirstPhase ("physical producer " <> show count <> " exact archive failed or cancelled")
+        recordFirstPhase ("physical producer " <> show count <> " exact archive returned")
+        pure result
       services = defaultApplicationServices
         { applicationCompileExact = compileExact,
-          applicationAfterCompilationJoin = putMVar joined ()
+          applicationAfterCompilationJoin = recordFirstPhase "compilation joined" >> putMVar joined (),
+          applicationAfterQueryLockAcquired = recordFirstPhase "native query ownership acquired",
+          applicationAfterQueryResolution = recordFirstPhase "query revision resolved",
+          dispatchApplicationRequest = traceFirstDispatch
         }
       injected = dependencies {serverApplicationServices = services}
       awaitSignal label signal worker = do
@@ -2684,17 +2702,17 @@ testCompilationRuntime = withSeededRepository $ \root -> do
           Just (Left ()) -> pure ()
           Just (Right (Left exception)) -> assertFailure (label <> " request failed before its signal: " <> show exception)
           Just (Right (Right _)) -> assertFailure (label <> " request completed before its signal")
-          Nothing -> assertFailure (label <> " signal timed out")
+          Nothing -> firstPhaseEvidence >>= assertFailure . ((label <> " signal timed out; phases(ms)=") <>)
   repository <- discoverRepository systemGit root >>= either (assertFailure . show) pure
   started <- withWebServer injected root (Api.WebOptions Nothing False) $ \running _ -> do
     headBefore <- gitHead root
     let coldArchive = root </> ".adrai" </> "cache" </> Text.unpack headBefore <> ".sqlite"
     coldPresent <- doesFileExist coldArchive
     assertBool "single-flight exercise begins without an exact archive" (not coldPresent)
-    first <- async (getJson running "/api/v1/doctor")
+    first <- async (getJsonLabeledObserved 30000000 (recordFirstPhase . ("first HTTP " <>)) "first-flight doctor" running "/api/v1/doctor")
     awaitSignal "first compilation join" joined first
     awaitSignal "producer entry" producerEntered first
-    second <- async (getJson running "/api/v1/search?q=seed")
+    second <- async (getJsonLabeledObserved 30000000 (recordFirstPhase . ("second HTTP " <>)) "first-flight search" running "/api/v1/search?q=seed")
     awaitSignal "second compilation join" joined second
     putMVar releaseProducer ()
     doctor <- wait first
@@ -2753,6 +2771,9 @@ testCompilationRuntime = withSeededRepository $ \root -> do
         assertFailure ("second-revision doctor did not succeed within thirty seconds at " <> Text.unpack secondHead <> ": " <> evidence <> ", final lock " <> show lock)
     textAt ["metadata", "as_of", "oid"] secondDoctorResponse >>= (@?= secondHead)
     readIORef starts >>= (@?= 2)
+  case started of
+    Left _ -> firstPhaseEvidence >>= putStrLn . ("first-flight failure phases(ms): " <>)
+    Right _ -> pure ()
   either (assertFailure . Text.unpack) pure started
   revision <- resolveRevision repository (RevisionSpec "HEAD") >>= either (assertFailure . show) pure
   detachedCoordinator <- Compilation.newCompilationCoordinator
@@ -2830,13 +2851,13 @@ testCompilationRuntime = withSeededRepository $ \root -> do
               evidence <- overlapEvidence
               assertFailure (label <> " signal timed out; " <> evidence)
     let originalDispatch = dispatchApplicationRequest defaultApplicationServices
-        tracedDispatch coordinator compileForDispatch afterJoin fallback allocate afterResolution publish bound apiRequest = do
+        tracedDispatch coordinator compileForDispatch afterJoin fallback allocate afterAcquire afterResolution publish bound apiRequest = do
           let route = case apiRequest of
                 Api.ApiCreateRequest _ _ -> "mutation"
                 Api.ApiDoctorRequest _ -> "doctor"
                 _ -> "other"
           recordOverlap (route <> " server dispatch entered")
-          result <- originalDispatch coordinator compileForDispatch afterJoin fallback allocate afterResolution publish bound apiRequest
+          result <- originalDispatch coordinator compileForDispatch afterJoin fallback allocate afterAcquire afterResolution publish bound apiRequest
             `onException` recordOverlap (route <> " server dispatch failed or cancelled")
           recordOverlap (route <> " server dispatch completed")
           pure result
@@ -2855,6 +2876,30 @@ testCompilationRuntime = withSeededRepository $ \root -> do
             applicationAfterCompilationJoin = recordOverlap "compilation joined" >> putMVar overlapJoined (),
             applicationBeforeCommitPublication = \_ -> recordOverlap "commit publication entered" >> putMVar publicationEntered ()
           }
+        getDoctorAfterBusy running = do
+          completed <- timeout 70000000 (retryDoctorAfterBusy running)
+          maybe (assertFailure "doctor retry chain exceeded its seventy-second client bound") pure completed
+        retryDoctorAfterBusy running = do
+          (status, response) <- getJsonStatusWith
+            (requestRawWithStepAndDeadlineObserved (recordOverlap . ("doctor HTTP " <>)) 70000000 "one-flight overlap doctor")
+            running "/api/v1/doctor"
+          case status of
+            200 -> pure response
+            503 -> do
+              let field [] value = Just value
+                  field (key : rest) (Aeson.Object values) = KeyMap.lookup (Key.fromText key) values >>= field rest
+                  field _ _ = Nothing
+                  typedBusy =
+                    field ["error", "category"] response == Just (Aeson.String "service-failure")
+                      && field ["error", "status"] response == Just (Aeson.Number 503)
+                      && field ["error", "code"] response == Just (Aeson.String "repository-busy")
+                      && field ["metadata", "as_of", "kind"] response == Just (Aeson.String "unavailable")
+                      && field ["metadata", "as_of", "reason"] response == Just (Aeson.String "request-failed")
+              assertBool ("doctor returned malformed busy response: " <> show response) typedBusy
+              recordOverlap "doctor returned typed repository busy before compilation join; retrying"
+              threadDelay 50000
+              retryDoctorAfterBusy running
+            _ -> assertFailure ("GET /api/v1/doctor returned " <> show status <> ": " <> show response)
         overlapDependencies = dependencies {serverApplicationServices = overlapServices}
     overlapStarted <- withWebServer overlapDependencies overlapRoot (Api.WebOptions Nothing False) $ \running serverWorker -> do
       let observeWorker label worker = poll worker >>= \case
@@ -2876,7 +2921,7 @@ testCompilationRuntime = withSeededRepository $ \root -> do
           recordOverlap ("committed HEAD " <> Text.unpack committedHead)
           awaitOverlap "post-mutation compilation join" 15000000 overlapJoined mutation
           awaitOverlap "post-mutation producer entry" 15000000 overlapEntered mutation
-          withAsync (getJsonLabeledObserved 70000000 (recordOverlap . ("doctor HTTP " <>)) "one-flight overlap doctor" running "/api/v1/doctor") $ \query ->
+          withAsync (getDoctorAfterBusy running) $ \query ->
             (do
                recordOverlap "concurrent doctor request launched"
                awaitOverlap "concurrent query compilation join" 15000000 overlapJoined query

@@ -1221,22 +1221,26 @@ function Read-And-VerifyOrdinaryPartitions {
 
     $ordinaryComponent = @($Ledger.components | Where-Object { [string]$_.name -ceq 'adrai-test' })[0]
     $raceTestName = 'ADRAI.P4-07.Cache integration (P4-07).competing tree-identical targets retain their own provenance projections'
+    $webMutationTestName = 'ADRAI.P7-02.web server runtime.all six HTTP mutations commit through checked shared services'
+    $physicalFlightTestName = 'ADRAI.P7-03.exact revision compilation is one physical flight'
     $requiredPartitionSelectors = @{
+        PhysicalFlight = '$0 == "ADRAI.P7-03.exact revision compilation is one physical flight"'
+        WebMutations = '$0 == "ADRAI.P7-02.web server runtime.all six HTTP mutations commit through checked shared services"'
         K = '$3 == "Cache integration (P4-07)" && !($0 == "ADRAI.P4-07.Cache integration (P4-07).competing tree-identical targets retain their own provenance projections")'
         Krace = '$0 == "ADRAI.P4-07.Cache integration (P4-07).competing tree-identical targets retain their own provenance projections"'
     }
     $requiredPartitionIds = @(
         'A', 'C', 'D', 'E', 'T', 'N', 'K', 'Krace', 'O', 'R', 'Rest',
-        'Q', 'Env', 'MutationE2E', 'CompilerSearch'
+        'Q', 'Env', 'MutationE2E', 'CompilerSearch', 'WebMutations', 'PhysicalFlight'
     )
     $partitions = @($overlay.partitions)
-    if ($partitions.Count -ne $requiredPartitionIds.Count) { throw 'Ordinary partition overlay must contain exactly fifteen partitions.' }
+    if ($partitions.Count -ne $requiredPartitionIds.Count) { throw 'Ordinary partition overlay must contain exactly seventeen partitions.' }
     $partitionIds = ConvertTo-OrdinalUniqueStrings -Values @($partitions | ForEach-Object { [string]$_.id }) -Label 'Ordinary partition IDs'
     Assert-OrdinalSetEquality -Expected $requiredPartitionIds -Actual $partitionIds -Label 'Ordinary partition IDs'
 
     $union = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($partition in $partitions) {
-        $expectedPartitionClass = if ([string]$partition.id -ceq 'Krace') { 'exclusive' } else { 'normal' }
+        $expectedPartitionClass = if ([string]$partition.id -in @('Krace', 'WebMutations', 'PhysicalFlight')) { 'exclusive' } else { 'normal' }
         if ([string]$partition.classification -cne $expectedPartitionClass) {
             throw "Ordinary partition '$($partition.id)' must be a $expectedPartitionClass queued job."
         }
@@ -1252,6 +1256,14 @@ function Read-And-VerifyOrdinaryPartitions {
             (@($partition.verifiedTests).Count -ne 1 -or [string](@($partition.verifiedTests)[0]) -cne $raceTestName)) {
             throw "Ordinary partition 'Krace' must contain only the competing tree-identical provenance test."
         }
+        if ([string]$partition.id -ceq 'WebMutations' -and
+            (@($partition.verifiedTests).Count -ne 1 -or [string](@($partition.verifiedTests)[0]) -cne $webMutationTestName)) {
+            throw "Ordinary partition 'WebMutations' must contain only the six-route HTTP mutation test."
+        }
+        if ([string]$partition.id -ceq 'PhysicalFlight' -and
+            (@($partition.verifiedTests).Count -ne 1 -or [string](@($partition.verifiedTests)[0]) -cne $physicalFlightTestName)) {
+            throw "Ordinary partition 'PhysicalFlight' must contain only the one physical exact-revision flight test."
+        }
         foreach ($name in @($partition.verifiedTests)) {
             if (-not $union.Add($name)) { throw "Ordinary partitions overlap at '$name'." }
         }
@@ -1261,7 +1273,7 @@ function Read-And-VerifyOrdinaryPartitions {
     Assert-OrdinalSetEquality -Expected $ordinaryNames -Actual $unionNames -Label 'Ordinary partition union'
 
     [string[]]$requiredQueueOrder = @(
-        'O', 'Rest', 'Q', 'N', 'R', 'T', 'Env', 'A', 'CompilerSearch', 'K',
+        'WebMutations', 'PhysicalFlight', 'O', 'Rest', 'Q', 'N', 'R', 'T', 'Env', 'A', 'CompilerSearch', 'K',
         'MutationE2E', 'D', 'cache', 'C', 'stress', 'E', 'registration',
         'Krace', 'repeat-001-001'
     )
@@ -1272,7 +1284,7 @@ function Read-And-VerifyOrdinaryPartitions {
         if ([string]$queue[$index].id -cne $requiredQueueOrder[$index]) {
             throw "Scheduler queue order differs at index $index."
         }
-        $expectedClass = if ($requiredQueueOrder[$index] -in @('Krace', 'repeat-001-001')) { 'exclusive' } else { 'normal' }
+        $expectedClass = if ($requiredQueueOrder[$index] -in @('WebMutations', 'PhysicalFlight', 'Krace', 'repeat-001-001')) { 'exclusive' } else { 'normal' }
         if ([string]$queue[$index].classification -cne $expectedClass) {
             throw "Scheduler queue classification is invalid for '$($queue[$index].id)'."
         }
@@ -1549,6 +1561,25 @@ switch -CaseSensitive ($Mode) {
         [Console]::Out.WriteLine('All 1 tests passed')
         exit 0
     }
+    'exclusive-success' {
+        $marker = Join-Path $PSScriptRoot 'exclusive descendant complete'
+        if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker -Force }
+        $childCode = '[void]([Threading.ManualResetEvent]::new($false).WaitOne(150)); [IO.File]::WriteAllText([Environment]::GetEnvironmentVariable("ADRAI_SELFCHECK_EXCLUSIVE_MARKER"), "complete")'
+        $env:ADRAI_SELFCHECK_EXCLUSIVE_MARKER = $marker
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCode))
+        $child = Start-Process -FilePath $PowerShellPath -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',$encoded -WindowStyle Hidden -PassThru
+        try {
+            if (-not $child.WaitForExit(5000) -or $child.ExitCode -ne 0) { throw 'Exclusive descendant did not complete successfully.' }
+        } finally { $child.Dispose() }
+        [Console]::Out.WriteLine('All 1 tests passed')
+        exit 0
+    }
+    'after-exclusive' {
+        if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'exclusive descendant complete'))) { throw 'Normal peer launched before the exclusive descendant completed.' }
+        [void]([Threading.ManualResetEvent]::new($false).WaitOne(150))
+        [Console]::Out.WriteLine('All 1 tests passed')
+        exit 0
+    }
     'nonzero' { exit 23 }
     'block' { [void]([Threading.ManualResetEvent]::new($false).WaitOne()); exit 0 }
     'malformed-summary' { [Console]::Out.WriteLine('All 2 tests passed'); exit 0 }
@@ -1612,6 +1643,35 @@ switch -CaseSensitive ($Mode) {
     if ($successRun.peakActiveJobs -ne 3 -or $successRun.completed.Count -ne 3) {
         throw 'Scheduler success self-check did not exercise three simultaneously owned process roots.'
     }
+
+    $schedulerExclusiveJobs = @(
+        (New-ControlledSchedulerJob 'scheduler-exclusive-first' 'exclusive-success' 1),
+        (New-ControlledSchedulerJob 'scheduler-exclusive-second' 'exclusive-success' 1),
+        (New-ControlledSchedulerJob 'scheduler-exclusive-peer-1' 'after-exclusive' 1),
+        (New-ControlledSchedulerJob 'scheduler-exclusive-peer-2' 'after-exclusive' 1),
+        (New-ControlledSchedulerJob 'scheduler-exclusive-peer-3' 'after-exclusive' 1)
+    )
+    $schedulerExclusiveJobs[0].classification = 'exclusive'
+    $schedulerExclusiveJobs[1].classification = 'exclusive'
+    Invoke-OwnedProcessQueue -Jobs $schedulerExclusiveJobs -MaximumActiveJobs 3 -RunId 'selfcheck-scheduler-exclusive'
+    Assert-ControlledSchedulerCleanup 'scheduler-exclusive-' 5
+    $exclusiveRun = @($script:Evidence.schedulerRuns | Where-Object { $_.id -ceq 'selfcheck-scheduler-exclusive' })[-1]
+    if ($exclusiveRun.completed[0] -cne 'scheduler-exclusive-first' -or $exclusiveRun.completed[1] -cne 'scheduler-exclusive-second' -or $exclusiveRun.peakActiveJobs -ne 3) {
+        throw 'The two exclusive jobs did not drain in order before the three-job normal wave.'
+    }
+    $exclusiveRecord = @($script:Evidence.invocations | Where-Object { $_.id -ceq 'scheduler-exclusive-first' })[-1]
+    $exclusiveFirstCompletedUtc = [DateTime]::Parse($exclusiveRecord.startedUtc).AddSeconds([double]$exclusiveRecord.durationSeconds)
+    $exclusiveRecord = @($script:Evidence.invocations | Where-Object { $_.id -ceq 'scheduler-exclusive-second' })[-1]
+    if ([DateTime]::Parse($exclusiveRecord.startedUtc) -lt $exclusiveFirstCompletedUtc) {
+        throw 'The second exclusive job was admitted before the first owned tree was finalized.'
+    }
+    $exclusiveCompletedUtc = [DateTime]::Parse($exclusiveRecord.startedUtc).AddSeconds([double]$exclusiveRecord.durationSeconds)
+    foreach ($peerRecord in @($script:Evidence.invocations | Where-Object { ([string]$_.id).StartsWith('scheduler-exclusive-peer-', [StringComparison]::Ordinal) })) {
+        if ([DateTime]::Parse($peerRecord.startedUtc) -lt $exclusiveCompletedUtc) {
+            throw 'Normal peer was admitted before the exclusive owned tree was finalized.'
+        }
+    }
+    $script:Evidence.schedulerExclusiveBarrierSelfCheckVerified = $true
 
     $schedulerNonzeroJobs = @(
         (New-ControlledSchedulerJob 'scheduler-nonzero-fail' 'nonzero' -1),
