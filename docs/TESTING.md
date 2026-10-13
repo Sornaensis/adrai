@@ -62,7 +62,7 @@ npm --prefix web ci
 npm --prefix web run build
 ```
 
-Use the pinned Node 24.15.0 and npm 11.12.1 toolchain; see
+Use stable Node 24.15.0 or newer and npm 11.12.1 or newer; see
 [Development](DEVELOPMENT.md) for reproducibility and asset tests.
 
 Builds and test execution use separate deadlines. Build mode compiles every

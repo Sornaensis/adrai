@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { performance } from 'node:perf_hooks';
-import { buildAsset, nativeCompiler, webRoot } from '../tools/build.mjs';
+import { buildAsset, nativeCompiler, validateToolchain, webRoot } from '../tools/build.mjs';
 import { verifyAssets } from '../tools/verify-assets.mjs';
 
 const compilerPath = nativeCompiler(webRoot);
@@ -23,6 +23,27 @@ const assertCompletionWithinAllocation = () => assert.ok(
   'Asset execution and cleanup exceeded the caller allocation',
 );
 
+test('stable baseline and newer runtimes are accepted while unsupported identities are rejected', async () => {
+  const pkg = JSON.parse(await readFile(join(webRoot, 'package.json'), 'utf8'));
+  for (const [node, npm] of [['24.15.0', '11.12.1'], ['24.15.1', '11.12.2'], ['26.10.0', '12.2.0']]) {
+    assert.deepEqual(validateToolchain({ node, npm, elm: '0.19.2' }, pkg), { node, npm: `npm@${npm}`, elm: '0.19.2' });
+  }
+  for (const node of ['24.14.99', '22.99.0', '24.15', 'v26.10.0', '26.10.0-rc.1', '26.10.0+build', '026.10.0', '26.10.0\n']) {
+    assert.throws(() => validateToolchain({ node, npm: '11.12.1', elm: '0.19.2' }, pkg), /toolchain mismatch/);
+  }
+  for (const npm of ['11.12.0', '10.99.0', '12', 'npm@12.2.0', '12.2.0-rc.1', '12.02.0', '12.2.0\n']) {
+    assert.throws(() => validateToolchain({ node: '24.15.0', npm, elm: '0.19.2' }, pkg), /toolchain mismatch/);
+  }
+  assert.throws(() => validateToolchain({ node: '26.10.0', npm: '12.2.0', elm: '0.19.3' }, pkg), /toolchain mismatch/);
+  for (const root of [webRoot, join(webRoot, '..', 'browser-tests')]) {
+    const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+    const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'));
+    assert.deepEqual(manifest.engines, { node: '>=24.15.0', npm: '>=11.12.1' });
+    assert.deepEqual(lock.packages[''].engines, manifest.engines);
+    assert.deepEqual(lock.packages[''].devDependencies, manifest.devDependencies);
+  }
+});
+
 test('optimized assets rebuild identically and copied source drift is rejected', async () => {
   const root = await mkdtemp(join(tmpdir(), 'adrai-asset-test-'));
   try {
@@ -30,10 +51,26 @@ test('optimized assets rebuild identically and copied source drift is rejected',
       await cp(join(webRoot, name), join(root, name), { recursive: true });
     }
     const first = await buildAsset({ root, compilerPath, signal: aggregateSignal });
+    const tools = JSON.parse(first.provenance).toolchain;
+    assert.equal(tools.node, process.version.slice(1));
+    if (process.env.npm_config_user_agent) {
+      assert.equal(tools.npm, `npm@${process.env.npm_config_user_agent.split(' ')[0].slice(4)}`);
+    }
     const second = await buildAsset({ root, compilerPath, signal: aggregateSignal });
     assert.equal(sha256(first.bundle), sha256(second.bundle));
     assert.deepEqual(first.provenance, second.provenance);
     await verifyAssets({ root, compilerPath, signal: aggregateSignal });
+
+    for (const name of ['dist/app.js', 'dist/provenance.json']) {
+      const path = join(root, name);
+      const original = await readFile(path);
+      try {
+        await writeFile(path, Buffer.concat([original, Buffer.from('\n')]));
+        await assert.rejects(verifyAssets({ root, compilerPath, signal: aggregateSignal }), /stale/);
+      } finally {
+        await writeFile(path, original);
+      }
+    }
 
     for (const name of ['src/Main.elm', 'static/bridge.js', 'static/index.html']) {
       const path = join(root, name);

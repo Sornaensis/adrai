@@ -5,7 +5,8 @@
     "test": "node ../web/tools/run-owned-frontend.mjs browser"
   },
   "engines": {
-    "node": "24.x"
+    "node": ">=24.15.0",
+    "npm": ">=11.12.1"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",

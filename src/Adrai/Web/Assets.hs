@@ -24,6 +24,7 @@ import qualified Data.Text as Text
 import qualified Language.Haskell.TH.Syntax as TH
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, pathIsSymbolicLink)
 import System.FilePath ((</>))
+import Text.Read (readMaybe)
 
 indexHtml :: ByteString
 applicationCss :: ByteString
@@ -75,6 +76,18 @@ assetProvenance :: ByteString
           exactKeys label expected object =
             unless (keys object == sort expected) (failReceipt (label ++ " has an unexpected field set"))
           sha bytes = Text.pack (show (hash bytes :: Digest SHA256))
+          stableVersion value = do
+            let parts = Text.splitOn "." value
+                canonical part =
+                  not (Text.null part)
+                    && Text.all (\c -> c >= '0' && c <= '9') part
+                    && (Text.length part == 1 || Text.head part /= '0')
+            if length parts == 3 && all canonical parts
+              then traverse (readMaybe . Text.unpack) parts :: Maybe [Integer]
+              else Nothing
+          versionAtLeast baseline value = case stableVersion value of
+            Just actual -> actual >= baseline
+            Nothing -> False
       sourceExists <- TH.runIO (doesDirectoryExist "web/src")
       unless sourceExists (failReceipt "web/src is missing")
       sourcePaths <- TH.runIO (walk "web/src")
@@ -109,17 +122,27 @@ assetProvenance :: ByteString
       nodeVersion <- textAt "toolchain" tools "node"
       npmVersion <- textAt "toolchain" tools "npm"
       elmVersion <- textAt "toolchain" tools "elm"
-      unless (nodeVersion == "24.15.0" && npmVersion == "npm@11.12.1" && elmVersion == "0.19.2")
-        (failReceipt "toolchain identity changed")
+      unless
+        ( versionAtLeast [24, 15, 0] nodeVersion
+            && maybe False (versionAtLeast [11, 12, 1]) (Text.stripPrefix "npm@" npmVersion)
+            && elmVersion == "0.19.2"
+        )
+        (failReceipt "toolchain version is unsupported")
       packageValue <- either failReceipt pure (Aeson.eitherDecodeStrict' (captured Map.! "web/package.json"))
       packageObject <- objectAt "package.json" packageValue
       engineObject <- nestedAt "package.json" packageObject "engines"
       devObject <- nestedAt "package.json" packageObject "devDependencies"
       packageManager <- textAt "package.json" packageObject "packageManager"
-      pinnedNode <- textAt "package.json.engines" engineObject "node"
+      nodeRequirement <- textAt "package.json.engines" engineObject "node"
+      npmRequirement <- textAt "package.json.engines" engineObject "npm"
       pinnedElm <- textAt "package.json.devDependencies" devObject "elm"
-      unless (packageManager == npmVersion && pinnedNode == nodeVersion && pinnedElm == "0.19.2-0")
-        (failReceipt "package toolchain pins changed")
+      unless
+        ( packageManager == "npm@11.12.1"
+            && nodeRequirement == ">=24.15.0"
+            && npmRequirement == ">=11.12.1"
+            && pinnedElm == "0.19.2-0"
+        )
+        (failReceipt "package toolchain requirements changed")
       elmValue <- either failReceipt pure (Aeson.eitherDecodeStrict' (captured Map.! "web/elm.json"))
       elmObject <- objectAt "elm.json" elmValue
       manifestVersion <- textAt "elm.json" elmObject "elm-version"

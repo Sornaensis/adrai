@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -88,19 +88,51 @@ function runCompiler(root, compilerPath, args, signal, onCompilerSpawn) {
   });
 }
 
+// Accept only canonical stable releases, matching npm's >= engine ranges.
+function versionAtLeast(version, minimum) {
+  if (typeof version !== 'string' || version.trim() !== version
+      || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) return false;
+  const actual = version.split('.').map(BigInt);
+  const baseline = minimum.split('.').map(BigInt);
+  for (let i = 0; i < actual.length; i += 1) {
+    if (actual[i] !== baseline[i]) return actual[i] > baseline[i];
+  }
+  return true;
+}
+
+export function validateToolchain({ node, npm, elm }, pkg) {
+  if (pkg.engines?.node !== '>=24.15.0' || pkg.engines?.npm !== '>=11.12.1'
+      || pkg.packageManager !== 'npm@11.12.1' || pkg.devDependencies?.elm !== '0.19.2-0') {
+    throw new Error('Asset package toolchain requirements changed.');
+  }
+  if (!versionAtLeast(node, '24.15.0') || !versionAtLeast(npm, '11.12.1') || elm !== '0.19.2') {
+    throw new Error(`Asset toolchain mismatch: Node ${node}, npm ${npm}, Elm ${elm}`);
+  }
+  return { node, npm: `npm@${npm}`, elm };
+}
+
+function npmVersion() {
+  const agent = process.env.npm_config_user_agent;
+  if (agent !== undefined) {
+    const match = /^npm\/([^ ]+) /.exec(agent);
+    if (!match) throw new Error(`Asset npm version mismatch: ${agent.split(' ')[0]}`);
+    return match[1];
+  }
+  // Direct Node entrypoints also identify the installed npm, never the selection pin.
+  const options = { encoding: 'utf8', windowsHide: true, timeout: 10000, maxBuffer: 4096 };
+  return (process.platform === 'win32'
+    ? execFileSync('cmd.exe', ['/d', '/s', '/c', 'npm --version'], options)
+    : execFileSync('npm', ['--version'], options)).trim();
+}
+
 async function toolchain(root, compilerPath, signal, onCompilerSpawn) {
   const pkg = JSON.parse(requireTextSync(join(root, 'package.json')));
   const node = process.version.slice(1);
-  const npm = pkg.packageManager;
+  const npm = npmVersion();
+  // Reject unsupported Node/npm before asking Elm to compile anything.
+  validateToolchain({ node, npm, elm: '0.19.2' }, pkg);
   const elm = await runCompiler(root, compilerPath, ['--version'], signal, onCompilerSpawn);
-  if (node !== pkg.engines.node || npm !== 'npm@11.12.1' || elm !== '0.19.2') {
-    throw new Error(`Asset toolchain mismatch: Node ${node}, ${npm}, Elm ${elm}`);
-  }
-  const agent = process.env.npm_config_user_agent;
-  if (agent && !agent.startsWith('npm/11.12.1 ')) {
-    throw new Error(`Asset npm version mismatch: ${agent.split(' ')[0]}`);
-  }
-  return { node, npm, elm };
+  return validateToolchain({ node, npm, elm }, pkg);
 }
 
 // Synchronous read keeps the version check before any compiler output is created.

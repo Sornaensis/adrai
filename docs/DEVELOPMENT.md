@@ -4,8 +4,12 @@ ADRAI is a native Haskell project built with Stack. The executable entry point i
 
 ## Build and test
 
-On a fresh checkout, use Node 24.15.0 and npm 11.12.1 to generate the web assets
-before any Stack build or install:
+On a fresh checkout, use stable Node 24.15.0 or newer and npm 11.12.1 or newer
+to generate the web assets before any Stack build or install.
+
+Use stable releases. `.node-version` and `web/package.json`'s `packageManager`
+retain the baseline selection; the package engine ranges also accept newer
+Node and npm releases. Elm and dependency versions remain pinned.
 
 ```console
 npm --prefix web ci
@@ -76,8 +80,8 @@ Integration and E2E tests create temporary real Git repositories. They cover nor
 Deterministic fixture plans live in `test/support`. Keep logical plans independent from their Git or service interpreters, record counts and invariants near the fixture, and treat generator tags, seeds, and canonical digests as reviewed contract changes.
 
 The web page embeds source HTML, CSS, and the generated Elm/bridge bundle
-during the Haskell build. Use Node 24.15.0 and npm 11.12.1, then run from
-`web/`:
+during the Haskell build. Use stable Node 24.15.0 or newer and npm 11.12.1 or
+newer, then run from `web/`:
 
 ```sh
 npm ci
@@ -93,12 +97,13 @@ npm run test:components
 before compiling Haskell or creating a source distribution. The receipt hashes
 every Elm source, the web manifests,
 build and verification scripts, bridge, bootstrap HTML, CSS, and the exact
-bundle bytes. It also records the pinned Node, npm, and compiler versions.
+bundle bytes. It also records the actual Node and npm versions and pinned Elm
+compiler version.
 `verify:assets` rebuilds in a temporary directory and fails if either generated
 file differs. Run it before the canonical Haskell build to prove the generated
 bytes match a fresh optimized compile. `Adrai.Web.Assets` separately checks the
-receipt's complete input path set, source and bundle hashes, and toolchain pins
-at compile time before embedding captured bytes. Stack tracks the web inputs,
+receipt's complete input path set, source and bundle hashes, supported Node/npm
+versions, and the Elm pin at compile time before embedding captured bytes. Stack tracks the web inputs,
 including new nested source files, and forces that module to recheck the receipt
 on a warm build. The retained build-input inventory also hashes Elm sources,
 fixtures, component and asset tests, manifests, build tools, static files and

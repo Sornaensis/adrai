@@ -4,7 +4,7 @@ ADRAI stores and searches Architecture Decision Records (ADRs) in Git. It is for
 
 ## Install and set up
 
-Use Git 2.31 or newer, Stack 3.11.1, Node 24.15.0, and npm 11.12.1. Linux also needs a C toolchain; see [Installation](docs/INSTALL.md) for platform requirements.
+Use Git 2.31 or newer, Stack 3.11.1, Node 24.15.0 or newer, and npm 11.12.1 or newer. Linux also needs a C toolchain; see [Installation](docs/INSTALL.md) for platform requirements.
 
 From the ADRAI source root:
 

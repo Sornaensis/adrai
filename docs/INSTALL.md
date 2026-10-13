@@ -15,7 +15,7 @@ architectures. macOS is not a supported installation target for these backends.
 
 - Git 2.31 or newer
 - Stack 3.11.1
-- Node 24.15.0 and npm 11.12.1 to build the web assets (the Elm 0.19.2 compiler is installed by `npm ci`)
+- Node 24.15.0 or newer and npm 11.12.1 or newer to build the web assets (the Elm 0.19.2 compiler is installed by `npm ci`)
 - On Linux, a C compiler and toolchain compatible with the selected GHC for
   source compilation, native runtime components, and the process-ownership helper
 
