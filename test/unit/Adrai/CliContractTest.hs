@@ -1612,6 +1612,21 @@ mutationCliContractTests =
             renderedExitCode rendered @?= ExitSuccess
             assertBool "create example" ("--actor human:alice" `T.isInfixOf` renderedStdout rendered)
           Right _ -> assertFailure "create help unexpectedly parsed as command"
+        for_
+          [ ("search", ["omitted or blank", "non-obsolete ADRs", "1-1000", "default 10", "adrai search --limit 1000", "--include-obsolete"])
+          , ("show", ["requires --view exploded"])
+          , ("amend", ["structured amendment JSON", "exactly one", "body and change_summary", "--change-summary", "inherit current values", "--actor human:alice"])
+          , ("scope", ["--set cannot be combined with --add or --remove"])
+          , ("domain", ["Choose exactly one mode", "mutually exclusive"])
+          , ("explore", [":help", "session controls"])
+          ] $ \(command, guidance) ->
+            case parseArguments [command, "--help"] of
+              Left rendered -> do
+                renderedExitCode rendered @?= ExitSuccess
+                let outputWords = T.unwords (T.words (renderedStdout rendered))
+                for_ guidance $ \expected ->
+                  assertBool (command <> " help missing " <> T.unpack expected) (expected `T.isInfixOf` outputWords)
+              Right _ -> assertFailure (command <> " help unexpectedly parsed as command")
         let output = T.unlines renderHelp
         assertBool "actual read commands" (T.isInfixOf "selected immutable revision" output)
         for_ ["search QUERY", "show ADR_ID", "history [ADR_ID]", "create {", "amend ADR_ID {", ":refresh"] $ \command ->

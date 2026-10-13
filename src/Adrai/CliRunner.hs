@@ -455,7 +455,7 @@ parser =
         ( Opt.commandGroup "Read and inspect (no Git commits):"
      <> Opt.command "show" (commandInfo (CmdShow <$> showParser) "show one ADR; example: adrai show ADR_ID")
      <> Opt.command "history" (commandInfo (CmdHistory <$> historyParser) "show operation history; example: adrai history ADR_ID")
-     <> Opt.command "search" (commandInfo (CmdSearch <$> searchParser) "search ADRs; example: adrai search database")
+     <> Opt.command "search" (commandInfoWithFooter (CmdSearch <$> searchParser) "search ADRs or list non-obsolete ADRs when QUERY is omitted or blank" "Browse up to 1000 non-obsolete ADRs at HEAD: adrai search --limit 1000. This bounded listing uses ADR ID order; add --include-obsolete to include obsolete decisions. Search text: adrai search database.")
      <> Opt.command "relevant" (commandInfo (CmdRelevant <$> relevantParser) "rank ADRs for a file; example: adrai relevant src/Main.hs --worktree")
      <> Opt.command "compare" (commandInfo (CmdCompare <$> compareParser) "compare revisions; example: adrai compare HEAD~1 HEAD")
      <> Opt.command "doctor" (commandInfo (CmdDoctor <$> doctorParser) "diagnose repository and index; example: adrai doctor")
@@ -463,16 +463,16 @@ parser =
         )
    <|> subparser
         ( Opt.commandGroup "Change decisions (these commands create Git commits):"
-     <> Opt.command "amend" (commandInfo (previewParser (CmdAmend <$> amendParser)) "amend an ADR; provide ADR, changed content, and --actor")
-     <> Opt.command "scope" (commandInfo (previewParser (CmdScope <$> scopeParser)) "change file scope; provide ADR, --add/--remove/--set, --reason, --actor")
-     <> Opt.command "domain" (commandInfo (previewParser (CmdDomain <$> domainParser)) "change domains; provide ADR, change option, --reason, --actor")
+     <> Opt.command "amend" (commandInfoWithFooter (previewParser (CmdAmend <$> amendParser)) "amend an ADR; requires content, a change summary, and an actor" "Provide exactly one of --body, --body-file, --stdin, or --input-json. Amendment JSON requires body and change_summary (or --change-summary); optional title and summary inherit current values when omitted. JSON also accepts actor, model, input_digest, prompt_digest, and context_digest. Example: adrai amend ADR_ID --body 'Require compatible migrations.' --change-summary 'Document migrations' --actor human:alice")
+     <> Opt.command "scope" (commandInfoWithFooter (previewParser (CmdScope <$> scopeParser)) "change file scope; provide ADR, --add/--remove/--set, --reason, --actor" "Combine --add and --remove for a delta, or use --set for a reviewed replacement. --set cannot be combined with --add or --remove.")
+     <> Opt.command "domain" (commandInfoWithFooter (previewParser (CmdDomain <$> domainParser)) "change domains; provide ADR, change option, --reason, --actor" "Choose exactly one mode: --add/--remove (which may be combined), --refine, --set, or --clear. These four modes are mutually exclusive.")
      <> Opt.command "obsolete" (commandInfo (previewParser (CmdObsolete <$> obsoleteParser)) "mark ADR obsolete; provide ADR, --reason, --actor")
      <> Opt.command "reactivate" (commandInfo (previewParser (CmdReactivate <$> reactivateParser)) "reactivate ADR; provide ADR, --reason, --actor")
         )
    <|> subparser
         ( Opt.commandGroup "Interfaces:"
      <> Opt.command "web" (commandInfo (CmdWeb <$> webParser) "open the browser explorer (run in its worktree; no --repo)")
-     <> Opt.command "explore" (commandInfo (pure CmdExplore) "open the terminal explorer for revision-local reads and checked edits")
+     <> Opt.command "explore" (commandInfoWithFooter (pure CmdExplore) "open the terminal explorer for revision-local reads and checked edits" "Run adrai explore, then enter :help for read commands, checked edits, filters, and session controls.")
         )
     )
 
@@ -485,6 +485,10 @@ previewParser commandParser =
 
 commandInfo :: Parser a -> String -> Opt.ParserInfo a
 commandInfo commandParser description = info (Opt.helper <*> commandParser) (progDesc description)
+
+commandInfoWithFooter :: Parser a -> String -> String -> Opt.ParserInfo a
+commandInfoWithFooter commandParser description guidance =
+  info (Opt.helper <*> commandParser) (progDesc description <> Opt.footer guidance)
 
 webParser :: Parser WebApi.WebOptions
 webParser =
@@ -537,7 +541,7 @@ createParser =
     <*> maybeText "context-digest" "DIGEST" "SHA-256 context digest"
     <*> optional (strOption (long "prompt-file" <> metavar "PATH" <> help "prompt source path"))
     <*> optional (strOption (long "context-file" <> metavar "PATH" <> help "context source path"))
-    <*> contentSourcesParser
+    <*> contentSourcesParser "create"
     <*> switch (long "json" <> help "output JSON")
   where
     optionalText name marker description =
@@ -548,9 +552,9 @@ amendParser :: Parser AmendCommand
 amendParser =
   AmendCommand
     <$> strArgument (metavar "ADR" <> help "ADR identifier to amend")
-    <*> maybeText "title" "TEXT" "replacement decision title"
-    <*> maybeText "summary" "TEXT" "replacement decision summary"
-    <*> maybeText "change-summary" "TEXT" "nonblank amendment rationale"
+    <*> maybeText "title" "TEXT" "replacement title (inherits current title if omitted)"
+    <*> maybeText "summary" "TEXT" "replacement summary (inherits current summary if omitted)"
+    <*> maybeText "change-summary" "TEXT" "required nonblank rationale (or JSON change_summary)"
     <*> maybeText "expect" "STATE_TOKEN" "expected current ADR state token"
     <*> maybeText "actor" "ACTOR" "actor as kind:identifier"
     <*> maybeText "model" "MODEL" "actor model"
@@ -559,7 +563,7 @@ amendParser =
     <*> maybeText "context-digest" "DIGEST" "SHA-256 context digest"
     <*> optional (strOption (long "prompt-file" <> metavar "PATH" <> help "prompt source path"))
     <*> optional (strOption (long "context-file" <> metavar "PATH" <> help "context source path"))
-    <*> contentSourcesParser
+    <*> contentSourcesParser "amendment"
     <*> switch (long "json" <> help "output JSON")
   where
     optionalText name marker description = strOption (long name <> metavar marker <> help description)
@@ -642,14 +646,14 @@ domainParser =
     optionalText name marker description = strOption (long name <> metavar marker <> help description)
     maybeText name marker description = optional (optionalText name marker description)
 
-contentSourcesParser :: Parser [ContentSource]
-contentSourcesParser = pure <$> contentSourceParser
+contentSourcesParser :: String -> Parser [ContentSource]
+contentSourcesParser inputKind = pure <$> contentSourceParser
   where
     contentSourceParser =
       BodyText <$> strOption (long "body" <> metavar "TEXT" <> help "literal decision body")
         <|> BodyFile <$> strOption (long "body-file" <> metavar "PATH" <> help "body file")
         <|> BodyStdin <$ flag' () (long "stdin" <> help "read body from standard input")
-        <|> InputJson <$> strOption (long "input-json" <> metavar "PATH_OR_DASH" <> help "strict structured create input")
+        <|> InputJson <$> strOption (long "input-json" <> metavar "PATH_OR_DASH" <> help ("strict structured " <> inputKind <> " JSON (use - for stdin)"))
 
 -- | Show command parser.
 showParser :: Parser ShowCommand
@@ -659,7 +663,7 @@ showParser =
     <*> option (Opt.eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> Opt.value CollapsedView <> showDefaultWith (const "collapsed") <> help "show collapsed (default) or exploded view")
     <*> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to query (default: HEAD)")
     <*> switch (long "json" <> help "output JSON")
-    <*> switch (long "raw" <> help "include raw semantic data")
+    <*> switch (long "raw" <> help "include raw semantic data (requires --view exploded)")
   where
     parseView value = case value of
       "collapsed" -> Right CollapsedView
@@ -683,7 +687,7 @@ historyParser =
 searchParser :: Parser SearchCommand
 searchParser =
   SearchCommand
-    <$> (strArgument (metavar "QUERY" <> help "optional search query") <|> pure "")
+    <$> (strArgument (metavar "QUERY" <> help "optional query; omitted or blank lists non-obsolete ADRs") <|> pure "")
     <*> option (eitherReader parseMode) (long "mode" <> metavar "fts|vector|hybrid" <> Opt.value HybridRetrieval <> showDefaultWith retrievalModeText <> help "retrieval mode")
     <*> option (eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> Opt.value CollapsedView <> showDefaultWith searchViewText <> help "result view")
     <*> optional (strOption (long "file" <> metavar "PATH" <> help "filter by file path"))
@@ -693,7 +697,7 @@ searchParser =
     <*> optional (option auto (long "until" <> metavar "MILLISECONDS" <> help "entries at or before this Unix timestamp in milliseconds"))
     <*> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to query")
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
-    <*> option auto (long "limit" <> Opt.value 10 <> showDefault <> help "max results (default 10)")
+    <*> option auto (long "limit" <> Opt.value 10 <> showDefault <> help "max results, 1-1000 (default 10; listing is bounded)")
     <*> switch (long "json" <> help "output JSON")
   where
     parseMode value = case value of

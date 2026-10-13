@@ -31,6 +31,7 @@ Inspect and search the repository:
 ```console
 adrai show ADR_ID
 adrai history ADR_ID
+adrai search --limit 1000
 adrai search "transactional database"
 adrai relevant src/Storage.hs --worktree
 adrai doctor
@@ -50,7 +51,7 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 | `obsolete` / `reactivate` | Change an ADR's lifecycle state. |
 | `show` | Display one collapsed or exploded ADR. |
 | `history` | Display operation history, optionally filtered by ADR or actor. |
-| `search` | Search ADRs with FTS, vector, or hybrid retrieval. |
+| `search` | Search ADRs with FTS, vector, or hybrid retrieval, or list non-obsolete ADRs with no query. |
 | `relevant` | Rank ADRs against a committed or worktree file. |
 | `compare` | Compare two immutable revisions. |
 | `compile` | Build or reuse the repository's derived SQLite index. |
@@ -60,7 +61,31 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 
 Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands also accept `--json` for stable machine-readable output. Run `adrai COMMAND --help` for the complete option list.
 
+Omitting the search query or supplying blank text lists non-obsolete ADRs in ADR
+ID order at the selected committed revision (default `HEAD`). The listing is
+bounded by `--limit`: the default is 10 and the supported range is 1–1000. Use
+`adrai search --limit 1000` to browse a larger window; it may not include every
+matching ADR. Add `--include-obsolete` to include obsolete decisions. File,
+domain, actor, and time filters also apply to the listing.
+
+`show --raw` requires `--view exploded`, for example
+`adrai show ADR_ID --view exploded --raw`.
+
 CLI mutation commands require an actor in `kind:identifier` form and create Git commits. Pass `--actor` or set `ADRAI_ACTOR`; valid kinds are `human`, `llm`, and `service`. Options such as `--expect STATE_TOKEN` provide optimistic concurrency checks when a caller is acting on previously read state. The option-free terminal explorer instead defaults to `human:terminal-explorer` and changes its actor through the `:actor` session control.
+
+`amend` requires exactly one content source: `--body`, `--body-file`, `--stdin`,
+or `--input-json PATH_OR_DASH` (`-` reads JSON from standard input). It also
+requires a nonblank `--change-summary` or JSON `change_summary`. Amendment JSON
+uses its own schema: `body`, `change_summary`, optional `title` and `summary`,
+and optional `actor`, `model`, `input_digest`, `prompt_digest`, and
+`context_digest`. Supply `body` in JSON; `--change-summary` may supply its
+rationale. Omitted title and summary inherit the current decision's values.
+
+For `scope`, combine `--add` and `--remove` for a delta, or use repeatable
+`--set` for a reviewed replacement. `--set` excludes `--add` and `--remove`.
+For `domain`, choose exactly one mode: `--add`/`--remove` (which may be
+combined), repeatable `--refine FROM=TO`, repeatable `--set`, or `--clear`.
+The four domain modes are mutually exclusive.
 
 ### Review before committing
 
