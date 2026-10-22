@@ -435,10 +435,11 @@
       "tests": [
         "ADRAI.P4-07.Query integration (history / search / compare).P6-08Q exact-v3 archive hooks and tamper fallback",
         "ADRAI.P4-07.Query integration (history / search / compare).relevant diagnostics bind exact index revision and monotonic phases",
+        "ADRAI.P4-07.Query integration (history / search / compare).domain trees reuse exact snapshots and preserve cold integrity gates",
         "ADRAI.P4-07.Query integration (history / search / compare).P6-08Q exact archive acquisition owns cancellation cleanup"
       ],
       "rationale": "Keep the shared exact-query seed, exact/fallback and acquisition-cleanup carriers, and relevance diagnostics in one isolated process.",
-      "costProvenance": "Static retained count 3 after the relevant diagnostics registration; current whole-partition runtime is unmeasured."
+      "costProvenance": "Static retained count 4 after the domain snapshot archive registration; current whole-partition runtime is unmeasured."
     },
     {
       "id": "Env",

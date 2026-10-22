@@ -406,6 +406,18 @@ domainsContract = do
   domainsMatchRequested [domain "platform.storage"] [domain "platform.storage.postgresql"] @?= True
   domainsMatchRequested [domain "platform"] [domain "platforms.storage"] @?= False
   domainsMatchRequested [domain "platform.storage", domain "other"] [domain "platform.storage.postgresql"] @?= False
+  let tree = projectDomainsTree snapshot Nothing False
+      branch name count children = DomainTreeEntry (DomainEntry name count) children
+      postgres = branch "platform.storage.postgresql" 1001 []
+      storage = branch "platform.storage" 1001 [postgres]
+  domainsProjectionTree tree @?= Just
+    [branch "platform" 1002 [branch "platform.api" 1001 [], storage], branch "platforms" 1 [branch "platforms.storage" 1 []]]
+  domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= Just [storage]
+  domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage.postgresql")) False) @?= Just [postgres]
+  domainsProjectionTree (projectDomainsTree snapshot (Just (domain "unknown")) False) @?= Just []
+  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= "platform.storage 1001\n└── platform.storage.postgresql 1001\n"
+  domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage")) True) @?= Just
+    [branch "platform.storage" 1002 [postgres, branch "platform.storage.redis" 1 []]]
 
 permutationContract :: IO ()
 permutationContract = do

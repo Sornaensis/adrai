@@ -34,6 +34,7 @@ adrai history ADR_ID
 adrai search --limit 1000
 adrai domains
 adrai domains platform.storage
+adrai domains --tree
 adrai search --domain platform.storage
 adrai search "transactional database"
 adrai relevant src/Storage.hs --worktree
@@ -55,7 +56,7 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 | `show` | Display one collapsed or exploded ADR. |
 | `history` | Display operation history, optionally filtered by ADR or actor. |
 | `search` | Search ADRs with FTS, vector, or hybrid retrieval, or list non-obsolete ADRs with no query. |
-| `domains [DOMAIN]` | Browse top-level domains or immediate children with recursive distinct ADR counts. |
+| `domains [DOMAIN]` | Browse top-level domains or immediate children with recursive distinct ADR counts; `--tree` draws every level. |
 | `relevant` | Rank ADRs against a committed or worktree file. |
 | `compare` | Compare two immutable revisions. |
 | `compile` | Build or reuse the repository's derived SQLite index. |
@@ -64,6 +65,12 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 | `web` | Start the authenticated loopback repository explorer, HTTP API, and event WebSocket. |
 
 Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands also accept `--json` for stable machine-readable output. Run `adrai COMMAND --help` for the complete option list.
+
+`domains DOMAIN --tree` includes the parent and every descendant with counts.
+Combine `--tree --json` for nested `children` (`adrai/domains-tree/v1`); default
+flat JSON remains `adrai/domains/v1`. Domain reads reuse exact archives published
+by `compile` or successful mutation indexing. A miss reads committed state without
+creating an archive; repeated misses remain cold. See [Search](SEARCH.md).
 
 `search` and `relevant` print simple ADR ID and title lists by default. Add
 `--view exploded` to include indented summaries. JSON requires `--json` and

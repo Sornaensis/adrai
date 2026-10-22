@@ -4,7 +4,7 @@
 -- | Integration tests for exact-cache query hooks and archive integrity.
 module Adrai.QueryIntegrationTest (tests) where
 
-import Adrai.Compiler.CacheSelection (exactCacheArchivePath)
+import Adrai.Compiler.CacheSelection (ExactArchiveBusy (..), exactCacheArchivePath)
 import Adrai.Domain (mkDomain)
 import Adrai.Format.Document
   ( AppliesToPayload (..),
@@ -23,7 +23,7 @@ import Adrai.Git (Repository, RevisionSpec (..), discoverRepository, gitOidText,
 import Adrai.Integration.CLI hiding (parseCompareResults, parseHistory, parseSearchResults)
 import Adrai.Compiler (materializeCurrentSearch)
 import Adrai.History (CommitPlacementEvidence (..), LineLandingEvidence (..), PlacementEvidence (..), ReadSnapshot (..), RevisionIdentity (..))
-import Adrai.Query (RelevantDiagnostics (..), RelevantFileInfo (..), RelevantProjection (..), RelevantRequest (..), SearchProjection (..), defaultRelevantRequest, defaultSearchRequest)
+import Adrai.Query (DomainEntry (..), DomainTreeEntry (..), DomainsProjection (..), RelevantDiagnostics (..), RelevantFileInfo (..), RelevantProjection (..), RelevantRequest (..), SearchProjection (..), defaultRelevantRequest, defaultSearchRequest, projectDomainsTree)
 import Adrai.Provenance
   ( GitOid,
     ProvenanceCapsuleInput (..),
@@ -49,7 +49,8 @@ import Adrai.Service.Query
   ( ExactQueryContext (..),
     QueryExecutionHooks (..),
     RelevantFailure (..),
-    SearchFailure,
+    SearchFailure (..),
+    DomainsRequest (..),
     SearchServiceRequest (..),
     loadExactQueryContextForTest,
     loadExactQueryContextWithAcquisitionHooksForTest,
@@ -57,6 +58,7 @@ import Adrai.Service.Query
     runRelevantQuery,
     runRelevantQueryWithHooks,
     runSearchWithHooks,
+    runDomainsWithHooks,
   )
 import Adrai.Types
   ( ActorKind (HumanActor),
@@ -88,7 +90,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.List (find, sort, sortOn)
 import qualified Data.Map.Strict as Map
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text, strip)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
@@ -128,8 +130,95 @@ tests =
     testGroup "Query integration (history / search / compare)"
       [ testExactCacheQueryHooks getSeed,
         testRelevantDiagnostics getSeed,
+        testDomainsArchive getSeed,
         testExactCacheAcquisitionCancellation getSeed
       ]
+
+testDomainsArchive :: IO (RepositorySeed ExactQuerySeed) -> TestTree
+testDomainsArchive getSeed = testCase "domain trees reuse exact snapshots and preserve cold integrity gates" $ do
+  seed <- getSeed
+  withPrivateRepositorySeed seed $ \payload repoPath -> do
+    repository <- requireRight "discover domain archive repository" =<< discoverRepository systemGit repoPath
+    basis <- requireRight "domain fork basis" (mkGitOid (exactQuerySeedMainCommit payload))
+    actor <- requireRight "domain fork actor" (mkActor HumanActor "query-fixture" Nothing)
+    adr <- requireRight "domain fixture ADR" (mkAdrId (fixtureId 'A' '1'))
+    parent <- requireRight "domain fixture parent" (mkConnectionId (fixtureId 'C' '2'))
+    initial <- traverse (requireRight "initial domain" . mkDomain) ["cache", "platform.api", "unicode"]
+    let member suffix addition mode removals = do
+          connection <- fixtureRight "domain revision ID" (mkConnectionId (fixtureId 'C' suffix))
+          operation <- fixtureRight "domain operation ID" (mkOperationId (fixtureId 'O' suffix))
+          added <- traverse (fixtureRight "domain addition" . mkDomain) addition
+          removed <- traverse (fixtureRight "domain removal" . mkDomain) removals
+          let record = ManagedConnection (ConnectionRecord connection (DomainsConnection (DomainsPayload adr [parent] mode added removed (sort (initial <> added)) [])) "Domain archive fixture.\n")
+          sealFixtureMember actor basis operation record ("domain." <> mode) [ProvenanceConnection parent]
+    left <- requireRight "left domain fork" (member '8' ["platform.left"] "expand" [])
+    right <- requireRight "right domain fork" (member '9' ["platform.right"] "expand" [])
+    commitFixtureFiles repoPath [left, right] "retain competing valid domain assignments"
+    current <- headCommit repoPath
+    currentOid <- requireRight "domain fork revision" (mkGitOid current)
+    archive <- maybe (fail "domain archive path missing") pure (exactCacheArchivePath repository currentOid)
+    events <- newIORef ([] :: [Text])
+    let recordEvent event = modifyIORef' events (event :)
+        hooks = QueryExecutionHooks
+          { queryArchiveLoad = recordEvent "archive",
+            queryArchiveRejected = const (recordEvent "rejected"),
+            queryColdFallback = recordEvent "fallback",
+            queryRawObservation = recordEvent "raw",
+            querySnapshotAnalysis = recordEvent "analyze",
+            queryProvenanceHydration = recordEvent "hydrate",
+            queryColdCompile = recordEvent "compile"
+          }
+        domainRequest = DomainsRequest Nothing "HEAD" False True
+    cold <- requireRight "cold domain tree" =<< runDomainsWithHooks hooks repository domainRequest
+    readIORef events >>= (@?= ["hydrate", "analyze", "raw", "fallback"])
+    doesFileExist archive >>= (@?= False)
+    snapshot <- requireRight "cold conflict snapshot" =<< readSnapshotAt repository "HEAD"
+    cold @?= projectDomainsTree snapshot Nothing False
+    case domainsProjectionTree cold of
+      Just roots -> case [node | node <- roots, domainEntryName (domainTreeEntry node) == "platform"] of
+        [node] -> do
+          domainEntryAdrCount (domainTreeEntry node) @?= 1
+          map (domainEntryName . domainTreeEntry) (domainTreeChildren node) @?= ["platform.api", "platform.left", "platform.right"]
+        _ -> assertFailure "domain conflict did not preserve its inferred parent"
+      Nothing -> assertFailure "domain tree omitted children"
+    _ <- adraiJsonOrThrow repoPath ["compile", "--json"]
+    beforeBytes <- BS.readFile archive
+    beforeTime <- getModificationTime archive
+    writeIORef events []
+    warm <- requireRight "warm domain tree" =<< runDomainsWithHooks hooks repository domainRequest
+    warm @?= cold
+    readIORef events >>= (@?= ["archive"])
+    BS.readFile archive >>= (@?= beforeBytes)
+    getModificationTime archive >>= (@?= beforeTime)
+    cancelled <- try (runDomainsWithHooks (hooks {queryArchiveLoad = throwIO ThreadKilled}) repository domainRequest) :: IO (Either SomeAsyncException (Either SearchFailure DomainsProjection))
+    case cancelled of
+      Left _ -> pure ()
+      Right _ -> assertFailure "domain archive cancellation was swallowed"
+    busy <- try (runDomainsWithHooks (hooks {queryArchiveLoad = throwIO ExactArchiveBusy}) repository domainRequest) :: IO (Either ExactArchiveBusy (Either SearchFailure DomainsProjection))
+    case busy of
+      Left ExactArchiveBusy -> pure ()
+      Right _ -> assertFailure "domain archive busy signal was swallowed"
+    historical <- requireRight "historical domain tree" =<< runDomainsWithHooks hooks repository (domainRequest {domainsRequestRevision = exactQuerySeedMainCommit payload})
+    revisionResolved (domainsProjectionRevision historical) @?= exactQuerySeedMainCommit payload
+    -- Parsed, sealed but graph-invalid semantics can still have a published
+    -- archive. Domains must reject its semantic error state and take the same
+    -- integrity gate as a missing archive, while valid conflicts above remain visible.
+    invalid <- requireRight "invalid domain delta fixture" (member '7' [] "contract" ["missing"])
+    commitFixtureFiles repoPath [invalid] "retain invalid domain removal for archive gating"
+    _ <- adraiJsonOrThrow repoPath ["compile", "--json"]
+    writeIORef events []
+    invalidWarm <- runDomainsWithHooks hooks repository domainRequest
+    case invalidWarm of
+      Left (SearchIntegrityFailure _) -> pure ()
+      other -> assertFailure ("invalid cached semantics bypassed domain integrity: " <> show other)
+    readIORef events >>= (@?= ["analyze", "raw", "fallback", "rejected", "archive"])
+    invalidHead <- requireRight "invalid domain revision" . mkGitOid =<< headCommit repoPath
+    invalidArchive <- maybe (fail "invalid archive path missing") pure (exactCacheArchivePath repository invalidHead)
+    renameFile invalidArchive (invalidArchive <> ".held")
+    writeIORef events []
+    invalidCold <- runDomainsWithHooks hooks repository domainRequest
+    invalidCold @?= invalidWarm
+    readIORef events >>= (@?= ["analyze", "raw", "fallback"])
 
 testRelevantDiagnostics :: IO (RepositorySeed ExactQuerySeed) -> TestTree
 testRelevantDiagnostics getSeed =

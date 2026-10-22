@@ -1,5 +1,16 @@
 # Cache
 
+`domains` can reuse an existing exact-revision archive through the same validated
+transaction used by search. It decodes a consistent snapshot and enforces the
+compiler's source-integrity error gate without rebuilding search passages or
+materialization. Valid domain conflicts remain browsable. Missing or rejected
+archives fall back to the committed snapshot read at the same resolved revision;
+busy and cancellation signals retain their existing behavior.
+
+Domain reads do not publish archives. Use `adrai compile`, or the normal indexing
+after a successful mutation, to prepare one. Repeated `domains` calls without an
+exact matching archive continue to use the cold path.
+
 ADRAI stores generated data under the repository's ignored `.adrai/` directory:
 
 - `.adrai/index.sqlite` is the mutable alias for the current compiled index.

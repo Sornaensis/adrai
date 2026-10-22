@@ -825,6 +825,7 @@
         "ADRAI.P4-07.Consistency oracle (P4-07).provenance maintenance metadata normalization.deterministic semantic metadata differences remain significant",
         "ADRAI.P4-07.Query integration (history / search / compare).P6-08Q exact-v3 archive hooks and tamper fallback",
         "ADRAI.P4-07.Query integration (history / search / compare).relevant diagnostics bind exact index revision and monotonic phases",
+        "ADRAI.P4-07.Query integration (history / search / compare).domain trees reuse exact snapshots and preserve cold integrity gates",
         "ADRAI.P4-07.Query integration (history / search / compare).P6-08Q exact archive acquisition owns cancellation cleanup",
         "ADRAI.P4-07.Environment (branch / worktree / sparse / unicode).linked_worktree_commits_only_its_branch_and_uses_common_lock",
         "ADRAI.P4-07.Environment (branch / worktree / sparse / unicode).symlinked managed parent cannot escape repository",

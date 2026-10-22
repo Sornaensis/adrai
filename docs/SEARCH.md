@@ -75,6 +75,8 @@ Collapsed results group competing decision heads by ADR. `--view exploded` adds 
 ```console
 adrai domains
 adrai domains platform
+adrai domains --tree
+adrai domains platform.storage --tree --json
 adrai domains platform.storage --at HEAD~1 --include-obsolete --json
 adrai search --domain platform.storage
 ```
@@ -98,6 +100,30 @@ JSON uses `adrai/domains/v1` with the resolved commit in `as_of`, the canonical
 requested `parent` (or `null` at the top level), and a `domains` array of
 `{"domain":"platform.storage","adr_count":12}` rows. Empty listings retain this
 envelope with an empty array.
+
+Add `--tree` to draw every level, with a recursive distinct ADR count at each
+node. With a parent argument, the tree includes that parent as its root; a leaf
+therefore produces one row, and an unknown parent produces none. Parent counts
+include direct assignments and deduplicate ADRs found under several children;
+they need not equal the sum of child counts. Names stay fully qualified:
+
+```text
+platform 12
+├── platform.api 7
+└── platform.storage 8
+    └── platform.storage.postgresql 5
+```
+
+`--tree --json` uses `adrai/domains-tree/v1`. It keeps `as_of`, `parent`, and
+`domains`, with a `children` array on every domain node (empty at leaves).
+Without `--tree`, the flat text and `adrai/domains/v1` JSON contracts are unchanged.
+
+Domain reads reuse an existing validated exact-revision archive without rebuilding
+search materialization. `adrai compile` and successful mutation post-commit
+indexing normally publish these archives. A missing or rejected archive falls
+back to the same committed snapshot integrity checks and provenance read; `domains`
+does not populate an archive, so repeated reads without one still take this cold
+path. `--at` reuse requires an archive for that exact resolved commit.
 
 ## File relevance
 

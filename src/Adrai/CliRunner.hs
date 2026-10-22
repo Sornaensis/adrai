@@ -430,7 +430,8 @@ data DomainsCommand = DomainsCommand
   { domainsParent :: Maybe Domain,
     domainsAt :: Text,
     domainsIncludeObsolete :: Bool,
-    domainsJson :: Bool
+    domainsJson :: Bool,
+    domainsTree :: Bool
   }
   deriving (Eq, Show)
 
@@ -471,7 +472,7 @@ parser =
         ( Opt.commandGroup "Read and inspect:"
      <> Opt.command "show" (commandInfoWithFooter (CmdShow <$> showParser) "show one ADR" "Read the decision, domain hierarchy, applicability, and state token before editing: adrai show ADR_ID. Use --view exploded to inspect records; --raw requires --view exploded. Keep subsequent amendments focused on the decision and its rationale.")
      <> Opt.command "history" (commandInfoWithFooter (CmdHistory <$> historyParser) "show operation history" "Inspect how a decision evolved: adrai history ADR_ID. Omit ADR_ID for repository-wide history; use --at to select a revision. Keep historical detail out of decision prose unless essential to the rationale.")
-     <> Opt.command "domains" (commandInfoWithFooter (CmdDomains <$> domainsParser) "browse domains with recursive ADR counts" "Omit DOMAIN for top-level domains, or provide a domain to list its immediate children. Counts include each non-obsolete ADR once per displayed domain and all its descendants, without a result limit. Search a subtree with adrai search --domain platform.storage; use --include-obsolete or --at REVISION consistently across both commands.")
+     <> Opt.command "domains" (commandInfoWithFooter (CmdDomains <$> domainsParser) "browse domains with recursive ADR counts" "Omit DOMAIN for top-level domains, or provide a domain to list its immediate children. Use --tree for every level; a requested parent becomes the tree root. Counts include each non-obsolete ADR once per displayed domain and all its descendants, without a result limit. --tree --json emits nested children. Search a subtree with adrai search --domain platform.storage; use --include-obsolete or --at REVISION consistently across both commands.")
      <> Opt.command "search" (commandInfoWithFooter (CmdSearch <$> searchParser) "search ADRs or list non-obsolete ADRs when QUERY is omitted or blank" "Browse up to 1000 non-obsolete ADRs at HEAD: adrai search --limit 1000. This bounded listing uses ADR ID order; add --include-obsolete to include obsolete decisions. Search text: adrai search database. Narrow by --domain using a sensible hierarchy, such as platform.storage, or --file to match applicability. Read matching decisions before authoring a concise standalone decision.")
      <> Opt.command "relevant" (commandInfoWithFooter (CmdRelevant <$> relevantParser) "rank ADRs for a file" "Find applicable guidance before changing an implementation: adrai relevant src/Main.hs --worktree. Use --at for immutable revision content, or --worktree with HEAD as context. Maintain path applicability through --applies-to/applies_to or scope instead of embedding paths in decision prose.")
      <> Opt.command "compare" (commandInfoWithFooter (CmdCompare <$> compareParser) "compare revisions" "Review decision changes between immutable revisions: adrai compare HEAD~1 HEAD. TO defaults to HEAD; --include-unchanged also shows stable decisions. Use this comparison for review; keep revision details out of decision prose unless essential.")
@@ -708,6 +709,7 @@ domainsParser = DomainsCommand
   <*> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to query")
   <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
   <*> switch (long "json" <> help "output JSON")
+  <*> switch (long "tree" <> help "draw all domain levels with recursive counts; JSON uses nested children")
 
 searchParser :: Parser SearchCommand
 searchParser =
@@ -922,7 +924,7 @@ dispatchWith dependencies (CliInvocation config (CmdSearch command)) =
         Right projection -> emitRendered (renderSearchOutcome command projection)
 
 dispatchWith dependencies (CliInvocation config (CmdDomains command)) = do
-  result <- cliRunDomains dependencies config (DomainsRequest (domainsParent command) (domainsAt command) (domainsIncludeObsolete command))
+  result <- cliRunDomains dependencies config (DomainsRequest (domainsParent command) (domainsAt command) (domainsIncludeObsolete command) (domainsTree command))
   case result of
     Left failure -> renderFailure failure
     Right projection -> emitRendered (renderDomainsOutcome command projection)

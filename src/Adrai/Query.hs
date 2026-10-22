@@ -32,8 +32,10 @@ module Adrai.Query
     referenceLookupErrorText,
     adrVisible,
     DomainEntry (..),
+    DomainTreeEntry (..),
     DomainsProjection (..),
     projectDomains,
+    projectDomainsTree,
     domainsProjectionJson,
     renderDomainsProjection,
     CompareOptions (..),
@@ -1289,7 +1291,14 @@ data DomainEntry = DomainEntry
 data DomainsProjection = DomainsProjection
   { domainsProjectionRevision :: RevisionIdentity,
     domainsProjectionParent :: Maybe Domain,
-    domainsProjectionEntries :: [DomainEntry]
+    domainsProjectionEntries :: [DomainEntry],
+    domainsProjectionTree :: Maybe [DomainTreeEntry]
+  }
+  deriving (Eq, Show)
+
+data DomainTreeEntry = DomainTreeEntry
+  { domainTreeEntry :: DomainEntry,
+    domainTreeChildren :: [DomainTreeEntry]
   }
   deriving (Eq, Show)
 
@@ -1297,20 +1306,34 @@ data DomainsProjection = DomainsProjection
 -- Sets count each ADR once even when several assignments or conflicting heads
 -- lie below the same displayed child. Unresolved heads remain discoverable.
 projectDomains :: ReadSnapshot -> Maybe Domain -> Bool -> DomainsProjection
-projectDomains snapshot parent includeObsolete =
-  DomainsProjection (readSnapshotRevision snapshot) parent
-    [DomainEntry name (Set.size adrs) | (name, adrs) <- Map.toAscList entries]
+projectDomains = projectDomainView False
+
+projectDomainsTree :: ReadSnapshot -> Maybe Domain -> Bool -> DomainsProjection
+projectDomainsTree = projectDomainView True
+
+projectDomainView :: Bool -> ReadSnapshot -> Maybe Domain -> Bool -> DomainsProjection
+projectDomainView tree snapshot parent includeObsolete =
+  DomainsProjection (readSnapshotRevision snapshot) parent (map entry roots)
+    (if tree then Just (map node roots) else Nothing)
   where
-    parentSegments = maybe [] (Text.splitOn "." . domainText) parent
-    depth = length parentSegments + 1
+    requested = maybe "" domainText parent
+    roots
+      | tree, Just selected <- parent = [domainText selected | Map.member (domainText selected) entries]
+      | otherwise = children requested
+    entry name = DomainEntry name (maybe 0 Set.size (Map.lookup name entries))
+    node name = DomainTreeEntry (entry name) (map node (children name))
+    children name = maybe [] Set.toAscList (Map.lookup name childIndex)
+    childIndex = Map.fromListWith Set.union
+      [(Text.dropEnd 1 prefix, Set.singleton name) | name <- Map.keys entries, let (prefix, _) = Text.breakOnEnd "." name]
+    -- Each assignment contributes all its prefixes once. Sets deduplicate an
+    -- ADR across sibling assignments; parent totals must not sum child totals.
     entries = Map.fromListWith Set.union
       [ (Text.intercalate "." (take depth segments), Set.singleton (reducedAdrId reduced))
         | reduced <- graphReductionAdrs (readSnapshotReduction snapshot),
           adrVisible includeObsolete reduced,
           assigned <- logicalAdrDomains reduced,
           let segments = Text.splitOn "." (domainText assigned),
-          take (length parentSegments) segments == parentSegments,
-          length segments >= depth
+          depth <- [1 .. length segments]
       ]
 
 logicalAdrDomains :: ReducedAdr -> [Domain]
@@ -1320,18 +1343,27 @@ logicalAdrDomains reduced =
 
 domainsProjectionJson :: DomainsProjection -> JsonValue
 domainsProjectionJson projection = object
-  [ ("schema", JsonString "adrai/domains/v1"),
+  [ ("schema", JsonString (if domainsProjectionTree projection == Nothing then "adrai/domains/v1" else "adrai/domains-tree/v1")),
     ("as_of", JsonString (revisionResolved (domainsProjectionRevision projection))),
     ("parent", maybe JsonNull (JsonString . domainText) (domainsProjectionParent projection)),
-    ("domains", JsonArray
-      [object [("domain", JsonString (domainEntryName entry)), ("adr_count", intJson (domainEntryAdrCount entry))]
-        | entry <- domainsProjectionEntries projection])
+    ("domains", JsonArray (case domainsProjectionTree projection of
+      Nothing -> map (object . entryMembers) (domainsProjectionEntries projection)
+      Just roots -> map treeJson roots))
   ]
+  where
+    entryMembers entry = [("domain", JsonString (domainEntryName entry)), ("adr_count", intJson (domainEntryAdrCount entry))]
+    treeJson node = object (entryMembers (domainTreeEntry node) <> [("children", JsonArray (map treeJson (domainTreeChildren node)))])
 
 renderDomainsProjection :: DomainsProjection -> Text
-renderDomainsProjection = Text.unlines . map renderEntry . domainsProjectionEntries
+renderDomainsProjection projection = Text.unlines $ case domainsProjectionTree projection of
+  Nothing -> map renderEntry (domainsProjectionEntries projection)
+  Just roots -> concatMap (\node -> renderEntry (domainTreeEntry node) : renderChildren "" (domainTreeChildren node)) roots
   where
     renderEntry entry = domainEntryName entry <> " " <> Text.pack (show (domainEntryAdrCount entry))
+    renderChildren _ [] = []
+    renderChildren prefix (node : rest) =
+      (prefix <> (if null rest then "└── " else "├── ") <> renderEntry (domainTreeEntry node))
+        : (renderChildren (prefix <> if null rest then "    " else "│   ") (domainTreeChildren node) <> renderChildren prefix rest)
 
 data SearchFilterInfo = SearchFilterInfo
   { filterScopeMatch :: Maybe ScopeFilterMatch,

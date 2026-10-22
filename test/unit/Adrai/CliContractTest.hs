@@ -116,6 +116,7 @@ import Adrai.History
 import Adrai.Query
   ( CompareCounts (CompareCounts),
     DomainEntry (..),
+    DomainTreeEntry (..),
     DomainsProjection (..),
     CompareProjection (..),
     ExplodedProjection (..),
@@ -1122,17 +1123,21 @@ mutationCliContractTests =
         readIORef selectedRepo >>= (@?= Just "doctor repo")
         readIORef selectedCommand >>= (@?= Just explicit)
     , testCase "domains parses canonical hierarchy options and renders and dispatches exact counts" $ do
-        let defaulted = DomainsCommand Nothing "HEAD" False False
+        let defaulted = DomainsCommand Nothing "HEAD" False False False
             parent = requireRight (mkDomain "platform.storage")
-            explicit = DomainsCommand (Just parent) "release~1" True True
-            projection = DomainsProjection (RevisionIdentity "release~1" "resolved-oid") (Just parent) [DomainEntry "platform.storage.postgresql" 1001]
+            explicit = DomainsCommand (Just parent) "release~1" True True True
+            projection = DomainsProjection (RevisionIdentity "release~1" "resolved-oid") (Just parent) [DomainEntry "platform.storage.postgresql" 1001] Nothing
         parseCli ["domains"] @?= Right (CliInvocation defaultCliConfig (CmdDomains defaulted))
-        parseCli ["domains", " Platform . Storage ", "--at", "release~1", "--include-obsolete", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdDomains explicit))
+        parseCli ["domains", " Platform . Storage ", "--at", "release~1", "--include-obsolete", "--json", "--tree"] @?= Right (CliInvocation defaultCliConfig (CmdDomains explicit))
         for_ [["domains", "a..b"], ["domains", ""], ["domains", "a", "b"], ["domains", "--limit", "10"], ["domains", "--worktree"]] assertParserFailure
         renderDomainsOutcome defaulted projection @?= CliRendered "platform.storage.postgresql 1001\n" "" ExitSuccess
         renderDomainsOutcome defaulted (projection {domainsProjectionEntries = []}) @?= CliRendered "" "" ExitSuccess
         let expectedJson = Aeson.object ["schema" Aeson..= ("adrai/domains/v1" :: Text), "as_of" Aeson..= ("resolved-oid" :: Text), "parent" Aeson..= ("platform.storage" :: Text), "domains" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage.postgresql" :: Text), "adr_count" Aeson..= (1001 :: Int)]]]
         Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 (renderedStdout (renderDomainsOutcome explicit projection))) @?= Right expectedJson
+        let treeProjection = projection {domainsProjectionTree = Just [DomainTreeEntry (DomainEntry "platform.storage" 1001) [DomainTreeEntry (DomainEntry "platform.storage.postgresql" 1001) []]]}
+            expectedTreeJson = Aeson.object ["schema" Aeson..= ("adrai/domains-tree/v1" :: Text), "as_of" Aeson..= ("resolved-oid" :: Text), "parent" Aeson..= ("platform.storage" :: Text), "domains" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage" :: Text), "adr_count" Aeson..= (1001 :: Int), "children" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage.postgresql" :: Text), "adr_count" Aeson..= (1001 :: Int), "children" Aeson..= ([] :: [Aeson.Value])]]]]]
+        Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 (renderedStdout (renderDomainsOutcome explicit treeProjection))) @?= Right expectedTreeJson
+        renderDomainsOutcome defaulted treeProjection @?= CliRendered "platform.storage 1001\n└── platform.storage.postgresql 1001\n" "" ExitSuccess
         received <- newIORef Nothing
         let dependencies = unsupportedCliDispatchDependencies
               { cliRunDomains = \config receivedRequest -> do
@@ -1140,7 +1145,7 @@ mutationCliContractTests =
                   pure (Right projection)
               }
         dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "domain repo"}) (CmdDomains explicit)) >>= (@?= ExitSuccess)
-        readIORef received >>= (@?= Just ("domain repo", DomainsRequest (Just parent) "release~1" True))
+        readIORef received >>= (@?= Just ("domain repo", DomainsRequest (Just parent) "release~1" True True))
     , testCase "search accepts only the frozen positional syntax, materializes strictly, renders exactly, and dispatches typed intent" $ do
         let defaulted = SearchCommand "" HybridRetrieval CollapsedView Nothing [] Nothing Nothing Nothing "HEAD" False 10 False
             explicit =
@@ -1382,6 +1387,10 @@ mutationCliContractTests =
           runCli ["domains"] >>= (@?= "storage 1\n")
           runCli ["domains", "storage"] >>= (@?= "storage.db 1\n")
           runCli ["domains", "storage.db"] >>= (@?= "storage.db.postgresql 1\n")
+          runCli ["domains", "--tree"] >>= (@?= "storage 1\n└── storage.db 1\n    └── storage.db.postgresql 1\n")
+          runCli ["domains", "storage.db", "--tree"] >>= (@?= "storage.db 1\n└── storage.db.postgresql 1\n")
+          runCli ["domains", "storage.db.postgresql", "--tree"] >>= (@?= "storage.db.postgresql 1\n")
+          runCli ["domains", "unknown", "--tree"] >>= (@?= "")
           runCli ["domains", "storage.db.postgresql"] >>= (@?= "")
           runCli ["domains", "unknown"] >>= (@?= "")
           for_ [[], [" "], ["DURABLE_LEDGER_TOKEN"]] $ \query -> do
@@ -1750,7 +1759,7 @@ mutationCliContractTests =
           Right _ -> assertFailure "create help unexpectedly parsed as command"
         for_
           [ ("init", ["standalone decision", "dot-separated domain hierarchy", "--applies-to"])
-          , ("domains", ["top-level domains", "immediate children", "without a result limit", "--at", "--include-obsolete", "--json"])
+          , ("domains", ["top-level domains", "immediate children", "without a result limit", "--at", "--include-obsolete", "--json", "--tree", "nested children"])
           , ("create", ["exactly one", "concise standalone decision", "brief rationale", "unless essential", "--applies-to/applies_to or scope", "platform.storage.postgresql", "--applies-to 'src/storage/**'"])
           , ("search", ["omitted or blank", "non-obsolete ADRs", "1-1000", "default 10", "adrai search --limit 1000", "--include-obsolete", "--domain", "--file", "concise standalone decision", "collapsed lists ADR IDs and titles", "exploded adds summaries", "--json"])
           , ("show", ["requires --view exploded", "before editing", "decision and its rationale"])

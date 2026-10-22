@@ -27,6 +27,7 @@ module Adrai.Service.Query
     runHistory,
     runSearch,
     runDomains,
+    runDomainsWithHooks,
     runSearchExact,
     runWebSearchExact,
     runSearchWithHooks,
@@ -83,7 +84,7 @@ import qualified Adrai.Format.Document as Document
 import Adrai.Domain (Domain)
 import Adrai.Format.Config (parseConfigText)
 import Adrai.Git (GitBlob (..), GitOid, Repository, RevisionSpec (..), gitOidText, gitTreeOid, gitTreePath, readRegularBlobAt, readWorktreeFileBytes)
-import Adrai.History (PlacementEvidence, ReadSnapshot (..), RevisionIdentity (..))
+import Adrai.History (PlacementEvidence, ReadSnapshot (..), RevisionIdentity (..), validateReadSnapshot)
 import Adrai.History
   ( HistoryError (..),
     HistoryOptions,
@@ -134,6 +135,7 @@ import Adrai.Query
     SearchRequest,
     DomainsProjection,
     projectDomains,
+    projectDomainsTree,
     SearchResult (..),
     RelevantError,
     RelevantProjection (..),
@@ -182,7 +184,7 @@ import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Database.SQLite.Simple (Connection, close, execute_, open)
+import Database.SQLite.Simple (Connection, Only, close, execute_, open, query_)
 import GHC.Clock (getMonotonicTimeNSec)
 import Data.Word (Word64)
 
@@ -263,7 +265,8 @@ data SearchServiceRequest = SearchServiceRequest
 data DomainsRequest = DomainsRequest
   { domainsRequestParent :: Maybe Domain,
     domainsRequestRevision :: Text,
-    domainsRequestIncludeObsolete :: Bool
+    domainsRequestIncludeObsolete :: Bool,
+    domainsRequestTree :: Bool
   }
   deriving (Eq, Show)
 
@@ -371,11 +374,29 @@ runSearch = runSearchWithHooks defaultQueryExecutionHooks
 
 -- | Aggregate the complete validated snapshot at one immutable revision.
 runDomains :: Repository -> DomainsRequest -> IO (Either SearchFailure DomainsProjection)
-runDomains repository request = do
-  snapshotResult <- readSnapshotAt repository (domainsRequestRevision request)
-  pure $ case snapshotResult of
-    Left failure -> Left (searchSnapshotFailure failure)
-    Right snapshot -> Right (projectDomains snapshot (domainsRequestParent request) (domainsRequestIncludeObsolete request))
+runDomains = runDomainsWithHooks defaultQueryExecutionHooks
+
+runDomainsWithHooks :: QueryExecutionHooks -> Repository -> DomainsRequest -> IO (Either SearchFailure DomainsProjection)
+runDomainsWithHooks hooks repository request = do
+  revisionResult <- resolveRepositoryRevision repository (RevisionSpec requestedRevision)
+  case revisionResult of
+    Left problem -> pure (Left (SearchRepositoryFailure (Text.pack (show problem))))
+    Right revision -> do
+      cached <- withExactCacheDecodedContext loadExactDomainsSnapshot hooks (pure ()) (pure ()) repository revision requestedRevision
+        (\_ snapshot -> pure (Right (project snapshot)))
+      case cached of
+        Just result -> pure result
+        Nothing -> do
+          queryColdFallback hooks
+          snapshotResult <- readSnapshotAtResolvedWithHooks hooks repository requestedRevision revision
+          pure $ case snapshotResult of
+            Left failure -> Left (searchSnapshotFailure failure)
+            Right snapshot -> Right (project snapshot)
+  where
+    requestedRevision = domainsRequestRevision request
+    project snapshot =
+      (if domainsRequestTree request then projectDomainsTree else projectDomains)
+        snapshot (domainsRequestParent request) (domainsRequestIncludeObsolete request)
 
 -- | Execute a search only from the validated immutable archive for the
 -- caller-captured commit.  Missing or rejected archives are acquisition
@@ -664,6 +685,21 @@ withExactCacheContextWithAcquisitionHooks
   -> (Connection -> ExactQueryContext -> IO value)
   -> IO (Maybe value)
 withExactCacheContextWithAcquisitionHooks hooks afterAcquired afterClose repository revision requestedRevision useContext =
+  withExactCacheDecodedContext (\_ -> loadExactQueryContext) hooks afterAcquired afterClose repository revision requestedRevision useContext
+
+-- Acquisition, transaction ownership, busy/cancellation propagation, and cold
+-- fallback rules are shared by full search and snapshot-only domain reads.
+withExactCacheDecodedContext
+  :: (forall scope. Connection -> ValidatedCacheRows scope -> Text -> Text -> IO (Either Text context))
+  -> QueryExecutionHooks
+  -> IO ()
+  -> IO ()
+  -> Repository
+  -> ResolvedRepositoryRevision
+  -> Text
+  -> (Connection -> context -> IO value)
+  -> IO (Maybe value)
+withExactCacheDecodedContext decodeContext hooks afterAcquired afterClose repository revision requestedRevision useContext =
   case exactCacheArchivePath repository (resolvedCommitOid revision) of
     Nothing -> pure Nothing
     Just path ->
@@ -678,7 +714,7 @@ withExactCacheContextWithAcquisitionHooks hooks afterAcquired afterClose reposit
                   execute_ archiveConnection "PRAGMA query_only=ON"
                   try @SomeException $ do
                     queryArchiveLoad hooks
-                    loaded <- try (loadExactQueryContext acceptedRows requestedRevision oid)
+                    loaded <- try (decodeContext archiveConnection acceptedRows requestedRevision oid)
                     case loaded of
                       Left exception -> rethrowQueryAsyncOrBusy exception >> queryArchiveRejected hooks (Text.pack (displayException exception)) >> pure Nothing
                       Right (Left problem) -> queryArchiveRejected hooks problem >> pure Nothing
@@ -723,26 +759,13 @@ indexExactQueryRows key rows = fmap reverse (foldl' insert Map.empty rows)
 -- value is exposed when any semantic or provenance authority disagrees.
 loadExactQueryContext :: ValidatedCacheRows scope -> Text -> Text -> IO (Either Text ExactQueryContext)
 loadExactQueryContext acceptedRows requestedRevision resolvedOid = do
-  let configRows = validatedRepositoryConfigRows acceptedRows
-      sourceRows = validatedManagedSourceRows acceptedRows
-      operationRows = validatedOperationRows acceptedRows
-      memberRows = validatedMemberRows acceptedRows
-      coverageRows = validatedCoverageRows acceptedRows
-      commitRows = validatedOperationCommitRows acceptedRows
-      landingRows = validatedLandingRows acceptedRows
-      targetRows = validatedTargetRows acceptedRows
-      lineConfigRows = validatedLineConfigRows acceptedRows
-      materialization = validatedSearchMaterialization acceptedRows
+  snapshotResult <- loadExactSnapshot acceptedRows requestedRevision resolvedOid
   pure $ do
-    config <- decodeConfig configRows
-    documents <- traverse decodeDocument sourceRows
-    classified <- traverse (uncurry classifyDocument) (zip documents sourceRows)
-    placements <- decodePlacements config classified resolvedOid operationRows memberRows coverageRows commitRows landingRows targetRows lineConfigRows
-    let snapshot = ReadSnapshot (RevisionIdentity requestedRevision resolvedOid) documents (reduceManagedGraph (map Document.parsedManagedRecord documents)) placements
+    snapshot <- snapshotResult
     case materializeCurrentSearch snapshot of
       Left problem -> Left ("cached search materialization does not reconstruct: " <> Text.pack (show problem))
       Right rebuilt -> do
-        let persisted = canonicalMaterialization materialization
+        let persisted = canonicalMaterialization (validatedSearchMaterialization acceptedRows)
         if rebuilt /= persisted
           then Left "persisted search materialization differs from reconstructed snapshot"
           else Right (ExactQueryContext snapshot persisted)
@@ -759,6 +782,42 @@ loadExactQueryContext acceptedRows requestedRevision resolvedOid = do
         searchPassageLineStart passage,
         searchPassageLineEnd passage
       )
+
+loadExactDomainsSnapshot :: Connection -> ValidatedCacheRows scope -> Text -> Text -> IO (Either Text ReadSnapshot)
+loadExactDomainsSnapshot connection acceptedRows requestedRevision resolvedOid = do
+  -- Match the compiler's persisted semantic-state gate. ADR conflicts and
+  -- synchronized provenance diagnostics remain admissible for discovery.
+  errors <- query_ connection "SELECT 1 FROM issue WHERE severity='error' AND code <> 'ADR_CONFLICT' AND origin <> 'provenance' LIMIT 1" :: IO [Only Int]
+  if null errors
+    then do
+      loaded <- loadExactSnapshot acceptedRows requestedRevision resolvedOid
+      pure $ do
+        snapshot <- loaded
+        either (Left . ("cached snapshot is inconsistent: " <>) . Text.pack . show) Right (validateReadSnapshot snapshot)
+        Right snapshot
+    else pure (Left "cached domain snapshot contains source-integrity errors")
+
+-- Decode the same config, documents, classification and placement authority as
+-- search, without constructing search passages or rebuilding retrieval rows.
+loadExactSnapshot :: ValidatedCacheRows scope -> Text -> Text -> IO (Either Text ReadSnapshot)
+loadExactSnapshot acceptedRows requestedRevision resolvedOid = do
+  let configRows = validatedRepositoryConfigRows acceptedRows
+      sourceRows = validatedManagedSourceRows acceptedRows
+      operationRows = validatedOperationRows acceptedRows
+      memberRows = validatedMemberRows acceptedRows
+      coverageRows = validatedCoverageRows acceptedRows
+      commitRows = validatedOperationCommitRows acceptedRows
+      landingRows = validatedLandingRows acceptedRows
+      targetRows = validatedTargetRows acceptedRows
+      lineConfigRows = validatedLineConfigRows acceptedRows
+  pure $ do
+    config <- decodeConfig configRows
+    documents <- traverse decodeDocument sourceRows
+    classified <- traverse (uncurry classifyDocument) (zip documents sourceRows)
+    placements <- decodePlacements config classified resolvedOid operationRows memberRows coverageRows commitRows landingRows targetRows lineConfigRows
+    let snapshot = ReadSnapshot (RevisionIdentity requestedRevision resolvedOid) documents (reduceManagedGraph (map Document.parsedManagedRecord documents)) placements
+    Right snapshot
+  where
     decodeConfig rows = case rows of
       [("default", Nothing, "valid")] -> Right defaultConfig
       [("committed", Just bytes, "valid")] -> do
