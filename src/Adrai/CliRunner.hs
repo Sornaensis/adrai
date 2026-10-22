@@ -99,9 +99,11 @@ import Adrai.History
   ( ActorSelector (..),
     HistoryOptions (..),
     HistoryOrder (..),
-    HistoryProjection,
+    HistoryProjection (..),
+    HistoryOperation (..),
+    RevisionIdentity (..),
+    isoTimestampFromMs,
     historyProjectionJson,
-    renderHistoryProjection,
   )
 import Adrai.Retrieval (RetrievalMode (FtsRetrieval, HybridRetrieval, VectorRetrieval))
 import Adrai.Types (ViewMode (CollapsedView, ExplodedView))
@@ -196,6 +198,7 @@ import Adrai.Types
      mkActor,
      mkAdrId,
      recordIdText,
+     operationIdText,
      gitRefText,
      configLogicalLines,
      configManagedPaths,
@@ -205,7 +208,13 @@ import Adrai.Types
      stateTokenText,
   )
 import Adrai.Query
-  ( CompareProjection,
+  ( CompareProjection (..),
+    CompareEntry (..),
+    CompareChange (..),
+    CollapsedProjection (..),
+    ExplodedProjection (..),
+    ExplodedOperation (..),
+    ExplodedItem (..),
     SearchProjection,
     DomainsProjection,
     domainsProjectionJson,
@@ -215,15 +224,14 @@ import Adrai.Query
     collapsedProjectionJson,
     compareProjectionJson,
     explodedProjectionJson,
-    renderCollapsedProjection,
-    renderCompareProjection,
-    renderExplodedProjection,
   )
+import qualified Adrai.Query as Query
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as ByteString
 import Data.Bifunctor (first)
+import Data.Char (isControl)
 import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -470,7 +478,7 @@ parser =
         )
    <|> subparser
         ( Opt.commandGroup "Read and inspect:"
-     <> Opt.command "show" (commandInfoWithFooter (CmdShow <$> showParser) "show one ADR" "Read the decision, domain hierarchy, applicability, and state token before editing: adrai show ADR_ID. Use --view exploded to inspect records; --raw requires --view exploded. Keep subsequent amendments focused on the decision and its rationale.")
+     <> Opt.command "show" (commandInfoWithFooter (CmdShow <$> showParser) "show one ADR" "Read the decision, domain hierarchy, applicability, and state token before editing: adrai show ADR_ID. Use --json for state tokens and structured provenance. Use --view exploded to inspect records; --raw requires --view exploded. Keep subsequent amendments focused on the decision and its rationale.")
      <> Opt.command "history" (commandInfoWithFooter (CmdHistory <$> historyParser) "show operation history" "Inspect how a decision evolved: adrai history ADR_ID. Omit ADR_ID for repository-wide history; use --at to select a revision. Keep historical detail out of decision prose unless essential to the rationale.")
      <> Opt.command "domains" (commandInfoWithFooter (CmdDomains <$> domainsParser) "browse domains with recursive ADR counts" "Omit DOMAIN for top-level domains, or provide a domain to list its immediate children. Use --tree for every level; a requested parent becomes the tree root. Counts include each non-obsolete ADR once per displayed domain and all its descendants, without a result limit. --tree --json emits nested children. Search a subtree with adrai search --domain platform.storage; use --include-obsolete or --at REVISION consistently across both commands.")
      <> Opt.command "search" (commandInfoWithFooter (CmdSearch <$> searchParser) "search ADRs or list non-obsolete ADRs when QUERY is omitted or blank" "Browse up to 1000 non-obsolete ADRs at HEAD: adrai search --limit 1000. This bounded listing uses ADR ID order; add --include-obsolete to include obsolete decisions. Search text: adrai search database. Narrow by --domain using a sensible hierarchy, such as platform.storage, or --file to match applicability. Read matching decisions before authoring a concise standalone decision.")
@@ -2424,8 +2432,10 @@ renderShowOutcome command result =
     output
       | showJson command = renderCanonicalJson value
       | otherwise = case result of
-          ShowCollapsed projection -> TextEncoding.decodeUtf8 (renderCollapsedProjection projection)
-          ShowExploded projection -> TextEncoding.decodeUtf8 (renderExplodedProjection projection)
+          ShowCollapsed projection -> renderCollapsedHuman projection
+          ShowExploded projection
+            | showRaw command -> rawSemanticText projection
+            | otherwise -> renderExplodedHuman projection
     value = case result of
       ShowCollapsed projection -> collapsedProjectionJson projection
       ShowExploded projection -> explodedProjectionJson projection
@@ -2439,7 +2449,7 @@ renderCompareOutcome command projection =
   where
     output
       | compareJson command = renderCanonicalJson (compareProjectionJson projection)
-      | otherwise = TextEncoding.decodeUtf8 (renderCompareProjection projection)
+      | otherwise = renderCompareHuman projection
 
 renderHistoryOutcome :: HistoryCommand -> HistoryProjection -> CliRendered
 renderHistoryOutcome command projection =
@@ -2450,7 +2460,99 @@ renderHistoryOutcome command projection =
   where
     output
       | historyJson command = renderCanonicalJson (historyProjectionJson projection)
-      | otherwise = TextEncoding.decodeUtf8 (renderHistoryProjection projection)
+      | otherwise = renderHistoryHuman projection
+
+-- Human CLI rendering is separate from the shared canonical JSON projections.
+-- Keep prose multiline while preventing terminal controls in ordinary output.
+humanInline :: Text -> Text
+humanInline = Text.map (\character -> if isControl character then ' ' else character)
+
+humanBlock :: Text -> Text
+humanBlock = Text.dropWhileEnd (== '\n') . Text.filter (\character -> character == '\n' || character == '\t' || not (isControl character)) . Text.replace "\r" "\n" . Text.replace "\r\n" "\n"
+
+humanLines :: [Text] -> Text
+humanLines = Text.unlines . reverse . dropWhile Text.null . reverse
+
+humanList :: [Text] -> Text
+humanList [] = "(none)"
+humanList values = Text.intercalate ", " (map humanInline values)
+
+renderCollapsedHuman :: CollapsedProjection -> Text
+renderCollapsedHuman projection = humanLines $
+  [ adrIdText (collapsedAdr projection) <> " " <> humanInline (collapsedTitle projection),
+    "Status: " <> humanInline (collapsedStatus projection),
+    "Domains: " <> humanList (collapsedDomains projection),
+    "Scope: " <> humanList (collapsedAppliesTo projection)
+  ]
+    <> maybe [] (\replacement -> ["Replacement: " <> adrIdText replacement]) (collapsedReplacement projection)
+    <> section "Summary" (collapsedSummary projection)
+    <> ["", humanBlock (collapsedBody projection)]
+  where
+    section label text = if Text.null text then [] else ["", label <> ":", humanBlock text]
+
+renderExplodedHuman :: ExplodedProjection -> Text
+renderExplodedHuman projection = humanLines $
+  ["ADR " <> adrIdText (explodedAdr projection)]
+    <> concatMap operationLines (explodedOperations projection)
+  where
+    operationLines operation =
+      ["", "Operation " <> operationIdText (explodedOperationId operation)]
+        <> concatMap itemLines (explodedOperationItems operation)
+    itemLines item =
+      ["", humanInline (explodedItemId item) <> " " <> humanInline (explodedItemEvent item), "Path: " <> humanInline (explodedItemPath item)]
+        <> optionalLine "Title" (explodedItemTitle item)
+        <> ["Domains: " <> humanList (explodedItemDomains item) | not (null (explodedItemDomains item))]
+        <> optionalLine "Relation" (explodedItemRelation item)
+        <> metadataLines (explodedItemMetadata item)
+        <> optionalBlock "Summary" (explodedItemSummary item)
+        <> optionalBlock "Body" (explodedItemBody item)
+        <> optionalBlock "Reason" (explodedItemRationale item)
+    optionalLine label = maybe [] (\text -> [label <> ": " <> humanInline text])
+    optionalBlock label = maybe [] (\text -> [label <> ":", humanBlock text])
+    metadataLines (Just (JsonObject fields)) =
+      [humanInline (Text.replace "_" " " key) <> ": " <> value | (key, json) <- fields, let value = humanValue json, not (Text.null value)]
+    metadataLines _ = []
+
+humanValue :: JsonValue -> Text
+humanValue value = case value of
+  JsonString text -> humanInline text
+  JsonArray values -> Text.intercalate ", " (filter (not . Text.null) (map humanValue values))
+  JsonNumber number -> Text.pack (show number)
+  JsonDecimal number -> Text.pack (show number)
+  JsonBool True -> "yes"
+  JsonBool False -> "no"
+  JsonNull -> ""
+  JsonObject fields -> Text.intercalate "; " [humanInline key <> ": " <> humanValue nested | (key, nested) <- fields]
+
+rawSemanticText :: ExplodedProjection -> Text
+rawSemanticText projection =
+  let output = Text.intercalate "\n" [text | operation <- explodedOperations projection, item <- explodedOperationItems operation, Just text <- [explodedItemRawSemantic item]]
+   in if Text.null output || Text.isSuffixOf "\n" output then output else output <> "\n"
+
+renderCompareHuman :: CompareProjection -> Text
+renderCompareHuman projection = humanLines $
+  [ "Compare " <> humanInline (revisionRequested (compareFromRevision projection)) <> " -> " <> humanInline (revisionRequested (compareToRevision projection)),
+    "Added: " <> count Query.compareAdded <> "  Removed: " <> count Query.compareRemoved <> "  Changed: " <> count Query.compareChanged <> "  Unchanged: " <> count Query.compareUnchanged
+  ]
+    <> concatMap entryLines (compareEntries projection)
+  where
+    count field = Text.pack (show (field (compareCounts projection)))
+    entryLines entry =
+      ["", humanInline (compareEntryKind entry) <> " " <> adrIdText (compareEntryAdr entry) <> " " <> humanInline (compareEntryTitle entry)]
+        <> ["  Changed: " <> humanList (map compareChangeField (compareEntryChanges entry)) | not (null (compareEntryChanges entry))]
+
+renderHistoryHuman :: HistoryProjection -> Text
+renderHistoryHuman projection = humanLines $
+  concatMap operationLines (historyProjectionOperations projection)
+    <> ["More operations available; increase --limit to show more." | historyProjectionTruncated projection]
+  where
+    operationLines operation =
+      [ isoTimestampFromMs (historyOperationClaimedAt operation) <> " " <> operationIdText (historyOperationId operation) <> " " <> humanInline (historyOperationLabel operation)
+          <> " " <> adrIdText (historyOperationAdr operation) <> " " <> humanInline (historyOperationTitle operation)
+          <> " [" <> actorText (historyOperationActor operation) <> "]"
+      ]
+        <> maybe [] (\reason -> ["  Reason: " <> humanInline reason]) (historyOperationReason operation)
+    actorText actor = (case actorKind actor of HumanActor -> "human:"; LlmActor -> "llm:"; ServiceActor -> "service:") <> humanInline (actorId actor)
 
 renderDomainsOutcome :: DomainsCommand -> DomainsProjection -> CliRendered
 renderDomainsOutcome command projection = CliRendered output "" ExitSuccess

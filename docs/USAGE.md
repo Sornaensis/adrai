@@ -66,6 +66,20 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 
 Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands also accept `--json` for stable machine-readable output. Run `adrai COMMAND --help` for the complete option list.
 
+Ordinary invocations print plain text. `show ADR_ID` displays the ID and title,
+lifecycle status, domains, file scope, summary, and decision body with real
+newlines. `show ADR_ID --view exploded` lists the requested operations, records,
+events, and their readable content. Use `--json` for the structured projection,
+including state tokens and provenance, or when parsing the output in a script.
+The explicit JSON schemas and canonical serialization are unchanged.
+
+`history` prints compact rows with each operation's claimed timestamp, ID,
+change label, ADR, title, and actor, followed by a reason when present. Its
+filters, order, and `--limit` also apply to this text view. `compare FROM TO`
+prints counts and ADRs classified as added, removed, changed, or unchanged,
+with changed field names. Add `--include-unchanged` to list unchanged ADRs.
+Both commands emit their structured projections only with `--json`.
+
 `domains DOMAIN --tree` includes the parent and every descendant with counts.
 Combine `--tree --json` for nested `children` (`adrai/domains-tree/v1`); default
 flat JSON remains `adrai/domains/v1`. Domain reads reuse exact archives published
@@ -90,7 +104,9 @@ matching ADR. Add `--include-obsolete` to include obsolete decisions. File,
 domain, actor, and time filters also apply to the listing.
 
 `show --raw` requires `--view exploded`, for example
-`adrai show ADR_ID --view exploded --raw`.
+`adrai show ADR_ID --view exploded --raw`. It prints each raw semantic document
+(metadata and body) directly. Combining `--raw --json` keeps that text in the
+existing `raw_semantic` JSON fields.
 
 CLI mutation commands require an actor in `kind:identifier` form and create Git commits. Pass `--actor` or set `ADRAI_ACTOR`; valid kinds are `human`, `llm`, and `service`. Options such as `--expect STATE_TOKEN` provide optimistic concurrency checks when a caller is acting on previously read state. The option-free terminal explorer instead defaults to `human:terminal-explorer` and changes its actor through the `:actor` session control.
 

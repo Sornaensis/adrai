@@ -111,7 +111,6 @@ import Adrai.History
     ReadSnapshot (..),
     RevisionIdentity (..),
     historyProjectionJson,
-    renderHistoryProjection,
   )
 import Adrai.Query
   ( CompareCounts (CompareCounts),
@@ -135,14 +134,19 @@ import Adrai.Query
     RelevantRetrieval (..),
     compareProjectionJson,
     explodedProjectionJson,
-    renderCompareProjection,
-    renderExplodedProjection,
     searchProjectionJson,
     relevantProjectionJson,
   )
+import qualified Adrai.Query as Query
+import qualified Adrai.History as History
+import Adrai.Fixture.QueryMaterialization (QueryMaterialization (..), materializeQueryFixture)
+import Adrai.Fixture.RetrievalScale (adrTemplates, retrievalScaleV1)
+import Adrai.Fixture.Types (AdrTemplate (..), RetrievalScaleSpec (..))
+import Data.List.NonEmpty (NonEmpty ((:|)))
 import Adrai.Service.Query (DomainsRequest (..), SearchServiceRequest (..), ShowFailure (..), ShowResult (..), showFailureIsConflict)
 import Adrai.Relevance (ConfidenceLabel (..), RelevanceScopeMatch (..))
 import Adrai.Types (RepoPath (..))
+import qualified Adrai.Types as Types
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Aeson.Key as Aeson.Key
@@ -175,6 +179,21 @@ import System.Directory (executable, getPermissions, setPermissions)
 import System.Info (os)
 
 -- | Fixture: a minimal CompileResult with known values for testing.
+humanFixture :: QueryMaterialization
+humanFixture = either (error . show) id $
+  materializeQueryFixture (retrievalScaleMeta retrievalScaleV1)
+    (firstTemplate
+      { adrTemplateTitle = "Choix café",
+        adrTemplateSummary = "Résumé utile.",
+        adrTemplateBodySections = [("Decision", "Première ligne.\nSeconde ligne Ω.")],
+        adrTemplateDomains = ["platform.storage"],
+        adrTemplateScopes = ["src/My  Project/**"]
+      } :| []) []
+  where
+    firstTemplate = case adrTemplates of
+      template : _ -> template
+      [] -> error "query fixture requires one ADR template"
+
 mkCompileResult :: CompileResult
 mkCompileResult =
   CompileResult
@@ -869,14 +888,11 @@ schemaContractTests =
         showFailureIsConflict (ShowReferenceFailure (LookupAmbiguous "A012345" [])) @?= False
         showFailureIsConflict (ShowSemanticConflict ["conflicting decision heads"]) @?= True,
       testCase "show render outcome is exact canonical JSON or the existing human renderer" $ do
-        let adr = either (error . show) id (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
-            token = either (error . show) id (Format.parseStateToken "S0123456789ABCDEFGHJKMN")
-            projection = ExplodedProjection
-              (RevisionIdentity "HEAD" "0123456789012345678901234567890123456789")
-              adr
-              (ResolutionState True False [])
-              token
-              []
+        let snapshot = queryMaterializationSnapshot humanFixture
+            adr = snd (Map.findMin (queryMaterializationAdrIds humanFixture))
+            collapsed = either (error . show) id (Query.projectCollapsed Query.CompactProjection snapshot adr)
+            projection = either (error . show) id (Query.projectExploded (Query.ExplodedOptions False) snapshot adr)
+            rawProjection = either (error . show) id (Query.projectExploded (Query.ExplodedOptions True) snapshot adr)
             jsonCommand = ShowCommand "A0123456789ABCDEFGHJKMNPQRS" ExplodedView "HEAD" True False
             textCommand = jsonCommand {showJson = False}
             result = ShowExploded projection
@@ -885,14 +901,32 @@ schemaContractTests =
         renderedExitCode jsonRendered @?= ExitSuccess
         renderedStderr jsonRendered @?= ""
         renderedStdout jsonRendered @?= renderCanonicalJson (explodedProjectionJson projection)
-        renderedStdout textRendered @?= Text.Encoding.decodeUtf8 (renderExplodedProjection projection),
+        renderedExitCode textRendered @?= ExitSuccess
+        renderedStderr textRendered @?= ""
+        for_ ["Operation ", "decision.create", "domain.initial", "scope.initial", "status.initial", "Choix café", "Première ligne.\nSeconde ligne Ω."] $ \content ->
+          assertBool "exploded text retains readable requested records" (content `Text.isInfixOf` renderedStdout textRendered)
+        let spacedPaths = projection {Query.explodedOperations =
+              [operation {Query.explodedOperationItems = [item {Query.explodedItemPath = " docs/My  Project/decision.md"} | item <- Query.explodedOperationItems operation]} | operation <- Query.explodedOperations projection]}
+        assertBool "exploded path preserves literal leading and internal spaces" ("Path:  docs/My  Project/decision.md\n" `Text.isInfixOf` renderedStdout (renderShowOutcome textCommand (ShowExploded spacedPaths)))
+        let collapsedCommand = textCommand {showView = CollapsedView}
+            collapsedText = renderShowOutcome collapsedCommand (ShowCollapsed collapsed)
+            expected = Text.unlines
+              [ Types.adrIdText adr <> " Choix café", "Status: active", "Domains: platform.storage", "Scope: src/My  Project/**", "", "Summary:", "Résumé utile.", "", "# Decision", "Première ligne.", "Seconde ligne Ω." ]
+        collapsedText @?= CliRendered expected "" ExitSuccess
+        renderedStdout (renderShowOutcome (collapsedCommand {showJson = True}) (ShowCollapsed collapsed)) @?= renderCanonicalJson (Query.collapsedProjectionJson collapsed)
+        assertBool "collapsed output hides provenance and internal state" (all (\key -> not (key `Text.isInfixOf` expected)) ["provenance", "state_token", "source_paths", "\\n", "\ESC"])
+        let rawText = renderedStdout (renderShowOutcome (textCommand {showRaw = True}) (ShowExploded rawProjection))
+            rawMembers = [raw | operation <- Query.explodedOperations rawProjection, item <- Query.explodedOperationItems operation, Just raw <- [Query.explodedItemRawSemantic item]]
+        rawText @?= Text.intercalate "\n" rawMembers
+        assertBool "raw text preserves actual Unicode and newlines" ("Première ligne.\nSeconde ligne Ω." `Text.isInfixOf` rawText)
+        renderedStdout (renderShowOutcome (jsonCommand {showRaw = True}) (ShowExploded rawProjection)) @?= renderCanonicalJson (explodedProjectionJson rawProjection),
       testCase "compare render outcome is exact canonical JSON or the established text renderer" $ do
         let projection =
               CompareProjection
                 (RevisionIdentity "base" "1111111111111111111111111111111111111111")
                 (RevisionIdentity "HEAD" "2222222222222222222222222222222222222222")
                 (CompareCounts 1 2 3 4)
-                []
+                [Query.CompareEntry (either (error . show) id (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")) "changed" "Choix café" Nothing Nothing [Query.CompareChange "body" (JsonString "avant") (JsonString "après") Nothing]]
                 []
             jsonCommand = CompareCommand "base" "HEAD" False True
             textCommand = jsonCommand {compareJson = False}
@@ -903,17 +937,10 @@ schemaContractTests =
         renderedStdout jsonRendered @?= renderCanonicalJson (compareProjectionJson projection)
         renderedExitCode textRendered @?= ExitSuccess
         renderedStderr textRendered @?= ""
-        renderedStdout textRendered @?= Text.Encoding.decodeUtf8 (renderCompareProjection projection),
+        renderedStdout textRendered @?= "Compare base -> HEAD\nAdded: 1  Removed: 2  Changed: 3  Unchanged: 4\n\nchanged A0123456789ABCDEFGHJKMNPQRS Choix café\n  Changed: body\n",
       testCase "history render outcome is exact canonical JSON or the established text renderer" $ do
-        let options = HistoryOptions OldestFirst 7 Nothing (Just 1000) (Just 2000)
-            projection = HistoryProjection
-              (RevisionIdentity "refs/heads/release" "3333333333333333333333333333333333333333")
-              Nothing
-              OldestFirst
-              7
-              False
-              options
-              []
+        let options = HistoryOptions OldestFirst 7 Nothing Nothing Nothing
+            projection = either (error . show) id (History.projectHistory (queryMaterializationSnapshot humanFixture) Nothing options)
             jsonCommand = HistoryCommand Nothing "refs/heads/release" 7 Nothing (Just 1000) (Just 2000) True True
             textCommand = jsonCommand {historyJson = False}
             jsonRendered = renderHistoryOutcome jsonCommand projection
@@ -923,7 +950,13 @@ schemaContractTests =
         renderedStdout jsonRendered @?= renderCanonicalJson (historyProjectionJson projection)
         renderedExitCode textRendered @?= ExitSuccess
         renderedStderr textRendered @?= ""
-        renderedStdout textRendered @?= Text.Encoding.decodeUtf8 (renderHistoryProjection projection),
+        let human = renderedStdout textRendered
+            operation = case historyProjectionOperations projection of
+              first : _ -> first
+              [] -> error "history fixture requires one operation"
+        human @?= History.isoTimestampFromMs (History.historyOperationClaimedAt operation) <> " " <> Types.operationIdText (History.historyOperationId operation) <> " created " <> Types.adrIdText (History.historyOperationAdr operation) <> " Choix café [service:adrai-query-fixture]\n  Reason: Résumé utile.\n"
+        renderedStdout (renderHistoryOutcome textCommand (projection {historyProjectionOperations = []})) @?= ""
+        assertBool "history emits one terminal newline without JSON escapes" (Text.isSuffixOf "\n" human && not (Text.isSuffixOf "\n\n" human) && not ("\\n" `Text.isInfixOf` human)),
       testCase "all JSON output types have sorted keys (deterministic serialization)" $ do
         -- Verify compileResultJson keys are sorted
         let compileResultJsonKeys = objectKeys (compileResultJson (mkCompileResult))
@@ -1342,7 +1375,7 @@ mutationCliContractTests =
           repo <- createTestRepo temporary
           createAdraiInit repo
           let source = "DURABLE_LEDGER_TOKEN transactions keep journal writes atomic.\nStorage recovery replays committed transactions using the durable ledger.\n"
-              fixtureTitle = "Durable ledger storage"
+              fixtureTitle = "Durable ledger café"
               fixtureSummary = "Keep DURABLE_LEDGER_TOKEN transactions atomic."
           _ <- commitFile repo "source.txt" (Text.Encoding.encodeUtf8 source)
           created <- createAdr repo fixtureTitle fixtureSummary source ["storage.db.postgresql"] ["source.txt"]
@@ -1383,6 +1416,35 @@ mutationCliContractTests =
                 runCli command >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n")
                 runCli (command <> ["--view", "exploded"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n  " <> fixtureSummary <> "\n")
                 for_ [CollapsedView, ExplodedView] $ \view -> checkJson command schema algorithm view expectedScore
+          let adrArgument = Text.unpack fixtureAdr
+              assertJsonOutput label output = case Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output) of
+                Right (Aeson.Object _) -> pure ()
+                _ -> assertFailure (label <> " did not retain explicit JSON output")
+          showText <- runCli ["show", adrArgument]
+          showText @?= fixtureAdr <> " " <> fixtureTitle <> "\nStatus: active\nDomains: storage.db.postgresql\nScope: source.txt\n\nSummary:\n" <> fixtureSummary <> "\n\n" <> source
+          assertBool "ordinary show hides internal JSON and provenance" (not ("\"provenance\"" `Text.isInfixOf` showText) && not ("\\n" `Text.isInfixOf` showText))
+          runCli ["show", adrArgument, "--json"] >>= assertJsonOutput "show"
+          explodedText <- runCli ["show", adrArgument, "--view", "exploded"]
+          for_ ["decision.create", "scope.initial", "domain.initial", "status.initial", fixtureTitle, source] $ \content ->
+            assertBool "installed exploded show keeps readable records" (content `Text.isInfixOf` explodedText)
+          rawText <- runCli ["show", adrArgument, "--view", "exploded", "--raw"]
+          assertBool "installed raw show emits semantic text with real newlines" (source `Text.isInfixOf` rawText && not ("\\n" `Text.isInfixOf` rawText) && not ("@adrai.begin" `Text.isInfixOf` rawText))
+          historyText <- runCli ["history", adrArgument, "--limit", "1"]
+          assertBool "installed history keeps title, operation, and reason without JSON"
+            ((" created " <> fixtureAdr <> " " <> fixtureTitle <> " [llm:planner]\n  Reason: " <> fixtureSummary <> "\n") `Text.isSuffixOf` historyText && length (Text.lines historyText) == 2)
+          runCli ["history", adrArgument, "--limit", "1", "--json"] >>= assertJsonOutput "history"
+          runCli ["history", adrArgument, "--actor", "human:missing"] >>= (@?= "")
+          compareText <- runCli ["compare", "HEAD~1", "HEAD"]
+          assertBool "installed comparison lists the added ADR" (("added " <> fixtureAdr <> " " <> fixtureTitle <> "\n") `Text.isInfixOf` compareText)
+          runCli ["compare", "HEAD~1", "HEAD", "--json"] >>= assertJsonOutput "compare"
+          unchanged <- runCli ["compare", "HEAD", "HEAD"]
+          assertBool "unchanged ADRs stay hidden by default" (not (("unchanged " <> fixtureAdr) `Text.isInfixOf` unchanged))
+          included <- runCli ["compare", "HEAD", "HEAD", "--include-unchanged"]
+          assertBool "explicit unchanged comparison lists the ADR" (("unchanged " <> fixtureAdr) `Text.isInfixOf` included)
+          (rawFailure, rawStdout, rawStderr) <- spawnAdrai repo ["show", adrArgument, "--raw"]
+          rawFailure @?= ExitFailure 2
+          rawStdout @?= ""
+          assertBool "invalid raw mode retains stderr failure" ("--raw requires --view exploded" `Text.isInfixOf` Text.Encoding.decodeUtf8 (BL.toStrict rawStderr))
           checkCommand ["search", "--mode", "fts"] "adrai/search-cli/v1" "filtered-list" (Just 1)
           runCli ["domains"] >>= (@?= "storage 1\n")
           runCli ["domains", "storage"] >>= (@?= "storage.db 1\n")
