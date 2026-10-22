@@ -1169,14 +1169,23 @@ mutationCliContractTests =
         assertBool "invalid path is rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchFile = Just "../outside"})))
         let jsonRendered = renderSearchOutcome explicit projection
             plainRendered = renderSearchOutcome (explicit {searchJson = False}) projection
-        jsonRendered @?= CliRendered (renderCanonicalJson (JsonObject [("schema", JsonString "adrai/search-cli/v1"), ("results", JsonArray [])])) "" ExitSuccess
+        jsonRendered @?= CliRendered (emptyCliJson "adrai/search-cli/v1" "exact-summary+identifier+section-rerank+weighted-rrf") "" ExitSuccess
         plainRendered @?= CliRendered "" "" ExitSuccess
-        let populated = projection {searchProjectionResults = [cliSearchRow, cliSearchRow {searchResultAdr = secondAdr, searchResultTitle = "[decision conflict]", searchResultSummary = "", searchResultConflicted = True, searchResultMatchedTitle = Just "Misleading matched head"}]}
+        let populated = projection {searchProjectionResults = [cliSearchRow, cliSearchRow {searchResultAdr = secondAdr, searchResultTitle = "[decision conflict]", searchResultSummary = "", searchResultScore = 0, searchResultConflicted = True, searchResultMatchedTitle = Just "Misleading matched head"}]}
             render view json = renderSearchOutcome (explicit {searchView = view, searchJson = json}) populated
         render CollapsedView False @?= CliRendered expectedList "" ExitSuccess
         render ExplodedView False @?= CliRendered expectedExpandedList "" ExitSuccess
         for_ [CollapsedView, ExplodedView] $ \view -> do
-          assertCliListJson "adrai/search-cli/v1" view (renderedStdout (render view True))
+          assertCliListJson "adrai/search-cli/v1" "exact-summary+identifier+section-rerank+weighted-rrf" 0.012346 0 view (renderedStdout (render view True))
+        for_ searchAlgorithms $ \(mode, algorithm) -> do
+          let emptyProjection = projection {searchProjectionMode = mode}
+              output query = renderedStdout (renderSearchOutcome (explicit {searchMode = mode, searchQuery = query}) emptyProjection)
+          output "cache" @?= emptyCliJson "adrai/search-cli/v1" algorithm
+          for_ ["", " \t\n "] $ \query ->
+            output query @?= emptyCliJson "adrai/search-cli/v1" "filtered-list"
+        let listed = populated {searchProjectionResults = [cliSearchRow {searchResultScore = 1}, (last (searchProjectionResults populated)) {searchResultScore = 1}]}
+        assertCliListJson "adrai/search-cli/v1" "filtered-list" 1 1 CollapsedView
+          (renderedStdout (renderSearchOutcome (defaulted {searchJson = True}) listed))
         assertBool "rich search service projection retains source paths" ("source_paths" `Text.isInfixOf` renderCanonicalJson (searchProjectionJson populated))
         selectedRepo <- newIORef Nothing
         selectedRequest <- newIORef Nothing
@@ -1257,7 +1266,7 @@ mutationCliContractTests =
           @?= Left "relevant --at and --worktree are mutually exclusive"
         assertBool "relevant rejects outside paths" (either (const True) (const False) (relevantCommandRequest (defaulted {relevantFile = "../outside"})))
         renderRelevantOutcome explicit projection
-          @?= CliRendered (renderCanonicalJson (JsonObject [("schema", JsonString "adrai/relevant-cli/v1"), ("results", JsonArray [])])) "" ExitSuccess
+          @?= CliRendered (emptyCliJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank") "" ExitSuccess
         let diagnosed = projection { relevantProjectionDiagnostics = Just (RelevantDiagnostics "0123456789abcdef0123456789abcdef01234567" "1111111111111111111111111111111111111111" True "cache-hit" 1.25 Nothing Nothing) }
             diagnosedJson = renderedStdout (renderRelevantOutcome explicit diagnosed)
         diagnosedJson @?= renderedStdout (renderRelevantOutcome explicit projection)
@@ -1266,12 +1275,15 @@ mutationCliContractTests =
           ("\"stale\": true" `Text.isInfixOf` serviceJson && "\"prepare_index\": 1.25" `Text.isInfixOf` serviceJson && "\"retrieve_candidates\": null" `Text.isInfixOf` serviceJson)
         renderRelevantOutcome (explicit {relevantJson = False}) projection
           @?= CliRendered "" "" ExitSuccess
-        let populated = diagnosed {relevantProjectionResults = [cliRelevantRow, cliRelevantRow {relevantResultAdr = secondAdr, relevantResultTitle = "[decision conflict]", relevantResultSummary = "", relevantResultMatchedTitle = Just "Misleading matched head"}]}
+        let populated = diagnosed {relevantProjectionResults = [cliRelevantRow, cliRelevantRow {relevantResultAdr = secondAdr, relevantResultTitle = "[decision conflict]", relevantResultSummary = "", relevantResultScore = 0, relevantResultMatchedTitle = Just "Misleading matched head"}]}
             render view json = renderRelevantOutcome (explicit {relevantView = view, relevantJson = json}) populated
         render CollapsedView False @?= CliRendered expectedList "" ExitSuccess
         render ExplodedView False @?= CliRendered expectedExpandedList "" ExitSuccess
         for_ [CollapsedView, ExplodedView] $ \view ->
-          assertCliListJson "adrai/relevant-cli/v1" view (renderedStdout (render view True))
+          assertCliListJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" 0.765432 0 view (renderedStdout (render view True))
+        let maximumScore = populated {relevantProjectionResults = [cliRelevantRow {relevantResultScore = 1}, (last (relevantProjectionResults populated)) {relevantResultScore = 0}]}
+        assertCliListJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" 1 0 CollapsedView
+          (renderedStdout (renderRelevantOutcome (explicit {relevantView = CollapsedView}) maximumScore))
         selectedRepo <- newIORef Nothing
         selectedRequest <- newIORef Nothing
         let dependencies =
@@ -1314,23 +1326,47 @@ mutationCliContractTests =
                 code @?= ExitSuccess
                 stderr @?= ""
                 pure (Text.Encoding.decodeUtf8 (BL.toStrict stdout))
-              checkCommand command schema = do
+              checkJson command schema algorithm view expectedScore = do
+                output <- runCli (command <> ["--json", "--view", if view == CollapsedView then "collapsed" else "exploded"])
+                score <- case Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output) of
+                  Right (Aeson.Object envelope) -> case KM.lookup "results" envelope of
+                    Just (Aeson.Array rows) | Vector.length rows == 1 -> case Vector.head rows of
+                      Aeson.Object row -> case KM.lookup "score" row of
+                        Just value@(Aeson.Number number) -> do
+                          let actual = realToFrac number :: Double
+                          assertBool "CLI score is finite and in [0,1]" (not (isNaN actual || isInfinite actual) && actual >= 0 && actual <= 1)
+                          for_ expectedScore $ \expected -> actual @?= expected
+                          pure value
+                        _ -> assertFailure "CLI score must be numeric" >> fail "unreachable"
+                      _ -> assertFailure "CLI result must be an object" >> fail "unreachable"
+                    _ -> assertFailure "CLI must return the fixture ADR" >> fail "unreachable"
+                  _ -> assertFailure "CLI response must be a JSON object" >> fail "unreachable"
+                Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output)
+                  @?= Right (Aeson.object
+                    [ "schema" Aeson..= (schema :: Text)
+                    , "algorithm" Aeson..= (algorithm :: Text)
+                    , "results" Aeson..= [Aeson.object
+                        (["adr" Aeson..= fixtureAdr, "title" Aeson..= fixtureTitle, "score" Aeson..= score]
+                          <> ["summary" Aeson..= fixtureSummary | view == ExplodedView])]
+                    ])
+              checkCommand command schema algorithm expectedScore = do
                 runCli command >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n")
                 runCli (command <> ["--view", "exploded"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n  " <> fixtureSummary <> "\n")
-                for_ [CollapsedView, ExplodedView] $ \view -> do
-                  output <- runCli (command <> ["--json", "--view", if view == CollapsedView then "collapsed" else "exploded"])
-                  Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output)
-                    @?= Right (Aeson.object
-                      [ "schema" Aeson..= (schema :: Text)
-                      , "results" Aeson..= [Aeson.object
-                          (["adr" Aeson..= fixtureAdr, "title" Aeson..= fixtureTitle]
-                            <> ["summary" Aeson..= fixtureSummary | view == ExplodedView])]
-                      ])
-          checkCommand ["search", "--mode", "fts"] "adrai/search-cli/v1"
-          checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1"
+                for_ [CollapsedView, ExplodedView] $ \view -> checkJson command schema algorithm view expectedScore
+          checkCommand ["search", "--mode", "fts"] "adrai/search-cli/v1" "filtered-list" (Just 1)
+          checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" Nothing
+          for_ searchAlgorithms $ \(mode, algorithm) -> do
+            let modeText = case mode of
+                  FtsRetrieval -> "fts"
+                  VectorRetrieval -> "vector"
+                  HybridRetrieval -> "hybrid"
+            checkJson ["search", "DURABLE_LEDGER_TOKEN", "--mode", modeText] "adrai/search-cli/v1" algorithm CollapsedView Nothing
+            runCli ["search", "cache", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson "adrai/search-cli/v1" algorithm)
+            runCli ["search", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson "adrai/search-cli/v1" "filtered-list")
           runCli ["search", "zzzxqvplmn", "--mode", "fts"] >>= (@?= "")
           BS.writeFile (repo </> "source.txt") "\n"
           runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "")
+          runCli ["relevant", "source.txt", "--worktree", "--json"] >>= (@?= emptyCliJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank")
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
         let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True
         parseCli ["show", "R0123456789ABCDEFGHJKMNPQRS", "--view", "exploded", "--at", "refs/heads/release", "--raw", "--json"]
@@ -2136,13 +2172,20 @@ mutationCliContractTests =
     summary = "First\tsummary line.\nSecond summary line."
     expectedList = "A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\nA1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
     expectedExpandedList = "A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\n  First summary line.\n  Second summary line.\nA1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
-    assertCliListJson schema view output =
+    emptyCliJson schema algorithm = renderCanonicalJson (JsonObject [("schema", JsonString schema), ("algorithm", JsonString algorithm), ("results", JsonArray [])])
+    searchAlgorithms =
+      [ (FtsRetrieval, "three-fts+weighted-rrf")
+      , (VectorRetrieval, "exact-summary+identifier+section-rerank+weighted-rrf")
+      , (HybridRetrieval, "three-fts+exact-summary+section-rerank+weighted-rrf")
+      ]
+    assertCliListJson schema algorithm firstScore secondScore view output =
       Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output)
         @?= Right (Aeson.object
           [ "schema" Aeson..= (schema :: Text)
+          , "algorithm" Aeson..= (algorithm :: Text)
           , "results" Aeson..=
-              [ Aeson.object (["adr" Aeson..= ("A0123456789ABCDEFGHJKMNPQRS" :: Text), "title" Aeson..= title] <> ["summary" Aeson..= summary | view == ExplodedView])
-              , Aeson.object (["adr" Aeson..= ("A1123456789ABCDEFGHJKMNPQRS" :: Text), "title" Aeson..= ("[decision conflict]" :: Text)] <> ["summary" Aeson..= ("" :: Text) | view == ExplodedView])
+              [ Aeson.object (["adr" Aeson..= ("A0123456789ABCDEFGHJKMNPQRS" :: Text), "title" Aeson..= title, "score" Aeson..= Aeson.Number firstScore] <> ["summary" Aeson..= summary | view == ExplodedView])
+              , Aeson.object (["adr" Aeson..= ("A1123456789ABCDEFGHJKMNPQRS" :: Text), "title" Aeson..= ("[decision conflict]" :: Text), "score" Aeson..= Aeson.Number secondScore] <> ["summary" Aeson..= ("" :: Text) | view == ExplodedView])
               ]
           ])
     cliSearchRow = SearchResult
@@ -2162,7 +2205,7 @@ mutationCliContractTests =
       , searchResultConflict = Nothing
       , searchResultResolution = ResolutionState True False []
       , searchResultStateToken = requireRight (mkStateToken "S0123456789012345678901")
-      , searchResultScore = 1
+      , searchResultScore = 0.0123456789
       , searchResultFtsScore = 1
       , searchResultVectorScore = 0
       , searchResultIdentifierVectorScore = 0
@@ -2189,7 +2232,7 @@ mutationCliContractTests =
       , relevantResultObsolete = False
       , relevantResultReplacement = Nothing
       , relevantResultResolution = ResolutionState True False []
-      , relevantResultScore = 1
+      , relevantResultScore = 0.765432198
       , relevantResultSemanticScore = 1
       , relevantResultLexicalScore = 1
       , relevantResultLexicalBonus = 0

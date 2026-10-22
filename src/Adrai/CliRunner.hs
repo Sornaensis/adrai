@@ -2420,7 +2420,7 @@ renderSearchOutcome command projection =
     ExitSuccess
   where
     output
-      | searchJson command = renderCanonicalJson (searchCliJson (searchView command) projection)
+      | searchJson command = renderCanonicalJson (searchCliJson command projection)
       | otherwise = renderSearchCli (searchView command) projection
 
 renderRelevantOutcome :: RelevantCommand -> RelevantProjection -> CliRendered

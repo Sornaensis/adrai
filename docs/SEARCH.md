@@ -13,13 +13,35 @@ output format. Conflicted ADRs retain their conflict title rather than displayin
 one matched head as a resolved decision.
 
 JSON is opt-in with `--json`. The CLI schemas are `adrai/search-cli/v1` and
-`adrai/relevant-cli/v1`. Each envelope contains only `schema` and `results`;
-each row contains only `adr` and `title`, plus `summary` with `--view exploded`.
-Source paths, scores, evidence and diagnostics are omitted. For example:
+`adrai/relevant-cli/v1`. Each envelope contains only `schema`, `algorithm` and
+`results`; each row contains only `adr`, `title` and `score`, plus `summary`
+with `--view exploded`. Source paths, scoring breakdowns, evidence and
+diagnostics are omitted. For example:
 
 ```json
-{"schema":"adrai/search-cli/v1","results":[{"adr":"A0123456789ABCDEFGHJKMNPQRS","title":"Use transactional storage"}]}
+{"schema":"adrai/search-cli/v1","algorithm":"three-fts+weighted-rrf","results":[{"adr":"A0123456789ABCDEFGHJKMNPQRS","title":"Use transactional storage","score":0.047619}]}
 ```
+
+Scores are the existing total ranking scores in `[0,1]`, rounded to six decimal
+places. They are not probabilities or confidence levels, and are not rescaled
+against other results in a response. Search ranking scores typically occupy a
+small part of this range. With an omitted or blank search query, `algorithm` is
+`filtered-list` and every result has score `1`, an eligibility sentinel rather
+than a relevance measurement. The algorithm is included even when there are no
+results.
+
+For nonblank search queries, the algorithm labels are:
+
+| Mode | Algorithm |
+| --- | --- |
+| `fts` | `three-fts+weighted-rrf` |
+| `vector` | `exact-summary+identifier+section-rerank+weighted-rrf` |
+| `hybrid` | `three-fts+exact-summary+section-rerank+weighted-rrf` |
+
+Relevance reports its retrieval strategy,
+`exact-summary+passage-fts+bounded-section-rerank`. Score and algorithm metadata
+appear only in JSON; plain and expanded text remain ID/title lists with optional
+summaries.
 
 Detailed service and HTTP projections remain available separately. Relevance
 results and ordering are deterministic for the same revision and source bytes;

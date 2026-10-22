@@ -63,8 +63,12 @@ Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands 
 
 `search` and `relevant` print simple ADR ID and title lists by default. Add
 `--view exploded` to include indented summaries. JSON requires `--json` and
-contains only `schema` and `results`, with `adr` and `title` in each result and
-`summary` only in the exploded view. The CLI schemas are `adrai/search-cli/v1`
+contains only `schema`, `algorithm` and `results`, with `adr`, `title` and a
+numeric `score` in `[0,1]` in each result, plus `summary` in the exploded view.
+Scores preserve the existing ranking totals rounded to six decimal places;
+they are not confidence levels or rescaled against the response. Blank search
+uses `filtered-list` with score `1` as an eligibility sentinel. Score metadata
+appears only in JSON. The CLI schemas are `adrai/search-cli/v1`
 and `adrai/relevant-cli/v1`; see [Search](SEARCH.md) for details.
 
 Omitting the search query or supplying blank text lists non-obsolete ADRs in ADR

@@ -109,12 +109,13 @@ import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Vector as Vector
 import Data.Aeson ( (.=) )
 import Data.List (sortOn)
+import Data.Maybe (fromMaybe)
 import Data.Char (isControl, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Control.Exception (bracket)
 import Database.SQLite.Simple (Connection, close, open)
-import Adrai.Format.Json (JsonValue (..))
+import Adrai.Format.Json (JsonValue (..), jsonNumberRounded6)
 import qualified Adrai.Query as Query
 
 -- | Shared, already-materialised mutation inputs.  Keeping these records out
@@ -532,7 +533,7 @@ searchCommandJson snapshot conn cmd =
       result <- runCurrentSearch conn snapshot materialization request
       case result of
         Left err -> pure (errorJson (Text.pack (show err)))
-        Right proj -> pure (toAesonValue (searchCliJson (searchView cmd) proj))
+        Right proj -> pure (toAesonValue (searchCliJson cmd proj))
   where
     errorJson problem =
       Aeson.object
@@ -619,11 +620,22 @@ relevantCommandJson snapshot source cmd =
 
 -- | Deliberately small CLI projections. Rich query and HTTP projections remain
 -- owned by 'Query.searchProjectionJson' and 'Query.relevantProjectionJson'.
-searchCliJson :: ViewMode -> Query.SearchProjection -> JsonValue
-searchCliJson view = resultListJson "adrai/search-cli/v1" view . searchCliRows
+searchCliJson :: SearchCommand -> Query.SearchProjection -> JsonValue
+searchCliJson command projection =
+  resultListJson "adrai/search-cli/v1" algorithm (searchView command) (searchCliRows projection)
+  where
+    algorithm
+      | Text.null (Text.strip (searchQuery command)) = "filtered-list"
+      | otherwise = case Query.searchProjectionMode projection of
+          FtsRetrieval -> "three-fts+weighted-rrf"
+          VectorRetrieval -> "exact-summary+identifier+section-rerank+weighted-rrf"
+          HybridRetrieval -> "three-fts+exact-summary+section-rerank+weighted-rrf"
 
 relevantCliJson :: ViewMode -> Query.RelevantProjection -> JsonValue
-relevantCliJson view = resultListJson "adrai/relevant-cli/v1" view . relevantCliRows
+relevantCliJson view projection =
+  resultListJson "adrai/relevant-cli/v1"
+    (Query.relevantRetrievalStrategy (Query.relevantProjectionRetrieval projection))
+    view (relevantCliRows projection)
 
 renderSearchCli :: ViewMode -> Query.SearchProjection -> Text
 renderSearchCli view = renderResultList view . searchCliRows
@@ -631,26 +643,27 @@ renderSearchCli view = renderResultList view . searchCliRows
 renderRelevantCli :: ViewMode -> Query.RelevantProjection -> Text
 renderRelevantCli view = renderResultList view . relevantCliRows
 
-searchCliRows :: Query.SearchProjection -> [(AdrId, Text, Text)]
-searchCliRows = map (\row -> (Query.searchResultAdr row, Query.searchResultTitle row, Query.searchResultSummary row)) . Query.searchProjectionResults
+searchCliRows :: Query.SearchProjection -> [(AdrId, Text, Text, Double)]
+searchCliRows = map (\row -> (Query.searchResultAdr row, Query.searchResultTitle row, Query.searchResultSummary row, Query.searchResultScore row)) . Query.searchProjectionResults
 
-relevantCliRows :: Query.RelevantProjection -> [(AdrId, Text, Text)]
-relevantCliRows = map (\row -> (Query.relevantResultAdr row, Query.relevantResultTitle row, Query.relevantResultSummary row)) . Query.relevantProjectionResults
+relevantCliRows :: Query.RelevantProjection -> [(AdrId, Text, Text, Double)]
+relevantCliRows = map (\row -> (Query.relevantResultAdr row, Query.relevantResultTitle row, Query.relevantResultSummary row, Query.relevantResultScore row)) . Query.relevantProjectionResults
 
-resultListJson :: Text -> ViewMode -> [(AdrId, Text, Text)] -> JsonValue
-resultListJson schema view rows = JsonObject
+resultListJson :: Text -> Text -> ViewMode -> [(AdrId, Text, Text, Double)] -> JsonValue
+resultListJson schema algorithm view rows = JsonObject
   [ ("schema", JsonString schema)
+  , ("algorithm", JsonString algorithm)
   , ("results", JsonArray (map resultJson rows))
   ]
   where
-    resultJson (adr, title, summary) = JsonObject $
-      [("adr", JsonString (adrIdText adr)), ("title", JsonString title)]
+    resultJson (adr, title, summary, score) = JsonObject $
+      [("adr", JsonString (adrIdText adr)), ("title", JsonString title), ("score", fromMaybe JsonNull (jsonNumberRounded6 score))]
         <> [("summary", JsonString summary) | view == ExplodedView]
 
-renderResultList :: ViewMode -> [(AdrId, Text, Text)] -> Text
+renderResultList :: ViewMode -> [(AdrId, Text, Text, Double)] -> Text
 renderResultList view = Text.concat . map renderRow
   where
-    renderRow (adr, title, summary) =
+    renderRow (adr, title, summary, _) =
       adrIdText adr <> " " <> singleLine title <> "\n"
         <> if view == ExplodedView
           then Text.concat ["  " <> Text.filter (\c -> not (isControl c)) (Text.map horizontalSpace line) <> "\n" | line <- Text.lines summary]
