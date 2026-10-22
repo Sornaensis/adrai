@@ -29,9 +29,13 @@ module Adrai.CliTypes
     SearchCommand (..),
     searchCommandRequest,
     searchCommandJson,
+    searchCliJson,
+    renderSearchCli,
     RelevantCommand (..),
     relevantCommandRequest,
     relevantCommandJson,
+    relevantCliJson,
+    renderRelevantCli,
     CompareCommand (..),
     compareCommandJson,
     CreateRequest (..),
@@ -63,7 +67,6 @@ import Adrai.Query
     ProjectionMode (..),
     SearchRequest (..),
     runCurrentSearch,
-    searchProjectionJson,
     projectCollapsed,
     projectExploded,
     collapsedProjectionJson,
@@ -73,7 +76,6 @@ import Adrai.Query
     RelevantRequest (..),
     RelevantSource (..),
     runRelevant,
-    relevantProjectionJson,
   )
 import Adrai.Retrieval
   ( RetrievalMode (..),
@@ -100,12 +102,14 @@ import Adrai.Types
     StateToken,
     mkActor,
     mkRepoPath,
+    adrIdText,
   )
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Vector as Vector
 import Data.Aeson ( (.=) )
 import Data.List (sortOn)
+import Data.Char (isControl, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Control.Exception (bracket)
@@ -528,11 +532,11 @@ searchCommandJson snapshot conn cmd =
       result <- runCurrentSearch conn snapshot materialization request
       case result of
         Left err -> pure (errorJson (Text.pack (show err)))
-        Right proj -> pure (toAesonValue (searchProjectionJson proj))
+        Right proj -> pure (toAesonValue (searchCliJson (searchView cmd) proj))
   where
     errorJson problem =
       Aeson.object
-        [ "schema" .= Aeson.String "adrai/search/v1"
+        [ "schema" .= Aeson.String "adrai/search-cli/v1"
         , "error" .= Aeson.String problem
         ]
 
@@ -578,6 +582,7 @@ data RelevantCommand = RelevantCommand
   , relevantIncludeObsolete :: Bool
   , relevantLimit           :: Int
   , relevantJson            :: Bool
+  , relevantView            :: ViewMode
   } deriving (Eq, Show)
 
 -- | Dispatch a relevant command on a read snapshot.
@@ -590,7 +595,7 @@ relevantCommandJson snapshot source cmd =
   case relevantCommandRequest commandForSnapshot of
     Left problem ->
       pure $ Aeson.object
-        [ "schema" .= Aeson.String "adrai/relevant/v2"
+        [ "schema" .= Aeson.String "adrai/relevant-cli/v1"
         , "error"  .= Aeson.String problem
         ]
     Right request -> bracket (open ":memory:") close $ \conn -> do
@@ -599,10 +604,10 @@ relevantCommandJson snapshot source cmd =
       case result of
         Left err ->
           pure $ Aeson.object
-            [ "schema" .= Aeson.String "adrai/relevant/v2"
+            [ "schema" .= Aeson.String "adrai/relevant-cli/v1"
             , "error"  .= Aeson.String (Text.pack (show err))
             ]
-        Right proj -> pure (toAesonValue (relevantProjectionJson proj))
+        Right proj -> pure (toAesonValue (relevantCliJson (relevantView cmd) proj))
   where
     commandForSnapshot
       | relevantAt cmd == Nothing && not (relevantWorktree cmd) =
@@ -611,6 +616,47 @@ relevantCommandJson snapshot source cmd =
     requested
       | Text.null (revisionRequested (readSnapshotRevision snapshot)) = "HEAD"
       | otherwise = revisionRequested (readSnapshotRevision snapshot)
+
+-- | Deliberately small CLI projections. Rich query and HTTP projections remain
+-- owned by 'Query.searchProjectionJson' and 'Query.relevantProjectionJson'.
+searchCliJson :: ViewMode -> Query.SearchProjection -> JsonValue
+searchCliJson view = resultListJson "adrai/search-cli/v1" view . searchCliRows
+
+relevantCliJson :: ViewMode -> Query.RelevantProjection -> JsonValue
+relevantCliJson view = resultListJson "adrai/relevant-cli/v1" view . relevantCliRows
+
+renderSearchCli :: ViewMode -> Query.SearchProjection -> Text
+renderSearchCli view = renderResultList view . searchCliRows
+
+renderRelevantCli :: ViewMode -> Query.RelevantProjection -> Text
+renderRelevantCli view = renderResultList view . relevantCliRows
+
+searchCliRows :: Query.SearchProjection -> [(AdrId, Text, Text)]
+searchCliRows = map (\row -> (Query.searchResultAdr row, Query.searchResultTitle row, Query.searchResultSummary row)) . Query.searchProjectionResults
+
+relevantCliRows :: Query.RelevantProjection -> [(AdrId, Text, Text)]
+relevantCliRows = map (\row -> (Query.relevantResultAdr row, Query.relevantResultTitle row, Query.relevantResultSummary row)) . Query.relevantProjectionResults
+
+resultListJson :: Text -> ViewMode -> [(AdrId, Text, Text)] -> JsonValue
+resultListJson schema view rows = JsonObject
+  [ ("schema", JsonString schema)
+  , ("results", JsonArray (map resultJson rows))
+  ]
+  where
+    resultJson (adr, title, summary) = JsonObject $
+      [("adr", JsonString (adrIdText adr)), ("title", JsonString title)]
+        <> [("summary", JsonString summary) | view == ExplodedView]
+
+renderResultList :: ViewMode -> [(AdrId, Text, Text)] -> Text
+renderResultList view = Text.concat . map renderRow
+  where
+    renderRow (adr, title, summary) =
+      adrIdText adr <> " " <> singleLine title <> "\n"
+        <> if view == ExplodedView
+          then Text.concat ["  " <> Text.filter (\c -> not (isControl c)) (Text.map horizontalSpace line) <> "\n" | line <- Text.lines summary]
+          else ""
+    horizontalSpace c = if isSpace c then ' ' else c
+    singleLine = Text.unwords . Text.words . Text.map (\c -> if isControl c || isSpace c then ' ' else c)
 
 relevantCommandRequest :: RelevantCommand -> Either Text RelevantRequest
 relevantCommandRequest command = do

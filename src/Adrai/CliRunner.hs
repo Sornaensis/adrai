@@ -79,8 +79,12 @@ import Adrai.CliTypes
     HistoryCommand (..),
     SearchCommand (..),
     searchCommandRequest,
+    searchCliJson,
+    renderSearchCli,
     RelevantCommand (..),
     relevantCommandRequest,
+    relevantCliJson,
+    renderRelevantCli,
     CompareCommand (..),
     CreateRequest (..),
     AmendRequest (..),
@@ -207,10 +211,6 @@ import Adrai.Query
     renderCollapsedProjection,
     renderCompareProjection,
     renderExplodedProjection,
-    renderSearchProjection,
-    searchProjectionJson,
-    renderRelevantProjection,
-    relevantProjectionJson,
   )
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
@@ -690,7 +690,7 @@ searchParser =
   SearchCommand
     <$> (strArgument (metavar "QUERY" <> help "optional query; omitted or blank lists non-obsolete ADRs") <|> pure "")
     <*> option (eitherReader parseMode) (long "mode" <> metavar "fts|vector|hybrid" <> Opt.value HybridRetrieval <> showDefaultWith retrievalModeText <> help "retrieval mode")
-    <*> option (eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> Opt.value CollapsedView <> showDefaultWith searchViewText <> help "result view")
+    <*> option (eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> Opt.value CollapsedView <> showDefaultWith searchViewText <> help "collapsed lists ADR IDs and titles; exploded adds summaries")
     <*> optional (strOption (long "file" <> metavar "PATH" <> help "filter by file path"))
     <*> many (strOption (long "domain" <> metavar "DOMAIN" <> help "domain filter (repeatable)"))
     <*> optional (strOption (long "actor" <> metavar "KIND:IDENTIFIER" <> help "filter by actor"))
@@ -726,6 +726,13 @@ relevantParser =
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
     <*> option auto (long "limit" <> Opt.value 10 <> showDefault <> help "max results (default 10)")
     <*> switch (long "json" <> help "output JSON")
+    <*> option (eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> Opt.value CollapsedView <> showDefaultWith viewText <> help "collapsed lists ADR IDs and titles; exploded adds summaries")
+  where
+    parseView "collapsed" = Right CollapsedView
+    parseView "exploded" = Right ExplodedView
+    parseView _ = Left "--view must be collapsed or exploded"
+    viewText CollapsedView = "collapsed"
+    viewText ExplodedView = "exploded"
 
 -- | Compare command parser.
 compareParser :: Parser CompareCommand
@@ -2413,8 +2420,8 @@ renderSearchOutcome command projection =
     ExitSuccess
   where
     output
-      | searchJson command = renderCanonicalJson (searchProjectionJson projection)
-      | otherwise = TextEncoding.decodeUtf8 (renderSearchProjection projection)
+      | searchJson command = renderCanonicalJson (searchCliJson (searchView command) projection)
+      | otherwise = renderSearchCli (searchView command) projection
 
 renderRelevantOutcome :: RelevantCommand -> RelevantProjection -> CliRendered
 renderRelevantOutcome command projection =
@@ -2424,8 +2431,8 @@ renderRelevantOutcome command projection =
     ExitSuccess
   where
     output
-      | relevantJson command = renderCanonicalJson (relevantProjectionJson projection)
-      | otherwise = TextEncoding.decodeUtf8 (renderRelevantProjection projection)
+      | relevantJson command = renderCanonicalJson (relevantCliJson (relevantView command) projection)
+      | otherwise = renderRelevantCli (relevantView command) projection
 
 renderInitSuccess :: InitResult -> PostCommitIndexResult -> Bool -> IO ExitCode
 renderInitSuccess result indexResult jsonOutput = emitRendered (renderInitOutcome result indexResult jsonOutput)

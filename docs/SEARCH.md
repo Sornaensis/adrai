@@ -5,7 +5,25 @@ ADRAI exposes two related commands:
 - `search [QUERY]` searches compiled ADR content.
 - `relevant FILE` ranks ADRs against a source file.
 
-Both operate against a resolved Git revision and return `adrai/search/v1` or `adrai/relevant/v2` projections with `--json`. Relevance results and ordering are deterministic for the same revision and source bytes; measured diagnostics vary between runs.
+Both operate against a resolved Git revision. By default, each result is a single
+line containing its ADR ID and title. `--view exploded` adds the summary below
+each title, indented by two spaces. No matches produce empty stdout; successful
+queries produce no stderr output. Result order and limits are unchanged by the
+output format. Conflicted ADRs retain their conflict title rather than displaying
+one matched head as a resolved decision.
+
+JSON is opt-in with `--json`. The CLI schemas are `adrai/search-cli/v1` and
+`adrai/relevant-cli/v1`. Each envelope contains only `schema` and `results`;
+each row contains only `adr` and `title`, plus `summary` with `--view exploded`.
+Source paths, scores, evidence and diagnostics are omitted. For example:
+
+```json
+{"schema":"adrai/search-cli/v1","results":[{"adr":"A0123456789ABCDEFGHJKMNPQRS","title":"Use transactional storage"}]}
+```
+
+Detailed service and HTTP projections remain available separately. Relevance
+results and ordering are deterministic for the same revision and source bytes;
+measured service diagnostics vary between runs.
 
 ## ADR search
 
@@ -23,7 +41,7 @@ Retrieval modes are:
 
 Filters include file scope, repeatable domains, actor, inclusive timestamps, obsolete state, and immutable revision. Filters are applied before candidates are ranked. A blank query returns a deterministic filtered ADR listing.
 
-Collapsed results group competing decision heads by ADR. `--view exploded` exposes operation-level detail. Use `--include-obsolete` to include obsolete ADRs.
+Collapsed results group competing decision heads by ADR. `--view exploded` adds summaries; use `adrai show ADR_ID --view exploded` for operation-level detail. Use `--include-obsolete` to include obsolete ADRs.
 
 ## File relevance
 
@@ -37,13 +55,13 @@ Without `--worktree`, the file and ADR context come from the same resolved revis
 
 Input is limited to 4 MiB. Binary-like input, NUL bytes, and very short or uninformative text are rejected or produce no weak match. Informative text is chunked, shortlisted through exact, FTS, and vector channels, and reranked against stored ADR passages. File scope affects ranking but does not exclude an otherwise relevant ADR.
 
-### Relevant JSON contract
+### Detailed relevance service and HTTP JSON contract
 
-`adrai relevant FILE --json` and the `data` member of `/api/v1/relevant` now use `adrai/relevant/v2`. The API route version describes the HTTP envelope; the `data.schema` value identifies this projection. Each `results` entry is one ADR, ordered by descending `score`, `semantic_score`, `lexical_score`, then ADR ID. `record` identifies the resolved decision record; a conflict has `record: null`, while `matched_record` and `matched_title` identify the head that supplied the strongest evidence. `title`, `summary`, `domains`, `applies_to`, status, replacement, and resolution fields retain decision context.
+The service projection and the `data` member of `/api/v1/relevant` use `adrai/relevant/v2`. CLI consumers migrating from that rich projection should use `adrai/relevant-cli/v1` for lists, or the HTTP API for detailed evidence and diagnostics. The API route version describes the HTTP envelope; the `data.schema` value identifies this projection. Each `results` entry is one ADR, ordered by descending `score`, `semantic_score`, `lexical_score`, then ADR ID. `record` identifies the resolved decision record; a conflict has `record: null`, while `matched_record` and `matched_title` identify the head that supplied the strongest evidence. `title`, `summary`, `domains`, `applies_to`, status, replacement, and resolution fields retain decision context.
 
 `score` combines semantic evidence, `lexical_bonus`, and `scope_bonus`. The lexical signal uses source content and localized source-definition phrases, with file scope a small bonus. The reported `semantic_score`, `lexical_score`, `scope_match`, `scope_bonus`, `margin`, strongest-pair scores, and `source_information` explain ranking and confidence. Scope alone cannot produce high confidence. The `retrieval.scoring` object lists the scoring constants. Result order and evidence order are deterministic for the same revision and file bytes.
 
-Service-backed CLI and HTTP relevance responses also include `diagnostics`. `index_revision` is the exact commit in the validated archive or cold-compiled snapshot actually queried; `checkout_head` is a separate observation of the checkout's HEAD at query start. `stale` means these commits differ. An explicit historical `--at` is therefore expected to be stale when the checkout has advanced. A worktree source still uses HEAD for ADR context; its bytes come from the working file.
+Service and HTTP relevance responses also include `diagnostics`. `index_revision` is the exact commit in the validated archive or cold-compiled snapshot actually queried; `checkout_head` is a separate observation of the checkout's HEAD at query start. `stale` means these commits differ. An explicit historical `--at` is therefore expected to be stale when the checkout has advanced. A worktree source still uses HEAD for ADR context; its bytes come from the working file.
 
 `index_preparation` is `cache-hit` or `cold-fallback`. All `timing_ms` values are measured elapsed milliseconds from a monotonic clock. `prepare_index` runs from exact-archive acquisition/validation (including a rejected attempt) through source loading, or through cold snapshot analysis and compilation, until the compiled context and source are ready. `retrieve_candidates` covers source preparation, vector and FTS retrieval, shortlist and fully evaluated passage-pair construction. `rank_results` covers aggregation, ordering, result scoring, and materialization of the published JSON projection, including evidence excerpts and resolution fields. The latter two are `null` when a short or empty source skips candidate work. Timings are observational; they do not affect result scores or ordering and are not latency targets.
 

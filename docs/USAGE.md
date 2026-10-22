@@ -61,6 +61,12 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 
 Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands also accept `--json` for stable machine-readable output. Run `adrai COMMAND --help` for the complete option list.
 
+`search` and `relevant` print simple ADR ID and title lists by default. Add
+`--view exploded` to include indented summaries. JSON requires `--json` and
+contains only `schema` and `results`, with `adr` and `title` in each result and
+`summary` only in the exploded view. The CLI schemas are `adrai/search-cli/v1`
+and `adrai/relevant-cli/v1`; see [Search](SEARCH.md) for details.
+
 Omitting the search query or supplying blank text lists non-obsolete ADRs in ADR
 ID order at the selected committed revision (default `HEAD`). The listing is
 bounded by `--limit`: the default is 10 and the supported range is 1–1000. Use

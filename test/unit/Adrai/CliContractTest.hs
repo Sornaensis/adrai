@@ -91,12 +91,12 @@ import Adrai.Explorer.Render (renderHelp)
 import Adrai.Git (GitOid (..))
 import qualified Adrai.Git as Git
 import Adrai.RetainedNative.NativeFixture (copyNativeFixture, nativeProgramName)
-import Adrai.Integration.CLI (createTestRepo, parseCompileResult, prependExtraPathParts, requireExecutable, spawnAdraiWith)
+import Adrai.Integration.CLI (createTestRepo, createAdraiInit, createAdr, commitFile, spawnAdrai, parseCompileResult, prependExtraPathParts, requireExecutable, spawnAdraiWith)
 import Adrai.Domain (canonicalDomains, mkDomain, parseDomainRefinement)
 import Adrai.Scope (mkScopePattern)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
 import Adrai.Service.PostCommitIndex (IndexWarning (..), PostCommitIndexError (..), PostCommitIndexResult (..))
-import Adrai.Types (ActorKind (..), ProvenanceInputs (..), RevisionSelector (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath)
+import Adrai.Types (ActorKind (..), ProvenanceInputs (..), RevisionSelector (..), mkAdrId, mkConnectionId, mkRecordId, mkRepoPath, mkStateToken)
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
 import qualified Adrai.Format as Format
 import Adrai.Provenance (sha256Digest)
@@ -118,22 +118,25 @@ import Adrai.Query
     ReferenceLookupError (..),
     ResolutionState (..),
     SearchProjection (..),
+    SearchResult (..),
+    SearchMatches (..),
+    ProjectionCounts (..),
     SearchRequest (..),
     RelevantFileInfo (..),
     RelevantDiagnostics (..),
     RelevantProjection (..),
+    RelevantResult (..),
     RelevantRequest (..),
     RelevantRetrieval (..),
     compareProjectionJson,
     explodedProjectionJson,
     renderCompareProjection,
     renderExplodedProjection,
-    renderSearchProjection,
     searchProjectionJson,
-    renderRelevantProjection,
     relevantProjectionJson,
   )
 import Adrai.Service.Query (SearchServiceRequest (..), ShowFailure (..), ShowResult (..), showFailureIsConflict)
+import Adrai.Relevance (ConfidenceLabel (..), RelevanceScopeMatch (..))
 import Adrai.Types (RepoPath (..))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
@@ -766,6 +769,7 @@ cliTypeConstructorTests =
               , relevantIncludeObsolete = True
               , relevantLimit = 15
               , relevantJson = True
+              , relevantView = CollapsedView
               }
         relevantFile cmd @?= "docs/adrs/001.md"
         relevantIncludeObsolete cmd @?= True
@@ -1165,8 +1169,15 @@ mutationCliContractTests =
         assertBool "invalid path is rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchFile = Just "../outside"})))
         let jsonRendered = renderSearchOutcome explicit projection
             plainRendered = renderSearchOutcome (explicit {searchJson = False}) projection
-        jsonRendered @?= CliRendered (renderCanonicalJson (searchProjectionJson projection)) "" ExitSuccess
-        plainRendered @?= CliRendered (Text.Encoding.decodeUtf8 (renderSearchProjection projection)) "" ExitSuccess
+        jsonRendered @?= CliRendered (renderCanonicalJson (JsonObject [("schema", JsonString "adrai/search-cli/v1"), ("results", JsonArray [])])) "" ExitSuccess
+        plainRendered @?= CliRendered "" "" ExitSuccess
+        let populated = projection {searchProjectionResults = [cliSearchRow, cliSearchRow {searchResultAdr = secondAdr, searchResultTitle = "[decision conflict]", searchResultSummary = "", searchResultConflicted = True, searchResultMatchedTitle = Just "Misleading matched head"}]}
+            render view json = renderSearchOutcome (explicit {searchView = view, searchJson = json}) populated
+        render CollapsedView False @?= CliRendered expectedList "" ExitSuccess
+        render ExplodedView False @?= CliRendered expectedExpandedList "" ExitSuccess
+        for_ [CollapsedView, ExplodedView] $ \view -> do
+          assertCliListJson "adrai/search-cli/v1" view (renderedStdout (render view True))
+        assertBool "rich search service projection retains source paths" ("source_paths" `Text.isInfixOf` renderCanonicalJson (searchProjectionJson populated))
         selectedRepo <- newIORef Nothing
         selectedRequest <- newIORef Nothing
         let dependencies =
@@ -1191,9 +1202,9 @@ mutationCliContractTests =
         let expectedRequest = SearchServiceRequest "refs/heads/release" <$> either (const Nothing) Just (searchCommandRequest explicit)
         readIORef selectedRequest >>= (@?= expectedRequest)
     , testCase "relevant accepts only revision or explicit worktree sources, renders exactly, and dispatches typed intent" $ do
-        let defaulted = RelevantCommand "src/query ü.txt" Nothing False False 10 False
-            explicit = RelevantCommand "src/query ü.txt" (Just "refs/heads/release") False True 7 True
-            worktree = RelevantCommand "src/query ü.txt" Nothing True False 10 False
+        let defaulted = RelevantCommand "src/query ü.txt" Nothing False False 10 False CollapsedView
+            explicit = RelevantCommand "src/query ü.txt" (Just "refs/heads/release") False True 7 True ExplodedView
+            worktree = RelevantCommand "src/query ü.txt" Nothing True False 10 False CollapsedView
             fileInfo =
               RelevantFileInfo
                 { relevantFilePath = RepoPath "src/query ü.txt"
@@ -1232,9 +1243,11 @@ mutationCliContractTests =
                 , relevantProjectionDiagnostics = Nothing
                 }
         parseCli ["relevant", "src/query ü.txt"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant defaulted))
-        parseCli ["relevant", "src/query ü.txt", "--at", "refs/heads/release", "--include-obsolete", "--limit", "7", "--json"]
+        parseCli ["relevant", "src/query ü.txt", "--at", "refs/heads/release", "--include-obsolete", "--limit", "7", "--json", "--view", "exploded"]
           @?= Right (CliInvocation defaultCliConfig (CmdRelevant explicit))
         parseCli ["relevant", "src/query ü.txt", "--worktree"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant worktree))
+        parseCli ["relevant", "src/query ü.txt", "--view", "collapsed"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant defaulted))
+        assertParserFailure ["relevant", "src/query ü.txt", "--view", "other"]
         for_ [["relevant", "--file", "src/query.txt"], ["relevant", "src/query.txt", "--revision", "HEAD"], ["relevant", "src/query.txt", "--working"]] assertParserFailure
         relevantCommandRequest defaulted
           @?= Right (RelevantRequest (RepoPath "src/query ü.txt") (AtRevision "HEAD") False 10)
@@ -1244,14 +1257,21 @@ mutationCliContractTests =
           @?= Left "relevant --at and --worktree are mutually exclusive"
         assertBool "relevant rejects outside paths" (either (const True) (const False) (relevantCommandRequest (defaulted {relevantFile = "../outside"})))
         renderRelevantOutcome explicit projection
-          @?= CliRendered (renderCanonicalJson (relevantProjectionJson projection)) "" ExitSuccess
-        assertBool "relevant --json emits the v2 projection" ("\"schema\": \"adrai/relevant/v2\"" `Text.isInfixOf` renderedStdout (renderRelevantOutcome explicit projection))
+          @?= CliRendered (renderCanonicalJson (JsonObject [("schema", JsonString "adrai/relevant-cli/v1"), ("results", JsonArray [])])) "" ExitSuccess
         let diagnosed = projection { relevantProjectionDiagnostics = Just (RelevantDiagnostics "0123456789abcdef0123456789abcdef01234567" "1111111111111111111111111111111111111111" True "cache-hit" 1.25 Nothing Nothing) }
             diagnosedJson = renderedStdout (renderRelevantOutcome explicit diagnosed)
-        assertBool "relevant CLI reports measured freshness without inventing skipped phases"
-          ("\"stale\": true" `Text.isInfixOf` diagnosedJson && "\"prepare_index\": 1.25" `Text.isInfixOf` diagnosedJson && "\"retrieve_candidates\": null" `Text.isInfixOf` diagnosedJson)
+        diagnosedJson @?= renderedStdout (renderRelevantOutcome explicit projection)
+        let serviceJson = renderCanonicalJson (relevantProjectionJson diagnosed)
+        assertBool "rich service projection retains measured diagnostics"
+          ("\"stale\": true" `Text.isInfixOf` serviceJson && "\"prepare_index\": 1.25" `Text.isInfixOf` serviceJson && "\"retrieve_candidates\": null" `Text.isInfixOf` serviceJson)
         renderRelevantOutcome (explicit {relevantJson = False}) projection
-          @?= CliRendered (Text.Encoding.decodeUtf8 (renderRelevantProjection projection)) "" ExitSuccess
+          @?= CliRendered "" "" ExitSuccess
+        let populated = diagnosed {relevantProjectionResults = [cliRelevantRow, cliRelevantRow {relevantResultAdr = secondAdr, relevantResultTitle = "[decision conflict]", relevantResultSummary = "", relevantResultMatchedTitle = Just "Misleading matched head"}]}
+            render view json = renderRelevantOutcome (explicit {relevantView = view, relevantJson = json}) populated
+        render CollapsedView False @?= CliRendered expectedList "" ExitSuccess
+        render ExplodedView False @?= CliRendered expectedExpandedList "" ExitSuccess
+        for_ [CollapsedView, ExplodedView] $ \view ->
+          assertCliListJson "adrai/relevant-cli/v1" view (renderedStdout (render view True))
         selectedRepo <- newIORef Nothing
         selectedRequest <- newIORef Nothing
         let dependencies =
@@ -1274,6 +1294,43 @@ mutationCliContractTests =
           >>= (@?= ExitSuccess)
         readIORef selectedRepo >>= (@?= Just "relevant repo")
         readIORef selectedRequest >>= (@?= either (const Nothing) Just (relevantCommandRequest explicit))
+        -- The existing process harness owns each CLI descendant; the bracketed
+        -- fixture directory is disposed at the end of this test, on any outcome.
+        withSystemTempDirectory "adrai concise CLI output" $ \temporary -> do
+          repo <- createTestRepo temporary
+          createAdraiInit repo
+          let source = "DURABLE_LEDGER_TOKEN transactions keep journal writes atomic.\nStorage recovery replays committed transactions using the durable ledger.\n"
+              fixtureTitle = "Durable ledger storage"
+              fixtureSummary = "Keep DURABLE_LEDGER_TOKEN transactions atomic."
+          _ <- commitFile repo "source.txt" (Text.Encoding.encodeUtf8 source)
+          created <- createAdr repo fixtureTitle fixtureSummary source ["storage"] ["source.txt"]
+          fixtureAdr <- case created of
+            Aeson.Object fields -> case KM.lookup "adr" fields of
+              Just (Aeson.String value) -> pure value
+              _ -> assertFailure "create omitted ADR ID" >> fail "unreachable"
+            _ -> assertFailure "create returned a non-object" >> fail "unreachable"
+          let runCli arguments = do
+                (code, stdout, stderr) <- spawnAdrai repo arguments
+                code @?= ExitSuccess
+                stderr @?= ""
+                pure (Text.Encoding.decodeUtf8 (BL.toStrict stdout))
+              checkCommand command schema = do
+                runCli command >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n")
+                runCli (command <> ["--view", "exploded"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n  " <> fixtureSummary <> "\n")
+                for_ [CollapsedView, ExplodedView] $ \view -> do
+                  output <- runCli (command <> ["--json", "--view", if view == CollapsedView then "collapsed" else "exploded"])
+                  Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output)
+                    @?= Right (Aeson.object
+                      [ "schema" Aeson..= (schema :: Text)
+                      , "results" Aeson..= [Aeson.object
+                          (["adr" Aeson..= fixtureAdr, "title" Aeson..= fixtureTitle]
+                            <> ["summary" Aeson..= fixtureSummary | view == ExplodedView])]
+                      ])
+          checkCommand ["search", "--mode", "fts"] "adrai/search-cli/v1"
+          checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1"
+          runCli ["search", "zzzxqvplmn", "--mode", "fts"] >>= (@?= "")
+          BS.writeFile (repo </> "source.txt") "\n"
+          runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "")
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
         let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True
         parseCli ["show", "R0123456789ABCDEFGHJKMNPQRS", "--view", "exploded", "--at", "refs/heads/release", "--raw", "--json"]
@@ -1620,10 +1677,10 @@ mutationCliContractTests =
         for_
           [ ("init", ["standalone decision", "dot-separated domain hierarchy", "--applies-to"])
           , ("create", ["exactly one", "concise standalone decision", "brief rationale", "unless essential", "--applies-to/applies_to or scope", "platform.storage.postgresql", "--applies-to 'src/storage/**'"])
-          , ("search", ["omitted or blank", "non-obsolete ADRs", "1-1000", "default 10", "adrai search --limit 1000", "--include-obsolete", "--domain", "--file", "concise standalone decision"])
+          , ("search", ["omitted or blank", "non-obsolete ADRs", "1-1000", "default 10", "adrai search --limit 1000", "--include-obsolete", "--domain", "--file", "concise standalone decision", "collapsed lists ADR IDs and titles", "exploded adds summaries", "--json"])
           , ("show", ["requires --view exploded", "before editing", "decision and its rationale"])
           , ("history", ["Omit ADR_ID", "--at", "unless essential"])
-          , ("relevant", ["--at", "--worktree", "--applies-to/applies_to or scope"])
+          , ("relevant", ["--at", "--worktree", "--applies-to/applies_to or scope", "--view", "collapsed lists ADR IDs and titles", "exploded adds summaries", "--json"])
           , ("compare", ["TO defaults to HEAD", "--include-unchanged", "unless essential"])
           , ("doctor", ["--at REVISION", "before relying on retrieved guidance"])
           , ("compile", ["--at REVISION", "content or metadata"])
@@ -2073,6 +2130,78 @@ mutationCliContractTests =
         conflictExit @?= ExitFailure 3
     ]
   where
+    firstAdr = requireRight (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")
+    secondAdr = requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS")
+    title = "Storage\tchoice\nü\ESC[0m"
+    summary = "First\tsummary line.\nSecond summary line."
+    expectedList = "A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\nA1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
+    expectedExpandedList = "A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\n  First summary line.\n  Second summary line.\nA1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
+    assertCliListJson schema view output =
+      Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output)
+        @?= Right (Aeson.object
+          [ "schema" Aeson..= (schema :: Text)
+          , "results" Aeson..=
+              [ Aeson.object (["adr" Aeson..= ("A0123456789ABCDEFGHJKMNPQRS" :: Text), "title" Aeson..= title] <> ["summary" Aeson..= summary | view == ExplodedView])
+              , Aeson.object (["adr" Aeson..= ("A1123456789ABCDEFGHJKMNPQRS" :: Text), "title" Aeson..= ("[decision conflict]" :: Text)] <> ["summary" Aeson..= ("" :: Text) | view == ExplodedView])
+              ]
+          ])
+    cliSearchRow = SearchResult
+      { searchResultAdr = firstAdr
+      , searchResultRecord = Nothing
+      , searchResultMatchedCandidate = Nothing
+      , searchResultMatchedRecord = Nothing
+      , searchResultMatchedTitle = Nothing
+      , searchResultMatchedSummary = Nothing
+      , searchResultTitle = title
+      , searchResultSummary = summary
+      , searchResultDomains = ["storage"]
+      , searchResultAppliesTo = ["src/**"]
+      , searchResultStatus = "active"
+      , searchResultObsolete = False
+      , searchResultReplacement = Nothing
+      , searchResultConflict = Nothing
+      , searchResultResolution = ResolutionState True False []
+      , searchResultStateToken = requireRight (mkStateToken "S0123456789012345678901")
+      , searchResultScore = 1
+      , searchResultFtsScore = 1
+      , searchResultVectorScore = 0
+      , searchResultIdentifierVectorScore = 0
+      , searchResultSourcePaths = ["private/source.md"]
+      , searchResultMatches = SearchMatches True False Nothing [] Nothing [] [] [] [] Map.empty Nothing Nothing
+      , searchResultRetrieval = JsonObject []
+      , searchResultCounts = ProjectionCounts 1 0 0 0 0
+      , searchResultScopeAmbiguous = False
+      , searchResultDomainAmbiguous = False
+      , searchResultConflicted = False
+      , searchResultShallowHistory = False
+      }
+    cliRelevantRow = RelevantResult
+      { relevantResultAdr = firstAdr
+      , relevantResultRecord = Nothing
+      , relevantResultMatchedCandidate = Nothing
+      , relevantResultMatchedRecord = Nothing
+      , relevantResultMatchedTitle = Nothing
+      , relevantResultTitle = title
+      , relevantResultSummary = summary
+      , relevantResultDomains = ["storage"]
+      , relevantResultAppliesTo = ["src/**"]
+      , relevantResultStatus = "active"
+      , relevantResultObsolete = False
+      , relevantResultReplacement = Nothing
+      , relevantResultResolution = ResolutionState True False []
+      , relevantResultScore = 1
+      , relevantResultSemanticScore = 1
+      , relevantResultLexicalScore = 1
+      , relevantResultLexicalBonus = 0
+      , relevantResultScopeMatch = RelevanceScopeExact
+      , relevantResultScopeBonus = 0
+      , relevantResultConfidence = HighConfidence
+      , relevantResultMargin = 1
+      , relevantResultStrongestPair = 1
+      , relevantResultStrongestLexicalPair = 1
+      , relevantResultSourceInformation = 1
+      , relevantResultEvidence = []
+      }
     parseCli :: [String] -> Either String CliInvocation
     parseCli arguments =
       case execParserPure defaultPrefs (info parser mempty) arguments of
