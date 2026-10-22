@@ -455,15 +455,19 @@ renderHistoryOp op =
 renderHelp :: [Text]
 renderHelp =
   [ ansiCyan (ansiBold "ADRAI Terminal Explorer")
-  , "Read commands use the selected immutable revision; reads make no Git commit."
+  , "Read commands use the selected immutable revision."
   , "search QUERY (or bare text) | show ADR_ID | view ADR_ID [collapsed|exploded]"
   , "history [ADR_ID] | conflicts"
   , ":view collapsed|exploded | :mode fts|vector|hybrid | :obsolete on|off"
   , ":file PATH|clear | filter file PATH|clear | filter obsolete on|off"
   , ":actor human|llm|service:ID | :revision REF | :refresh"
-  , "Create: create {\"title\":\"Title\",\"summary\":\"Summary\",\"body\":\"Decision\\n\",\"domains\":[],\"applies_to\":[]}"
+  , "Create: create {\"title\":\"Use PostgreSQL\",\"summary\":\"Store application data\",\"body\":\"Use PostgreSQL for transactional storage.\\n\",\"domains\":[\"platform.storage.postgresql\"],\"applies_to\":[\"src/storage/**\"]}"
   , "Amend: amend ADR_ID {\"body\":\"New decision\\n\",\"change_summary\":\"Why\"}"
   , "Amend also accepts title and summary; omitted fields inherit current values."
+  , "Write one concise standalone decision with a brief rationale."
+  , "Keep titles, summaries, bodies, and reasons free of paths, commits, and other ADR references unless essential."
+  , "Record path applicability with applies_to on create, or CLI scope; use CLI domain to change domains."
+  , "Always choose a sensible dot-separated domain hierarchy, such as platform.storage.postgresql."
   , "status ADR_ID active|obsolete"
   , "View an ADR before amend/status. Writes check the viewed HEAD/ref and state."
   , "After external changes use :refresh (or :revision HEAD), then view again."

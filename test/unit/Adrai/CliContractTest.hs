@@ -1604,6 +1604,11 @@ mutationCliContractTests =
         case parseArguments ["--help"] of
           Left rendered -> do
             renderedExitCode rendered @?= ExitSuccess
+            renderedStderr rendered @?= ""
+            assertBool "root help ends with one newline"
+              (T.isSuffixOf "\n" (renderedStdout rendered) && not (T.isSuffixOf "\n\n" (renderedStdout rendered)))
+            assertBool "root help omits Next example" (not ("Next:" `T.isInfixOf` renderedStdout rendered))
+            assertBool "root help retains repo placement" ("Place --repo PATH before the command" `T.isInfixOf` renderedStdout rendered)
             for_ ["init", "create", "show", "history", "search", "relevant", "compare", "doctor", "compile", "amend", "scope", "domain", "obsolete", "reactivate", "web", "explore"] $ \name ->
               assertBool ("missing command " <> name) (T.pack name `T.isInfixOf` renderedStdout rendered)
           Right _ -> assertFailure "top-level help unexpectedly parsed as command"
@@ -1613,16 +1618,29 @@ mutationCliContractTests =
             assertBool "create example" ("--actor human:alice" `T.isInfixOf` renderedStdout rendered)
           Right _ -> assertFailure "create help unexpectedly parsed as command"
         for_
-          [ ("search", ["omitted or blank", "non-obsolete ADRs", "1-1000", "default 10", "adrai search --limit 1000", "--include-obsolete"])
-          , ("show", ["requires --view exploded"])
-          , ("amend", ["structured amendment JSON", "exactly one", "body and change_summary", "--change-summary", "inherit current values", "--actor human:alice"])
-          , ("scope", ["--set cannot be combined with --add or --remove"])
-          , ("domain", ["Choose exactly one mode", "mutually exclusive"])
-          , ("explore", [":help", "session controls"])
+          [ ("init", ["standalone decision", "dot-separated domain hierarchy", "--applies-to"])
+          , ("create", ["exactly one", "concise standalone decision", "brief rationale", "unless essential", "--applies-to/applies_to or scope", "platform.storage.postgresql", "--applies-to 'src/storage/**'"])
+          , ("search", ["omitted or blank", "non-obsolete ADRs", "1-1000", "default 10", "adrai search --limit 1000", "--include-obsolete", "--domain", "--file", "concise standalone decision"])
+          , ("show", ["requires --view exploded", "before editing", "decision and its rationale"])
+          , ("history", ["Omit ADR_ID", "--at", "unless essential"])
+          , ("relevant", ["--at", "--worktree", "--applies-to/applies_to or scope"])
+          , ("compare", ["TO defaults to HEAD", "--include-unchanged", "unless essential"])
+          , ("doctor", ["--at REVISION", "before relying on retrieved guidance"])
+          , ("compile", ["--at REVISION", "content or metadata"])
+          , ("amend", ["structured amendment JSON", "exactly one", "body and change_summary", "--change-summary", "inherit current values", "--actor human:alice", "concise standalone decision", "unless essential", "--applies-to/applies_to or scope", "platform.storage.postgresql"])
+          , ("scope", ["--set cannot be combined with --add or --remove", "path applicability here", "brief rationale", "domain hierarchy"])
+          , ("domain", ["Choose exactly one mode", "mutually exclusive", "Always choose a sensible dot-separated domain hierarchy", "platform.storage.postgresql"])
+          , ("obsolete", ["brief standalone reason", "--replacement only when", "--expect", "status-only conflict"])
+          , ("reactivate", ["brief standalone reason", "unless essential", "domain hierarchy", "status-only conflict"])
+          , ("web", ["--no-open", "concise standalone decision", "--applies-to/applies_to or scope", "platform.storage.postgresql"])
+          , ("explore", [":help", "session controls", "concise standalone decision", "platform.storage.postgresql"])
           ] $ \(command, guidance) ->
             case parseArguments [command, "--help"] of
               Left rendered -> do
                 renderedExitCode rendered @?= ExitSuccess
+                renderedStderr rendered @?= ""
+                assertBool (command <> " help ends with one newline")
+                  (T.isSuffixOf "\n" (renderedStdout rendered) && not (T.isSuffixOf "\n\n" (renderedStdout rendered)))
                 let outputWords = T.unwords (T.words (renderedStdout rendered))
                 for_ guidance $ \expected ->
                   assertBool (command <> " help missing " <> T.unpack expected) (expected `T.isInfixOf` outputWords)
@@ -1633,6 +1651,8 @@ mutationCliContractTests =
           assertBool ("missing explorer command: " <> T.unpack command) (T.isInfixOf command output)
         assertBool "accepted view syntax" (T.isInfixOf "view ADR_ID [collapsed|exploded]" output)
         assertBool "status syntax" (T.isInfixOf "status ADR_ID active|obsolete" output)
+        for_ ["concise standalone decision", "brief rationale", "unless essential", "applies_to on create", "dot-separated domain hierarchy", "\"domains\":[\"platform.storage.postgresql\"]", "\"applies_to\":[\"src/storage/**\"]"] $ \guidance ->
+          assertBool ("missing explorer authoring guidance: " <> T.unpack guidance) (T.isInfixOf guidance output)
         let malformed = ["show", "show bad-id", "view bad-id exploded", "history bad-id", "create --title X --body Y", "amend", ":view unknown", ":mode unknown", "filter domain", "status bad-id retired", "create {\"body\":\"x\",\"unknown\":true}", "amend A0123456789ABCDEFGHJKMNPQRS {\"body\":\"x\"}"]
         for_ malformed $ \input ->
           case Explorer.parseCommand input of

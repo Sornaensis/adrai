@@ -447,32 +447,32 @@ parser :: CliParser
 parser =
   CliInvocation <$> globalConfigParser <*>
     ( subparser
-        ( Opt.commandGroup "Get started (these commands create Git commits):"
-     <> Opt.command "init" (info (Opt.helper <*> (previewParser (CmdInit <$> initParser))) (progDesc "initialize ADRAI in an existing Git repository" <> Opt.footer "Example: adrai init"))
-     <> Opt.command "create" (info (Opt.helper <*> (previewParser (CmdCreate <$> createParser))) (progDesc "create an ADR (requires content and an actor)" <> Opt.footer "Example: adrai create --title 'Use PostgreSQL' --summary 'Store application data' --body 'PostgreSQL provides transactions.' --actor human:alice"))
+        ( Opt.commandGroup "Get started:"
+     <> Opt.command "init" (commandInfoWithFooter (previewParser (CmdInit <$> initParser)) "initialize ADRAI in an existing Git repository" "Run adrai init once, then use create for each standalone decision. Choose a sensible dot-separated domain hierarchy, such as platform.storage.postgresql, and record applicability with --applies-to.")
+     <> Opt.command "create" (commandInfoWithFooter (previewParser (CmdCreate <$> createParser)) "create an ADR (requires content and an actor)" ("Provide exactly one of --body, --body-file, --stdin, or --input-json. Structured JSON accepts title, summary, body, domains, and applies_to, plus actor and provenance metadata. " <> authoringGuidance <> " Example: adrai create --title 'Use PostgreSQL' --summary 'Store application data' --body 'Use PostgreSQL for transactional storage.' --domain platform.storage.postgresql --applies-to 'src/storage/**' --actor human:alice"))
         )
    <|> subparser
-        ( Opt.commandGroup "Read and inspect (no Git commits):"
-     <> Opt.command "show" (commandInfo (CmdShow <$> showParser) "show one ADR; example: adrai show ADR_ID")
-     <> Opt.command "history" (commandInfo (CmdHistory <$> historyParser) "show operation history; example: adrai history ADR_ID")
-     <> Opt.command "search" (commandInfoWithFooter (CmdSearch <$> searchParser) "search ADRs or list non-obsolete ADRs when QUERY is omitted or blank" "Browse up to 1000 non-obsolete ADRs at HEAD: adrai search --limit 1000. This bounded listing uses ADR ID order; add --include-obsolete to include obsolete decisions. Search text: adrai search database.")
-     <> Opt.command "relevant" (commandInfo (CmdRelevant <$> relevantParser) "rank ADRs for a file; example: adrai relevant src/Main.hs --worktree")
-     <> Opt.command "compare" (commandInfo (CmdCompare <$> compareParser) "compare revisions; example: adrai compare HEAD~1 HEAD")
-     <> Opt.command "doctor" (commandInfo (CmdDoctor <$> doctorParser) "diagnose repository and index; example: adrai doctor")
-     <> Opt.command "compile" (commandInfo (CmdCompile <$> compileParser) "build or reuse the derived index; example: adrai compile")
+        ( Opt.commandGroup "Read and inspect:"
+     <> Opt.command "show" (commandInfoWithFooter (CmdShow <$> showParser) "show one ADR" "Read the decision, domain hierarchy, applicability, and state token before editing: adrai show ADR_ID. Use --view exploded to inspect records; --raw requires --view exploded. Keep subsequent amendments focused on the decision and its rationale.")
+     <> Opt.command "history" (commandInfoWithFooter (CmdHistory <$> historyParser) "show operation history" "Inspect how a decision evolved: adrai history ADR_ID. Omit ADR_ID for repository-wide history; use --at to select a revision. Keep historical detail out of decision prose unless essential to the rationale.")
+     <> Opt.command "search" (commandInfoWithFooter (CmdSearch <$> searchParser) "search ADRs or list non-obsolete ADRs when QUERY is omitted or blank" "Browse up to 1000 non-obsolete ADRs at HEAD: adrai search --limit 1000. This bounded listing uses ADR ID order; add --include-obsolete to include obsolete decisions. Search text: adrai search database. Narrow by --domain using a sensible hierarchy, such as platform.storage, or --file to match applicability. Read matching decisions before authoring a concise standalone decision.")
+     <> Opt.command "relevant" (commandInfoWithFooter (CmdRelevant <$> relevantParser) "rank ADRs for a file" "Find applicable guidance before changing an implementation: adrai relevant src/Main.hs --worktree. Use --at for immutable revision content, or --worktree with HEAD as context. Maintain path applicability through --applies-to/applies_to or scope instead of embedding paths in decision prose.")
+     <> Opt.command "compare" (commandInfoWithFooter (CmdCompare <$> compareParser) "compare revisions" "Review decision changes between immutable revisions: adrai compare HEAD~1 HEAD. TO defaults to HEAD; --include-unchanged also shows stable decisions. Use this comparison for review; keep revision details out of decision prose unless essential.")
+     <> Opt.command "doctor" (commandInfoWithFooter (CmdDoctor <$> doctorParser) "diagnose repository and index" "Run adrai doctor to inspect repository and index health at HEAD, or select --at REVISION. Address reported issues before relying on retrieved guidance; use compile to build or refresh the derived index.")
+     <> Opt.command "compile" (commandInfoWithFooter (CmdCompile <$> compileParser) "build or reuse the derived index" "Run adrai compile to prepare retrieval at HEAD, or select --at REVISION. The index is derived from recorded decisions; use create, amend, scope, or domain to change their content or metadata, then retrieve guidance with search or relevant.")
         )
    <|> subparser
-        ( Opt.commandGroup "Change decisions (these commands create Git commits):"
-     <> Opt.command "amend" (commandInfoWithFooter (previewParser (CmdAmend <$> amendParser)) "amend an ADR; requires content, a change summary, and an actor" "Provide exactly one of --body, --body-file, --stdin, or --input-json. Amendment JSON requires body and change_summary (or --change-summary); optional title and summary inherit current values when omitted. JSON also accepts actor, model, input_digest, prompt_digest, and context_digest. Example: adrai amend ADR_ID --body 'Require compatible migrations.' --change-summary 'Document migrations' --actor human:alice")
-     <> Opt.command "scope" (commandInfoWithFooter (previewParser (CmdScope <$> scopeParser)) "change file scope; provide ADR, --add/--remove/--set, --reason, --actor" "Combine --add and --remove for a delta, or use --set for a reviewed replacement. --set cannot be combined with --add or --remove.")
-     <> Opt.command "domain" (commandInfoWithFooter (previewParser (CmdDomain <$> domainParser)) "change domains; provide ADR, change option, --reason, --actor" "Choose exactly one mode: --add/--remove (which may be combined), --refine, --set, or --clear. These four modes are mutually exclusive.")
-     <> Opt.command "obsolete" (commandInfo (previewParser (CmdObsolete <$> obsoleteParser)) "mark ADR obsolete; provide ADR, --reason, --actor")
-     <> Opt.command "reactivate" (commandInfo (previewParser (CmdReactivate <$> reactivateParser)) "reactivate ADR; provide ADR, --reason, --actor")
+        ( Opt.commandGroup "Change decisions:"
+     <> Opt.command "amend" (commandInfoWithFooter (previewParser (CmdAmend <$> amendParser)) "amend an ADR; requires content, a change summary, and an actor" ("Read the current decision first; use --expect with its state token when checking for intervening changes. Provide exactly one of --body, --body-file, --stdin, or --input-json. Amendment JSON requires body and change_summary (or --change-summary); optional title and summary inherit current values when omitted. JSON also accepts actor, model, input_digest, prompt_digest, and context_digest. " <> authoringGuidance <> " Use scope or domain for metadata changes. Example: adrai amend ADR_ID --body 'Require compatible migrations.' --change-summary 'Preserve compatibility during rollout' --actor human:alice"))
+     <> Opt.command "scope" (commandInfoWithFooter (previewParser (CmdScope <$> scopeParser)) "change file scope; provide ADR, --add/--remove/--set, --reason, --actor" "Record path applicability here rather than in the title, summary, body, or reason. Combine --add and --remove for a delta, or use --set for a reviewed replacement. --set cannot be combined with --add or --remove. Give a brief rationale for the applicability change; preserve the decision's sensible domain hierarchy.")
+     <> Opt.command "domain" (commandInfoWithFooter (previewParser (CmdDomain <$> domainParser)) "change domains; provide ADR, change option, --reason, --actor" "Always choose a sensible dot-separated domain hierarchy, such as platform.storage.postgresql. Choose exactly one mode: --add/--remove (which may be combined), --refine, --set, or --clear. These four modes are mutually exclusive. Prefer a meaningful hierarchy over clearing domains; give a brief rationale without incidental paths, commits, or references to other ADRs.")
+     <> Opt.command "obsolete" (commandInfoWithFooter (previewParser (CmdObsolete <$> obsoleteParser)) "mark ADR obsolete; provide ADR, --reason, --actor" "Read the current decision before retiring it; use --expect with its state token to check for intervening changes. Give a brief standalone reason. Use --replacement only when a specific active replacement is necessary; omit incidental paths, commits, and other ADR references from the reason. Use --resolve only for a status-only conflict.")
+     <> Opt.command "reactivate" (commandInfoWithFooter (previewParser (CmdReactivate <$> reactivateParser)) "reactivate ADR; provide ADR, --reason, --actor" "Read the obsolete decision before restoring it; use --expect with its state token to check for intervening changes. Give a brief standalone reason without paths, commits, or other ADR references unless essential. Check that applicability and a sensible domain hierarchy still fit. Use --resolve only for a status-only conflict.")
         )
    <|> subparser
         ( Opt.commandGroup "Interfaces:"
-     <> Opt.command "web" (commandInfo (CmdWeb <$> webParser) "open the browser explorer (run in its worktree; no --repo)")
-     <> Opt.command "explore" (commandInfoWithFooter (pure CmdExplore) "open the terminal explorer for revision-local reads and checked edits" "Run adrai explore, then enter :help for read commands, checked edits, filters, and session controls.")
+     <> Opt.command "web" (commandInfoWithFooter (CmdWeb <$> webParser) "open the browser explorer (run in its worktree; no --repo)" ("Run adrai web in the target worktree; use --no-open to print the address without opening a browser. Read decisions and their applicability before editing. " <> authoringGuidance))
+     <> Opt.command "explore" (commandInfoWithFooter (pure CmdExplore) "open the terminal explorer for revision-local reads and checked edits" ("Run adrai explore, then enter :help for read commands, checked edits, filters, and session controls. View a decision before editing and :refresh after external changes. " <> authoringGuidance))
         )
     )
 
@@ -483,8 +483,9 @@ previewParser commandParser =
     <$> many (flag' () (long "preview" <> long "dry-run" <> help "review proposed files without writes or commits"))
     <*> commandParser
 
-commandInfo :: Parser a -> String -> Opt.ParserInfo a
-commandInfo commandParser description = info (Opt.helper <*> commandParser) (progDesc description)
+authoringGuidance :: String
+authoringGuidance =
+  "Write one concise standalone decision with a brief rationale. Keep titles, summaries, bodies, and reasons free of paths, commits, and references to other ADRs unless essential. Record path applicability with --applies-to/applies_to or scope. Always choose a sensible dot-separated domain hierarchy, such as platform.storage.postgresql."
 
 commandInfoWithFooter :: Parser a -> String -> String -> Opt.ParserInfo a
 commandInfoWithFooter commandParser description guidance =
@@ -747,7 +748,8 @@ run = do
         let (message, parserExit) = Opt.renderFailure failure "adrai"
             exitCode = if parserExit == ExitSuccess then ExitSuccess else ExitFailure 2
             guidance = if null arguments then "\nRun adrai --help to see commands and first steps.\n" else ""
-        writeUtf8 (if exitCode == ExitSuccess then stdout else stderr) (Text.pack (message <> guidance))
+        writeUtf8 (if exitCode == ExitSuccess then stdout else stderr)
+          (if exitCode == ExitSuccess then successfulHelpText message else Text.pack (message <> guidance))
         exitWith exitCode
       Opt.CompletionInvoked completion -> Opt.execCompletion completion "adrai" >>= putStr
   where
@@ -763,18 +765,21 @@ parseArguments arguments =
         let (message, parserExit) = Opt.renderFailure failure "adrai"
             guidance = if null arguments then "\nRun adrai --help to see commands and first steps.\n" else ""
          in if parserExit == ExitSuccess
-              then Left (CliRendered (Text.pack message) "" ExitSuccess)
+              then Left (CliRendered (successfulHelpText message) "" ExitSuccess)
               else Left (CliRendered "" (Text.pack (message <> guidance)) (ExitFailure 2))
       Opt.CompletionInvoked _ -> Left (CliRendered "" "" ExitSuccess)
   where
     parserInfo = cliParserInfo
+
+successfulHelpText :: String -> Text
+successfulHelpText message = Text.dropWhileEnd (`elem` ['\r', '\n']) (Text.pack message) <> "\n"
 
 cliParserInfo :: Opt.ParserInfo CliInvocation
 cliParserInfo =
   info (Opt.helper <*> parser)
     ( progDesc "Architecture Decision Records in a Git repository"
    <> Opt.header "Start in an existing Git repository: adrai init"
-   <> Opt.footer "Next: adrai create --title 'Use PostgreSQL' --summary 'Store application data' --body 'PostgreSQL provides transactions.' --actor human:alice. Then: adrai show ADR_ID or adrai search database. Place --repo PATH before the command (except web); see adrai COMMAND --help."
+   <> Opt.footer "Place --repo PATH before the command (except web); see adrai COMMAND --help."
     )
 
 explicitRepoWithWeb :: [String] -> Bool
