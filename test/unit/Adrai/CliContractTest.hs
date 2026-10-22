@@ -1170,7 +1170,13 @@ mutationCliContractTests =
         let treeProjection = projection {domainsProjectionTree = Just [DomainTreeEntry (DomainEntry "platform.storage" 1001) [DomainTreeEntry (DomainEntry "platform.storage.postgresql" 1001) []]]}
             expectedTreeJson = Aeson.object ["schema" Aeson..= ("adrai/domains-tree/v1" :: Text), "as_of" Aeson..= ("resolved-oid" :: Text), "parent" Aeson..= ("platform.storage" :: Text), "domains" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage" :: Text), "adr_count" Aeson..= (1001 :: Int), "children" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage.postgresql" :: Text), "adr_count" Aeson..= (1001 :: Int), "children" Aeson..= ([] :: [Aeson.Value])]]]]]
         Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 (renderedStdout (renderDomainsOutcome explicit treeProjection))) @?= Right expectedTreeJson
-        renderDomainsOutcome defaulted treeProjection @?= CliRendered "platform.storage 1001\n└── platform.storage.postgresql 1001\n" "" ExitSuccess
+        renderDomainsOutcome defaulted treeProjection @?= CliRendered "platform.storage 1001\n└── postgresql 1001\n" "" ExitSuccess
+        let branch name count children = DomainTreeEntry (DomainEntry name count) children
+            branchingTree = projection {domainsProjectionTree = Just
+              [branch "platform" 12
+                [branch "platform.api" 7 [branch "platform.api.rest" 7 []],
+                 branch "platform.storage" 8 [branch "platform.storage.postgresql" 5 [], branch "platform.storage.redis" 3 []]]]}
+        renderDomainsOutcome defaulted branchingTree @?= CliRendered "platform 12\n├── api 7\n│   └── rest 7\n└── storage 8\n    ├── postgresql 5\n    └── redis 3\n" "" ExitSuccess
         received <- newIORef Nothing
         let dependencies = unsupportedCliDispatchDependencies
               { cliRunDomains = \config receivedRequest -> do
@@ -1449,8 +1455,8 @@ mutationCliContractTests =
           runCli ["domains"] >>= (@?= "storage 1\n")
           runCli ["domains", "storage"] >>= (@?= "storage.db 1\n")
           runCli ["domains", "storage.db"] >>= (@?= "storage.db.postgresql 1\n")
-          runCli ["domains", "--tree"] >>= (@?= "storage 1\n└── storage.db 1\n    └── storage.db.postgresql 1\n")
-          runCli ["domains", "storage.db", "--tree"] >>= (@?= "storage.db 1\n└── storage.db.postgresql 1\n")
+          runCli ["domains", "--tree"] >>= (@?= "storage 1\n└── db 1\n    └── postgresql 1\n")
+          runCli ["domains", "storage.db", "--tree"] >>= (@?= "storage.db 1\n└── postgresql 1\n")
           runCli ["domains", "storage.db.postgresql", "--tree"] >>= (@?= "storage.db.postgresql 1\n")
           runCli ["domains", "unknown", "--tree"] >>= (@?= "")
           runCli ["domains", "storage.db.postgresql"] >>= (@?= "")

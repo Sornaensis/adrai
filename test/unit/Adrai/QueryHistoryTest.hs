@@ -415,9 +415,12 @@ domainsContract = do
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= Just [storage]
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage.postgresql")) False) @?= Just [postgres]
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "unknown")) False) @?= Just []
-  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= "platform.storage 1001\n└── platform.storage.postgresql 1001\n"
+  renderDomainsProjection tree @?= "platform 1002\n├── api 1001\n└── storage 1001\n    └── postgresql 1001\nplatforms 1\n└── storage 1\n"
+  renderDomainsProjection (projectDomains snapshot (Just (domain "platform.storage")) False) @?= "platform.storage.postgresql 1001\n"
+  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= "platform.storage 1001\n└── postgresql 1001\n"
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage")) True) @?= Just
     [branch "platform.storage" 1002 [postgres, branch "platform.storage.redis" 1 []]]
+  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) True) @?= "platform.storage 1002\n├── postgresql 1001\n└── redis 1\n"
 
 permutationContract :: IO ()
 permutationContract = do

@@ -1356,13 +1356,13 @@ domainsProjectionJson projection = object
 
 renderDomainsProjection :: DomainsProjection -> Text
 renderDomainsProjection projection = Text.unlines $ case domainsProjectionTree projection of
-  Nothing -> map renderEntry (domainsProjectionEntries projection)
-  Just roots -> concatMap (\node -> renderEntry (domainTreeEntry node) : renderChildren "" (domainTreeChildren node)) roots
+  Nothing -> map (renderEntry id) (domainsProjectionEntries projection)
+  Just roots -> concatMap (\node -> renderEntry id (domainTreeEntry node) : renderChildren "" (domainTreeChildren node)) roots
   where
-    renderEntry entry = domainEntryName entry <> " " <> Text.pack (show (domainEntryAdrCount entry))
+    renderEntry label entry = label (domainEntryName entry) <> " " <> Text.pack (show (domainEntryAdrCount entry))
     renderChildren _ [] = []
     renderChildren prefix (node : rest) =
-      (prefix <> (if null rest then "└── " else "├── ") <> renderEntry (domainTreeEntry node))
+      (prefix <> (if null rest then "└── " else "├── ") <> renderEntry (Text.takeWhileEnd (/= '.')) (domainTreeEntry node))
         : (renderChildren (prefix <> if null rest then "    " else "│   ") (domainTreeChildren node) <> renderChildren prefix rest)
 
 data SearchFilterInfo = SearchFilterInfo

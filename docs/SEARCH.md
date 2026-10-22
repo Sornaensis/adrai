@@ -105,17 +105,21 @@ Add `--tree` to draw every level, with a recursive distinct ADR count at each
 node. With a parent argument, the tree includes that parent as its root; a leaf
 therefore produces one row, and an unknown parent produces none. Parent counts
 include direct assignments and deduplicate ADRs found under several children;
-they need not equal the sum of child counts. Names stay fully qualified:
+they need not equal the sum of child counts. Each root keeps its fully qualified
+name; descendants display only their local segment:
 
 ```text
 platform 12
-├── platform.api 7
-└── platform.storage 8
-    └── platform.storage.postgresql 5
+├── api 7
+└── storage 8
+    └── postgresql 5
 ```
 
 `--tree --json` uses `adrai/domains-tree/v1`. It keeps `as_of`, `parent`, and
 `domains`, with a `children` array on every domain node (empty at leaves).
+JSON domain names remain fully qualified, including descendants. For example,
+`domains platform.storage --tree` prints `platform.storage` at the root and
+`postgresql` below it, while JSON retains `platform.storage.postgresql`.
 Without `--tree`, the flat text and `adrai/domains/v1` JSON contracts are unchanged.
 
 Domain reads reuse an existing validated exact-revision archive without rebuilding
