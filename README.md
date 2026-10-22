@@ -59,6 +59,9 @@ Search by topic, find decisions whose declared scopes match a file, or rank deci
 
 ```powershell
 adrai search "transactions"
+adrai domains
+adrai domains platform.storage
+adrai search --domain platform.storage
 adrai search --file src/storage/Orders.hs --json
 adrai relevant src/storage/Orders.hs --worktree --json
 ```

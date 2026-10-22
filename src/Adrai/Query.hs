@@ -31,6 +31,11 @@ module Adrai.Query
     resolveAdrReference,
     referenceLookupErrorText,
     adrVisible,
+    DomainEntry (..),
+    DomainsProjection (..),
+    projectDomains,
+    domainsProjectionJson,
+    renderDomainsProjection,
     CompareOptions (..),
     CompareCounts (..),
     CompareChange (..),
@@ -1275,6 +1280,59 @@ adrVisible :: Bool -> ReducedAdr -> Bool
 adrVisible includeObsolete reduced =
   includeObsolete || case axisResolutionEffective (reducedStatusAxis reduced) of Just status -> reducedStatusState status /= StatusObsolete; Nothing -> True
 
+data DomainEntry = DomainEntry
+  { domainEntryName :: Text,
+    domainEntryAdrCount :: Int
+  }
+  deriving (Eq, Show)
+
+data DomainsProjection = DomainsProjection
+  { domainsProjectionRevision :: RevisionIdentity,
+    domainsProjectionParent :: Maybe Domain,
+    domainsProjectionEntries :: [DomainEntry]
+  }
+  deriving (Eq, Show)
+
+-- | Browse one level of the logical hierarchy, without a search-result limit.
+-- Sets count each ADR once even when several assignments or conflicting heads
+-- lie below the same displayed child. Unresolved heads remain discoverable.
+projectDomains :: ReadSnapshot -> Maybe Domain -> Bool -> DomainsProjection
+projectDomains snapshot parent includeObsolete =
+  DomainsProjection (readSnapshotRevision snapshot) parent
+    [DomainEntry name (Set.size adrs) | (name, adrs) <- Map.toAscList entries]
+  where
+    parentSegments = maybe [] (Text.splitOn "." . domainText) parent
+    depth = length parentSegments + 1
+    entries = Map.fromListWith Set.union
+      [ (Text.intercalate "." (take depth segments), Set.singleton (reducedAdrId reduced))
+        | reduced <- graphReductionAdrs (readSnapshotReduction snapshot),
+          adrVisible includeObsolete reduced,
+          assigned <- logicalAdrDomains reduced,
+          let segments = Text.splitOn "." (domainText assigned),
+          take (length parentSegments) segments == parentSegments,
+          length segments >= depth
+      ]
+
+logicalAdrDomains :: ReducedAdr -> [Domain]
+logicalAdrDomains reduced =
+  Set.toAscList . Set.fromList $
+    concatMap (`domainEffective` reduced) (axisResolutionHeads (reducedDomainAxis reduced))
+
+domainsProjectionJson :: DomainsProjection -> JsonValue
+domainsProjectionJson projection = object
+  [ ("schema", JsonString "adrai/domains/v1"),
+    ("as_of", JsonString (revisionResolved (domainsProjectionRevision projection))),
+    ("parent", maybe JsonNull (JsonString . domainText) (domainsProjectionParent projection)),
+    ("domains", JsonArray
+      [object [("domain", JsonString (domainEntryName entry)), ("adr_count", intJson (domainEntryAdrCount entry))]
+        | entry <- domainsProjectionEntries projection])
+  ]
+
+renderDomainsProjection :: DomainsProjection -> Text
+renderDomainsProjection = Text.unlines . map renderEntry . domainsProjectionEntries
+  where
+    renderEntry entry = domainEntryName entry <> " " <> Text.pack (show (domainEntryAdrCount entry))
+
 data SearchFilterInfo = SearchFilterInfo
   { filterScopeMatch :: Maybe ScopeFilterMatch,
     filterDomains :: [Text],
@@ -2145,9 +2203,7 @@ searchFilterInfo snapshot request requestedDomains reduced
             filterActor = actorSelectorText <$> searchRequestActor request
           }
   where
-    logicalDomains =
-      Set.toAscList . Set.fromList $
-        concatMap (`domainEffective` reduced) (axisResolutionHeads (reducedDomainAxis reduced))
+    logicalDomains = logicalAdrDomains reduced
     domainsMatch = domainsMatchRequested requestedDomains logicalDomains
     scopeMatch = logicalScopeMatch (searchRequestFile request) reduced
     operationCapsule = do

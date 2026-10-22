@@ -197,7 +197,7 @@ load while preserving its real commits, exact archive compilation and test guard
 `PhysicalFlight`, selecting exactly `exact revision compilation is one physical
 flight`, is the second exclusive job. Its real internal consumers and producer
 remain concurrent; its owned tree completes before the next exclusive job starts.
-`Rest` excludes both exact leaves and contains 600 tests; `WebMutations` and `PhysicalFlight` each contain one.
+`Rest` excludes both exact leaves and contains 602 tests; `WebMutations` and `PhysicalFlight` each contain one.
 
 `Rest` is the third exclusive job, completing its owned descendants before `O`.
 This isolates its resource group from external scheduler load; it is not a proven
@@ -218,8 +218,8 @@ admission priority; only a matching Complete establishes actual runtime and
 acceptance, and a cancelled duration remains censored.
 
 The current queue has 21 selected jobs and 21 registration-listing processes,
-for a direct process lower bound of 42. The unchanged ledger has 972 unique
-tests and the named repeat gives 973 planned executions. These are source counts;
+for a direct process lower bound of 42. The current ledger has 974 unique
+tests and the named repeat gives 975 planned executions. These are source counts;
 a matching Complete result establishes actual execution and wall time.
 
 The runner derives the required job-ID

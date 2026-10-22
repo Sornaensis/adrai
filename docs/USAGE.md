@@ -1,6 +1,6 @@
 # Usage
 
-ADRAI operates on an existing Git repository. Run `adrai --help` to see all 16 commands grouped by purpose. Pass `--repo PATH` before the command to target a repository other than the current directory (for example, `adrai --repo ../project show ADR_ID`). `web` must run in its worktree and rejects an explicit `--repo`.
+ADRAI operates on an existing Git repository. Run `adrai --help` to see all 17 commands grouped by purpose. Pass `--repo PATH` before the command to target a repository other than the current directory (for example, `adrai --repo ../project show ADR_ID`). `web` must run in its worktree and rejects an explicit `--repo`.
 
 ## Quick start
 
@@ -32,6 +32,9 @@ Inspect and search the repository:
 adrai show ADR_ID
 adrai history ADR_ID
 adrai search --limit 1000
+adrai domains
+adrai domains platform.storage
+adrai search --domain platform.storage
 adrai search "transactional database"
 adrai relevant src/Storage.hs --worktree
 adrai doctor
@@ -52,6 +55,7 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 | `show` | Display one collapsed or exploded ADR. |
 | `history` | Display operation history, optionally filtered by ADR or actor. |
 | `search` | Search ADRs with FTS, vector, or hybrid retrieval, or list non-obsolete ADRs with no query. |
+| `domains [DOMAIN]` | Browse top-level domains or immediate children with recursive distinct ADR counts. |
 | `relevant` | Rank ADRs against a committed or worktree file. |
 | `compare` | Compare two immutable revisions. |
 | `compile` | Build or reuse the repository's derived SQLite index. |

@@ -16,6 +16,7 @@ module Adrai.Service.Query
     HistoryRequest (..),
     HistoryFailure (..),
     SearchServiceRequest (..),
+    DomainsRequest (..),
     SearchFailure (..),
     RelevantFailure (..),
     QueryExecutionHooks (..),
@@ -25,6 +26,7 @@ module Adrai.Service.Query
     runCompare,
     runHistory,
     runSearch,
+    runDomains,
     runSearchExact,
     runWebSearchExact,
     runSearchWithHooks,
@@ -78,6 +80,7 @@ import Adrai.Compiler.CacheSelection
     withValidatedExactCacheTargetConnection,
   )
 import qualified Adrai.Format.Document as Document
+import Adrai.Domain (Domain)
 import Adrai.Format.Config (parseConfigText)
 import Adrai.Git (GitBlob (..), GitOid, Repository, RevisionSpec (..), gitOidText, gitTreeOid, gitTreePath, readRegularBlobAt, readWorktreeFileBytes)
 import Adrai.History (PlacementEvidence, ReadSnapshot (..), RevisionIdentity (..))
@@ -129,6 +132,8 @@ import Adrai.Query
     SearchError,
     SearchProjection (..),
     SearchRequest,
+    DomainsProjection,
+    projectDomains,
     SearchResult (..),
     RelevantError,
     RelevantProjection (..),
@@ -255,6 +260,13 @@ data SearchServiceRequest = SearchServiceRequest
   }
   deriving (Eq, Show)
 
+data DomainsRequest = DomainsRequest
+  { domainsRequestParent :: Maybe Domain,
+    domainsRequestRevision :: Text,
+    domainsRequestIncludeObsolete :: Bool
+  }
+  deriving (Eq, Show)
+
 data SearchFailure
   = SearchRepositoryFailure Text
   | SearchIntegrityFailure [Text]
@@ -356,6 +368,14 @@ runHistory repository request = do
 
 runSearch :: Repository -> SearchServiceRequest -> IO (Either SearchFailure SearchProjection)
 runSearch = runSearchWithHooks defaultQueryExecutionHooks
+
+-- | Aggregate the complete validated snapshot at one immutable revision.
+runDomains :: Repository -> DomainsRequest -> IO (Either SearchFailure DomainsProjection)
+runDomains repository request = do
+  snapshotResult <- readSnapshotAt repository (domainsRequestRevision request)
+  pure $ case snapshotResult of
+    Left failure -> Left (searchSnapshotFailure failure)
+    Right snapshot -> Right (projectDomains snapshot (domainsRequestParent request) (domainsRequestIncludeObsolete request))
 
 -- | Execute a search only from the validated immutable archive for the
 -- caller-captured commit.  Missing or rejected archives are acquisition

@@ -21,6 +21,7 @@ module Adrai.CliRunner
     ReactivateCommand (..),
     ScopeCommand (..),
     DomainCommand (..),
+    DomainsCommand (..),
     ContentSource (..),
     CreateRequest (..),
     AmendRequest (..),
@@ -58,6 +59,7 @@ module Adrai.CliRunner
     renderCompareOutcome,
     renderHistoryOutcome,
     renderSearchOutcome,
+    renderDomainsOutcome,
     renderRelevantOutcome,
     renderCompileOutcome,
     renderDoctorOutcome,
@@ -124,6 +126,7 @@ import Adrai.Service.Query
   ( CompareRequest (..),
     HistoryRequest (..),
     SearchServiceRequest (..),
+    DomainsRequest (..),
     ShowRequest (..),
     ShowResult (..),
     compareFailureText,
@@ -131,6 +134,7 @@ import Adrai.Service.Query
     runCompare,
     runHistory,
     runSearch,
+    runDomains,
     runRelevantQuery,
     runShow,
     searchFailureIsConflict,
@@ -203,6 +207,9 @@ import Adrai.Types
 import Adrai.Query
   ( CompareProjection,
     SearchProjection,
+    DomainsProjection,
+    domainsProjectionJson,
+    renderDomainsProjection,
     RelevantRequest,
     RelevantProjection,
     collapsedProjectionJson,
@@ -419,12 +426,21 @@ data DomainCommand = DomainCommand
   deriving (Eq, Show)
 
 -- | Parsed CLI command, constructed from optparse-applicative.
+data DomainsCommand = DomainsCommand
+  { domainsParent :: Maybe Domain,
+    domainsAt :: Text,
+    domainsIncludeObsolete :: Bool,
+    domainsJson :: Bool
+  }
+  deriving (Eq, Show)
+
 data CliCommand
   = CmdCompile CompileCommand
   | CmdDoctor DoctorCommand
   | CmdShow ShowCommand
   | CmdHistory HistoryCommand
   | CmdSearch SearchCommand
+  | CmdDomains DomainsCommand
   | CmdRelevant RelevantCommand
   | CmdCompare CompareCommand
   | CmdInit InitCommand
@@ -455,6 +471,7 @@ parser =
         ( Opt.commandGroup "Read and inspect:"
      <> Opt.command "show" (commandInfoWithFooter (CmdShow <$> showParser) "show one ADR" "Read the decision, domain hierarchy, applicability, and state token before editing: adrai show ADR_ID. Use --view exploded to inspect records; --raw requires --view exploded. Keep subsequent amendments focused on the decision and its rationale.")
      <> Opt.command "history" (commandInfoWithFooter (CmdHistory <$> historyParser) "show operation history" "Inspect how a decision evolved: adrai history ADR_ID. Omit ADR_ID for repository-wide history; use --at to select a revision. Keep historical detail out of decision prose unless essential to the rationale.")
+     <> Opt.command "domains" (commandInfoWithFooter (CmdDomains <$> domainsParser) "browse domains with recursive ADR counts" "Omit DOMAIN for top-level domains, or provide a domain to list its immediate children. Counts include each non-obsolete ADR once per displayed domain and all its descendants, without a result limit. Search a subtree with adrai search --domain platform.storage; use --include-obsolete or --at REVISION consistently across both commands.")
      <> Opt.command "search" (commandInfoWithFooter (CmdSearch <$> searchParser) "search ADRs or list non-obsolete ADRs when QUERY is omitted or blank" "Browse up to 1000 non-obsolete ADRs at HEAD: adrai search --limit 1000. This bounded listing uses ADR ID order; add --include-obsolete to include obsolete decisions. Search text: adrai search database. Narrow by --domain using a sensible hierarchy, such as platform.storage, or --file to match applicability. Read matching decisions before authoring a concise standalone decision.")
      <> Opt.command "relevant" (commandInfoWithFooter (CmdRelevant <$> relevantParser) "rank ADRs for a file" "Find applicable guidance before changing an implementation: adrai relevant src/Main.hs --worktree. Use --at for immutable revision content, or --worktree with HEAD as context. Maintain path applicability through --applies-to/applies_to or scope instead of embedding paths in decision prose.")
      <> Opt.command "compare" (commandInfoWithFooter (CmdCompare <$> compareParser) "compare revisions" "Review decision changes between immutable revisions: adrai compare HEAD~1 HEAD. TO defaults to HEAD; --include-unchanged also shows stable decisions. Use this comparison for review; keep revision details out of decision prose unless essential.")
@@ -685,6 +702,13 @@ historyParser =
     <*> switch (long "json" <> help "output JSON")
 
 -- | Search command parser.
+domainsParser :: Parser DomainsCommand
+domainsParser = DomainsCommand
+  <$> optional (Opt.argument (eitherReader (first (Text.unpack . domainErrorText) . mkDomain . Text.pack)) (metavar "DOMAIN" <> help "parent domain; omitted lists top-level domains"))
+  <*> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to query")
+  <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
+  <*> switch (long "json" <> help "output JSON")
+
 searchParser :: Parser SearchCommand
 searchParser =
   SearchCommand
@@ -896,6 +920,12 @@ dispatchWith dependencies (CliInvocation config (CmdSearch command)) =
       case result of
         Left failure -> renderFailure failure
         Right projection -> emitRendered (renderSearchOutcome command projection)
+
+dispatchWith dependencies (CliInvocation config (CmdDomains command)) = do
+  result <- cliRunDomains dependencies config (DomainsRequest (domainsParent command) (domainsAt command) (domainsIncludeObsolete command))
+  case result of
+    Left failure -> renderFailure failure
+    Right projection -> emitRendered (renderDomainsOutcome command projection)
 dispatchWith dependencies (CliInvocation config (CmdRelevant command)) =
   case relevantCommandRequest command of
     Left problem -> renderFailure (CliUserFailure problem)
@@ -934,6 +964,7 @@ data CliDispatchDependencies = CliDispatchDependencies
   , cliRunCompare :: ~(CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection))
   , cliRunHistory :: ~(CliConfig -> HistoryCommand -> IO (Either CliFailure HistoryProjection))
   , cliRunSearch :: ~(CliConfig -> SearchServiceRequest -> IO (Either CliFailure SearchProjection))
+  , cliRunDomains :: ~(CliConfig -> DomainsRequest -> IO (Either CliFailure DomainsProjection))
   , cliRunRelevant :: ~(CliConfig -> RelevantRequest -> IO (Either CliFailure RelevantProjection))
   , cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
   , cliMaterializeAmend :: AmendCommand -> IO (Either Text AmendRequest)
@@ -952,7 +983,7 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies runProductionCompile runProductionDoctor runProductionShow runProductionCompare runProductionHistory runProductionSearch runProductionRelevant materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies runProductionCompile runProductionDoctor runProductionShow runProductionCompare runProductionHistory runProductionSearch runProductionDomains runProductionRelevant materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
 
 runProductionCompile :: CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult)
 runProductionCompile config command = do
@@ -1496,6 +1527,13 @@ runProductionSearch config request = do
           | searchFailureIsConflict failure -> Left (CliConflictFailure (searchFailureText failure))
           | otherwise -> Left (CliUserFailure (searchFailureText failure))
         Right projection -> Right projection
+
+runProductionDomains :: CliConfig -> DomainsRequest -> IO (Either CliFailure DomainsProjection)
+runProductionDomains config request = do
+  repositoryResult <- discoverRepository systemGit (configRepo config)
+  case repositoryResult of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> first (CliUserFailure . searchFailureText) <$> runDomains repository request
 
 runProductionRelevant :: CliConfig -> RelevantRequest -> IO (Either CliFailure RelevantProjection)
 runProductionRelevant config request = do
@@ -2411,6 +2449,13 @@ renderHistoryOutcome command projection =
     output
       | historyJson command = renderCanonicalJson (historyProjectionJson projection)
       | otherwise = TextEncoding.decodeUtf8 (renderHistoryProjection projection)
+
+renderDomainsOutcome :: DomainsCommand -> DomainsProjection -> CliRendered
+renderDomainsOutcome command projection = CliRendered output "" ExitSuccess
+  where
+    output = if domainsJson command
+      then renderCanonicalJson (domainsProjectionJson projection)
+      else renderDomainsProjection projection
 
 renderSearchOutcome :: SearchCommand -> SearchProjection -> CliRendered
 renderSearchOutcome command projection =

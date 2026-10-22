@@ -38,6 +38,7 @@ tests =
       testCase "compare shape, classifications, hidden unchanged counts, order, and hunks are stable" compareContract,
       testCase "full public projections match byte-for-byte goldens" projectionByteGoldenContract,
       testCase "obsolete visibility is explicit while show/history retain obsolete ADRs" obsoleteVisibilityContract,
+      testCase "domain browsing counts unique ADR subtrees without search limits" domainsContract,
       testCase "all projection bytes are invariant under input permutation" permutationContract
     ]
 
@@ -373,6 +374,38 @@ obsoleteVisibilityContract = do
   adrVisible True reduced @?= True
   collapsedObsolete projection @?= True
   assertBool "history retains obsoletion" ("obsoleted" `elem` map historyOperationLabel (historyProjectionOperations history))
+
+domainsContract :: IO ()
+domainsContract = do
+  let identifier kind index = Text.singleton kind <> Text.justifyRight 26 '0' (Text.pack (show (index :: Int)))
+      recordsFor index assignments state =
+        let adr = exactAdr (identifier 'A' index)
+            record = exactRecord (identifier 'R' index)
+            domains = map domain assignments
+        in [ ManagedDecision (DecisionRecord adr record "Domain fixture" "Domain fixture summary" domains "Decision\n"),
+             ManagedConnection (ConnectionRecord (must (mkConnectionId (identifier 'C' index))) (DomainsConnection (DomainsPayload adr [] "initial" domains [] domains [])) "Domains\n"),
+             ManagedConnection (ConnectionRecord (must (mkConnectionId (identifier 'C' (index + 2000)))) (StatusConnection (StatusPayload adr [] StatusActive [record] Nothing)) "Status\n")
+           ]
+           <> [ManagedConnection (ConnectionRecord (must (mkConnectionId (identifier 'C' (index + 4000)))) (StatusConnection (StatusPayload adr [must (mkConnectionId (identifier 'C' (index + 2000)))] StatusObsolete [record] Nothing)) "Retire fixture\n") | state == StatusObsolete]
+      records = concat [recordsFor index ["platform.storage.postgresql", "platform.api"] StatusActive | index <- [1..1001]]
+        <> recordsFor 1002 ["platform"] StatusActive
+        <> recordsFor 1003 ["platform.storage.redis"] StatusObsolete
+        <> recordsFor 1004 ["platforms.storage"] StatusActive
+      snapshot = snapshotFor "domains" records []
+      entries parent obsolete = domainsProjectionEntries (projectDomains snapshot (domain <$> parent) obsolete)
+  entries Nothing False @?= [DomainEntry "platform" 1002, DomainEntry "platforms" 1]
+  entries (Just "platform") False @?= [DomainEntry "platform.api" 1001, DomainEntry "platform.storage" 1001]
+  entries (Just "platform.storage") True @?= [DomainEntry "platform.storage.postgresql" 1001, DomainEntry "platform.storage.redis" 1]
+  entries Nothing True @?= [DomainEntry "platform" 1003, DomainEntry "platforms" 1]
+  entries (Just "platform.storage.postgresql") False @?= []
+  entries (Just "unknown") False @?= []
+  domainsProjectionEntries (projectDomains (snapshotFor "empty" [] []) Nothing False) @?= []
+  let competing = ManagedConnection (ConnectionRecord c6 (DomainsConnection (DomainsPayload primaryAdr [] "initial" [domain "other.branch"] [] [domain "other.branch"] [])) "Competing domain\n")
+      conflicted = snapshotFor "conflicted-domains" (take 4 fullRecords <> [competing]) []
+  domainsProjectionEntries (projectDomains conflicted Nothing False) @?= [DomainEntry "compiler" 1, DomainEntry "other" 1]
+  domainsMatchRequested [domain "platform.storage"] [domain "platform.storage.postgresql"] @?= True
+  domainsMatchRequested [domain "platform"] [domain "platforms.storage"] @?= False
+  domainsMatchRequested [domain "platform.storage", domain "other"] [domain "platform.storage.postgresql"] @?= False
 
 permutationContract :: IO ()
 permutationContract = do

@@ -49,6 +49,7 @@ import Adrai.CliRunner
      AmendCommand (..),
      ScopeCommand (..),
      DomainCommand (..),
+     DomainsCommand (..),
     InitCommand (..),
     defaultCliConfig,
     parseActor,
@@ -79,6 +80,7 @@ import Adrai.CliRunner
      renderCompareOutcome,
      renderHistoryOutcome,
      renderSearchOutcome,
+     renderDomainsOutcome,
      renderRelevantOutcome,
      renderCompileOutcome,
      renderDoctorOutcome,
@@ -113,6 +115,8 @@ import Adrai.History
   )
 import Adrai.Query
   ( CompareCounts (CompareCounts),
+    DomainEntry (..),
+    DomainsProjection (..),
     CompareProjection (..),
     ExplodedProjection (..),
     ReferenceLookupError (..),
@@ -135,7 +139,7 @@ import Adrai.Query
     searchProjectionJson,
     relevantProjectionJson,
   )
-import Adrai.Service.Query (SearchServiceRequest (..), ShowFailure (..), ShowResult (..), showFailureIsConflict)
+import Adrai.Service.Query (DomainsRequest (..), SearchServiceRequest (..), ShowFailure (..), ShowResult (..), showFailureIsConflict)
 import Adrai.Relevance (ConfidenceLabel (..), RelevanceScopeMatch (..))
 import Adrai.Types (RepoPath (..))
 import qualified Data.Aeson as Aeson
@@ -271,6 +275,7 @@ unsupportedCliDispatchDependencies =
     , cliRunCompare = \_ _ -> error "compare service must not be selected"
     , cliRunHistory = \_ _ -> error "history service must not be selected"
     , cliRunSearch = \_ _ -> error "search service must not be selected"
+    , cliRunDomains = \_ _ -> error "domains service must not be selected"
     , cliRunRelevant = \_ _ -> error "relevant service must not be selected"
     , cliMaterializeCreate = \_ -> error "create materialization must not be selected"
     , cliMaterializeAmend = \_ -> error "amend materialization must not be selected"
@@ -1116,6 +1121,26 @@ mutationCliContractTests =
           >>= (@?= ExitSuccess)
         readIORef selectedRepo >>= (@?= Just "doctor repo")
         readIORef selectedCommand >>= (@?= Just explicit)
+    , testCase "domains parses canonical hierarchy options and renders and dispatches exact counts" $ do
+        let defaulted = DomainsCommand Nothing "HEAD" False False
+            parent = requireRight (mkDomain "platform.storage")
+            explicit = DomainsCommand (Just parent) "release~1" True True
+            projection = DomainsProjection (RevisionIdentity "release~1" "resolved-oid") (Just parent) [DomainEntry "platform.storage.postgresql" 1001]
+        parseCli ["domains"] @?= Right (CliInvocation defaultCliConfig (CmdDomains defaulted))
+        parseCli ["domains", " Platform . Storage ", "--at", "release~1", "--include-obsolete", "--json"] @?= Right (CliInvocation defaultCliConfig (CmdDomains explicit))
+        for_ [["domains", "a..b"], ["domains", ""], ["domains", "a", "b"], ["domains", "--limit", "10"], ["domains", "--worktree"]] assertParserFailure
+        renderDomainsOutcome defaulted projection @?= CliRendered "platform.storage.postgresql 1001\n" "" ExitSuccess
+        renderDomainsOutcome defaulted (projection {domainsProjectionEntries = []}) @?= CliRendered "" "" ExitSuccess
+        let expectedJson = Aeson.object ["schema" Aeson..= ("adrai/domains/v1" :: Text), "as_of" Aeson..= ("resolved-oid" :: Text), "parent" Aeson..= ("platform.storage" :: Text), "domains" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage.postgresql" :: Text), "adr_count" Aeson..= (1001 :: Int)]]]
+        Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 (renderedStdout (renderDomainsOutcome explicit projection))) @?= Right expectedJson
+        received <- newIORef Nothing
+        let dependencies = unsupportedCliDispatchDependencies
+              { cliRunDomains = \config receivedRequest -> do
+                  writeIORef received (Just (configRepo config, receivedRequest))
+                  pure (Right projection)
+              }
+        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "domain repo"}) (CmdDomains explicit)) >>= (@?= ExitSuccess)
+        readIORef received >>= (@?= Just ("domain repo", DomainsRequest (Just parent) "release~1" True))
     , testCase "search accepts only the frozen positional syntax, materializes strictly, renders exactly, and dispatches typed intent" $ do
         let defaulted = SearchCommand "" HybridRetrieval CollapsedView Nothing [] Nothing Nothing Nothing "HEAD" False 10 False
             explicit =
@@ -1315,7 +1340,7 @@ mutationCliContractTests =
               fixtureTitle = "Durable ledger storage"
               fixtureSummary = "Keep DURABLE_LEDGER_TOKEN transactions atomic."
           _ <- commitFile repo "source.txt" (Text.Encoding.encodeUtf8 source)
-          created <- createAdr repo fixtureTitle fixtureSummary source ["storage"] ["source.txt"]
+          created <- createAdr repo fixtureTitle fixtureSummary source ["storage.db.postgresql"] ["source.txt"]
           fixtureAdr <- case created of
             Aeson.Object fields -> case KM.lookup "adr" fields of
               Just (Aeson.String value) -> pure value
@@ -1354,6 +1379,19 @@ mutationCliContractTests =
                 runCli (command <> ["--view", "exploded"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n  " <> fixtureSummary <> "\n")
                 for_ [CollapsedView, ExplodedView] $ \view -> checkJson command schema algorithm view expectedScore
           checkCommand ["search", "--mode", "fts"] "adrai/search-cli/v1" "filtered-list" (Just 1)
+          runCli ["domains"] >>= (@?= "storage 1\n")
+          runCli ["domains", "storage"] >>= (@?= "storage.db 1\n")
+          runCli ["domains", "storage.db"] >>= (@?= "storage.db.postgresql 1\n")
+          runCli ["domains", "storage.db.postgresql"] >>= (@?= "")
+          runCli ["domains", "unknown"] >>= (@?= "")
+          for_ [[], [" "], ["DURABLE_LEDGER_TOKEN"]] $ \query -> do
+            runCli (["search"] <> query <> ["--domain", "storage.db", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n")
+            runCli (["search"] <> query <> ["--domain", "stor", "--mode", "fts"]) >>= (@?= "")
+          _ <- runCli ["obsolete", Text.unpack fixtureAdr, "--reason", "Retire fixture", "--actor", "human:test"]
+          runCli ["domains"] >>= (@?= "")
+          runCli ["domains", "--include-obsolete"] >>= (@?= "storage 1\n")
+          runCli ["domains", "--at", "HEAD~1"] >>= (@?= "storage 1\n")
+          _ <- runCli ["reactivate", Text.unpack fixtureAdr, "--reason", "Restore fixture", "--actor", "human:test"]
           checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" Nothing
           for_ searchAlgorithms $ \(mode, algorithm) -> do
             let modeText = case mode of
@@ -1702,7 +1740,7 @@ mutationCliContractTests =
               (T.isSuffixOf "\n" (renderedStdout rendered) && not (T.isSuffixOf "\n\n" (renderedStdout rendered)))
             assertBool "root help omits Next example" (not ("Next:" `T.isInfixOf` renderedStdout rendered))
             assertBool "root help retains repo placement" ("Place --repo PATH before the command" `T.isInfixOf` renderedStdout rendered)
-            for_ ["init", "create", "show", "history", "search", "relevant", "compare", "doctor", "compile", "amend", "scope", "domain", "obsolete", "reactivate", "web", "explore"] $ \name ->
+            for_ ["init", "create", "show", "history", "search", "domains", "relevant", "compare", "doctor", "compile", "amend", "scope", "domain", "obsolete", "reactivate", "web", "explore"] $ \name ->
               assertBool ("missing command " <> name) (T.pack name `T.isInfixOf` renderedStdout rendered)
           Right _ -> assertFailure "top-level help unexpectedly parsed as command"
         case parseArguments ["create", "--help"] of
@@ -1712,6 +1750,7 @@ mutationCliContractTests =
           Right _ -> assertFailure "create help unexpectedly parsed as command"
         for_
           [ ("init", ["standalone decision", "dot-separated domain hierarchy", "--applies-to"])
+          , ("domains", ["top-level domains", "immediate children", "without a result limit", "--at", "--include-obsolete", "--json"])
           , ("create", ["exactly one", "concise standalone decision", "brief rationale", "unless essential", "--applies-to/applies_to or scope", "platform.storage.postgresql", "--applies-to 'src/storage/**'"])
           , ("search", ["omitted or blank", "non-obsolete ADRs", "1-1000", "default 10", "adrai search --limit 1000", "--include-obsolete", "--domain", "--file", "concise standalone decision", "collapsed lists ADR IDs and titles", "exploded adds summaries", "--json"])
           , ("show", ["requires --view exploded", "before editing", "decision and its rationale"])

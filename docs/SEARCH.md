@@ -63,7 +63,41 @@ Retrieval modes are:
 
 Filters include file scope, repeatable domains, actor, inclusive timestamps, obsolete state, and immutable revision. Filters are applied before candidates are ranked. A blank query returns a deterministic filtered ADR listing.
 
+`--domain platform.storage` includes ADRs assigned to that exact domain or any
+dotted descendant, such as `platform.storage.postgresql`. It excludes near
+prefixes such as `platform.storage-old`. Repeat `--domain` to require a match in
+every requested subtree; omit the query to browse matching ADRs with the usual search limit.
+
 Collapsed results group competing decision heads by ADR. `--view exploded` adds summaries; use `adrai show ADR_ID --view exploded` for operation-level detail. Use `--include-obsolete` to include obsolete ADRs.
+
+## Browse domains
+
+```console
+adrai domains
+adrai domains platform
+adrai domains platform.storage --at HEAD~1 --include-obsolete --json
+adrai search --domain platform.storage
+```
+
+With no argument, `domains` lists top-level names. With a parent, it lists only
+immediate children using full canonical names. Intermediate prefixes are inferred
+from assignments: `platform.storage.postgresql` also makes `platform` and
+`platform.storage` browsable. Rows are sorted by domain and print `DOMAIN COUNT`.
+A leaf, unknown parent, or empty hierarchy produces empty text output. Malformed
+domain input fails validation; input case and whitespace are canonicalized.
+
+Each count includes distinct ADRs assigned directly to that displayed domain or
+any dotted descendant. Multiple assignments under one subtree count the ADR once.
+Counts use the complete resolved Git snapshot, without search's 10/1000 result
+limits. Obsolete ADRs are hidden by default; `--include-obsolete` includes them.
+`--at REVISION` selects committed historical state (default `HEAD`). Competing
+domain heads contribute their union so unresolved assignments remain discoverable;
+only unambiguously obsolete ADRs are hidden, consistent with search eligibility.
+
+JSON uses `adrai/domains/v1` with the resolved commit in `as_of`, the canonical
+requested `parent` (or `null` at the top level), and a `domains` array of
+`{"domain":"platform.storage","adr_count":12}` rows. Empty listings retain this
+envelope with an empty array.
 
 ## File relevance
 
