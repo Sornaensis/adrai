@@ -519,6 +519,7 @@ data SearchCommand = SearchCommand
   , searchIncludeObsolete :: Bool
   , searchLimit          :: Int
   , searchJson           :: Bool
+  , searchAllDomains     :: Bool
   } deriving (Eq, Show)
 
 -- | Dispatch a search command on a read snapshot.  Uses an empty
@@ -552,6 +553,7 @@ searchCommandRequest cmd = do
       , searchRequestView = searchView cmd
       , searchRequestIncludeObsolete = searchIncludeObsolete cmd
       , searchRequestDomains = searchDomains cmd
+      , searchRequestAllDomains = searchAllDomains cmd
       , searchRequestFile = requestedFile
       , searchRequestActor = requestedActor
       , searchRequestSince = searchSince cmd

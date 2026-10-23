@@ -49,6 +49,9 @@ default to their CLI windows of 10 and 20 and accept limits from 1 through
 default bound. Search requires `q`, including `q=` for deterministic blank
 browse; it also accepts `actor=kind:identifier` and inclusive signed-decimal
 Unix-millisecond `since`/`until` filters. History accepts those same filters.
+Search's comma-separated `domain` filter requires each exact canonical assignment
+by default; `all=true` includes each requested domain and its dotted descendants.
+This option is independent of `include_obsolete=true`.
 Relevant defaults to a committed `at=HEAD` source; `worktree=true` reads the
 safe current worktree file against the exact HEAD compilation context and
 cannot be combined with an explicit `at`.

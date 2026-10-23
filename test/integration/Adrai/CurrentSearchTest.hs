@@ -133,13 +133,22 @@ threeModeContract = withSearch p303RationaleSnapshot $ \connection materializati
 filterBeforeRetrievalContract :: IO ()
 filterBeforeRetrievalContract = withSearch p303RationaleSnapshot $ \connection materialization -> do
   let base = (defaultSearchRequest "current") {searchRequestIncludeObsolete = True}
-      matching = base {searchRequestDomains = ["current"], searchRequestFile = Just (mustRepoPath "src/current/module.hs")}
+      matching = base {searchRequestDomains = ["current.domain"], searchRequestFile = Just (mustRepoPath "src/current/module.hs")}
       wrongDomain = base {searchRequestDomains = ["unrelated"]}
       wrongFile = base {searchRequestFile = Just (mustRepoPath "docs/readme.md")}
   matched <- mustSearch =<< runCurrentSearch connection p303RationaleSnapshot materialization matching
   excludedDomain <- mustSearch =<< runCurrentSearch connection p303RationaleSnapshot materialization wrongDomain
   excludedFile <- mustSearch =<< runCurrentSearch connection p303RationaleSnapshot materialization wrongFile
   length (searchProjectionResults matched) @?= 1
+  forM_ ["", "current"] $ \query -> do
+    exactParent <- mustSearch =<< runCurrentSearch connection p303RationaleSnapshot materialization (matching {searchRequestQuery = query, searchRequestDomains = ["current"]})
+    searchProjectionResults exactParent @?= []
+    subtree <- mustSearch =<< runCurrentSearch connection p303RationaleSnapshot materialization (matching {searchRequestQuery = query, searchRequestDomains = ["current"], searchRequestAllDomains = True})
+    length (searchProjectionResults subtree) @?= 1
+    repeated <- mustSearch =<< runCurrentSearch connection p303RationaleSnapshot materialization (matching {searchRequestQuery = query, searchRequestDomains = ["current", "unrelated"], searchRequestAllDomains = True})
+    searchProjectionResults repeated @?= []
+    hidden <- mustSearch =<< runCurrentSearch connection p303RationaleSnapshot materialization (matching {searchRequestQuery = query, searchRequestAllDomains = True, searchRequestIncludeObsolete = False})
+    searchProjectionResults hidden @?= []
   searchProjectionResults excludedDomain @?= []
   searchProjectionResults excludedFile @?= []
   searchMatchFileScope (searchResultMatches (onlyResult matched)) @?= Just ScopeExact
@@ -210,7 +219,7 @@ explodedViewContract = do
     let base =
           (defaultSearchRequest "current decision api")
             { searchRequestIncludeObsolete = True,
-              searchRequestDomains = ["current"],
+              searchRequestDomains = ["current.domain"],
               searchRequestFile = Just (mustRepoPath "src/current/module.hs"),
               searchRequestActor = Just (ActorSelector HumanActor "p2-06"),
               searchRequestSince = Just 105,

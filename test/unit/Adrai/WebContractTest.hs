@@ -4,6 +4,8 @@
 module Adrai.WebContractTest (tests) where
 
 import qualified Adrai.CliTypes as CliTypes
+import qualified Adrai.Query as Query
+import qualified Adrai.Service.Query as QueryService
 import qualified Adrai.Format
 import qualified Adrai.Git as Git
 import qualified Adrai.Provenance as Provenance
@@ -94,6 +96,17 @@ testQueryStrictness :: IO ()
 testQueryStrictness = do
   failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("q", Just "b")] ByteString.empty) @?= "duplicate-query"
   failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("wat", Just "b")] ByteString.empty) @?= "unknown-query"
+  let domainQuery = [("q", Just ""), ("domain", Just "platform.storage,security" )]
+      checkDomains allDomains parameters = case Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute parameters ByteString.empty of
+        Right (Api.ApiSearchRequest serviceRequest) -> do
+          let request = QueryService.searchServiceQuery serviceRequest
+          Query.searchRequestDomains request @?= ["platform.storage", "security"]
+          Query.searchRequestAllDomains request @?= allDomains
+          Query.searchRequestIncludeObsolete request @?= False
+        other -> assertFailure ("domain search decode failed: " <> show other)
+  checkDomains False domainQuery
+  checkDomains True (domainQuery <> [("all", Just "true")])
+  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute (domainQuery <> [("all", Just "yes")]) ByteString.empty) @?= "invalid-field"
   failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("limit", Just "1001")] ByteString.empty) @?= "invalid-field"
   assertBool "search accepts a full 1000-result window" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just ""), ("limit", Just "1000")] ByteString.empty))
   assertBool "history accepts a full 1000-operation window" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.HistoryRoute [("limit", Just "1000")] ByteString.empty))

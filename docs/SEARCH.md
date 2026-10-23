@@ -63,10 +63,12 @@ Retrieval modes are:
 
 Filters include file scope, repeatable domains, actor, inclusive timestamps, obsolete state, and immutable revision. Filters are applied before candidates are ranked. A blank query returns a deterministic filtered ADR listing.
 
-`--domain platform.storage` includes ADRs assigned to that exact domain or any
-dotted descendant, such as `platform.storage.postgresql`. It excludes near
-prefixes such as `platform.storage-old`. Repeat `--domain` to require a match in
-every requested subtree; omit the query to browse matching ADRs with the usual search limit.
+`--domain platform.storage` matches ADRs assigned to that exact canonical domain.
+Add `--all` to include dotted descendants, such as `platform.storage.postgresql`.
+Both modes exclude near prefixes such as `platform.storage-old`. Repeat `--domain`
+to require every requested domain (or every requested subtree with `--all`) to
+match. `--all` does not include obsolete ADRs; use `--include-obsolete` separately.
+Omit the query to browse matching ADRs with the usual search limit.
 
 Collapsed results group competing decision heads by ADR. `--view exploded` adds summaries; use `adrai show ADR_ID --view exploded` for operation-level detail. Use `--include-obsolete` to include obsolete ADRs.
 
@@ -78,7 +80,7 @@ adrai domains platform
 adrai domains --tree
 adrai domains platform.storage --tree --json
 adrai domains platform.storage --at HEAD~1 --include-obsolete --json
-adrai search --domain platform.storage
+adrai search --domain platform.storage --all
 ```
 
 With no argument, `domains` lists top-level names. With a parent, it lists only
@@ -101,22 +103,27 @@ requested `parent` (or `null` at the top level), and a `domains` array of
 `{"domain":"platform.storage","adr_count":12}` rows. Empty listings retain this
 envelope with an empty array.
 
-Add `--tree` to draw every level, with a recursive distinct ADR count at each
+Add `--tree` to draw every level, with separate distinct ADR counts at each
 node. With a parent argument, the tree includes that parent as its root; a leaf
-therefore produces one row, and an unknown parent produces none. Parent counts
-include direct assignments and deduplicate ADRs found under several children;
-they need not equal the sum of child counts. Each root keeps its fully qualified
+therefore produces one row, and an unknown parent produces none. Each row is
+`domain D (N descendants)`: D counts exact assignments, while N counts assignments
+strictly below that domain. Each set deduplicates ADRs, including conflicting
+domain heads. An ADR assigned both directly and below appears in both counts;
+N is not computed by subtracting D from the inclusive total. Inferred parents
+can have zero direct assignments. Each root keeps its fully qualified
 name; descendants display only their local segment:
 
 ```text
-platform 12
-├── api 7
-└── storage 8
-    └── postgresql 5
+platform 0 (12 descendants)
+├── api 7 (0 descendants)
+└── storage 3 (5 descendants)
+    └── postgresql 5 (0 descendants)
 ```
 
 `--tree --json` uses `adrai/domains-tree/v1`. It keeps `as_of`, `parent`, and
 `domains`, with a `children` array on every domain node (empty at leaves).
+Each node retains inclusive `adr_count` and adds `direct_adr_count` and
+`descendant_adr_count` for the separate exact and strict-descendant sets.
 JSON domain names remain fully qualified, including descendants. For example,
 `domains platform.storage --tree` prints `platform.storage` at the root and
 `postgresql` below it, while JSON retains `platform.storage.postgresql`.

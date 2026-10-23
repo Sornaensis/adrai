@@ -80,7 +80,9 @@ prints counts and ADRs classified as added, removed, changed, or unchanged,
 with changed field names. Add `--include-unchanged` to list unchanged ADRs.
 Both commands emit their structured projections only with `--json`.
 
-`domains DOMAIN --tree` includes the parent and every descendant with counts.
+`domains DOMAIN --tree` includes the parent and every descendant, showing
+`domain D (N descendants)` for distinct exact and strictly descendant assignments.
+The same ADR can belong to both counts. Flat domain rows keep inclusive counts.
 Combine `--tree --json` for nested `children` (`adrai/domains-tree/v1`); default
 flat JSON remains `adrai/domains/v1`. Domain reads reuse exact archives published
 by `compile` or successful mutation indexing. A miss reads committed state without
@@ -102,6 +104,9 @@ bounded by `--limit`: the default is 10 and the supported range is 1–1000. Use
 `adrai search --limit 1000` to browse a larger window; it may not include every
 matching ADR. Add `--include-obsolete` to include obsolete decisions. File,
 domain, actor, and time filters also apply to the listing.
+Domain filters match exact assignments by default. Add `--all` to include dotted
+descendants of every requested `--domain`; obsolete ADRs still require
+`--include-obsolete`.
 
 `show --raw` requires `--view exploded`, for example
 `adrai show ADR_ID --view exploded --raw`. It prints each raw semantic document

@@ -400,27 +400,44 @@ domainsContract = do
   entries (Just "platform.storage.postgresql") False @?= []
   entries (Just "unknown") False @?= []
   domainsProjectionEntries (projectDomains (snapshotFor "empty" [] []) Nothing False) @?= []
-  let competing = ManagedConnection (ConnectionRecord c6 (DomainsConnection (DomainsPayload primaryAdr [] "initial" [domain "other.branch"] [] [domain "other.branch"] [])) "Competing domain\n")
+  let competingDomains = [domain "compiler", domain "compiler.cache", domain "other.branch"]
+      competing = ManagedConnection (ConnectionRecord c6 (DomainsConnection (DomainsPayload primaryAdr [] "initial" competingDomains [] competingDomains [])) "Competing domain\n")
       conflicted = snapshotFor "conflicted-domains" (take 4 fullRecords <> [competing]) []
   domainsProjectionEntries (projectDomains conflicted Nothing False) @?= [DomainEntry "compiler" 1, DomainEntry "other" 1]
-  domainsMatchRequested [domain "platform.storage"] [domain "platform.storage.postgresql"] @?= True
-  domainsMatchRequested [domain "platform"] [domain "platforms.storage"] @?= False
-  domainsMatchRequested [domain "platform.storage", domain "other"] [domain "platform.storage.postgresql"] @?= False
+  domainsMatchRequested False [domain "platform.storage"] [domain "platform.storage.postgresql"] @?= False
+  domainsMatchRequested False [domain "platform.storage"] [domain "platform.storage"] @?= True
+  domainsMatchRequested True [domain "platform.storage"] [domain "platform.storage.postgresql"] @?= True
+  domainsMatchRequested True [domain "platform"] [domain "platforms.storage"] @?= False
+  domainsMatchRequested True [domain "platform.storage", domain "other"] [domain "platform.storage.postgresql"] @?= False
+  domainsMatchRequested False [domain "platform.storage", domain "other"] [domain "platform.storage", domain "other"] @?= True
+  domainsMatchRequested False [domain "platform.storage", domain "other"] [domain "platform.storage"] @?= False
   let tree = projectDomainsTree snapshot Nothing False
-      branch name count children = DomainTreeEntry (DomainEntry name count) children
-      postgres = branch "platform.storage.postgresql" 1001 []
-      storage = branch "platform.storage" 1001 [postgres]
+      branch name count direct descendants children = DomainTreeEntry (DomainEntry name count) direct descendants children
+      postgres = branch "platform.storage.postgresql" 1001 1001 0 []
+      storage = branch "platform.storage" 1001 0 1001 [postgres]
   domainsProjectionTree tree @?= Just
-    [branch "platform" 1002 [branch "platform.api" 1001 [], storage], branch "platforms" 1 [branch "platforms.storage" 1 []]]
+    [branch "platform" 1002 1 1001 [branch "platform.api" 1001 1001 0 [], storage], branch "platforms" 1 0 1 [branch "platforms.storage" 1 1 0 []]]
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= Just [storage]
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage.postgresql")) False) @?= Just [postgres]
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "unknown")) False) @?= Just []
-  renderDomainsProjection tree @?= "platform 1002\n├── api 1001\n└── storage 1001\n    └── postgresql 1001\nplatforms 1\n└── storage 1\n"
+  renderDomainsProjection tree @?= "platform 1 (1001 descendants)\n├── api 1001 (0 descendants)\n└── storage 0 (1001 descendants)\n    └── postgresql 1001 (0 descendants)\nplatforms 0 (1 descendants)\n└── storage 1 (0 descendants)\n"
   renderDomainsProjection (projectDomains snapshot (Just (domain "platform.storage")) False) @?= "platform.storage.postgresql 1001\n"
-  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= "platform.storage 1001\n└── postgresql 1001\n"
+  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= "platform.storage 0 (1001 descendants)\n└── postgresql 1001 (0 descendants)\n"
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage")) True) @?= Just
-    [branch "platform.storage" 1002 [postgres, branch "platform.storage.redis" 1 []]]
-  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) True) @?= "platform.storage 1002\n├── postgresql 1001\n└── redis 1\n"
+    [branch "platform.storage" 1002 0 1002 [postgres, branch "platform.storage.redis" 1 1 0 []]]
+  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) True) @?= "platform.storage 0 (1002 descendants)\n├── postgresql 1001 (0 descendants)\n└── redis 1 (0 descendants)\n"
+  let overlapping = snapshotFor "overlapping-domains"
+        (recordsFor 1 ["platform", "platform.api", "platform.api.http"] StatusActive
+          <> recordsFor 2 ["platform.api.http", "platform.storage"] StatusActive) []
+  domainsProjectionTree (projectDomainsTree overlapping Nothing False) @?= Just
+    [branch "platform" 2 1 2 [branch "platform.api" 2 1 2 [branch "platform.api.http" 2 2 0 []], branch "platform.storage" 1 1 0 []]]
+  case domainsProjectionTree (projectDomainsTree conflicted Nothing False) of
+    Just [compiler, other] -> do
+      domainTreeDirectAdrCount compiler @?= 1
+      domainTreeDescendantAdrCount compiler @?= 1
+      domainTreeDirectAdrCount other @?= 0
+      domainTreeDescendantAdrCount other @?= 1
+    _ -> fail "conflicting domain heads must retain direct and inferred domains"
 
 permutationContract :: IO ()
 permutationContract = do

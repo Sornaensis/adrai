@@ -480,8 +480,8 @@ parser =
         ( Opt.commandGroup "Read and inspect:"
      <> Opt.command "show" (commandInfoWithFooter (CmdShow <$> showParser) "show one ADR" "Read the decision, domain hierarchy, applicability, and state token before editing: adrai show ADR_ID. Use --json for state tokens and structured provenance. Use --view exploded to inspect records; --raw requires --view exploded. Keep subsequent amendments focused on the decision and its rationale.")
      <> Opt.command "history" (commandInfoWithFooter (CmdHistory <$> historyParser) "show operation history" "Inspect how a decision evolved: adrai history ADR_ID. Omit ADR_ID for repository-wide history; use --at to select a revision. Keep historical detail out of decision prose unless essential to the rationale.")
-     <> Opt.command "domains" (commandInfoWithFooter (CmdDomains <$> domainsParser) "browse domains with recursive ADR counts" "Omit DOMAIN for top-level domains, or provide a domain to list its immediate children. Use --tree for every level; a requested parent becomes the tree root. Counts include each non-obsolete ADR once per displayed domain and all its descendants, without a result limit. --tree --json emits nested children. Search a subtree with adrai search --domain platform.storage; use --include-obsolete or --at REVISION consistently across both commands.")
-     <> Opt.command "search" (commandInfoWithFooter (CmdSearch <$> searchParser) "search ADRs or list non-obsolete ADRs when QUERY is omitted or blank" "Browse up to 1000 non-obsolete ADRs at HEAD: adrai search --limit 1000. This bounded listing uses ADR ID order; add --include-obsolete to include obsolete decisions. Search text: adrai search database. Narrow by --domain using a sensible hierarchy, such as platform.storage, or --file to match applicability. Read matching decisions before authoring a concise standalone decision.")
+     <> Opt.command "domains" (commandInfoWithFooter (CmdDomains <$> domainsParser) "browse domains with ADR counts" "Omit DOMAIN for top-level domains, or provide a domain to list its immediate children. Flat counts include each non-obsolete ADR once per domain and its descendants. Use --tree for every level; a requested parent becomes the tree root. Tree rows show exact assignments and strictly descendant assignments as domain D (N descendants), without a result limit. --tree --json emits nested children and both counts. Search a subtree with adrai search --domain platform.storage --all; use --include-obsolete or --at REVISION consistently across both commands.")
+     <> Opt.command "search" (commandInfoWithFooter (CmdSearch <$> searchParser) "search ADRs or list non-obsolete ADRs when QUERY is omitted or blank" "Browse up to 1000 non-obsolete ADRs at HEAD: adrai search --limit 1000. This bounded listing uses ADR ID order; add --include-obsolete to include obsolete decisions. Search text: adrai search database. Narrow by --domain using an exact assignment such as platform.storage; add --all to include dotted descendants. Repeat --domain to require all requested domains. Use --file to match applicability. Read matching decisions before authoring a concise standalone decision.")
      <> Opt.command "relevant" (commandInfoWithFooter (CmdRelevant <$> relevantParser) "rank ADRs for a file" "Find applicable guidance before changing an implementation: adrai relevant src/Main.hs --worktree. Use --at for immutable revision content, or --worktree with HEAD as context. Maintain path applicability through --applies-to/applies_to or scope instead of embedding paths in decision prose.")
      <> Opt.command "compare" (commandInfoWithFooter (CmdCompare <$> compareParser) "compare revisions" "Review decision changes between immutable revisions: adrai compare HEAD~1 HEAD. TO defaults to HEAD; --include-unchanged also shows stable decisions. Use this comparison for review; keep revision details out of decision prose unless essential.")
      <> Opt.command "doctor" (commandInfoWithFooter (CmdDoctor <$> doctorParser) "diagnose repository and index" "Run adrai doctor to inspect repository and index health at HEAD, or select --at REVISION. Address reported issues before relying on retrieved guidance; use compile to build or refresh the derived index.")
@@ -717,7 +717,7 @@ domainsParser = DomainsCommand
   <*> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to query")
   <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
   <*> switch (long "json" <> help "output JSON")
-  <*> switch (long "tree" <> help "draw all domain levels with recursive counts; JSON uses nested children")
+  <*> switch (long "tree" <> help "draw all domain levels with exact and strict-descendant counts; JSON uses nested children")
 
 searchParser :: Parser SearchCommand
 searchParser =
@@ -726,7 +726,7 @@ searchParser =
     <*> option (eitherReader parseMode) (long "mode" <> metavar "fts|vector|hybrid" <> Opt.value HybridRetrieval <> showDefaultWith retrievalModeText <> help "retrieval mode")
     <*> option (eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> Opt.value CollapsedView <> showDefaultWith searchViewText <> help "collapsed lists ADR IDs and titles; exploded adds summaries")
     <*> optional (strOption (long "file" <> metavar "PATH" <> help "filter by file path"))
-    <*> many (strOption (long "domain" <> metavar "DOMAIN" <> help "domain filter (repeatable)"))
+    <*> many (strOption (long "domain" <> metavar "DOMAIN" <> help "exact domain filter (repeatable; all requested domains must match)"))
     <*> optional (strOption (long "actor" <> metavar "KIND:IDENTIFIER" <> help "filter by actor"))
     <*> optional (option auto (long "since" <> metavar "MILLISECONDS" <> help "entries at or after this Unix timestamp in milliseconds"))
     <*> optional (option auto (long "until" <> metavar "MILLISECONDS" <> help "entries at or before this Unix timestamp in milliseconds"))
@@ -734,6 +734,7 @@ searchParser =
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
     <*> option auto (long "limit" <> Opt.value 10 <> showDefault <> help "max results, 1-1000 (default 10; listing is bounded)")
     <*> switch (long "json" <> help "output JSON")
+    <*> switch (long "all" <> help "include dotted descendants of each --domain; obsolete filtering is independent")
   where
     parseMode value = case value of
       "fts" -> Right FtsRetrieval

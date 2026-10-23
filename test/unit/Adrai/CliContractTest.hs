@@ -781,6 +781,7 @@ cliTypeConstructorTests =
               , searchIncludeObsolete = False
               , searchLimit = 20
               , searchJson = False
+              , searchAllDomains = False
               }
         searchQuery cmd @?= "test query"
         searchMode cmd @?= FtsRetrieval
@@ -1167,16 +1168,16 @@ mutationCliContractTests =
         renderDomainsOutcome defaulted (projection {domainsProjectionEntries = []}) @?= CliRendered "" "" ExitSuccess
         let expectedJson = Aeson.object ["schema" Aeson..= ("adrai/domains/v1" :: Text), "as_of" Aeson..= ("resolved-oid" :: Text), "parent" Aeson..= ("platform.storage" :: Text), "domains" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage.postgresql" :: Text), "adr_count" Aeson..= (1001 :: Int)]]]
         Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 (renderedStdout (renderDomainsOutcome explicit projection))) @?= Right expectedJson
-        let treeProjection = projection {domainsProjectionTree = Just [DomainTreeEntry (DomainEntry "platform.storage" 1001) [DomainTreeEntry (DomainEntry "platform.storage.postgresql" 1001) []]]}
-            expectedTreeJson = Aeson.object ["schema" Aeson..= ("adrai/domains-tree/v1" :: Text), "as_of" Aeson..= ("resolved-oid" :: Text), "parent" Aeson..= ("platform.storage" :: Text), "domains" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage" :: Text), "adr_count" Aeson..= (1001 :: Int), "children" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage.postgresql" :: Text), "adr_count" Aeson..= (1001 :: Int), "children" Aeson..= ([] :: [Aeson.Value])]]]]]
+        let treeProjection = projection {domainsProjectionTree = Just [DomainTreeEntry (DomainEntry "platform.storage" 1001) 0 1001 [DomainTreeEntry (DomainEntry "platform.storage.postgresql" 1001) 1001 0 []]]}
+            expectedTreeJson = Aeson.object ["schema" Aeson..= ("adrai/domains-tree/v1" :: Text), "as_of" Aeson..= ("resolved-oid" :: Text), "parent" Aeson..= ("platform.storage" :: Text), "domains" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage" :: Text), "adr_count" Aeson..= (1001 :: Int), "direct_adr_count" Aeson..= (0 :: Int), "descendant_adr_count" Aeson..= (1001 :: Int), "children" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage.postgresql" :: Text), "adr_count" Aeson..= (1001 :: Int), "direct_adr_count" Aeson..= (1001 :: Int), "descendant_adr_count" Aeson..= (0 :: Int), "children" Aeson..= ([] :: [Aeson.Value])]]]]]
         Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 (renderedStdout (renderDomainsOutcome explicit treeProjection))) @?= Right expectedTreeJson
-        renderDomainsOutcome defaulted treeProjection @?= CliRendered "platform.storage 1001\n└── postgresql 1001\n" "" ExitSuccess
-        let branch name count children = DomainTreeEntry (DomainEntry name count) children
+        renderDomainsOutcome defaulted treeProjection @?= CliRendered "platform.storage 0 (1001 descendants)\n└── postgresql 1001 (0 descendants)\n" "" ExitSuccess
+        let branch name count direct descendants children = DomainTreeEntry (DomainEntry name count) direct descendants children
             branchingTree = projection {domainsProjectionTree = Just
-              [branch "platform" 12
-                [branch "platform.api" 7 [branch "platform.api.rest" 7 []],
-                 branch "platform.storage" 8 [branch "platform.storage.postgresql" 5 [], branch "platform.storage.redis" 3 []]]]}
-        renderDomainsOutcome defaulted branchingTree @?= CliRendered "platform 12\n├── api 7\n│   └── rest 7\n└── storage 8\n    ├── postgresql 5\n    └── redis 3\n" "" ExitSuccess
+              [branch "platform" 12 0 12
+                [branch "platform.api" 7 0 7 [branch "platform.api.rest" 7 7 0 []],
+                 branch "platform.storage" 8 0 8 [branch "platform.storage.postgresql" 5 5 0 [], branch "platform.storage.redis" 3 3 0 []]]]}
+        renderDomainsOutcome defaulted branchingTree @?= CliRendered "platform 0 (12 descendants)\n├── api 0 (7 descendants)\n│   └── rest 7 (0 descendants)\n└── storage 0 (8 descendants)\n    ├── postgresql 5 (0 descendants)\n    └── redis 3 (0 descendants)\n" "" ExitSuccess
         received <- newIORef Nothing
         let dependencies = unsupportedCliDispatchDependencies
               { cliRunDomains = \config receivedRequest -> do
@@ -1186,7 +1187,7 @@ mutationCliContractTests =
         dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "domain repo"}) (CmdDomains explicit)) >>= (@?= ExitSuccess)
         readIORef received >>= (@?= Just ("domain repo", DomainsRequest (Just parent) "release~1" True True))
     , testCase "search accepts only the frozen positional syntax, materializes strictly, renders exactly, and dispatches typed intent" $ do
-        let defaulted = SearchCommand "" HybridRetrieval CollapsedView Nothing [] Nothing Nothing Nothing "HEAD" False 10 False
+        let defaulted = SearchCommand "" HybridRetrieval CollapsedView Nothing [] Nothing Nothing Nothing "HEAD" False 10 False False
             explicit =
               SearchCommand
                 "cache ü"
@@ -1200,6 +1201,7 @@ mutationCliContractTests =
                 "refs/heads/release"
                 True
                 7
+                True
                 True
             projection =
               SearchProjection
@@ -1215,7 +1217,7 @@ mutationCliContractTests =
           [ "search", "cache ü", "--mode", "vector", "--view", "exploded"
           , "--file", "src/cache ü.hs", "--domain", "compiler", "--domain", "runtime"
           , "--actor", "llm:planner", "--since", "100", "--until", "200"
-          , "--at", "refs/heads/release", "--include-obsolete", "--limit", "7", "--json"
+          , "--at", "refs/heads/release", "--include-obsolete", "--limit", "7", "--json", "--all"
           ]
           @?= Right (CliInvocation defaultCliConfig (CmdSearch explicit))
         for_ [["search", "--query", "cache"], ["search", "cache", "--fts"], ["search", "cache", "--collapsed"], ["search", "cache", "--model", "planner"], ["search", "cache", "--mode", "other"], ["search", "cache", "--view", "other"]] assertParserFailure
@@ -1227,6 +1229,7 @@ mutationCliContractTests =
             searchRequestView searchRequest @?= ExplodedView
             searchRequestFile searchRequest @?= Just (RepoPath "src/cache ü.hs")
             searchRequestDomains searchRequest @?= ["compiler", "runtime"]
+            searchRequestAllDomains searchRequest @?= True
             searchRequestActor searchRequest @?= Just (ActorSelector LlmActor "planner")
             searchRequestSince searchRequest @?= Just 100
             searchRequestUntil searchRequest @?= Just 200
@@ -1455,19 +1458,23 @@ mutationCliContractTests =
           runCli ["domains"] >>= (@?= "storage 1\n")
           runCli ["domains", "storage"] >>= (@?= "storage.db 1\n")
           runCli ["domains", "storage.db"] >>= (@?= "storage.db.postgresql 1\n")
-          runCli ["domains", "--tree"] >>= (@?= "storage 1\n└── db 1\n    └── postgresql 1\n")
-          runCli ["domains", "storage.db", "--tree"] >>= (@?= "storage.db 1\n└── postgresql 1\n")
-          runCli ["domains", "storage.db.postgresql", "--tree"] >>= (@?= "storage.db.postgresql 1\n")
+          runCli ["domains", "--tree"] >>= (@?= "storage 0 (1 descendants)\n└── db 0 (1 descendants)\n    └── postgresql 1 (0 descendants)\n")
+          runCli ["domains", "storage.db", "--tree"] >>= (@?= "storage.db 0 (1 descendants)\n└── postgresql 1 (0 descendants)\n")
+          runCli ["domains", "storage.db.postgresql", "--tree"] >>= (@?= "storage.db.postgresql 1 (0 descendants)\n")
           runCli ["domains", "unknown", "--tree"] >>= (@?= "")
           runCli ["domains", "storage.db.postgresql"] >>= (@?= "")
           runCli ["domains", "unknown"] >>= (@?= "")
           for_ [[], [" "], ["DURABLE_LEDGER_TOKEN"]] $ \query -> do
-            runCli (["search"] <> query <> ["--domain", "storage.db", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n")
+            runCli (["search"] <> query <> ["--domain", "storage.db", "--mode", "fts"]) >>= (@?= "")
+            runCli (["search"] <> query <> ["--domain", "storage.db.postgresql", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n")
+            runCli (["search"] <> query <> ["--domain", "storage.db", "--all", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n")
             runCli (["search"] <> query <> ["--domain", "stor", "--mode", "fts"]) >>= (@?= "")
           _ <- runCli ["obsolete", Text.unpack fixtureAdr, "--reason", "Retire fixture", "--actor", "human:test"]
           runCli ["domains"] >>= (@?= "")
           runCli ["domains", "--include-obsolete"] >>= (@?= "storage 1\n")
           runCli ["domains", "--at", "HEAD~1"] >>= (@?= "storage 1\n")
+          runCli ["search", "--domain", "storage", "--all", "--mode", "fts"] >>= (@?= "")
+          runCli ["search", "--domain", "storage", "--all", "--include-obsolete", "--mode", "fts"] >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n")
           _ <- runCli ["reactivate", Text.unpack fixtureAdr, "--reason", "Restore fixture", "--actor", "human:test"]
           checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" Nothing
           for_ searchAlgorithms $ \(mode, algorithm) -> do

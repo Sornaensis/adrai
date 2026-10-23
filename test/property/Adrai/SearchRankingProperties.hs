@@ -90,9 +90,10 @@ propFilterPermutation = withTests 80 . property $ do
   includeSecurity <- forAll Gen.bool
   requested <- forAll (sampledPermutation requestedDomains)
   logical <- forAll (sampledPermutation (compilerDomains <> securityDomains includeSecurity))
-  domainsMatchRequested requested logical === includeSecurity
-  domainsMatchRequested requested logical
-    === domainsMatchRequested requestedDomains (compilerDomains <> securityDomains includeSecurity)
+  domainsMatchRequested True requested logical === includeSecurity
+  domainsMatchRequested False requested logical === False
+  domainsMatchRequested True requested logical
+    === domainsMatchRequested True requestedDomains (compilerDomains <> securityDomains includeSecurity)
   where
     requestedDomains = map mustDomain ["compiler", "security"]
     compilerDomains = map mustDomain ["compiler.cache", "compiler.search"]

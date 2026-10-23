@@ -178,6 +178,8 @@ testDomainsArchive getSeed = testCase "domain trees reuse exact snapshots and pr
       Just roots -> case [node | node <- roots, domainEntryName (domainTreeEntry node) == "platform"] of
         [node] -> do
           domainEntryAdrCount (domainTreeEntry node) @?= 1
+          domainTreeDirectAdrCount node @?= 0
+          domainTreeDescendantAdrCount node @?= 1
           map (domainEntryName . domainTreeEntry) (domainTreeChildren node) @?= ["platform.api", "platform.left", "platform.right"]
         _ -> assertFailure "domain conflict did not preserve its inferred parent"
       Nothing -> assertFailure "domain tree omitted children"
@@ -200,6 +202,14 @@ testDomainsArchive getSeed = testCase "domain trees reuse exact snapshots and pr
       Right _ -> assertFailure "domain archive busy signal was swallowed"
     historical <- requireRight "historical domain tree" =<< runDomainsWithHooks hooks repository (domainRequest {domainsRequestRevision = exactQuerySeedMainCommit payload})
     revisionResolved (domainsProjectionRevision historical) @?= exactQuerySeedMainCommit payload
+    case domainsProjectionTree historical of
+      Just roots -> case [node | node <- roots, domainEntryName (domainTreeEntry node) == "platform"] of
+        [node] -> do
+          domainTreeDirectAdrCount node @?= 0
+          domainTreeDescendantAdrCount node @?= 1
+          map (domainEntryName . domainTreeEntry) (domainTreeChildren node) @?= ["platform.api"]
+        _ -> assertFailure "historical domain tree did not preserve its exact snapshot"
+      Nothing -> assertFailure "historical domain tree omitted children"
     -- Parsed, sealed but graph-invalid semantics can still have a published
     -- archive. Domains must reject its semantic error state and take the same
     -- integrity gate as a missing archive, while valid conflicts above remain visible.

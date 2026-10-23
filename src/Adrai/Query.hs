@@ -321,6 +321,7 @@ data SearchRequest = SearchRequest
     searchRequestView :: ViewMode,
     searchRequestIncludeObsolete :: Bool,
     searchRequestDomains :: [Text],
+    searchRequestAllDomains :: Bool,
     searchRequestFile :: Maybe RepoPath,
     searchRequestActor :: Maybe ActorSelector,
     searchRequestSince :: Maybe Integer,
@@ -338,6 +339,7 @@ defaultSearchRequest query =
       searchRequestView = CollapsedView,
       searchRequestIncludeObsolete = False,
       searchRequestDomains = [],
+      searchRequestAllDomains = False,
       searchRequestFile = Nothing,
       searchRequestActor = Nothing,
       searchRequestSince = Nothing,
@@ -1298,6 +1300,8 @@ data DomainsProjection = DomainsProjection
 
 data DomainTreeEntry = DomainTreeEntry
   { domainTreeEntry :: DomainEntry,
+    domainTreeDirectAdrCount :: Int,
+    domainTreeDescendantAdrCount :: Int,
     domainTreeChildren :: [DomainTreeEntry]
   }
   deriving (Eq, Show)
@@ -1320,21 +1324,27 @@ projectDomainView tree snapshot parent includeObsolete =
     roots
       | tree, Just selected <- parent = [domainText selected | Map.member (domainText selected) entries]
       | otherwise = children requested
-    entry name = DomainEntry name (maybe 0 Set.size (Map.lookup name entries))
-    node name = DomainTreeEntry (entry name) (map node (children name))
+    count values name = maybe 0 Set.size (Map.lookup name values)
+    entry name = DomainEntry name (count entries name)
+    node name = DomainTreeEntry (entry name) (count directEntries name) (count descendantEntries name) (map node (children name))
     children name = maybe [] Set.toAscList (Map.lookup name childIndex)
     childIndex = Map.fromListWith Set.union
       [(Text.dropEnd 1 prefix, Set.singleton name) | name <- Map.keys entries, let (prefix, _) = Text.breakOnEnd "." name]
-    -- Each assignment contributes all its prefixes once. Sets deduplicate an
-    -- ADR across sibling assignments; parent totals must not sum child totals.
-    entries = Map.fromListWith Set.union
-      [ (Text.intercalate "." (take depth segments), Set.singleton (reducedAdrId reduced))
+    assignments =
+      [ (domainText assigned, reducedAdrId reduced)
         | reduced <- graphReductionAdrs (readSnapshotReduction snapshot),
           adrVisible includeObsolete reduced,
-          assigned <- logicalAdrDomains reduced,
-          let segments = Text.splitOn "." (domainText assigned),
-          depth <- [1 .. length segments]
+          assigned <- logicalAdrDomains reduced
       ]
+    -- Keep exact and strict-descendant sets independently: the same ADR can
+    -- belong to both, so subtraction from the inclusive count is incorrect.
+    directEntries = Map.fromListWith Set.union [(name, Set.singleton adr) | (name, adr) <- assignments]
+    descendantEntries = Map.fromListWith Set.union
+      [(Text.intercalate "." (take depth segments), Set.singleton adr)
+        | (name, adr) <- assignments,
+          let segments = Text.splitOn "." name,
+          depth <- [1 .. length segments - 1]]
+    entries = Map.unionWith Set.union directEntries descendantEntries
 
 logicalAdrDomains :: ReducedAdr -> [Domain]
 logicalAdrDomains reduced =
@@ -1352,17 +1362,22 @@ domainsProjectionJson projection = object
   ]
   where
     entryMembers entry = [("domain", JsonString (domainEntryName entry)), ("adr_count", intJson (domainEntryAdrCount entry))]
-    treeJson node = object (entryMembers (domainTreeEntry node) <> [("children", JsonArray (map treeJson (domainTreeChildren node)))])
+    treeJson node = object (entryMembers (domainTreeEntry node) <>
+      [("direct_adr_count", intJson (domainTreeDirectAdrCount node)),
+       ("descendant_adr_count", intJson (domainTreeDescendantAdrCount node)),
+       ("children", JsonArray (map treeJson (domainTreeChildren node)))])
 
 renderDomainsProjection :: DomainsProjection -> Text
 renderDomainsProjection projection = Text.unlines $ case domainsProjectionTree projection of
   Nothing -> map (renderEntry id) (domainsProjectionEntries projection)
-  Just roots -> concatMap (\node -> renderEntry id (domainTreeEntry node) : renderChildren "" (domainTreeChildren node)) roots
+  Just roots -> concatMap (\node -> renderTreeEntry id node : renderChildren "" (domainTreeChildren node)) roots
   where
     renderEntry label entry = label (domainEntryName entry) <> " " <> Text.pack (show (domainEntryAdrCount entry))
+    renderTreeEntry label node = label (domainEntryName (domainTreeEntry node)) <> " " <> Text.pack (show (domainTreeDirectAdrCount node))
+      <> " (" <> Text.pack (show (domainTreeDescendantAdrCount node)) <> " descendants)"
     renderChildren _ [] = []
     renderChildren prefix (node : rest) =
-      (prefix <> (if null rest then "└── " else "├── ") <> renderEntry (Text.takeWhileEnd (/= '.')) (domainTreeEntry node))
+      (prefix <> (if null rest then "└── " else "├── ") <> renderTreeEntry (Text.takeWhileEnd (/= '.')) node)
         : (renderChildren (prefix <> if null rest then "    " else "│   ") (domainTreeChildren node) <> renderChildren prefix rest)
 
 data SearchFilterInfo = SearchFilterInfo
@@ -2236,7 +2251,7 @@ searchFilterInfo snapshot request requestedDomains reduced
           }
   where
     logicalDomains = logicalAdrDomains reduced
-    domainsMatch = domainsMatchRequested requestedDomains logicalDomains
+    domainsMatch = domainsMatchRequested (searchRequestAllDomains request) requestedDomains logicalDomains
     scopeMatch = logicalScopeMatch (searchRequestFile request) reduced
     operationCapsule = do
       decision <- axisResolutionEffective (reducedDecisionAxis reduced)
@@ -2252,13 +2267,14 @@ searchFilterInfo snapshot request requestedDomains reduced
       ManagedDecision decision -> decisionRecord decision == record
       _ -> False
 
--- | Domain eligibility is a canonical AND across requested ancestors.  Keeping
+-- | Domain eligibility is a canonical AND across exact assignments, or across
+-- requested subtrees when descendant inclusion is explicit. Keeping
 -- this as a pure helper makes the filter-before-retrieval contract explicit and
 -- independently testable for input-order invariance.
-domainsMatchRequested :: [Domain] -> [Domain] -> Bool
-domainsMatchRequested requestedDomains logicalDomains =
+domainsMatchRequested :: Bool -> [Domain] -> [Domain] -> Bool
+domainsMatchRequested includeDescendants requestedDomains logicalDomains =
   all
-    (\requested -> any (`domainIsWithin` requested) logicalDomains)
+    (\requested -> any (\assigned -> if includeDescendants then assigned `domainIsWithin` requested else assigned == requested) logicalDomains)
     requestedDomains
 
 logicalScopeMatch :: Maybe RepoPath -> ReducedAdr -> Maybe ScopeFilterMatch
