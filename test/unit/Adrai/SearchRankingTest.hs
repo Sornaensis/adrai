@@ -120,6 +120,10 @@ bonusContract = do
 
 limitContract :: Assertion
 limitContract = do
+  rankedSearchDepth @?= 10
+  sectionShortlistLimit 1000 rankedSearchDepth @?= 120
+  forcedChannelLimit rankedSearchDepth @?= 10
+  fieldRerankLimit 1000 rankedSearchDepth @?= 80
   sectionShortlistLimit 50 1 @?= 50
   sectionShortlistLimit 1000 1 @?= 120
   sectionShortlistLimit 1000 11 @?= 132
@@ -131,11 +135,11 @@ limitContract = do
 fingerprintContract :: Assertion
 fingerprintContract = do
   rankingFingerprintPayload @?= ByteString.pack expectedPayload
-  ByteString.length rankingFingerprintPayload @?= 626
-  rankingImplementationFingerprint @?= "sha256:2Xiogjc9P2SaolcX_3ng2BVVp_RXj9TfoiFzJgcQMFk"
+  ByteString.length rankingFingerprintPayload @?= 663
+  rankingImplementationFingerprint @?= "sha256:ReF0xewg_UheRUS6EqYOT2EOxI5TgEijrTD-2Df2rE8"
   where
     expectedPayload =
-      "{\"active_weight_normalization\":\"positive-nonempty\",\"agreement_bonus_cap\":0.006,\"candidate_tie_break\":\"fused,semantic,max-fts,item-id-desc\",\"channel_tie_break\":\"raw-score-desc,item-id-desc\",\"channels\":[\"fts_phrase\",\"fts_terms\",\"fts_stemmed\",\"fts_identifier\",\"semantic_vector\",\"identifier_vector\"],\"contract\":\"adrai-search-ranking/v1\",\"field_rerank\":\"min(candidates,max(80,limit*8))+conflict-heads\",\"forced_per_channel\":\"min(10,max(3,limit))\",\"lexical_bonus_cap\":0.012,\"logical_tie_break\":\"fused,semantic,adr-id-desc\",\"rrf_k\":20.0,\"score_rounding\":\"six-decimal-ties-to-even\",\"section_shortlist\":\"min(allowed,max(120,limit*12))\"}"
+      "{\"active_weight_normalization\":\"positive-nonempty\",\"agreement_bonus_cap\":0.006,\"candidate_tie_break\":\"fused,semantic,max-fts,item-id-desc\",\"channel_tie_break\":\"raw-score-desc,item-id-desc\",\"channels\":[\"fts_phrase\",\"fts_terms\",\"fts_stemmed\",\"fts_identifier\",\"semantic_vector\",\"identifier_vector\"],\"contract\":\"adrai-search-ranking/v1\",\"field_rerank\":\"min(candidates,80)+conflict-heads\",\"forced_per_channel\":10.0,\"fts_query_cap\":300.0,\"lexical_bonus_cap\":0.012,\"logical_tie_break\":\"fused,semantic,adr-id-desc\",\"prefix_threshold\":\"min(30,allowed)\",\"retrieval_depth\":10.0,\"rrf_k\":20.0,\"score_rounding\":\"six-decimal-ties-to-even\",\"section_shortlist\":\"min(allowed,120)\"}"
 
 jsonNumberContract :: Assertion
 jsonNumberContract = do

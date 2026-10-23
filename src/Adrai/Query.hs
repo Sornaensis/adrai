@@ -86,6 +86,7 @@ module Adrai.Query
 where
 
 import Adrai.Domain (Domain, DomainError, canonicalDomains, domainIsWithin, domainRefinementText, domainText)
+import Adrai.Pagination (Pagination, PaginationError, paginate, paginationJson, validatePage)
 import Adrai.Format (publicSchemaText, renderDigest)
 import Adrai.Format.Document
 import Adrai.Format.Json
@@ -327,6 +328,7 @@ data SearchRequest = SearchRequest
     searchRequestSince :: Maybe Integer,
     searchRequestUntil :: Maybe Integer,
     searchRequestLimit :: Int,
+    searchRequestPage :: Integer,
     searchRequestShallowHistory :: Bool
   }
   deriving (Eq, Show)
@@ -345,12 +347,14 @@ defaultSearchRequest query =
       searchRequestSince = Nothing,
       searchRequestUntil = Nothing,
       searchRequestLimit = 10,
+      searchRequestPage = 1,
       searchRequestShallowHistory = False
     }
 
 data SearchError
   = SearchSnapshotInvalid SnapshotConsistencyError
   | SearchInvalidLimit Int
+  | SearchInvalidPage PaginationError
   | SearchUnsupportedView ViewMode
   | SearchInvalidDomains DomainError
   | SearchInvalidTimeRange Integer Integer
@@ -417,6 +421,7 @@ data SearchProjection = SearchProjection
     searchProjectionMode :: RetrievalMode,
     searchProjectionView :: ViewMode,
     searchProjectionLimit :: Int,
+    searchProjectionPagination :: Pagination,
     searchProjectionResults :: [SearchResult],
     searchProjectionExplodedDetails :: Map AdrId ExplodedProjection
   }
@@ -1416,12 +1421,10 @@ runCurrentSearchValidated connection snapshot materialization corpus request =
             ( buildSearchProjection
                 snapshot
                 request
-                ( take (searchRequestLimit request)
-                    [ blankSearchResult snapshot request reduced info
+                [ blankSearchResult snapshot request reduced info
                       | (adr, info) <- Map.toAscList filterInfo,
                         Just reduced <- [Map.lookup adr reducedByAdr]
-                    ]
-                )
+                ]
             )
       | otherwise -> do
           let plan = buildQueryPlan (searchRequestQuery request) (sortOn fst (searchMaterializationAliases materialization))
@@ -1434,7 +1437,7 @@ runCurrentSearchValidated connection snapshot materialization corpus request =
             let channels = finalChannels (searchRequestMode request) ftsChannels semanticScores identifierScores
                 fusedBase = weightedReciprocalRankFusion (queryPlanWeights plan) channels
                 baseOrder = sortCandidateIds fusedBase semanticScores ftsChannels
-                rerankTarget = fieldRerankLimit (length baseOrder) (searchRequestLimit request)
+                rerankTarget = fieldRerankLimit (length baseOrder) rankedSearchDepth
                 initiallyReranked = Set.fromList (take rerankTarget baseOrder)
                 rerankedAdrs =
                   Set.fromList
@@ -1458,10 +1461,7 @@ runCurrentSearchValidated connection snapshot materialization corpus request =
                 fused = Map.mapWithKey (applyRerank evidenceByItem) fusedBase
                 rankedItems = sortCandidateIds fused semanticScores ftsChannels
                 bestByAdr = chooseBestByAdr rankedItems allowedDocuments
-                rankedAdrs =
-                  take
-                    (searchRequestLimit request)
-                    (sortLogicalAdrs bestByAdr fused semanticScores)
+                rankedAdrs = sortLogicalAdrs bestByAdr fused semanticScores
                 ftsDiagnostics = ftsDiagnosticsJson plan ftsPrefixUsed ftsChannels
                 retrieval =
                   retrievalDiagnosticsJson
@@ -1494,7 +1494,8 @@ runCurrentSearchValidated connection snapshot materialization corpus request =
             buildSearchProjection snapshot request results
 
 buildSearchProjection :: ReadSnapshot -> SearchRequest -> [SearchResult] -> Either SearchError SearchProjection
-buildSearchProjection snapshot request results = do
+buildSearchProjection snapshot request allResults = do
+  (results, pagination) <- mapLeft SearchInvalidPage (paginate (searchRequestPage request) (searchRequestLimit request) allResults)
   explodedDetails <-
     case searchRequestView request of
       CollapsedView -> Right Map.empty
@@ -1505,6 +1506,7 @@ buildSearchProjection snapshot request results = do
         searchProjectionMode = searchRequestMode request,
         searchProjectionView = searchRequestView request,
         searchProjectionLimit = searchRequestLimit request,
+        searchProjectionPagination = pagination,
         searchProjectionResults = results,
         searchProjectionExplodedDetails = explodedDetails
       }
@@ -2232,7 +2234,7 @@ validateSearchRequest request
   | Just since <- searchRequestSince request,
     Just untilBound <- searchRequestUntil request,
     since > untilBound = Left (SearchInvalidTimeRange since untilBound)
-  | otherwise = Right ()
+  | otherwise = mapLeft SearchInvalidPage (validatePage (searchRequestPage request))
 
 searchFilterInfo :: ReadSnapshot -> SearchRequest -> [Domain] -> ReducedAdr -> Maybe SearchFilterInfo
 searchFilterInfo snapshot request requestedDomains reduced
@@ -2297,7 +2299,7 @@ runRequestedFts :: Connection -> SearchRequest -> QueryPlan -> Set Text -> IO (E
 runRequestedFts connection request plan allowed
   | searchRequestMode request == VectorRetrieval = pure (Right (Map.empty, False))
   | otherwise =
-      case mkCandidateLimit (toInteger (searchRequestLimit request)) of
+      case mkCandidateLimit (toInteger rankedSearchDepth) of
         Left problem -> pure (Left (SearchSqlFailure problem))
         Right candidateLimit -> do
           result <- runSummaryFtsChannels connection plan allowed candidateLimit
@@ -2334,9 +2336,9 @@ buildRequestedVectorScores corpus request plan documents passages ftsChannels
             Map.insert SemanticVectorChannel summaryScores
               (Map.insert IdentifierVectorChannel identifierScores ftsChannels)
           preliminary = weightedReciprocalRankFusion (queryPlanWeights plan) preliminaryChannels
-          forced = Set.unions [Set.fromList (take (forcedChannelLimit (searchRequestLimit request)) (rankRawChannel scores)) | scores <- Map.elems preliminaryChannels]
+          forced = Set.unions [Set.fromList (take (forcedChannelLimit rankedSearchDepth) (rankRawChannel scores)) | scores <- Map.elems preliminaryChannels]
           ordered = sortPreliminaryIds preliminary summaryScores identifierScores
-          shortlistTarget = sectionShortlistLimit (Map.size documents) (searchRequestLimit request)
+          shortlistTarget = sectionShortlistLimit (Map.size documents) rankedSearchDepth
           shortlist = fillCandidateSet shortlistTarget forced ordered
           candidatePassages = [passage | passage <- passages, Set.member (searchPassageDocumentItemId passage) shortlist]
           passagesByItem = Map.fromListWith (<>) [(searchPassageDocumentItemId passage, [passage]) | passage <- candidatePassages]
@@ -2649,6 +2651,7 @@ retrievalDiagnosticsJson :: RetrievalMode -> QueryPlan -> JsonValue -> SearchVec
 retrievalDiagnosticsJson mode plan ftsDiagnostics vectorDiagnostics rerankCount =
   object
     [ ("algorithm", JsonString (retrievalAlgorithm mode)),
+      ("policy", JsonString "fixed-depth-10"),
       ("profile", JsonString (queryProfileName (queryPlanProfile plan))),
       ("aliases", textArray (queryPlanAliases plan)),
       ("fts", ftsDiagnostics),
@@ -2976,6 +2979,7 @@ searchProjectionJson projection =
       ("view", JsonString (searchViewName (searchProjectionView projection))),
       ("mode", JsonString (retrievalModeName (searchProjectionMode projection))),
       ("limit", JsonNumber (fromIntegral (searchProjectionLimit projection))),
+      ("pagination", paginationJson (searchProjectionPagination projection)),
       ("results", JsonArray (map renderResult (searchProjectionResults projection)))
     ]
   where

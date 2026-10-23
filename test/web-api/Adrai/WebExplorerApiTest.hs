@@ -8,7 +8,9 @@ import Adrai.Format.Document (ParsedManagedDocument (..), parseManagedDocument)
 import qualified Adrai.Graph as Graph
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
 import Adrai.Provenance (mkGitOid)
+import Adrai.Pagination (Pagination (..), PaginationError (..))
 import Adrai.Query (CollapsedProjection (..), CollapsedRichDetail (..), ExplodedProjection (..), ExplodedOptions (..), ProjectionMode (..), ResolutionState (..), SearchProjection (..), SearchRequest (..), SearchResult (..), defaultSearchRequest, collapsedProjectionJson, explodedProjectionJson, projectCollapsed, projectExploded, runCurrentSearch, searchProjectionJson)
+import qualified Adrai.Query as Query
 import Adrai.Retrieval (SearchMaterialization (..))
 import Adrai.Types (mkRepoPath)
 import Adrai.WindowDocuments (windowDocuments)
@@ -74,16 +76,37 @@ boundedWindowFixture = do
       documents = concatMap (windowDocuments basis) [1 .. 1001]
       reduction = Graph.reduceManagedGraph (map parsedManagedRecord documents)
       snapshot = ReadSnapshot (RevisionIdentity basisText basisText) documents reduction Map.empty
-      request = (defaultSearchRequest "") {searchRequestLimit = 1000}
+      request = (defaultSearchRequest "") {searchRequestLimit = 1000, searchRequestDomains = ["platform"], searchRequestFile = Just (must (mkRepoPath "src/module.hs"))}
   assertBool "every synthetic source is a validated sealed document" (null (Graph.graphReductionIssues reduction))
   length (Graph.graphReductionAdrs reduction) @?= 1001
-  projected <- bracket (open ":memory:") close $ \connection ->
-    runCurrentSearch connection snapshot (SearchMaterialization [] [] []) request
+  (projected, second, outOfRange, huge, invalid, overflow, empty) <- bracket (open ":memory:") close $ \connection -> do
+    let run = runCurrentSearch connection snapshot (SearchMaterialization [] [] [])
+    first <- run request
+    next <- run (request {searchRequestPage = 2})
+    beyond <- run (request {searchRequestPage = 3})
+    veryLarge <- run (request {searchRequestPage = toInteger (maxBound :: Int)})
+    bad <- run (request {searchRequestPage = 0})
+    tooLarge <- run (request {searchRequestPage = toInteger (maxBound :: Int) + 1})
+    none <- run (request {searchRequestDomains = ["missing"]})
+    pure (first, next, beyond, veryLarge, bad, tooLarge, none)
   let result = must projected
       ids = map searchResultAdr (searchProjectionResults result)
   searchProjectionLimit result @?= 1000
   length ids @?= 1000
   Set.size (Set.fromList ids) @?= 1000
+  searchProjectionPagination result @?= Pagination (Just 1) (Just 1000) 1001 (Just 2) 1000 1 True
+  let final = must second
+      lastIds = map searchResultAdr (searchProjectionResults final)
+  length lastIds @?= 1
+  Set.size (Set.fromList (ids <> lastIds)) @?= 1001
+  ids <> lastIds @?= Map.keys (Map.fromList [(Graph.reducedAdrId adr, ()) | adr <- Graph.graphReductionAdrs reduction])
+  searchProjectionPagination final @?= Pagination (Just 2) (Just 1000) 1001 (Just 2) 1 0 False
+  searchProjectionResults (must outOfRange) @?= []
+  searchProjectionPagination (must outOfRange) @?= Pagination (Just 3) (Just 1000) 1001 (Just 2) 0 0 False
+  searchProjectionResults (must huge) @?= []
+  invalid @?= Left (Query.SearchInvalidPage (InvalidPage 0))
+  overflow @?= Left (Query.SearchInvalidPage (InvalidPage (toInteger (maxBound :: Int) + 1)))
+  searchProjectionPagination (must empty) @?= Pagination (Just 1) (Just 1000) 0 (Just 0) 0 0 False
 
 parseFixtureFile :: (FilePath, ByteString.ByteString) -> Either Text ParsedManagedDocument
 parseFixtureFile (path, bytes) = do

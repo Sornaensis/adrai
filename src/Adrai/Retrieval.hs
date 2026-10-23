@@ -43,6 +43,7 @@ module Adrai.Retrieval
     LexicalEvidence (..),
     lexicalEvidence,
     agreementBonus,
+    rankedSearchDepth,
     sectionShortlistLimit,
     forcedChannelLimit,
     fieldRerankLimit,
@@ -573,6 +574,10 @@ lexicalEvidence plan fields =
 agreementBonus :: Int -> Double
 agreementBonus participatingChannels = min 0.006 (fromIntegral (max 0 (participatingChannels - 1)) * 0.0015)
 
+-- Presentation page size never controls retrieval or reranking work.
+rankedSearchDepth :: Int
+rankedSearchDepth = 10
+
 sectionShortlistLimit :: Int -> Int -> Int
 sectionShortlistLimit allowedCount limit = min allowedCount (max 120 (limit * 12))
 
@@ -597,9 +602,12 @@ rankingFingerprintPayload = renderCompactJson payload
           ("channel_tie_break", JString "raw-score-desc,item-id-desc"),
           ("candidate_tie_break", JString "fused,semantic,max-fts,item-id-desc"),
           ("logical_tie_break", JString "fused,semantic,adr-id-desc"),
-          ("section_shortlist", JString "min(allowed,max(120,limit*12))"),
-          ("forced_per_channel", JString "min(10,max(3,limit))"),
-          ("field_rerank", JString "min(candidates,max(80,limit*8))+conflict-heads"),
+          ("retrieval_depth", JNumber (fromIntegral rankedSearchDepth)),
+          ("fts_query_cap", JNumber 300),
+          ("prefix_threshold", JString "min(30,allowed)"),
+          ("section_shortlist", JString "min(allowed,120)"),
+          ("forced_per_channel", JNumber 10),
+          ("field_rerank", JString "min(candidates,80)+conflict-heads"),
           ("lexical_bonus_cap", JNumber 0.012),
           ("agreement_bonus_cap", JNumber 0.006),
           ("score_rounding", JString "six-decimal-ties-to-even")

@@ -114,6 +114,7 @@ limitContract = do
   candidateLimitValue (mustRight (mkCandidateLimit 1)) @?= 1
   candidateLimitValue (mustRight (candidateCap (mustRight (mkCandidateLimit 1)))) @?= 240
   candidateLimitValue (mustRight (candidateCap (mustRight (mkCandidateLimit 9)))) @?= 270
+  candidateLimitValue (mustRight (candidateCap (mustRight (mkCandidateLimit (toInteger rankedSearchDepth))))) @?= 300
   let validMaximum = toInteger (maxBound :: Int64)
       overflowedCap = validMaximum * 30
   candidateCap (mustRight (mkCandidateLimit validMaximum)) @?= Left (CandidateLimitOverflow overflowedCap)

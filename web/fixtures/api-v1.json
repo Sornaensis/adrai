@@ -790,7 +790,16 @@
           }
         ],
         "schema": "adrai/search/v1",
-        "view": "collapsed"
+        "view": "collapsed",
+        "pagination": {
+          "has_next": false,
+          "page": 1,
+          "page_size": 10,
+          "remaining": 0,
+          "returned": 1,
+          "total_pages": 1,
+          "total_results": 1
+        }
       }
     },
     "search_ranked": {
@@ -919,7 +928,8 @@
                 "section_candidates": 1,
                 "sections_scanned": 7,
                 "summary_corpus": 1
-              }
+              },
+              "policy": "fixed-depth-10"
             },
             "score": 0.065619,
             "source_paths": [
@@ -938,7 +948,16 @@
           }
         ],
         "schema": "adrai/search/v1",
-        "view": "collapsed"
+        "view": "collapsed",
+        "pagination": {
+          "has_next": false,
+          "page": 1,
+          "page_size": 10,
+          "remaining": 0,
+          "returned": 1,
+          "total_pages": 1,
+          "total_results": 1
+        }
       }
     },
     "search_conflicted": {
@@ -1021,7 +1040,16 @@
           }
         ],
         "schema": "adrai/search/v1",
-        "view": "collapsed"
+        "view": "collapsed",
+        "pagination": {
+          "has_next": false,
+          "page": 1,
+          "page_size": 10,
+          "remaining": 0,
+          "returned": 1,
+          "total_pages": 1,
+          "total_results": 1
+        }
       }
     },
     "relevant_committed": {

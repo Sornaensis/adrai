@@ -3,6 +3,15 @@
     "as_of": "rationale-resolved",
     "limit": 10,
     "mode": "hybrid",
+    "pagination": {
+      "has_next": false,
+      "page": 1,
+      "page_size": 10,
+      "remaining": 0,
+      "returned": 1,
+      "total_pages": 1,
+      "total_results": 1
+    },
     "results": [
       {
         "adr": "A00000000000000000000000000",
@@ -74,6 +83,15 @@
     "as_of": "p3-04-conflict-resolved",
     "limit": 10,
     "mode": "hybrid",
+    "pagination": {
+      "has_next": false,
+      "page": 1,
+      "page_size": 10,
+      "remaining": 0,
+      "returned": 1,
+      "total_pages": 1,
+      "total_results": 1
+    },
     "results": [
       {
         "adr": "A00000000000000000000000000",
@@ -170,6 +188,7 @@
               "terms": "\"left\""
             }
           },
+          "policy": "fixed-depth-10",
           "profile": "keyword",
           "vector": {
             "algorithm": "exact-summary+bounded-exact-sections",
@@ -203,6 +222,15 @@
     "as_of": "rationale-resolved",
     "limit": 10,
     "mode": "fts",
+    "pagination": {
+      "has_next": false,
+      "page": 1,
+      "page_size": 10,
+      "remaining": 0,
+      "returned": 1,
+      "total_pages": 1,
+      "total_results": 1
+    },
     "results": [
       {
         "adr": "A00000000000000000000000000",
@@ -307,6 +335,7 @@
               "terms": "\"current\" AND \"decision\" AND \"api\""
             }
           },
+          "policy": "fixed-depth-10",
           "profile": "keyword",
           "vector": {
             "algorithm": "not-requested",
@@ -338,6 +367,15 @@
     "as_of": "rationale-resolved",
     "limit": 10,
     "mode": "hybrid",
+    "pagination": {
+      "has_next": false,
+      "page": 1,
+      "page_size": 10,
+      "remaining": 0,
+      "returned": 1,
+      "total_pages": 1,
+      "total_results": 1
+    },
     "results": [
       {
         "adr": "A00000000000000000000000000",
@@ -444,6 +482,7 @@
               "terms": "\"current\" AND \"decision\" AND \"api\""
             }
           },
+          "policy": "fixed-depth-10",
           "profile": "keyword",
           "vector": {
             "algorithm": "exact-summary+bounded-exact-sections",
@@ -472,12 +511,21 @@
     "schema": "adrai/search/v1",
     "view": "collapsed"
   },
-  "ranking_fingerprint": "sha256:2Xiogjc9P2SaolcX_3ng2BVVp_RXj9TfoiFzJgcQMFk",
+  "ranking_fingerprint": "sha256:ReF0xewg_UheRUS6EqYOT2EOxI5TgEijrTD-2Df2rE8",
   "schema": "adrai/p3-04-search-golden/v1",
   "vector": {
     "as_of": "rationale-resolved",
     "limit": 10,
     "mode": "vector",
+    "pagination": {
+      "has_next": false,
+      "page": 1,
+      "page_size": 10,
+      "remaining": 0,
+      "returned": 1,
+      "total_pages": 1,
+      "total_results": 1
+    },
     "results": [
       {
         "adr": "A00000000000000000000000000",
@@ -567,6 +615,7 @@
             "channel_candidates": {},
             "profile": "keyword"
           },
+          "policy": "fixed-depth-10",
           "profile": "keyword",
           "vector": {
             "algorithm": "exact-summary+bounded-exact-sections",

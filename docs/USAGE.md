@@ -104,6 +104,13 @@ bounded by `--limit`: the default is 10 and the supported range is 1–1000. Use
 `adrai search --limit 1000` to browse a larger window; it may not include every
 matching ADR. Add `--include-obsolete` to include obsolete decisions. File,
 domain, actor, and time filters also apply to the listing.
+`--limit` is the page size (1–1000, default 10); `--page` is one-based and defaults
+to 1. A blank query pages the full filtered corpus, so `adrai search --limit 1000
+--page 2` can visit ADRs beyond the first 1000. Ranked queries page a documented
+fixed retrieved result set; changing page size does not change ranking budgets.
+Text always includes returned/total, page counts, and remaining results; JSON
+adds the same information under `pagination`, including empty and out-of-range
+pages. See [Search](SEARCH.md) for the retrieval policy and metadata fields.
 Domain filters match exact assignments by default. Add `--all` to include dotted
 descendants of every requested `--domain`; obsolete ADRs still require
 `--include-obsolete`.

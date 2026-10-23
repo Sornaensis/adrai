@@ -76,6 +76,7 @@ import Adrai.Git
     revisionSpecText,
   )
 import Adrai.History (ActorSelector (..), HistoryOptions (..), HistoryOrder (..))
+import Adrai.Pagination (validatePage)
 import qualified Adrai.History as History
 import Adrai.Provenance (GitOid, encodeBase64Url, gitOidText, mkGitOid, sha256DigestFrames)
 import Adrai.Query (RelevantRequest (..), SearchRequest (..), defaultSearchRequest)
@@ -378,13 +379,19 @@ requiredQuery key values = maybe (Left (badField key "missing query field")) Rig
 
 decodeSearch :: ApiLimits -> [(Text, Text)] -> Either ApiError SearchServiceRequest
 decodeSearch limits values = do
-  queryFields ["q", "at", "mode", "view", "include_obsolete", "domain", "all", "file", "limit", "shallow", "actor", "since", "until"] values
+  queryFields ["q", "at", "mode", "view", "include_obsolete", "domain", "all", "file", "limit", "page", "shallow", "actor", "since", "until"] values
   needle <- requiredQuery "q" values
   mode <- maybe (Right HybridRetrieval) parseMode (queryValue "mode" values)
   view <- maybe (Right CollapsedView) parseView (queryValue "view" values)
   includeObsolete <- optionalBool "include_obsolete" False values
   shallow <- optionalBool "shallow" False values
   allDomains <- optionalBool "all" False values
+  page <- case queryValue "page" values of
+    Nothing -> Right 1
+    Just raw -> case readMaybe (Text.unpack raw) :: Maybe Integer of
+      Just value | not (Text.null raw), Text.all (\c -> c >= '0' && c <= '9') raw ->
+        value <$ first (const (badField "page" "page must be a positive supported integer")) (validatePage value)
+      _ -> Left (badField "page" "page must be a positive supported integer")
   limit <- boundedLimit limits 10 values
   actor <- traverse parseActorSelector (queryValue "actor" values)
   (since, untilBound) <- parseTimeWindow values
@@ -398,6 +405,7 @@ decodeSearch limits values = do
           searchRequestAllDomains = allDomains,
           searchRequestFile = path,
           searchRequestLimit = limit,
+          searchRequestPage = page,
           searchRequestActor = actor,
           searchRequestSince = since,
           searchRequestUntil = untilBound,
@@ -491,8 +499,8 @@ boundedLimit limits = boundedLimitTo (maximumResultLimit limits)
 boundedLimitTo :: Int -> Int -> [(Text, Text)] -> Either ApiError Int
 boundedLimitTo maximumAllowed fallback values = case queryValue "limit" values of
   Nothing -> Right fallback
-  Just raw -> case readMaybe (Text.unpack raw) of
-    Just value | value >= 1 && value <= maximumAllowed -> Right value
+  Just raw -> case readMaybe (Text.unpack raw) :: Maybe Integer of
+    Just value | value >= 1 && value <= toInteger maximumAllowed -> Right (fromInteger value)
     _ -> Left (badField "limit" "limit is outside the configured bound")
 
 parseActorSelector :: Text -> Either ApiError ActorSelector

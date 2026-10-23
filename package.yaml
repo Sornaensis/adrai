@@ -90,6 +90,7 @@ library:
     - Adrai.Integrity
     - Adrai.ManagedPath
     - Adrai.Markdown
+    - Adrai.Pagination
     - Adrai.Provenance
     - Adrai.Provenance.Classification
     - Adrai.Provenance.Discovery

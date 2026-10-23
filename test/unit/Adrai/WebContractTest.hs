@@ -106,6 +106,11 @@ testQueryStrictness = do
         other -> assertFailure ("domain search decode failed: " <> show other)
   checkDomains False domainQuery
   checkDomains True (domainQuery <> [("all", Just "true")])
+  case Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute (domainQuery <> [("page", Just "2")]) ByteString.empty of
+    Right (Api.ApiSearchRequest serviceRequest) -> Query.searchRequestPage (QueryService.searchServiceQuery serviceRequest) @?= 2
+    _ -> assertFailure "search page must decode into the shared request"
+  mapM_ (\raw -> failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute (domainQuery <> [("page", Just raw)]) ByteString.empty) @?= "invalid-field") ["0", "-1", "1.5", " 1", "18446744073709551617"]
+  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute (domainQuery <> [("limit", Just "18446744073709551617")]) ByteString.empty) @?= "invalid-field"
   failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute (domainQuery <> [("all", Just "yes")]) ByteString.empty) @?= "invalid-field"
   failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just "a"), ("limit", Just "1001")] ByteString.empty) @?= "invalid-field"
   assertBool "search accepts a full 1000-result window" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just ""), ("limit", Just "1000")] ByteString.empty))

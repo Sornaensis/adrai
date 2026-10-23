@@ -51,6 +51,7 @@ where
 
 import Adrai.Compiler (ColdCompilerResult (..))
 import Adrai.Domain (Domain)
+import Adrai.Pagination (Pagination, paginationJson, renderPagination)
 import Adrai.History
   ( HistoryOptions (..),
     HistoryOrder (..),
@@ -520,6 +521,7 @@ data SearchCommand = SearchCommand
   , searchLimit          :: Int
   , searchJson           :: Bool
   , searchAllDomains     :: Bool
+  , searchPage           :: Integer
   } deriving (Eq, Show)
 
 -- | Dispatch a search command on a read snapshot.  Uses an empty
@@ -559,6 +561,7 @@ searchCommandRequest cmd = do
       , searchRequestSince = searchSince cmd
       , searchRequestUntil = searchUntil cmd
       , searchRequestLimit = searchLimit cmd
+      , searchRequestPage = searchPage cmd
       , searchRequestShallowHistory = False
       }
   where
@@ -624,7 +627,7 @@ relevantCommandJson snapshot source cmd =
 -- owned by 'Query.searchProjectionJson' and 'Query.relevantProjectionJson'.
 searchCliJson :: SearchCommand -> Query.SearchProjection -> JsonValue
 searchCliJson command projection =
-  resultListJson "adrai/search-cli/v1" algorithm (searchView command) (searchCliRows projection)
+  resultListJson "adrai/search-cli/v1" algorithm (searchView command) (searchCliRows projection) (Just (Query.searchProjectionPagination projection))
   where
     algorithm
       | Text.null (Text.strip (searchQuery command)) = "filtered-list"
@@ -637,10 +640,10 @@ relevantCliJson :: ViewMode -> Query.RelevantProjection -> JsonValue
 relevantCliJson view projection =
   resultListJson "adrai/relevant-cli/v1"
     (Query.relevantRetrievalStrategy (Query.relevantProjectionRetrieval projection))
-    view (relevantCliRows projection)
+    view (relevantCliRows projection) Nothing
 
 renderSearchCli :: ViewMode -> Query.SearchProjection -> Text
-renderSearchCli view = renderResultList view . searchCliRows
+renderSearchCli view projection = renderResultList view (searchCliRows projection) <> renderPagination (Query.searchProjectionPagination projection)
 
 renderRelevantCli :: ViewMode -> Query.RelevantProjection -> Text
 renderRelevantCli view = renderResultList view . relevantCliRows
@@ -651,12 +654,13 @@ searchCliRows = map (\row -> (Query.searchResultAdr row, Query.searchResultTitle
 relevantCliRows :: Query.RelevantProjection -> [(AdrId, Text, Text, Double)]
 relevantCliRows = map (\row -> (Query.relevantResultAdr row, Query.relevantResultTitle row, Query.relevantResultSummary row, Query.relevantResultScore row)) . Query.relevantProjectionResults
 
-resultListJson :: Text -> Text -> ViewMode -> [(AdrId, Text, Text, Double)] -> JsonValue
-resultListJson schema algorithm view rows = JsonObject
+resultListJson :: Text -> Text -> ViewMode -> [(AdrId, Text, Text, Double)] -> Maybe Pagination -> JsonValue
+resultListJson schema algorithm view rows pagination = JsonObject $
   [ ("schema", JsonString schema)
   , ("algorithm", JsonString algorithm)
   , ("results", JsonArray (map resultJson rows))
   ]
+    <> maybe [] (\value -> [("pagination", paginationJson value)]) pagination
   where
     resultJson (adr, title, summary, score) = JsonObject $
       [("adr", JsonString (adrIdText adr)), ("title", JsonString title), ("score", fromMaybe JsonNull (jsonNumberRounded6 score))]

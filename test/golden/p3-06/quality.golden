@@ -9,11 +9,11 @@
       "typed_equal": true
     },
     "search": {
-      "bytes": 20980,
-      "cold_sha256": "sha256:WYtdALnllKLgwSoJEdnpukFLZR1-UMwLqyZV7ELBY8M",
+      "bytes": 21361,
+      "cold_sha256": "sha256:cg9nJtAZ2qeQity4ShqZt22z9FV0M7XjhWfMnp7Xw9U",
       "rendered_bytes_equal": true,
-      "repeated_sha256": "sha256:WYtdALnllKLgwSoJEdnpukFLZR1-UMwLqyZV7ELBY8M",
-      "reused_sha256": "sha256:WYtdALnllKLgwSoJEdnpukFLZR1-UMwLqyZV7ELBY8M",
+      "repeated_sha256": "sha256:cg9nJtAZ2qeQity4ShqZt22z9FV0M7XjhWfMnp7Xw9U",
+      "reused_sha256": "sha256:cg9nJtAZ2qeQity4ShqZt22z9FV0M7XjhWfMnp7Xw9U",
       "typed_equal": true
     }
   },

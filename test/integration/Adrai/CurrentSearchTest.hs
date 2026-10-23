@@ -4,6 +4,11 @@ module Adrai.CurrentSearchTest (tests, p304ConflictSnapshot) where
 
 import Adrai.Compiler (materializeCurrentSearch)
 import Adrai.CompilerMaterializationTest (p303RationaleSnapshot)
+import Adrai.Fixture.QueryMaterialization (QueryMaterialization (..), materializeQueryFixture)
+import Adrai.Fixture.RetrievalScale (adrTemplates, retrievalScaleV1)
+import Adrai.Fixture.Types (RetrievalScaleSpec (..))
+import Adrai.Pagination (Pagination (..))
+import Adrai.SearchVectorCorpus (buildSearchVectorCorpus)
 import Adrai.Format.Document
 import Adrai.Format.Json (JsonValue (..))
 import Adrai.Graph (GraphAxis (..), reduceManagedGraph)
@@ -16,6 +21,7 @@ import Adrai.Sqlite
 import Adrai.Types
 import Control.Exception (bracket)
 import Control.Monad (forM_)
+import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.ByteString as ByteString
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
@@ -201,6 +207,15 @@ conflictGroupingContract = withSearch p304ConflictSnapshot $ \connection materia
   right <- mustSearch =<< search "right"
   length (searchProjectionResults left) @?= 1
   length (searchProjectionResults right) @?= 1
+  paginationTotalResults (searchProjectionPagination left) @?= 1
+  exploded <- mustSearch =<< runCurrentSearch connection p304ConflictSnapshot materialization
+    ((defaultSearchRequest "left") {searchRequestView = ExplodedView, searchRequestLimit = 1})
+  paginationTotalResults (searchProjectionPagination exploded) @?= 1
+  Map.size (searchProjectionExplodedDetails exploded) @?= 1
+  next <- mustSearch =<< runCurrentSearch connection p304ConflictSnapshot materialization
+    ((defaultSearchRequest "left") {searchRequestView = ExplodedView, searchRequestLimit = 1, searchRequestPage = 2})
+  searchProjectionResults next @?= []
+  Map.size (searchProjectionExplodedDetails next) @?= 0
   let leftResult = onlyResult left
       rightResult = onlyResult right
   searchResultAdr leftResult @?= searchResultAdr rightResult
@@ -276,6 +291,27 @@ repeatStabilityContract = withSearch p304ConflictSnapshot $ \connection material
   first <- mustSearch =<< runCurrentSearch connection p304ConflictSnapshot materialization request
   second <- mustSearch =<< runCurrentSearch connection p304ConflictSnapshot materialization request
   renderSearchProjection first @?= renderSearchProjection second
+  let templates = case take 24 adrTemplates of
+        template : rest -> template :| rest
+        [] -> error "ranked paging requires fixture ADRs"
+      fixture = either (error . show) id (materializeQueryFixture (retrievalScaleMeta retrievalScaleV1) templates [])
+      snapshot = queryMaterializationSnapshot fixture
+  withSearch snapshot $ \rankedConnection rankedMaterialization ->
+    forM_ [FtsRetrieval, VectorRetrieval, HybridRetrieval] $ \mode -> do
+      let corpus = either (error . show) id (buildSearchVectorCorpus rankedMaterialization)
+          rankedRequest = (defaultSearchRequest "cache") {searchRequestMode = mode, searchRequestLimit = 1000}
+          run value = mustSearch =<< runCurrentSearchWithCorpus rankedConnection snapshot rankedMaterialization corpus value
+          pages size = do
+            initial <- run (rankedRequest {searchRequestLimit = size})
+            let totalPages = maybe 0 id (paginationTotalPages (searchProjectionPagination initial))
+            rest <- mapM (\page -> run (rankedRequest {searchRequestLimit = size, searchRequestPage = toInteger page})) [2 .. totalPages]
+            pure (concatMap searchProjectionResults (initial : rest))
+      whole <- run rankedRequest
+      assertBool "ranked paging fixture has multiple ADRs" (length (searchProjectionResults whole) > 1)
+      forM_ (searchProjectionResults whole) $ \row ->
+        lookupJsonPath ["policy"] (searchResultRetrieval row) @?= Just (JsonString "fixed-depth-10")
+      pages 1 >>= (@?= searchProjectionResults whole)
+      pages 3 >>= (@?= searchProjectionResults whole)
 
 p304ConflictSnapshot :: ReadSnapshot
 p304ConflictSnapshot = axisConflictSnapshot DecisionAxis

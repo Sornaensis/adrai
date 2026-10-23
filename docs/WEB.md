@@ -52,6 +52,14 @@ Unix-millisecond `since`/`until` filters. History accepts those same filters.
 Search's comma-separated `domain` filter requires each exact canonical assignment
 by default; `all=true` includes each requested domain and its dotted descendants.
 This option is independent of `include_obsolete=true`.
+Search also accepts one-based `page` (default 1), with `limit` as its page size.
+Both CLI and shared search projections add `pagination` metadata: `page`,
+`page_size`, `total_results`, `total_pages`, `returned`, `remaining`, and `has_next`.
+Blank-query totals cover the full filtered corpus, including more than 1000
+ADRs. Ranked totals cover the complete finalized result set from the fixed
+retrieval-depth-10 policy described in [Search](SEARCH.md). Retrieval budgets
+never depend on page or page size. Existing row fields and schema names remain
+compatible; the current explorer keeps its existing bounded first-page view.
 Relevant defaults to a committed `at=HEAD` source; `worktree=true` reads the
 safe current worktree file against the exact HEAD compilation context and
 cannot be combined with an explicit `at`.

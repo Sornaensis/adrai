@@ -68,7 +68,33 @@ Add `--all` to include dotted descendants, such as `platform.storage.postgresql`
 Both modes exclude near prefixes such as `platform.storage-old`. Repeat `--domain`
 to require every requested domain (or every requested subtree with `--all`) to
 match. `--all` does not include obsolete ADRs; use `--include-obsolete` separately.
-Omit the query to browse matching ADRs with the usual search limit.
+Omit the query to browse matching ADRs with the usual page size.
+
+Search accepts `--page N` (one-based, default 1) and `--limit N` (results per
+page, default 10, maximum 1000). A blank query pages the complete filtered ADR
+corpus in ADR ID order, including corpora larger than 1000. For example,
+`adrai search --domain platform --all --limit 1000 --page 2` returns the next
+window of that subtree. Domain, file, actor, time, revision, and obsolete filters
+are applied before counting and paging. `--all` only expands domain matching;
+it does not change the page size or include obsolete decisions.
+
+Ranked queries page the complete distinct ADR result set produced by a fixed
+retrieval policy anchored to retrieval depth 10. The policy allows 300 hits per
+individual FTS query, retains the existing union of exact/near/prefix terms,
+uses a prefix fallback threshold of `min(30, allowed items)`, selects up to 120
+documents for section scoring and 10 forced candidates per channel, and reranks
+up to 80 documents plus their competing heads. These budgets are independent of
+both page and page size. Ranking and ADR deduplication finish before paging.
+Ranked totals describe this retrieved result set, while blank-query totals
+describe the full filtered corpus.
+
+Every text response ends with one compact line showing returned/total results,
+page/total pages, and remaining results. Empty sets explicitly report 0 pages;
+positive pages beyond the last page return no rows and are marked out of range.
+The CLI and rich JSON projections add a `pagination` object with `page`,
+`page_size`, `total_results`, `total_pages`, `returned`, `remaining`, and
+`has_next`. Empty sets have `total_pages: 0`. Existing result row fields and
+schema names are preserved; this metadata is additive.
 
 Collapsed results group competing decision heads by ADR. `--view exploded` adds summaries; use `adrai show ADR_ID --view exploded` for operation-level detail. Use `--include-obsolete` to include obsolete ADRs.
 
