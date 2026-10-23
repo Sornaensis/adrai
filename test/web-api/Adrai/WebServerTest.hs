@@ -607,7 +607,7 @@ assertQueryRouteSnapshots root repository adr current running = do
   worktreeDigest <- textAt ["data", "file", "digest"] worktreeRelevant
   committedDigest <- textAt ["data", "file", "digest"] committedRelevant
   assertBool "worktree and committed relevance use distinct file bytes" (worktreeDigest /= committedDigest)
-  Query.runRelevantQueryExact repository currentOid (DomainQuery.RelevantRequest relevantPath Types.WorkingRevision False 10)
+  Query.runRelevantQueryExact repository currentOid (DomainQuery.RelevantRequest relevantPath Types.WorkingRevision False 10 1)
     >>= either (assertFailure . Text.unpack . Query.relevantFailureText) (const (pure ()))
   blankSearch <- getJson running ("/api/v1/search?q=&at=" <> current <> "&limit=1000")
   valueAt ["data", "limit"] blankSearch >>= (@?= Aeson.Number 1000)
@@ -636,7 +636,7 @@ assertQueryRouteSnapshots root repository adr current running = do
   callProcess "git" ["-C", root, "commit", "--allow-empty", "-m", "move after exact request basis"]
   ambient <- gitHead root
   assertBool "ambient HEAD moved after the exact response basis" (ambient /= current)
-  pinnedNamed <- Query.runRelevantQueryExact repository currentOid (DomainQuery.RelevantRequest relevantPath (Types.AtRevision "main") False 10)
+  pinnedNamed <- Query.runRelevantQueryExact repository currentOid (DomainQuery.RelevantRequest relevantPath (Types.AtRevision "main") False 10 1)
     >>= either (assertFailure . Text.unpack . Query.relevantFailureText) pure
   revisionRequested (DomainQuery.relevantProjectionRevision pinnedNamed) @?= "main"
   revisionResolved (DomainQuery.relevantProjectionRevision pinnedNamed) @?= current

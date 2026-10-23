@@ -71,7 +71,7 @@ lifecycle status, domains, file scope, summary, and decision body with real
 newlines. `show ADR_ID --view exploded` lists the requested operations, records,
 events, and their readable content. Use `--json` for the structured projection,
 including state tokens and provenance, or when parsing the output in a script.
-The explicit JSON schemas and canonical serialization are unchanged.
+Canonical serialization remains available through explicit `--json`; list projections include additive pagination metadata.
 
 `history` prints compact rows with each operation's claimed timestamp, ID,
 change label, ADR, title, and actor, followed by a reason when present. Its
@@ -79,6 +79,16 @@ filters, order, and `--limit` also apply to this text view. `compare FROM TO`
 prints counts and ADRs classified as added, removed, changed, or unchanged,
 with changed field names. Add `--include-unchanged` to list unchanged ADRs.
 Both commands emit their structured projections only with `--json`.
+
+`history --page N --limit N` pages filtered operations without splitting a grouped
+operation (default page 1, size 20, maximum 1000). `truncated` is `has_next`;
+use the next `--page` to continue. `compare --page N --limit N` pages visible ADR
+entries (default page 1, size 20, maximum 1000), while summary category counts
+always cover the complete comparison. Both commands always print a compact
+shown/total, pages, and remaining footer, including empty and final pages.
+The compare service and HTTP API keep complete unpaged results when both
+`page` and `limit` are omitted; either parameter opts into pagination. Unpaged
+JSON has null `page`, `page_size`, and `total_pages`, full totals, and zero remaining.
 
 `domains DOMAIN --tree` includes the parent and every descendant, showing
 `domain D (N descendants)` for distinct exact and strictly descendant assignments.
@@ -90,7 +100,7 @@ creating an archive; repeated misses remain cold. See [Search](SEARCH.md).
 
 `search` and `relevant` print simple ADR ID and title lists by default. Add
 `--view exploded` to include indented summaries. JSON requires `--json` and
-contains only `schema`, `algorithm` and `results`, with `adr`, `title` and a
+contains `schema`, `algorithm`, `pagination` and `results`, with `adr`, `title` and a
 numeric `score` in `[0,1]` in each result, plus `summary` in the exploded view.
 Scores preserve the existing ranking totals rounded to six decimal places;
 they are not confidence levels or rescaled against the response. Blank search
@@ -100,9 +110,8 @@ and `adrai/relevant-cli/v1`; see [Search](SEARCH.md) for details.
 
 Omitting the search query or supplying blank text lists non-obsolete ADRs in ADR
 ID order at the selected committed revision (default `HEAD`). The listing is
-bounded by `--limit`: the default is 10 and the supported range is 1–1000. Use
-`adrai search --limit 1000` to browse a larger window; it may not include every
-matching ADR. Add `--include-obsolete` to include obsolete decisions. File,
+paged by `--limit`: the default is 10 and the supported range is 1–1000.
+Add `--include-obsolete` to include obsolete decisions. File,
 domain, actor, and time filters also apply to the listing.
 `--limit` is the page size (1–1000, default 10); `--page` is one-based and defaults
 to 1. A blank query pages the full filtered corpus, so `adrai search --limit 1000

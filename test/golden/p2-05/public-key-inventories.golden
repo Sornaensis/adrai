@@ -28,6 +28,7 @@
     "entries",
     "from",
     "from_requested",
+    "pagination",
     "to",
     "to_requested",
     "view"
@@ -50,6 +51,7 @@
     "limit",
     "operations",
     "order",
+    "pagination",
     "schema",
     "truncated",
     "view"

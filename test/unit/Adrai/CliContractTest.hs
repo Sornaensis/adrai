@@ -138,7 +138,7 @@ import Adrai.Query
     relevantProjectionJson,
   )
 import qualified Adrai.Query as Query
-import Adrai.Pagination (Pagination (..), paginationJson)
+import Adrai.Pagination (Pagination (..), paginationJson, renderPagination, unpagedPagination)
 import qualified Adrai.History as History
 import Adrai.Fixture.QueryMaterialization (QueryMaterialization (..), materializeQueryFixture)
 import Adrai.Fixture.RetrievalScale (adrTemplates, retrievalScaleV1)
@@ -763,6 +763,7 @@ cliTypeConstructorTests =
               , historyUntil = Just 2000
               , historyReverse = True
               , historyJson = False
+              , historyPage = 1
               }
         historyAt cmd @?= "refs/heads/release"
         historyActor cmd @?= Just "llm:planner"
@@ -798,6 +799,7 @@ cliTypeConstructorTests =
               , relevantLimit = 15
               , relevantJson = True
               , relevantView = CollapsedView
+              , relevantPage = 1
               }
         relevantFile cmd @?= "docs/adrs/001.md"
         relevantIncludeObsolete cmd @?= True
@@ -809,6 +811,8 @@ cliTypeConstructorTests =
               , compareAfter = "HEAD"
               , compareUnchanged = True
               , compareJson = False
+              , compareLimit = 20
+              , comparePage = 1
               }
         compareBefore cmd @?= "HEAD~1"
         compareAfter cmd @?= "HEAD"
@@ -931,7 +935,8 @@ schemaContractTests =
                 (CompareCounts 1 2 3 4)
                 [Query.CompareEntry (either (error . show) id (mkAdrId "A0123456789ABCDEFGHJKMNPQRS")) "changed" "Choix café" Nothing Nothing [Query.CompareChange "body" (JsonString "avant") (JsonString "après") Nothing]]
                 []
-            jsonCommand = CompareCommand "base" "HEAD" False True
+                (unpagedPagination 1)
+            jsonCommand = CompareCommand "base" "HEAD" False True 20 1
             textCommand = jsonCommand {compareJson = False}
             jsonRendered = renderCompareOutcome jsonCommand projection
             textRendered = renderCompareOutcome textCommand projection
@@ -940,11 +945,11 @@ schemaContractTests =
         renderedStdout jsonRendered @?= renderCanonicalJson (compareProjectionJson projection)
         renderedExitCode textRendered @?= ExitSuccess
         renderedStderr textRendered @?= ""
-        renderedStdout textRendered @?= "Compare base -> HEAD\nAdded: 1  Removed: 2  Changed: 3  Unchanged: 4\n\nchanged A0123456789ABCDEFGHJKMNPQRS Choix café\n  Changed: body\n",
+        renderedStdout textRendered @?= "Compare base -> HEAD\nAdded: 1  Removed: 2  Changed: 3  Unchanged: 4\n\nchanged A0123456789ABCDEFGHJKMNPQRS Choix café\n  Changed: body\nShowing 1 of 1 results; 0 remaining.\n",
       testCase "history render outcome is exact canonical JSON or the established text renderer" $ do
-        let options = HistoryOptions OldestFirst 7 Nothing Nothing Nothing
+        let options = HistoryOptions OldestFirst 7 Nothing Nothing Nothing 1
             projection = either (error . show) id (History.projectHistory (queryMaterializationSnapshot humanFixture) Nothing options)
-            jsonCommand = HistoryCommand Nothing "refs/heads/release" 7 Nothing (Just 1000) (Just 2000) True True
+            jsonCommand = HistoryCommand Nothing "refs/heads/release" 7 Nothing (Just 1000) (Just 2000) True True 1
             textCommand = jsonCommand {historyJson = False}
             jsonRendered = renderHistoryOutcome jsonCommand projection
             textRendered = renderHistoryOutcome textCommand projection
@@ -957,8 +962,8 @@ schemaContractTests =
             operation = case historyProjectionOperations projection of
               first : _ -> first
               [] -> error "history fixture requires one operation"
-        human @?= History.isoTimestampFromMs (History.historyOperationClaimedAt operation) <> " " <> Types.operationIdText (History.historyOperationId operation) <> " created " <> Types.adrIdText (History.historyOperationAdr operation) <> " Choix café [service:adrai-query-fixture]\n  Reason: Résumé utile.\n"
-        renderedStdout (renderHistoryOutcome textCommand (projection {historyProjectionOperations = []})) @?= ""
+        human @?= History.isoTimestampFromMs (History.historyOperationClaimedAt operation) <> " " <> Types.operationIdText (History.historyOperationId operation) <> " created " <> Types.adrIdText (History.historyOperationAdr operation) <> " Choix café [service:adrai-query-fixture]\n  Reason: Résumé utile.\n" <> renderPagination (historyProjectionPagination projection)
+        renderedStdout (renderHistoryOutcome textCommand (projection {historyProjectionOperations = [], historyProjectionPagination = Pagination (Just 1) (Just 7) 0 (Just 0) 0 0 False})) @?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n"
         assertBool "history emits one terminal newline without JSON escapes" (Text.isSuffixOf "\n" human && not (Text.isSuffixOf "\n\n" human) && not ("\\n" `Text.isInfixOf` human)),
       testCase "all JSON output types have sorted keys (deterministic serialization)" $ do
         -- Verify compileResultJson keys are sorted
@@ -1288,9 +1293,9 @@ mutationCliContractTests =
         let expectedRequest = SearchServiceRequest "refs/heads/release" <$> either (const Nothing) Just (searchCommandRequest explicit)
         readIORef selectedRequest >>= (@?= expectedRequest)
     , testCase "relevant accepts only revision or explicit worktree sources, renders exactly, and dispatches typed intent" $ do
-        let defaulted = RelevantCommand "src/query ü.txt" Nothing False False 10 False CollapsedView
-            explicit = RelevantCommand "src/query ü.txt" (Just "refs/heads/release") False True 7 True ExplodedView
-            worktree = RelevantCommand "src/query ü.txt" Nothing True False 10 False CollapsedView
+        let defaulted = RelevantCommand "src/query ü.txt" Nothing False False 10 False CollapsedView 1
+            explicit = RelevantCommand "src/query ü.txt" (Just "refs/heads/release") False True 7 True ExplodedView 1
+            worktree = RelevantCommand "src/query ü.txt" Nothing True False 10 False CollapsedView 1
             fileInfo =
               RelevantFileInfo
                 { relevantFilePath = RepoPath "src/query ü.txt"
@@ -1327,23 +1332,26 @@ mutationCliContractTests =
                 , relevantProjectionRetrieval = retrieval
                 , relevantProjectionResults = []
                 , relevantProjectionDiagnostics = Nothing
+                , relevantProjectionPagination = Pagination (Just 1) (Just 7) 0 (Just 0) 0 0 False
                 }
         parseCli ["relevant", "src/query ü.txt"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant defaulted))
         parseCli ["relevant", "src/query ü.txt", "--at", "refs/heads/release", "--include-obsolete", "--limit", "7", "--json", "--view", "exploded"]
           @?= Right (CliInvocation defaultCliConfig (CmdRelevant explicit))
         parseCli ["relevant", "src/query ü.txt", "--worktree"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant worktree))
         parseCli ["relevant", "src/query ü.txt", "--view", "collapsed"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant defaulted))
+        parseCli ["relevant", "src/query ü.txt", "--page", "2"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant (defaulted {relevantPage = 2})))
+        for_ ["0", "101", "18446744073709551617"] $ \value -> assertParserFailure ["relevant", "src/query ü.txt", "--limit", value]
         assertParserFailure ["relevant", "src/query ü.txt", "--view", "other"]
         for_ [["relevant", "--file", "src/query.txt"], ["relevant", "src/query.txt", "--revision", "HEAD"], ["relevant", "src/query.txt", "--working"]] assertParserFailure
         relevantCommandRequest defaulted
-          @?= Right (RelevantRequest (RepoPath "src/query ü.txt") (AtRevision "HEAD") False 10)
+          @?= Right (RelevantRequest (RepoPath "src/query ü.txt") (AtRevision "HEAD") False 10 1)
         relevantCommandRequest worktree
-          @?= Right (RelevantRequest (RepoPath "src/query ü.txt") WorkingRevision False 10)
+          @?= Right (RelevantRequest (RepoPath "src/query ü.txt") WorkingRevision False 10 1)
         relevantCommandRequest (explicit {relevantWorktree = True})
           @?= Left "relevant --at and --worktree are mutually exclusive"
         assertBool "relevant rejects outside paths" (either (const True) (const False) (relevantCommandRequest (defaulted {relevantFile = "../outside"})))
         renderRelevantOutcome explicit projection
-          @?= CliRendered (emptyCliJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank") "" ExitSuccess
+          @?= CliRendered (emptyCliJson 7 "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank") "" ExitSuccess
         let diagnosed = projection { relevantProjectionDiagnostics = Just (RelevantDiagnostics "0123456789abcdef0123456789abcdef01234567" "1111111111111111111111111111111111111111" True "cache-hit" 1.25 Nothing Nothing) }
             diagnosedJson = renderedStdout (renderRelevantOutcome explicit diagnosed)
         diagnosedJson @?= renderedStdout (renderRelevantOutcome explicit projection)
@@ -1351,11 +1359,11 @@ mutationCliContractTests =
         assertBool "rich service projection retains measured diagnostics"
           ("\"stale\": true" `Text.isInfixOf` serviceJson && "\"prepare_index\": 1.25" `Text.isInfixOf` serviceJson && "\"retrieve_candidates\": null" `Text.isInfixOf` serviceJson)
         renderRelevantOutcome (explicit {relevantJson = False}) projection
-          @?= CliRendered "" "" ExitSuccess
-        let populated = diagnosed {relevantProjectionResults = [cliRelevantRow, cliRelevantRow {relevantResultAdr = secondAdr, relevantResultTitle = "[decision conflict]", relevantResultSummary = "", relevantResultScore = 0, relevantResultMatchedTitle = Just "Misleading matched head"}]}
+          @?= CliRendered "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n" "" ExitSuccess
+        let populated = diagnosed {relevantProjectionPagination = Pagination (Just 1) (Just 7) 2 (Just 1) 2 0 False, relevantProjectionResults = [cliRelevantRow, cliRelevantRow {relevantResultAdr = secondAdr, relevantResultTitle = "[decision conflict]", relevantResultSummary = "", relevantResultScore = 0, relevantResultMatchedTitle = Just "Misleading matched head"}]}
             render view json = renderRelevantOutcome (explicit {relevantView = view, relevantJson = json}) populated
-        render CollapsedView False @?= CliRendered expectedList "" ExitSuccess
-        render ExplodedView False @?= CliRendered expectedExpandedList "" ExitSuccess
+        render CollapsedView False @?= CliRendered (expectedList <> "Showing 2 of 2 results; page 1/1; 0 remaining.\n") "" ExitSuccess
+        render ExplodedView False @?= CliRendered (expectedExpandedList <> "Showing 2 of 2 results; page 1/1; 0 remaining.\n") "" ExitSuccess
         for_ [CollapsedView, ExplodedView] $ \view ->
           assertCliListJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" 0.765432 0 view (renderedStdout (render view True))
         let maximumScore = populated {relevantProjectionResults = [cliRelevantRow {relevantResultScore = 1}, (last (relevantProjectionResults populated)) {relevantResultScore = 0}]}
@@ -1425,9 +1433,9 @@ mutationCliContractTests =
                     , "results" Aeson..= [Aeson.object
                         (["adr" Aeson..= fixtureAdr, "title" Aeson..= fixtureTitle, "score" Aeson..= score]
                           <> ["summary" Aeson..= fixtureSummary | view == ExplodedView])]
-                    ] <> ["pagination" Aeson..= toAesonValue (paginationJson (Pagination (Just 1) (Just 10) 1 (Just 1) 1 0 False)) | schema == "adrai/search-cli/v1"]))
+                    ] <> ["pagination" Aeson..= toAesonValue (paginationJson (Pagination (Just 1) (Just 10) 1 (Just 1) 1 0 False)) | schema `elem` ["adrai/search-cli/v1", "adrai/relevant-cli/v1"]]))
               checkCommand command schema algorithm expectedScore = do
-                let footer = if schema == "adrai/search-cli/v1" then "Showing 1 of 1 results; page 1/1; 0 remaining.\n" else ""
+                let footer = "Showing 1 of 1 results; page 1/1; 0 remaining.\n"
                 runCli command >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n" <> footer)
                 runCli (command <> ["--view", "exploded"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n  " <> fixtureSummary <> "\n" <> footer)
                 for_ [CollapsedView, ExplodedView] $ \view -> checkJson command schema algorithm view expectedScore
@@ -1435,6 +1443,16 @@ mutationCliContractTests =
               assertJsonOutput label output = case Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output) of
                 Right (Aeson.Object _) -> pure ()
                 _ -> assertFailure (label <> " did not retain explicit JSON output")
+          let checkPage command rowsKey = do
+                output <- runCli (command <> ["--page", "2", "--limit", "1", "--json"])
+                case Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output) of
+                  Right (Aeson.Object envelope) -> do
+                    KM.lookup rowsKey envelope @?= Just (Aeson.Array Vector.empty)
+                    KM.lookup "pagination" envelope @?= Just (toAesonValue (paginationJson (Pagination (Just 2) (Just 1) 1 (Just 1) 0 0 False)))
+                  other -> assertFailure (show other)
+          checkPage ["history", adrArgument] "operations"
+          checkPage ["compare", "HEAD~1", "HEAD"] "entries"
+          checkPage ["relevant", "source.txt"] "results"
           showText <- runCli ["show", adrArgument]
           showText @?= fixtureAdr <> " " <> fixtureTitle <> "\nStatus: active\nDomains: storage.db.postgresql\nScope: source.txt\n\nSummary:\n" <> fixtureSummary <> "\n\n" <> source
           assertBool "ordinary show hides internal JSON and provenance" (not ("\"provenance\"" `Text.isInfixOf` showText) && not ("\\n" `Text.isInfixOf` showText))
@@ -1446,9 +1464,9 @@ mutationCliContractTests =
           assertBool "installed raw show emits semantic text with real newlines" (source `Text.isInfixOf` rawText && not ("\\n" `Text.isInfixOf` rawText) && not ("@adrai.begin" `Text.isInfixOf` rawText))
           historyText <- runCli ["history", adrArgument, "--limit", "1"]
           assertBool "installed history keeps title, operation, and reason without JSON"
-            ((" created " <> fixtureAdr <> " " <> fixtureTitle <> " [llm:planner]\n  Reason: " <> fixtureSummary <> "\n") `Text.isSuffixOf` historyText && length (Text.lines historyText) == 2)
+            ((" created " <> fixtureAdr <> " " <> fixtureTitle <> " [llm:planner]\n  Reason: " <> fixtureSummary <> "\nShowing 1 of 1 results; page 1/1; 0 remaining.\n") `Text.isSuffixOf` historyText && length (Text.lines historyText) == 3)
           runCli ["history", adrArgument, "--limit", "1", "--json"] >>= assertJsonOutput "history"
-          runCli ["history", adrArgument, "--actor", "human:missing"] >>= (@?= "")
+          runCli ["history", adrArgument, "--actor", "human:missing"] >>= (@?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n")
           compareText <- runCli ["compare", "HEAD~1", "HEAD"]
           assertBool "installed comparison lists the added ADR" (("added " <> fixtureAdr <> " " <> fixtureTitle <> "\n") `Text.isInfixOf` compareText)
           runCli ["compare", "HEAD~1", "HEAD", "--json"] >>= assertJsonOutput "compare"
@@ -1490,12 +1508,12 @@ mutationCliContractTests =
                   VectorRetrieval -> "vector"
                   HybridRetrieval -> "hybrid"
             checkJson ["search", "DURABLE_LEDGER_TOKEN", "--mode", modeText] "adrai/search-cli/v1" algorithm CollapsedView Nothing
-            runCli ["search", "cache", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson "adrai/search-cli/v1" algorithm)
-            runCli ["search", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson "adrai/search-cli/v1" "filtered-list")
+            runCli ["search", "cache", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" algorithm)
+            runCli ["search", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" "filtered-list")
           runCli ["search", "zzzxqvplmn", "--mode", "fts"] >>= (@?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n")
           BS.writeFile (repo </> "source.txt") "\n"
-          runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "")
-          runCli ["relevant", "source.txt", "--worktree", "--json"] >>= (@?= emptyCliJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank")
+          runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n")
+          runCli ["relevant", "source.txt", "--worktree", "--json"] >>= (@?= emptyCliJson 10 "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank")
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
         let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True
         parseCli ["show", "R0123456789ABCDEFGHJKMNPQRS", "--view", "exploded", "--at", "refs/heads/release", "--raw", "--json"]
@@ -1544,12 +1562,15 @@ mutationCliContractTests =
           >>= (@?= ExitFailure 2)
         readIORef serviceCalled >>= (@?= False)
     , testCase "compare accepts only positional revisions and dispatches the full typed request" $ do
-        let explicit = CompareCommand "release~1" "release" True True
-            defaulted = CompareCommand "release~1" "HEAD" False False
+        let explicit = CompareCommand "release~1" "release" True True 20 1
+            defaulted = CompareCommand "release~1" "HEAD" False False 20 1
         parseCli ["compare", "release~1", "release", "--include-unchanged", "--json"]
           @?= Right (CliInvocation defaultCliConfig (CmdCompare explicit))
         parseCli ["compare", "release~1"]
           @?= Right (CliInvocation defaultCliConfig (CmdCompare defaulted))
+        parseCli ["compare", "release~1", "--page", "2", "--limit", "7"]
+          @?= Right (CliInvocation defaultCliConfig (CmdCompare (defaulted {comparePage = 2, compareLimit = 7})))
+        for_ ["0", "1001", "18446744073709551617"] $ \value -> assertParserFailure ["compare", "release~1", "--limit", value]
         assertParserFailure ["compare", "--from", "release~1"]
         assertParserFailure ["compare", "-f", "release~1"]
         assertParserFailure ["compare", "release~1", "--to", "release"]
@@ -1563,6 +1584,7 @@ mutationCliContractTests =
                 (CompareCounts 0 0 0 0)
                 []
                 []
+                (unpagedPagination 0)
             dependencies =
               unsupportedCliDispatchDependencies
                 { cliRunShow = \_ _ -> error "show service must not be selected",
@@ -1594,17 +1616,20 @@ mutationCliContractTests =
               (Just 2000)
               True
               True
-            defaulted = HistoryCommand Nothing "HEAD" 20 Nothing Nothing Nothing False False
+              1
+            defaulted = HistoryCommand Nothing "HEAD" 20 Nothing Nothing Nothing False False 1
         parseCli ["history", "A0123456789", "--at", "refs/heads/release", "--limit", "7", "--actor", "llm:planner", "--since", "1000", "--until", "2000", "--reverse", "--json"]
           @?= Right (CliInvocation defaultCliConfig (CmdHistory explicit))
         parseCli ["history"]
           @?= Right (CliInvocation defaultCliConfig (CmdHistory defaulted))
+        parseCli ["history", "--page", "2"] @?= Right (CliInvocation defaultCliConfig (CmdHistory (defaulted {historyPage = 2})))
+        for_ ["0", "1001", "18446744073709551617"] $ \value -> assertParserFailure ["history", "--limit", value]
         assertParserFailure ["history", "--newest-first"]
         assertParserFailure ["history", "--oldest-first"]
         assertParserFailure ["history", "llm", "planner"]
         selectedRepo <- newIORef Nothing
         selectedCommand <- newIORef Nothing
-        let options = HistoryOptions NewestFirst 20 Nothing Nothing Nothing
+        let options = HistoryOptions NewestFirst 20 Nothing Nothing Nothing 1
             projection = HistoryProjection
               (RevisionIdentity "HEAD" "4444444444444444444444444444444444444444")
               Nothing
@@ -1613,6 +1638,7 @@ mutationCliContractTests =
               False
               options
               []
+              (Pagination (Just 1) (Just 20) 0 (Just 0) 0 0 False)
             dependencies =
               unsupportedCliDispatchDependencies
                 { cliRunShow = \_ _ -> error "show service must not be selected",
@@ -2302,9 +2328,9 @@ mutationCliContractTests =
     summary = "First\tsummary line.\nSecond summary line."
     expectedList = "A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\nA1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
     expectedExpandedList = "A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\n  First summary line.\n  Second summary line.\nA1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
-    emptyCliJson schema algorithm
-      | schema == "adrai/search-cli/v1" = emptySearchCliJson 1 10 algorithm
-      | otherwise = renderCanonicalJson (JsonObject [("schema", JsonString schema), ("algorithm", JsonString algorithm), ("results", JsonArray [])])
+    emptyCliJson size schema algorithm = renderCanonicalJson (JsonObject
+      [("schema", JsonString schema), ("algorithm", JsonString algorithm), ("results", JsonArray []),
+       ("pagination", paginationJson (Pagination (Just 1) (Just size) 0 (Just 0) 0 0 False))])
     emptySearchCliJson page size algorithm = renderCanonicalJson (JsonObject
       [("schema", JsonString "adrai/search-cli/v1"), ("algorithm", JsonString algorithm), ("results", JsonArray []),
        ("pagination", paginationJson (Pagination (Just page) (Just size) 0 (Just 0) 0 0 False))])
@@ -2322,7 +2348,7 @@ mutationCliContractTests =
               [ Aeson.object (["adr" Aeson..= ("A0123456789ABCDEFGHJKMNPQRS" :: Text), "title" Aeson..= title, "score" Aeson..= Aeson.Number firstScore] <> ["summary" Aeson..= summary | view == ExplodedView])
               , Aeson.object (["adr" Aeson..= ("A1123456789ABCDEFGHJKMNPQRS" :: Text), "title" Aeson..= ("[decision conflict]" :: Text), "score" Aeson..= Aeson.Number secondScore] <> ["summary" Aeson..= ("" :: Text) | view == ExplodedView])
               ]
-          ] <> ["pagination" Aeson..= toAesonValue (paginationJson (Pagination (Just 1) (Just 7) 2 (Just 1) 2 0 False)) | schema == "adrai/search-cli/v1"]))
+          ] <> ["pagination" Aeson..= toAesonValue (paginationJson (Pagination (Just 1) (Just 7) 2 (Just 1) 2 0 False)) | schema `elem` ["adrai/search-cli/v1", "adrai/relevant-cli/v1"]]))
     cliSearchRow = SearchResult
       { searchResultAdr = firstAdr
       , searchResultRecord = Nothing

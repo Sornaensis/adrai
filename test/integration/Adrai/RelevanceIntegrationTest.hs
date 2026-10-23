@@ -16,6 +16,7 @@ import Adrai.Property.Generators
     materializeProjectionDag,
   )
 import Adrai.Query
+import Adrai.Pagination (Pagination (..), PaginationError (..))
 import Adrai.Relevance
 import Adrai.Retrieval (SearchMaterialization)
 import Adrai.Sqlite (initializeSearchSchema, replaceSearchMaterialization)
@@ -162,6 +163,19 @@ globalConfidenceContract = withRelevant multiAdrSnapshot $ \connection materiali
       source = RevisionRelevantSource path "after-resolved" "blob-multi" bytes
   complete <- mustRelevant =<< runRelevant connection multiAdrSnapshot materialization request source
   limited <- mustRelevant =<< runRelevant connection multiAdrSnapshot materialization (request {relevantRequestLimit = 1}) source
+  mapM_ (\size -> do
+    initial <- mustRelevant =<< runRelevant connection multiAdrSnapshot materialization (request {relevantRequestLimit = size}) source
+    let pages = maybe 0 id (paginationTotalPages (relevantProjectionPagination initial))
+    projections <- mapM (\page -> mustRelevant =<< runRelevant connection multiAdrSnapshot materialization (request {relevantRequestLimit = size, relevantRequestPage = toInteger page}) source) [1 .. pages]
+    concatMap relevantProjectionResults projections @?= relevantProjectionResults complete
+    mapM_ (\projection -> relevantProjectionRetrieval projection @?= relevantProjectionRetrieval complete) projections) [1, 2, 3]
+  let total = length (relevantProjectionResults complete)
+  paginationTotalResults (relevantProjectionPagination limited) @?= total
+  beyond <- mustRelevant =<< runRelevant connection multiAdrSnapshot materialization (request {relevantRequestPage = toInteger (maxBound :: Int)}) source
+  relevantProjectionResults beyond @?= []
+  paginationRemaining (relevantProjectionPagination beyond) @?= 0
+  runRelevant connection multiAdrSnapshot materialization (request {relevantRequestPage = 0}) source >>= (@?= Left (RelevantInvalidPage (InvalidPage 0)))
+  runRelevant connection multiAdrSnapshot materialization (request {relevantRequestPage = toInteger (maxBound :: Int) + 1}) source >>= (@?= Left (RelevantInvalidPage (InvalidPage (toInteger (maxBound :: Int) + 1))))
   assertBool "fixture yields a real competitor outside the public limit" (length (relevantProjectionResults complete) >= 2)
   case (relevantProjectionResults complete, relevantProjectionResults limited) of
     (completeTop : _, [limitedTop]) -> do

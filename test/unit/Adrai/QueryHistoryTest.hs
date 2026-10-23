@@ -7,6 +7,7 @@ import Adrai.Format.Document
 import Adrai.Format.Json
 import Adrai.Graph
 import Adrai.History
+import Adrai.Pagination (PageRequest (..), Pagination (..), PaginationError (..), unpagedPagination)
 import Adrai.Provenance
 import Adrai.Query
 import Adrai.Scope (ScopePattern, mkScopePattern)
@@ -74,7 +75,8 @@ writeProjectionGoldens = mapM_ (uncurry BS.writeFile) projectionGoldenArtifacts
 
 projectionGoldenArtifacts :: [(FilePath, BS.ByteString)]
 projectionGoldenArtifacts =
-  [ ("test/golden/p2-05/collapsed-compact.golden", renderCollapsedProjection (must (projectCollapsed CompactProjection fullSnapshot primaryAdr))),
+  [ ("test/golden/p2-05/public-key-inventories.golden", renderCanonicalJsonBytes publicKeyInventories),
+    ("test/golden/p2-05/collapsed-compact.golden", renderCollapsedProjection (must (projectCollapsed CompactProjection fullSnapshot primaryAdr))),
     ("test/golden/p2-05/collapsed-rich.golden", renderCollapsedProjection (must (projectCollapsed RichProjection fullSnapshot primaryAdr))),
     ("test/golden/p2-05/exploded-compact.golden", renderExplodedProjection (must (projectExploded (ExplodedOptions False) fullSnapshot primaryAdr))),
     ("test/golden/p2-05/exploded-raw.golden", renderExplodedProjection (must (projectExploded (ExplodedOptions True) fullSnapshot primaryAdr))),
@@ -100,7 +102,7 @@ compareGoldenProjection :: CompareProjection
 compareGoldenProjection =
   must
     ( compareSnapshots
-        (CompareOptions True [("mode", JsonString "pure")])
+        (CompareOptions True [("mode", JsonString "pure")] Nothing)
         (snapshotFor "before" beforeRecords (documentsSimple beforeRecords))
         (snapshotFor "after" afterRecords (documentsSimple afterRecords))
     )
@@ -216,7 +218,7 @@ snapshotConsistencyContract = do
   projectExploded (ExplodedOptions False) mismatched primaryAdr @?= Left expected
   projectHistory mismatched (Just primaryAdr) defaultHistoryOptions
     @?= Left (HistorySnapshotInvalid (SnapshotConsistencyError ["supplied graph reduction does not match parsed managed documents"]))
-  compareSnapshots (CompareOptions False []) fullSnapshot mismatched @?= Left expected
+  compareSnapshots (CompareOptions False [] Nothing) fullSnapshot mismatched @?= Left expected
   let firstDocument = firstUnsafe (readSnapshotDocuments fullSnapshot)
       inconsistent =
         fullSnapshot
@@ -224,6 +226,11 @@ snapshotConsistencyContract = do
           }
       operationProblem = QuerySnapshotInvalid (SnapshotConsistencyError ["operation " <> operationIdText o1 <> " has inconsistent capsule fields"])
   projectCollapsed CompactProjection inconsistent primaryAdr @?= Left operationProblem
+  compareSnapshots (CompareOptions False [] Nothing) mismatched fullSnapshot @?= Left expected
+  compareSnapshots (CompareOptions False [] Nothing) inconsistent fullSnapshot @?= Left operationProblem
+  compareSnapshots (CompareOptions False [] Nothing) fullSnapshot inconsistent @?= Left operationProblem
+  compareSnapshots (CompareOptions False [] Nothing) mismatched inconsistent @?= Left expected
+  compareSnapshots (CompareOptions False [] Nothing) inconsistent mismatched @?= Left operationProblem
 
 historyContract :: IO ()
 historyContract = do
@@ -238,6 +245,23 @@ historyContract = do
   let filteredOptions = defaultHistoryOptions {historyOptionOrder = OldestFirst, historyOptionUntil = Just 100, historyOptionLimit = 1}
       filtered = must (projectHistory fullSnapshot (Just primaryAdr) filteredOptions)
   map historyOperationLabel (historyProjectionOperations filtered) @?= ["amended"]
+  mapM_ (\order -> do
+    let options = defaultHistoryOptions {historyOptionOrder = order, historyOptionLimit = 2}
+        first = must (projectHistory fullSnapshot (Just primaryAdr) options)
+        final = must (projectHistory fullSnapshot (Just primaryAdr) (options {historyOptionPage = 2}))
+        beyond = must (projectHistory fullSnapshot (Just primaryAdr) (options {historyOptionPage = toInteger (maxBound :: Int)}))
+        complete = must (projectHistory fullSnapshot (Just primaryAdr) (options {historyOptionLimit = 1000}))
+    historyProjectionOperations first <> historyProjectionOperations final @?= historyProjectionOperations complete
+    historyProjectionPagination first @?= Pagination (Just 1) (Just 2) 3 (Just 2) 2 1 True
+    historyProjectionPagination final @?= Pagination (Just 2) (Just 2) 3 (Just 2) 1 0 False
+    historyProjectionTruncated first @?= True
+    historyProjectionTruncated final @?= False
+    historyProjectionOperations beyond @?= []
+    historyProjectionTruncated beyond @?= False) [OldestFirst, NewestFirst]
+  historyProjectionPagination filtered @?= Pagination (Just 1) (Just 1) 1 (Just 1) 1 0 False
+  let empty = must (projectHistory fullSnapshot (Just primaryAdr) (filteredOptions {historyOptionActor = Just (ActorSelector HumanActor "missing")}))
+  historyProjectionPagination empty @?= Pagination (Just 1) (Just 1) 0 (Just 0) 0 0 False
+  projectHistory fullSnapshot (Just primaryAdr) (defaultHistoryOptions {historyOptionPage = 0}) @?= Left (HistoryInvalidPage (InvalidPage 0))
   projectHistory fullSnapshot (Just primaryAdr) (defaultHistoryOptions {historyOptionLimit = 0}) @?= Left (HistoryInvalidLimit 0)
   let otherAdr = exactAdr "A22222222222222222222222222"
       otherRecord = exactRecord "R88888888888888888888888888"
@@ -345,7 +369,7 @@ compareContract = do
       afterRecords = fullRecords <> [unchanged]
       before = snapshotFor "before" beforeRecords (documentsSimple beforeRecords)
       after = snapshotFor "after" afterRecords (documentsSimple afterRecords)
-      comparison = must (compareSnapshots (CompareOptions False [("mode", JsonString "pure")]) before after)
+      comparison = must (compareSnapshots (CompareOptions False [("mode", JsonString "pure")] Nothing) before after)
   objectKeys (compareProjectionJson comparison) @?= expectedCompareKeys
   compareChanged (compareCounts comparison) @?= 1
   compareUnchanged (compareCounts comparison) @?= 1
@@ -357,7 +381,19 @@ compareContract = do
   assertBool "title diff has exact single-line hunk" (maybe False ("@@ -1 +1 @@" `Text.isInfixOf`) (diffFor "title"))
   assertBool "summary diff has exact single-line hunk" (maybe False ("@@ -1 +1 @@" `Text.isInfixOf`) (diffFor "summary"))
   assertBool "body diff has exact n=3 context range" (maybe False ("@@ -7,5 +7,5 @@" `Text.isInfixOf`) (diffFor "body"))
-  let withUnchanged = must (compareSnapshots (CompareOptions True []) before after)
+  let withUnchanged = must (compareSnapshots (CompareOptions True [] Nothing) before after)
+      first = must (compareSnapshots (CompareOptions True [] (Just (PageRequest 1 1))) before after)
+      final = must (compareSnapshots (CompareOptions True [] (Just (PageRequest 2 1))) before after)
+      beyond = must (compareSnapshots (CompareOptions True [] (Just (PageRequest (toInteger (maxBound :: Int)) 1))) before after)
+  compareEntries first <> compareEntries final @?= compareEntries withUnchanged
+  compareCounts first @?= compareCounts withUnchanged
+  comparePagination first @?= Pagination (Just 1) (Just 1) 2 (Just 2) 1 1 True
+  comparePagination final @?= Pagination (Just 2) (Just 1) 2 (Just 2) 1 0 False
+  comparePagination withUnchanged @?= unpagedPagination 2
+  compareEntries beyond @?= []
+  comparePagination comparison @?= unpagedPagination 1
+  compareSnapshots (CompareOptions True [] (Just (PageRequest 0 1))) before after @?= Left (QueryInvalidPagination (InvalidPage 0))
+  compareSnapshots (CompareOptions True [] (Just (PageRequest 1 1001))) before after @?= Left (QueryInvalidPagination (InvalidPageSize 1001))
   map compareEntryAdr (compareEntries withUnchanged) @?= sort [primaryAdr, unchangedAdr]
   let snapshotKeys = firstCompareAfterKeys (compareProjectionJson withUnchanged)
   assertBool "heads are flat" (all (`elem` snapshotKeys) ["record_heads", "scope_heads", "domain_heads", "status_heads"])
@@ -448,8 +484,8 @@ permutationContract = do
       secondExploded = must (projectExploded (ExplodedOptions True) reversed primaryAdr)
       firstHistory = must (projectHistory fullSnapshot (Just primaryAdr) defaultHistoryOptions)
       secondHistory = must (projectHistory reversed (Just primaryAdr) defaultHistoryOptions)
-      firstCompare = must (compareSnapshots (CompareOptions True []) fullSnapshot fullSnapshot)
-      secondCompare = must (compareSnapshots (CompareOptions True []) reversed reversed)
+      firstCompare = must (compareSnapshots (CompareOptions True [] Nothing) fullSnapshot fullSnapshot)
+      secondCompare = must (compareSnapshots (CompareOptions True [] Nothing) reversed reversed)
   renderCollapsedProjection firstCollapsed @?= renderCollapsedProjection secondCollapsed
   renderExplodedProjection firstExploded @?= renderExplodedProjection secondExploded
   renderHistoryProjection firstHistory @?= renderHistoryProjection secondHistory
@@ -468,8 +504,8 @@ publicKeyInventories =
 expectedCollapsedKeys, expectedExplodedKeys, expectedHistoryKeys, expectedCompareKeys :: [Text]
 expectedCollapsedKeys = sort ["schema", "view", "as_of", "adr", "record", "title", "summary", "body", "domains", "applies_to", "status", "obsolete", "replacement", "resolved", "resolution_required", "resolution", "state_token", "counts", "evolution", "provenance", "issues"]
 expectedExplodedKeys = sort ["schema", "view", "as_of", "adr", "resolved", "resolution_required", "resolution", "state_token", "operations"]
-expectedHistoryKeys = sort ["schema", "view", "as_of", "adr", "order", "limit", "truncated", "filters", "operations"]
-expectedCompareKeys = sort ["view", "from", "to", "from_requested", "to_requested", "counts", "entries", "cache"]
+expectedHistoryKeys = sort ["schema", "view", "as_of", "adr", "order", "limit", "truncated", "filters", "operations", "pagination"]
+expectedCompareKeys = sort ["view", "from", "to", "from_requested", "to_requested", "counts", "entries", "cache", "pagination"]
 
 primaryAdr :: AdrId
 primaryAdr = exactAdr "A11111111111111111111111111"

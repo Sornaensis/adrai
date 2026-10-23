@@ -8,7 +8,8 @@ import Adrai.Format.Document (ParsedManagedDocument (..), parseManagedDocument)
 import qualified Adrai.Graph as Graph
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
 import Adrai.Provenance (mkGitOid)
-import Adrai.Pagination (Pagination (..), PaginationError (..))
+import Adrai.Pagination (Pagination (..), PaginationError (..), PageRequest (..), unpagedPagination)
+import qualified Adrai.Service.Query as Service
 import Adrai.Query (CollapsedProjection (..), CollapsedRichDetail (..), ExplodedProjection (..), ExplodedOptions (..), ProjectionMode (..), ResolutionState (..), SearchProjection (..), SearchRequest (..), SearchResult (..), defaultSearchRequest, collapsedProjectionJson, explodedProjectionJson, projectCollapsed, projectExploded, runCurrentSearch, searchProjectionJson)
 import qualified Adrai.Query as Query
 import Adrai.Retrieval (SearchMaterialization (..))
@@ -107,6 +108,26 @@ boundedWindowFixture = do
   invalid @?= Left (Query.SearchInvalidPage (InvalidPage 0))
   overflow @?= Left (Query.SearchInvalidPage (InvalidPage (toInteger (maxBound :: Int) + 1)))
   searchProjectionPagination (must empty) @?= Pagination (Just 1) (Just 1000) 0 (Just 0) 0 0 False
+  let legacyRequest = Service.CompareRequest basisText basisText True Nothing
+      legacy = must (Service.projectComparison legacyRequest snapshot snapshot)
+      apiParameters = [("from", Just basisText), ("to", Just basisText), ("include_unchanged", Just "true")]
+      decodeComparison parameters = case must (Api.decodeApiRequest Api.defaultApiLimits Api.CompareRoute parameters ByteString.empty) of
+        Api.ApiCompareRequest value -> value
+        other -> error (show other)
+      apiLegacy = must (Service.projectComparison (decodeComparison apiParameters) snapshot snapshot)
+      apiPage parameters = must (Service.projectComparison (decodeComparison (apiParameters <> parameters)) snapshot snapshot)
+      firstComparison = apiPage [("limit", Just "1000")]
+      finalComparison = apiPage [("limit", Just "1000"), ("page", Just "2")]
+  length (Query.compareEntries legacy) @?= 1001
+  Query.comparePagination legacy @?= unpagedPagination 1001
+  Api.apiResultPayload (Api.ApiCompareResult apiLegacy) @?= Api.apiResultPayload (Api.ApiCompareResult legacy)
+  Query.comparePagination apiLegacy @?= unpagedPagination 1001
+  Query.comparePagination firstComparison @?= Pagination (Just 1) (Just 1000) 1001 (Just 2) 1000 1 True
+  Query.comparePagination finalComparison @?= Pagination (Just 2) (Just 1000) 1001 (Just 2) 1 0 False
+  Query.compareEntries firstComparison <> Query.compareEntries finalComparison @?= Query.compareEntries legacy
+  Query.compareCounts firstComparison @?= Query.compareCounts legacy
+  Service.compareRequestPage (decodeComparison (apiParameters <> [("page", Just "2")])) @?= Just (PageRequest 2 20)
+
 
 parseFixtureFile :: (FilePath, ByteString.ByteString) -> Either Text ParsedManagedDocument
 parseFixtureFile (path, bytes) = do

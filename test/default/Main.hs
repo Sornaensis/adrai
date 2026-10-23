@@ -485,6 +485,7 @@ normalMain' arguments =
   case arguments of
     ["--assert-adrai-exe-preserved"] -> assertAdraiExePreserved
     ["--hold-overlay-session", path] -> Adrai.Provenance.LockTest.holdSessionForTest path
+    ["--write-p2-05-goldens"] -> Adrai.QueryHistoryTest.writeProjectionGoldens
     ["--write-p3-01-goldens"] -> Adrai.VectorQualityTest.writeP301Goldens
     ["--write-p3-02-goldens"] -> Adrai.RetrievalPlanGoldenTest.writeP302Goldens
     ["--write-p3-03-goldens"] -> Adrai.CompilerMaterializationGoldenTest.writeP303Goldens

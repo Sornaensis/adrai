@@ -74,7 +74,7 @@ prop_compareDirection :: Property
 prop_compareDirection = withTests 60 . property $ do
   spec <- forAll genProjectionDagSpec
   let fixture = materializeProjectionDag spec
-      options = CompareOptions True []
+      options = CompareOptions True [] Nothing
       forward = expect "forward comparison" (compareSnapshots options (projectionFixtureBefore fixture) (projectionFixtureAfter fixture))
       reverseProjection = expect "reverse comparison" (compareSnapshots options (projectionFixtureAfter fixture) (projectionFixtureBefore fixture))
       forwardCounts = compareCounts forward
@@ -127,7 +127,7 @@ renderAll fixture before after =
     { bytesCollapsed = renderCollapsedProjection (expect "collapsed projection" (projectCollapsed RichProjection after adr)),
       bytesExploded = renderExplodedProjection (expect "exploded projection" (projectExploded (ExplodedOptions True) after adr)),
       bytesHistory = renderHistoryProjection (expect "history projection" (projectHistory after (Just adr) defaultHistoryOptions)),
-      bytesCompare = renderCompareProjection (expect "compare projection" (compareSnapshots (CompareOptions True []) before after))
+      bytesCompare = renderCompareProjection (expect "compare projection" (compareSnapshots (CompareOptions True [] Nothing) before after))
     }
   where
     adr = projectionFixturePrimaryAdr fixture

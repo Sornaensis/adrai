@@ -12,6 +12,15 @@
       "revision": "p3-04-conflict-resolved",
       "source": "revision"
     },
+    "pagination": {
+      "has_next": false,
+      "page": 1,
+      "page_size": 10,
+      "remaining": 0,
+      "returned": 1,
+      "total_pages": 1,
+      "total_results": 1
+    },
     "results": [
       {
         "adr": "A00000000000000000000000000",
@@ -87,6 +96,8 @@
         },
         "queries": 1
       },
+      "policy": "fixed-depth-10",
+      "policy_fingerprint": "sha256:lvUo4JRdVf6Pw8RuteW1dq_ClswnjlMaXDQ5xN_d6d8",
       "scope_used_for_eligibility": false,
       "scoring": {
         "high_margin": 0.045,
@@ -141,6 +152,15 @@
       "query_chunks": 1,
       "revision": "rationale-resolved",
       "source": "revision"
+    },
+    "pagination": {
+      "has_next": false,
+      "page": 1,
+      "page_size": 10,
+      "remaining": 0,
+      "returned": 1,
+      "total_pages": 1,
+      "total_results": 1
     },
     "results": [
       {
@@ -217,6 +237,8 @@
         },
         "queries": 1
       },
+      "policy": "fixed-depth-10",
+      "policy_fingerprint": "sha256:lvUo4JRdVf6Pw8RuteW1dq_ClswnjlMaXDQ5xN_d6d8",
       "scope_used_for_eligibility": false,
       "scoring": {
         "high_margin": 0.045,
@@ -271,6 +293,15 @@
       "query_chunks": 1,
       "revision": "rationale-resolved",
       "source": "revision"
+    },
+    "pagination": {
+      "has_next": false,
+      "page": 1,
+      "page_size": 10,
+      "remaining": 0,
+      "returned": 1,
+      "total_pages": 1,
+      "total_results": 1
     },
     "results": [
       {
@@ -347,6 +378,8 @@
         },
         "queries": 1
       },
+      "policy": "fixed-depth-10",
+      "policy_fingerprint": "sha256:lvUo4JRdVf6Pw8RuteW1dq_ClswnjlMaXDQ5xN_d6d8",
       "scope_used_for_eligibility": false,
       "scoring": {
         "high_margin": 0.045,

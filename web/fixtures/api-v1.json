@@ -1186,10 +1186,21 @@
             "algorithm": "exact",
             "identifier_corpus": 1,
             "semantic_corpus": 1
-          }
+          },
+          "policy": "fixed-depth-10",
+          "policy_fingerprint": "sha256:lvUo4JRdVf6Pw8RuteW1dq_ClswnjlMaXDQ5xN_d6d8"
         },
         "schema": "adrai/relevant/v2",
-        "view": "relevant"
+        "view": "relevant",
+        "pagination": {
+          "has_next": false,
+          "page": 1,
+          "page_size": 10,
+          "remaining": 0,
+          "returned": 1,
+          "total_pages": 1,
+          "total_results": 1
+        }
       }
     },
     "relevant_worktree": {
@@ -1288,6 +1299,8 @@
             },
             "queries": 1
           },
+          "policy": "fixed-depth-10",
+          "policy_fingerprint": "sha256:lvUo4JRdVf6Pw8RuteW1dq_ClswnjlMaXDQ5xN_d6d8",
           "scope_used_for_eligibility": false,
           "scoring": {
             "high_margin": 0.045,
@@ -1329,7 +1342,16 @@
           }
         },
         "schema": "adrai/relevant/v2",
-        "view": "relevant"
+        "view": "relevant",
+        "pagination": {
+          "has_next": false,
+          "page": 1,
+          "page_size": 10,
+          "remaining": 0,
+          "returned": 1,
+          "total_pages": 1,
+          "total_results": 1
+        }
       }
     },
     "history": {
@@ -1364,7 +1386,7 @@
             "reason": "status update",
             "resolved": true,
             "status": "active",
-            "title": "Café architecture v2"
+            "title": "Caf\u00e9 architecture v2"
           },
           {
             "actor": "llm:reviewer",
@@ -1387,7 +1409,7 @@
             "reason": "reviewed amendment",
             "resolved": true,
             "status": "active",
-            "title": "Café architecture v2"
+            "title": "Caf\u00e9 architecture v2"
           },
           {
             "actor": "human:architect",
@@ -1411,16 +1433,25 @@
             "label": "created",
             "operation": "O11111111111111111111111111",
             "placement": "original",
-            "reason": "Café architecture v1 summary",
+            "reason": "Caf\u00e9 architecture v1 summary",
             "resolved": true,
             "status": "active",
-            "title": "Café architecture v1"
+            "title": "Caf\u00e9 architecture v1"
           }
         ],
         "order": "newest-first",
         "schema": "adrai/history/v1",
         "truncated": false,
-        "view": "history"
+        "view": "history",
+        "pagination": {
+          "has_next": false,
+          "page": 1,
+          "page_size": 20,
+          "remaining": 0,
+          "returned": 3,
+          "total_pages": 1,
+          "total_results": 3
+        }
       }
     },
     "compare": {
@@ -1484,7 +1515,7 @@
                 "C55555555555555555555555555"
               ],
               "summary": "new summary",
-              "title": "Café architecture v2"
+              "title": "Caf\u00e9 architecture v2"
             },
             "before": {
               "adr": "A11111111111111111111111111",
@@ -1523,8 +1554,8 @@
               "status_heads": [
                 "C33333333333333333333333333"
               ],
-              "summary": "Café architecture v1 summary",
-              "title": "Café architecture v1"
+              "summary": "Caf\u00e9 architecture v1 summary",
+              "title": "Caf\u00e9 architecture v1"
             },
             "changes": [
               {
@@ -1533,15 +1564,15 @@
                 "field": "record"
               },
               {
-                "after": "Café architecture v2",
-                "before": "Café architecture v1",
-                "diff": "--- before+++ after@@ -1 +1 @@-Café architecture v1+Café architecture v2",
+                "after": "Caf\u00e9 architecture v2",
+                "before": "Caf\u00e9 architecture v1",
+                "diff": "--- before+++ after@@ -1 +1 @@-Caf\u00e9 architecture v1+Caf\u00e9 architecture v2",
                 "field": "title"
               },
               {
                 "after": "new summary",
-                "before": "Café architecture v1 summary",
-                "diff": "--- before+++ after@@ -1 +1 @@-Café architecture v1 summary+new summary",
+                "before": "Caf\u00e9 architecture v1 summary",
+                "diff": "--- before+++ after@@ -1 +1 @@-Caf\u00e9 architecture v1 summary+new summary",
                 "field": "summary"
               },
               {
@@ -1570,7 +1601,7 @@
               }
             ],
             "kind": "changed",
-            "title": "Café architecture v2"
+            "title": "Caf\u00e9 architecture v2"
           },
           {
             "adr": "A22222222222222222222222222",
@@ -1693,7 +1724,16 @@
         "from_requested": "1111111111111111111111111111111111111111",
         "to": "2222222222222222222222222222222222222222",
         "to_requested": "2222222222222222222222222222222222222222",
-        "view": "compare"
+        "view": "compare",
+        "pagination": {
+          "has_next": false,
+          "page": null,
+          "page_size": null,
+          "remaining": 0,
+          "returned": 2,
+          "total_pages": null,
+          "total_results": 2
+        }
       }
     },
     "conflicts": {

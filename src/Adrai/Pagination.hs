@@ -2,9 +2,11 @@
 
 module Adrai.Pagination
   ( Pagination (..),
+    PageRequest (..),
     PaginationError (..),
     validatePage,
     paginate,
+    unpagedPagination,
     paginationJson,
     renderPagination,
   )
@@ -28,6 +30,15 @@ data Pagination = Pagination
 
 data PaginationError = InvalidPage Integer | InvalidPageSize Int
   deriving (Eq, Show)
+
+data PageRequest = PageRequest
+  { pageRequestPage :: Integer,
+    pageRequestSize :: Int
+  }
+  deriving (Eq, Show)
+
+unpagedPagination :: Int -> Pagination
+unpagedPagination total = Pagination Nothing Nothing total Nothing total 0 False
 
 validatePage :: Integer -> Either PaginationError ()
 validatePage page

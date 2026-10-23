@@ -23,6 +23,11 @@ module Adrai.Relevance
     relevanceAdrShortlistMin,
     relevanceAdrShortlistMax,
     relevanceAdrShortlistMultiplier,
+    relevanceSemanticShortlistSize,
+    relevanceIdentifierSeedSize,
+    relevancePassageLimit,
+    relevanceSectionLimit,
+    relevanceRetrievalFingerprint,
     relevanceScopeShortlistCap,
     relevanceMaxSourceQueryChunks,
     secondEvidenceWeight,
@@ -185,6 +190,21 @@ relevanceAdrShortlistMax = 160
 
 relevanceAdrShortlistMultiplier :: Int
 relevanceAdrShortlistMultiplier = 12
+
+-- Fixed default-depth-10 retrieval policy, independent of presentation pages.
+relevanceSemanticShortlistSize, relevanceIdentifierSeedSize, relevancePassageLimit, relevanceSectionLimit :: Int
+relevanceSemanticShortlistSize = 120
+relevanceIdentifierSeedSize = 60
+relevancePassageLimit = 60
+relevanceSectionLimit = 40
+
+relevanceRetrievalFingerprint :: Text
+relevanceRetrievalFingerprint = renderDigest . sha256Digest . TextEncoding.encodeUtf8 $
+  "fixed-depth-10:semantic=" <> count relevanceSemanticShortlistSize
+    <> ";identifier=" <> count relevanceIdentifierSeedSize <> ";union=" <> count relevanceAdrShortlistMax
+    <> ";passage=" <> count relevancePassageLimit <> ";section=" <> count relevanceSectionLimit
+  where
+    count = Text.pack . show
 
 relevanceScopeShortlistCap :: Int
 relevanceScopeShortlistCap = 24

@@ -64,6 +64,17 @@ Relevant defaults to a committed `at=HEAD` source; `worktree=true` reads the
 safe current worktree file against the exact HEAD compilation context and
 cannot be combined with an explicit `at`.
 
+History and relevance also accept one-based `page`, defaulting to 1, and use
+`limit` as their page size (defaults 20 and 10; maxima 1000 and 100).
+Their `pagination` metadata follows search. History `truncated` equals `has_next`.
+Relevance totals cover the complete fixed-policy retrieved result set, while
+`eligible_adrs` describes its eligible corpus; confidence uses all competitors.
+Compare accepts optional `page`/`limit` (defaults 1/20 when either is present).
+Omitting both preserves the complete legacy comparison, including more than
+1000 entries. Its pagination page fields are null in that mode, with complete
+filtered totals and zero remaining. Global category counts cover all ADRs even
+when unchanged entries are hidden or the response contains one page.
+
 The explorer keeps each search or history response as one fixed result window
 for its exact revision, filters, and limit. Page controls display at most 100
 items from that window without another request or reranking. Changing the

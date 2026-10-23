@@ -4,6 +4,8 @@
 module Adrai.WebContractTest (tests) where
 
 import qualified Adrai.CliTypes as CliTypes
+import qualified Adrai.History
+import Adrai.Pagination (PageRequest (..))
 import qualified Adrai.Query as Query
 import qualified Adrai.Service.Query as QueryService
 import qualified Adrai.Format
@@ -116,6 +118,32 @@ testQueryStrictness = do
   assertBool "search accepts a full 1000-result window" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.SearchRoute [("q", Just ""), ("limit", Just "1000")] ByteString.empty))
   assertBool "history accepts a full 1000-operation window" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.HistoryRoute [("limit", Just "1000")] ByteString.empty))
   failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.HistoryRoute [("limit", Just "1001")] ByteString.empty) @?= "invalid-field"
+  let compareFields = [("from", Just "HEAD~1"), ("to", Just "HEAD")]
+  mapM_ (\(route, fields) -> mapM_ (\raw ->
+    failureCode (Api.decodeApiRequest Api.defaultApiLimits route (fields <> [("page", Just raw)]) ByteString.empty) @?= "invalid-field")
+    ["0", "-1", "1.5", " 1", "18446744073709551617"])
+    [(Api.HistoryRoute, []), (Api.RelevantRoute, [("file", Just "src/main.hs")]), (Api.CompareRoute, compareFields)]
+  case Api.decodeApiRequest Api.defaultApiLimits Api.HistoryRoute [("page", Just "2")] ByteString.empty of
+    Right (Api.ApiHistoryRequest request) -> Adrai.History.historyOptionPage (QueryService.historyRequestOptions request) @?= 2
+    other -> assertFailure (show other)
+  case Api.decodeApiRequest Api.defaultApiLimits Api.RelevantRoute [("file", Just "src/main.hs"), ("page", Just "2")] ByteString.empty of
+    Right (Api.ApiRelevantRequest request) -> Query.relevantRequestPage request @?= 2
+    other -> assertFailure (show other)
+  mapM_ (\(fields, expected) -> case Api.decodeApiRequest Api.defaultApiLimits Api.CompareRoute (compareFields <> fields) ByteString.empty of
+    Right (Api.ApiCompareRequest request) -> QueryService.compareRequestPage request @?= expected
+    other -> assertFailure (show other))
+    [([], Nothing), ([("page", Just "2")], Just (PageRequest 2 20)), ([("limit", Just "7")], Just (PageRequest 1 7))]
+  failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.CompareRoute (compareFields <> [("limit", Just "1001")]) ByteString.empty) @?= "invalid-field"
+  failureCode (Api.decodeApiRequest (Api.defaultApiLimits {Api.maximumResultLimit = 5}) Api.CompareRoute (compareFields <> [("limit", Just "6")]) ByteString.empty) @?= "invalid-field"
+  case Api.decodeApiRequest (Api.defaultApiLimits {Api.maximumResultLimit = 5}) Api.CompareRoute (compareFields <> [("page", Just "2")]) ByteString.empty of
+    Right (Api.ApiCompareRequest request) -> QueryService.compareRequestPage request @?= Just (PageRequest 2 5)
+    other -> assertFailure (show other)
+  case Api.decodeApiRequest (Api.defaultApiLimits {Api.maximumResultLimit = 5}) Api.CompareRoute compareFields ByteString.empty of
+    Right (Api.ApiCompareRequest request) -> QueryService.compareRequestPage request @?= Nothing
+    other -> assertFailure (show other)
+  failureCode (Api.decodeApiRequest (Api.defaultApiLimits {Api.maximumResultLimit = 2000}) Api.CompareRoute (compareFields <> [("limit", Just "1001")]) ByteString.empty) @?= "invalid-field"
+
+
   failureCode (Api.decodeApiRequest Api.defaultApiLimits Api.RelevantRoute [("file", Just "src/main.hs"), ("limit", Just "101")] ByteString.empty) @?= "invalid-field"
   assertBool "relevant accepts its 100-result bound" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.RelevantRoute [("file", Just "src/main.hs"), ("limit", Just "100")] ByteString.empty))
   assertBool "worktree relevance is an existing typed selector" (isRight (Api.decodeApiRequest Api.defaultApiLimits Api.RelevantRoute [("file", Just "src/main.hs"), ("worktree", Just "true")] ByteString.empty))

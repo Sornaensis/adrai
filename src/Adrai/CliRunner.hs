@@ -95,6 +95,7 @@ import Adrai.CliTypes
     ObsoleteCliRequest (..),
     ReactivateCliRequest (..),
   )
+import Adrai.Pagination (PageRequest (..), renderPagination)
 import Adrai.History
   ( ActorSelector (..),
     HistoryOptions (..),
@@ -703,12 +704,21 @@ historyParser =
   HistoryCommand
     <$> optional (strArgument (metavar "ADR_ID" <> help "optional ADR ID or prefix"))
     <*> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to query (default: HEAD)")
-    <*> option auto (long "limit" <> Opt.value 20 <> showDefault <> help "max results (default 20)")
+    <*> option (eitherReader (parsePageSize 1000)) (long "limit" <> Opt.value 20 <> showDefault <> help "results per page, 1-1000 (default 20)")
     <*> optional (strOption (long "actor" <> metavar "KIND:IDENTIFIER" <> help "filter by actor"))
     <*> optional (option auto (long "since" <> metavar "MILLISECONDS" <> help "show entries at or after this Unix timestamp in milliseconds"))
     <*> optional (option auto (long "until" <> metavar "MILLISECONDS" <> help "show entries at or before this Unix timestamp in milliseconds"))
     <*> switch (long "reverse" <> help "reverse the order")
     <*> switch (long "json" <> help "output JSON")
+    <*> resultPageParser
+
+resultPageParser :: Parser Integer
+resultPageParser = option auto (long "page" <> Opt.value 1 <> showDefault <> help "one-based result page")
+
+parsePageSize :: Integer -> String -> Either String Int
+parsePageSize maximumSize raw = case reads raw :: [(Integer, String)] of
+  [(value, "")] | value >= 1 && value <= maximumSize -> Right (fromInteger value)
+  _ -> Left ("--limit must be between 1 and " <> show maximumSize)
 
 -- | Search command parser.
 domainsParser :: Parser DomainsCommand
@@ -763,9 +773,10 @@ relevantParser =
     <*> optional (strOption (long "at" <> metavar "REVISION" <> help "immutable revision containing FILE (default HEAD)"))
     <*> switch (long "worktree" <> help "read FILE from the worktree using HEAD as context")
     <*> switch (long "include-obsolete" <> help "include obsolete ADRs")
-    <*> option auto (long "limit" <> Opt.value 10 <> showDefault <> help "max results (default 10)")
+    <*> option (eitherReader (parsePageSize 100)) (long "limit" <> Opt.value 10 <> showDefault <> help "results per page, 1-100 (default 10)")
     <*> switch (long "json" <> help "output JSON")
     <*> option (eitherReader parseView) (long "view" <> metavar "collapsed|exploded" <> Opt.value CollapsedView <> showDefaultWith viewText <> help "collapsed lists ADR IDs and titles; exploded adds summaries")
+    <*> resultPageParser
   where
     parseView "collapsed" = Right CollapsedView
     parseView "exploded" = Right ExplodedView
@@ -781,6 +792,8 @@ compareParser =
     <*> (strArgument (metavar "TO" <> help "revision to compare to (default HEAD)") <|> pure "HEAD")
     <*> switch (long "include-unchanged" <> help "include unchanged items")
     <*> switch (long "json" <> help "output JSON")
+    <*> option (eitherReader (parsePageSize 1000)) (long "limit" <> Opt.value 20 <> showDefault <> help "results per page, 1-1000 (default 20)")
+    <*> resultPageParser
 
 -- | Run the CLI: parse arguments and dispatch to the appropriate handler.
 run :: IO ()
@@ -1493,7 +1506,8 @@ runProductionCompare config command = do
           CompareRequest
             { compareRequestFrom = compareBefore command,
               compareRequestTo = compareAfter command,
-              compareRequestIncludeUnchanged = compareUnchanged command
+              compareRequestIncludeUnchanged = compareUnchanged command,
+              compareRequestPage = Just (PageRequest (comparePage command) (compareLimit command))
             }
       pure $ case result of
         Left failure -> Left (CliUserFailure (compareFailureText failure))
@@ -1519,7 +1533,8 @@ runProductionHistory config command =
                         historyOptionLimit = historyLimit command,
                         historyOptionActor = actorSelector,
                         historyOptionSince = historySince command,
-                        historyOptionUntil = historyUntil command
+                        historyOptionUntil = historyUntil command,
+                        historyOptionPage = historyPage command
                       }
                 }
           pure $ case result of
@@ -2535,11 +2550,11 @@ rawSemanticText projection =
    in if Text.null output || Text.isSuffixOf "\n" output then output else output <> "\n"
 
 renderCompareHuman :: CompareProjection -> Text
-renderCompareHuman projection = humanLines $
+renderCompareHuman projection = (humanLines $
   [ "Compare " <> humanInline (revisionRequested (compareFromRevision projection)) <> " -> " <> humanInline (revisionRequested (compareToRevision projection)),
     "Added: " <> count Query.compareAdded <> "  Removed: " <> count Query.compareRemoved <> "  Changed: " <> count Query.compareChanged <> "  Unchanged: " <> count Query.compareUnchanged
   ]
-    <> concatMap entryLines (compareEntries projection)
+    <> concatMap entryLines (compareEntries projection)) <> renderPagination (comparePagination projection)
   where
     count field = Text.pack (show (field (compareCounts projection)))
     entryLines entry =
@@ -2547,9 +2562,8 @@ renderCompareHuman projection = humanLines $
         <> ["  Changed: " <> humanList (map compareChangeField (compareEntryChanges entry)) | not (null (compareEntryChanges entry))]
 
 renderHistoryHuman :: HistoryProjection -> Text
-renderHistoryHuman projection = humanLines $
-  concatMap operationLines (historyProjectionOperations projection)
-    <> ["More operations available; increase --limit to show more." | historyProjectionTruncated projection]
+renderHistoryHuman projection = humanLines (concatMap operationLines (historyProjectionOperations projection))
+  <> renderPagination (historyProjectionPagination projection)
   where
     operationLines operation =
       [ isoTimestampFromMs (historyOperationClaimedAt operation) <> " " <> operationIdText (historyOperationId operation) <> " " <> humanInline (historyOperationLabel operation)

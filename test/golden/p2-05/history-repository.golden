@@ -87,6 +87,15 @@
     }
   ],
   "order": "newest-first",
+  "pagination": {
+    "has_next": false,
+    "page": 1,
+    "page_size": 20,
+    "remaining": 0,
+    "returned": 4,
+    "total_pages": 1,
+    "total_results": 4
+  },
   "schema": "adrai/history/v1",
   "truncated": false,
   "view": "history"

@@ -24,6 +24,7 @@ module Adrai.Service.Query
     runShow,
     runWebShow,
     runCompare,
+    projectComparison,
     runHistory,
     runSearch,
     runDomains,
@@ -182,6 +183,7 @@ import qualified Data.Set as Set
 import Data.Int (Int64)
 import Data.List (sortOn)
 import Data.Text (Text)
+import Adrai.Pagination (PageRequest)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Database.SQLite.Simple (Connection, Only, close, execute_, open, query_)
@@ -230,7 +232,8 @@ data ShowFailure
 data CompareRequest = CompareRequest
   { compareRequestFrom :: Text,
     compareRequestTo :: Text,
-    compareRequestIncludeUnchanged :: Bool
+    compareRequestIncludeUnchanged :: Bool,
+    compareRequestPage :: Maybe PageRequest
   }
   deriving (Eq, Show)
 
@@ -344,18 +347,20 @@ runCompare repository request = do
       afterResult <- readSnapshotAt repository (compareRequestTo request)
       pure $ case afterResult of
         Left failure -> Left (compareSnapshotFailure failure)
-        Right afterSnapshot ->
-          either
-            (Left . CompareProjectionFailure)
-            Right
-            ( compareSnapshots
-                CompareOptions
-                  { compareIncludeUnchanged = compareRequestIncludeUnchanged request,
-                    compareCacheMetadata = []
-                  }
-                beforeSnapshot
-                afterSnapshot
-            )
+        Right afterSnapshot -> projectComparison request beforeSnapshot afterSnapshot
+
+-- | Apply the shared request to already resolved snapshots. Omitting paging
+-- preserves the complete comparison for existing service and API clients.
+projectComparison :: CompareRequest -> ReadSnapshot -> ReadSnapshot -> Either CompareFailure CompareProjection
+projectComparison request beforeSnapshot afterSnapshot =
+  either (Left . CompareProjectionFailure) Right
+    (compareSnapshots
+      CompareOptions
+        { compareIncludeUnchanged = compareRequestIncludeUnchanged request,
+          compareCacheMetadata = [],
+          compareOptionPage = compareRequestPage request
+        }
+      beforeSnapshot afterSnapshot)
 
 runHistory :: Repository -> HistoryRequest -> IO (Either HistoryFailure HistoryProjection)
 runHistory repository request = do

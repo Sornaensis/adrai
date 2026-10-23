@@ -7,13 +7,13 @@ ADRAI exposes two related commands:
 
 Both operate against a resolved Git revision. By default, each result is a single
 line containing its ADR ID and title. `--view exploded` adds the summary below
-each title, indented by two spaces. No matches produce empty stdout; successful
-queries produce no stderr output. Result order and limits are unchanged by the
+each title, indented by two spaces. Every response ends with a compact page footer,
+including no matches; successful queries produce no stderr output. Result order and limits are unchanged by the
 output format. Conflicted ADRs retain their conflict title rather than displaying
 one matched head as a resolved decision.
 
 JSON is opt-in with `--json`. The CLI schemas are `adrai/search-cli/v1` and
-`adrai/relevant-cli/v1`. Each envelope contains only `schema`, `algorithm` and
+`adrai/relevant-cli/v1`. Each envelope contains `schema`, `algorithm`, `pagination` and
 `results`; each row contains only `adr`, `title` and `score`, plus `summary`
 with `--view exploded`. Source paths, scoring breakdowns, evidence and
 diagnostics are omitted. For example:
@@ -171,6 +171,18 @@ adrai relevant src/Storage.hs --at main~1 --json
 ```
 
 Without `--worktree`, the file and ADR context come from the same resolved revision (`HEAD` by default). `--worktree` reads the current file safely from the worktree while keeping ADR context bound to `HEAD`; it cannot be combined with `--at`.
+
+`--page N` selects a one-based page (default 1); `--limit N` sets its size
+(default 10, range 1–100). CLI and HTTP responses include the shared `pagination`
+fields described above; text always ends with shown/total, pages and remaining.
+Totals describe the finalized distinct ADRs retrieved by a fixed depth-10 policy,
+not all `eligible_adrs`. That policy uses semantic shortlist 120, identifier seed
+60, union maximum 160, passage evidence 60 per source chunk and LSH section
+candidates 40, with the existing fixed source-chunk and scope bounds. Exact
+fallback is unchanged. Retrieval diagnostics publish `policy: fixed-depth-10`
+and its `policy_fingerprint`. Changing page size never changes these budgets.
+All competitors contribute to confidence and margins before a page is selected,
+so concatenating pages preserves complete-result order, evidence and confidence.
 
 Input is limited to 4 MiB. Binary-like input, NUL bytes, and very short or uninformative text are rejected or produce no weak match. Informative text is chunked, shortlisted through exact, FTS, and vector channels, and reranked against stored ADR passages. File scope affects ranking but does not exclude an otherwise relevant ADR.
 

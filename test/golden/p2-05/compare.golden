@@ -256,6 +256,15 @@
   ],
   "from": "before-resolved",
   "from_requested": "before",
+  "pagination": {
+    "has_next": false,
+    "page": null,
+    "page_size": null,
+    "remaining": 0,
+    "returned": 2,
+    "total_pages": null,
+    "total_results": 2
+  },
   "to": "after-resolved",
   "to_requested": "after",
   "view": "compare"

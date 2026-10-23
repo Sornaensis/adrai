@@ -86,7 +86,7 @@ module Adrai.Query
 where
 
 import Adrai.Domain (Domain, DomainError, canonicalDomains, domainIsWithin, domainRefinementText, domainText)
-import Adrai.Pagination (Pagination, PaginationError, paginate, paginationJson, validatePage)
+import Adrai.Pagination (Pagination, PaginationError (..), PageRequest (..), paginate, paginationJson, unpagedPagination, validatePage)
 import Adrai.Format (publicSchemaText, renderDigest)
 import Adrai.Format.Document
 import Adrai.Format.Json
@@ -311,6 +311,7 @@ data ExplodedProjection = ExplodedProjection
 
 data QueryError
   = QueryAdrNotFound AdrId
+  | QueryInvalidPagination PaginationError
   | QuerySnapshotInvalid SnapshotConsistencyError
   deriving (Eq, Show)
 
@@ -433,7 +434,8 @@ data RelevantRequest = RelevantRequest
   { relevantRequestFile :: RepoPath,
     relevantRequestRevision :: RevisionSelector,
     relevantRequestIncludeObsolete :: Bool,
-    relevantRequestLimit :: Int
+    relevantRequestLimit :: Int,
+    relevantRequestPage :: Integer
   }
   deriving (Eq, Show)
 
@@ -443,7 +445,8 @@ defaultRelevantRequest path =
     { relevantRequestFile = path,
       relevantRequestRevision = AtRevision "HEAD",
       relevantRequestIncludeObsolete = False,
-      relevantRequestLimit = 10
+      relevantRequestLimit = 10,
+      relevantRequestPage = 1
     }
 
 data RelevantSource
@@ -462,6 +465,7 @@ data RelevantSource
 
 data RelevantError
   = RelevantInvalidLimit Int
+  | RelevantInvalidPage PaginationError
   | RelevantSnapshotInvalid SnapshotConsistencyError
   | RelevantMaterializationMismatch Text
   | RelevantSourceMismatch Text
@@ -553,7 +557,8 @@ data RelevantProjection = RelevantProjection
     relevantProjectionFile :: RelevantFileInfo,
     relevantProjectionRetrieval :: RelevantRetrieval,
     relevantProjectionResults :: [RelevantResult],
-    relevantProjectionDiagnostics :: Maybe RelevantDiagnostics
+    relevantProjectionDiagnostics :: Maybe RelevantDiagnostics,
+    relevantProjectionPagination :: Pagination
   }
   deriving (Eq, Show)
 
@@ -1573,15 +1578,7 @@ runRelevantValidated timingHooks connection snapshot materialization corpus requ
           finishZero =
             let fileInfo = relevantFileInfo request source prepared [] []
              in pure
-                  ( Right
-                      RelevantProjection
-                        { relevantProjectionRevision = readSnapshotRevision snapshot,
-                          relevantProjectionFile = fileInfo,
-                          relevantProjectionRetrieval = emptyRelevantRetrieval [] [],
-                          relevantProjectionResults = [],
-                          relevantProjectionDiagnostics = Nothing
-                        }
-                  )
+                    (buildRelevantProjection request snapshot fileInfo (emptyRelevantRetrieval [] []) [])
        in if meaningfulAlnumByteCount bytes == 0
             then
               case validateTextBytes label bytes of
@@ -1594,16 +1591,9 @@ runRelevantValidated timingHooks connection snapshot materialization corpus requ
                   let meaningfulCount = meaningfulAlnumCount decoded
                       finish allChunks selectedChunks =
                         let fileInfo = relevantFileInfo request source prepared allChunks selectedChunks
-                            emptyProjection =
-                              RelevantProjection
-                                { relevantProjectionRevision = readSnapshotRevision snapshot,
-                                  relevantProjectionFile = fileInfo,
-                                  relevantProjectionRetrieval = emptyRelevantRetrieval allChunks selectedChunks,
-                                  relevantProjectionResults = [],
-                                  relevantProjectionDiagnostics = Nothing
-                                }
+                            emptyProjection = buildRelevantProjection request snapshot fileInfo (emptyRelevantRetrieval allChunks selectedChunks) []
                          in if meaningfulCount < minMeaningfulAlnum || null selectedChunks
-                              then pure (Right emptyProjection)
+                              then pure emptyProjection
                               else runRelevantCandidates timingHooks connection snapshot corpus request prepared fileInfo allChunks selectedChunks
                    in if meaningfulCount == 0
                         then finish [] []
@@ -1619,6 +1609,7 @@ prepareRelevant snapshot materialization request source = do
   if relevantRequestLimit request < 1 || relevantRequestLimit request > 100
     then Left (RelevantInvalidLimit (relevantRequestLimit request))
     else Right ()
+  mapLeft RelevantInvalidPage (validatePage (relevantRequestPage request))
   validateRelevantSource snapshot request source
   mapM_ validateDocument (searchMaterializationDocuments materialization)
   mapM_ validatePassage (searchMaterializationPassages materialization)
@@ -1714,15 +1705,7 @@ runRelevantCandidates :: RelevantTimingHooks -> Connection -> ReadSnapshot -> Se
 runRelevantCandidates timingHooks connection snapshot corpus request prepared fileInfo allChunks selectedChunks
   | Map.null documents =
       pure
-        ( Right
-            RelevantProjection
-              { relevantProjectionRevision = readSnapshotRevision snapshot,
-                relevantProjectionFile = fileInfo,
-                relevantProjectionRetrieval = emptyRelevantRetrieval allChunks selectedChunks,
-                relevantProjectionResults = [],
-                relevantProjectionDiagnostics = Nothing
-              }
-        )
+        (buildRelevantProjection request snapshot fileInfo (emptyRelevantRetrieval allChunks selectedChunks) [])
   | otherwise = do
       let semanticVectors = map (semanticEmbedding . sourceEmbeddingText . textChunkText) selectedChunks
           identifierVectors = map (identifierEmbedding . sourceEmbeddingText . textChunkText) selectedChunks
@@ -1748,7 +1731,7 @@ runRelevantCandidates timingHooks connection snapshot corpus request prepared fi
                           relevantCandidatesRetrieved timingHooks
                           let aggregated = aggregateRelevantMatches request prepared documents matchesByAdr auxByMatch
                               orderedAggregated = sortBy relevantAggregatedOrder aggregated
-                              results = take (relevantRequestLimit request) (finalizeRelevantResults snapshot (relevantRequestFile request) documents orderedAggregated)
+                              results = finalizeRelevantResults snapshot (relevantRequestFile request) documents orderedAggregated
                               shortlistAdrs =
                                 Set.fromList
                                   [ searchDocumentAdrId document
@@ -1780,19 +1763,21 @@ runRelevantCandidates timingHooks connection snapshot corpus request prepared fi
                                     relevantRetrievalSections = Just sectionDiagnostics,
                                     relevantRetrievalExactRerankCandidates = exactCandidateCount
                                   }
-                              projection = RelevantProjection
-                                { relevantProjectionRevision = readSnapshotRevision snapshot,
-                                  relevantProjectionFile = fileInfo,
-                                  relevantProjectionRetrieval = retrieval,
-                                  relevantProjectionResults = results,
-                                  relevantProjectionDiagnostics = Nothing
-                                }
-                          forcePublishedRelevantProjection projection
-                          relevantResultsRanked timingHooks
-                          pure (Right projection)
+                              projection = buildRelevantProjection request snapshot fileInfo retrieval results
+                          case projection of
+                            Left problem -> pure (Left problem)
+                            Right paged -> do
+                              forcePublishedRelevantProjection paged
+                              relevantResultsRanked timingHooks
+                              pure (Right paged)
   where
     documents = preparedRelevantDocuments prepared
     passages = preparedRelevantPassages prepared
+
+buildRelevantProjection :: RelevantRequest -> ReadSnapshot -> RelevantFileInfo -> RelevantRetrieval -> [RelevantResult] -> Either RelevantError RelevantProjection
+buildRelevantProjection request snapshot fileInfo retrieval allResults = do
+  (results, pagination) <- mapLeft RelevantInvalidPage (paginate (relevantRequestPage request) (relevantRequestLimit request) allResults)
+  Right (RelevantProjection (readSnapshotRevision snapshot) fileInfo retrieval results Nothing pagination)
 
 -- The retrieval clock stops only after the pair scores and passage payloads
 -- consumed by aggregation have been evaluated. Map.size would force keys and
@@ -1861,7 +1846,7 @@ relevantDocumentScores missingError vectors queryVector =
       mapLeft RelevantVectorFailure (dot queryVector documentVector)
 
 runRelevantPassageFts :: Connection -> RelevantRequest -> [TextChunk] -> [SearchPassage] -> IO (Either RelevantError ([PassageChunkEvidence], JsonValue))
-runRelevantPassageFts connection request chunks passages =
+runRelevantPassageFts connection _request chunks passages =
   case mkCandidateLimit (toInteger perChunkLimit) of
     Left problem -> pure (Left (RelevantSqlFailure problem))
     Right candidateLimit -> do
@@ -1870,7 +1855,7 @@ runRelevantPassageFts connection request chunks passages =
         values <- result
         Right (values, passageFtsDiagnostics values)
   where
-    perChunkLimit = max 24 (relevantRequestLimit request * 6)
+    perChunkLimit = relevancePassageLimit
     allowed = Set.fromList (map searchPassageId passages)
     collect [] _ values = pure (Right (reverse values))
     collect (chunk : remaining) limit values = do
@@ -1943,14 +1928,14 @@ passageFtsDiagnostics chunks =
     ]
 
 relevantShortlist :: RelevantRequest -> Map Text SearchDocument -> [SearchPassage] -> Map Text Double -> Map Text Double -> [PassageChunkEvidence] -> Set Text
-relevantShortlist request documents passages summaryScores identifierScores passageChunks
+relevantShortlist _request documents passages summaryScores identifierScores passageChunks
   | Map.size documents <= target = Map.keysSet documents
   | Set.size initial <= relevanceAdrShortlistMax = initial
   | otherwise = Set.fromList (take relevanceAdrShortlistMax (sortBy combinedOrder (Set.toList initial)))
   where
-    target = min relevanceAdrShortlistMax (max relevanceAdrShortlistMin (relevantRequestLimit request * relevanceAdrShortlistMultiplier))
+    target = relevanceSemanticShortlistSize
     semanticTop = take target (rankScoreMap summaryScores)
-    identifierTop = take (max 24 (target `div` 2)) (rankScoreMap identifierScores)
+    identifierTop = take relevanceIdentifierSeedSize (rankScoreMap identifierScores)
     passageToDocument = Map.fromList [(searchPassageId passage, searchPassageDocumentItemId passage) | passage <- passages]
     ftsItems =
       Set.fromList
@@ -1967,7 +1952,7 @@ rankScoreMap :: Map Text Double -> [Text]
 rankScoreMap = map fst . sortBy (comparing (Down . snd) <> comparing (Down . fst)) . Map.toList
 
 selectRelevantSectionCandidates :: SearchVectorCorpus -> RelevantRequest -> [DenseVector] -> [SearchPassage] -> [PassageChunkEvidence] -> Either RelevantError ([Set Text], JsonValue, Int)
-selectRelevantSectionCandidates corpus request sourceVectors passages passageChunks = do
+selectRelevantSectionCandidates corpus _request sourceVectors passages passageChunks = do
   passageVectors <- relevantPassageVectors corpus passages
   (baseCandidates, diagnostics, baseCandidateCount) <-
     case sectionIndexMode (Map.size passageVectors) of
@@ -1990,7 +1975,7 @@ selectRelevantSectionCandidates corpus request sourceVectors passages passageChu
         index <- mapLeft RelevantVectorFailure (buildLshIndex plan (Map.toAscList passageVectors))
         selected <-
           traverse
-            (\sourceVector -> mapLeft RelevantVectorFailure (selectCandidates index sourceVector (Map.keysSet passageVectors) (max 24 (relevantRequestLimit request * 4)) False))
+            (\sourceVector -> mapLeft RelevantVectorFailure (selectCandidates index sourceVector (Map.keysSet passageVectors) relevanceSectionLimit False))
             sourceVectors
         let candidateSets = map fst selected
             candidateDiagnostics = map snd selected
@@ -2676,7 +2661,8 @@ vectorDiagnosticsJson diagnostics =
 
 data CompareOptions = CompareOptions
   { compareIncludeUnchanged :: Bool,
-    compareCacheMetadata :: [(Text, JsonValue)]
+    compareCacheMetadata :: [(Text, JsonValue)],
+    compareOptionPage :: Maybe PageRequest
   }
   deriving (Eq, Show)
 
@@ -2720,7 +2706,8 @@ data CompareProjection = CompareProjection
     compareToRevision :: RevisionIdentity,
     compareCounts :: CompareCounts,
     compareEntries :: [CompareEntry],
-    compareCache :: [(Text, JsonValue)]
+    compareCache :: [(Text, JsonValue)],
+    comparePagination :: Pagination
   }
   deriving (Eq, Show)
 
@@ -2734,13 +2721,20 @@ compareSnapshots options beforeSnapshot afterSnapshot = do
       entries = map (classify beforeMap afterMap) allAdrs
       includeEntry entry = compareIncludeUnchanged options || compareEntryKind entry /= "unchanged"
       count kind = length (filter ((== kind) . compareEntryKind) entries)
+      visible = filter includeEntry entries
+  (paged, pagination) <- case compareOptionPage options of
+    Nothing -> Right (visible, unpagedPagination (length visible))
+    Just request
+      | pageRequestSize request > 1000 -> Left (QueryInvalidPagination (InvalidPageSize (pageRequestSize request)))
+      | otherwise -> mapLeft QueryInvalidPagination (paginate (pageRequestPage request) (pageRequestSize request) visible)
   Right
     CompareProjection
       { compareFromRevision = readSnapshotRevision beforeSnapshot,
         compareToRevision = readSnapshotRevision afterSnapshot,
         compareCounts = CompareCounts (count "added") (count "removed") (count "changed") (count "unchanged"),
-        compareEntries = filter includeEntry entries,
-        compareCache = compareCacheMetadata options
+        compareEntries = paged,
+        compareCache = compareCacheMetadata options,
+        comparePagination = pagination
       }
   where
     classify beforeMap afterMap adr =
@@ -2758,7 +2752,7 @@ snapshotMap snapshot =
     [ (adr, CompareSnapshot collapsed recordHeads scopeHeads domainHeads statusHeads)
       | reduced <- graphReductionAdrs (readSnapshotReduction snapshot),
         let adr = reducedAdrId reduced,
-        Right collapsed <- [projectCollapsed CompactProjection snapshot adr],
+        let collapsed = materializeCollapsed CompactProjection snapshot reduced,
         let recordHeads = map recordIdText (axisResolutionHeads (reducedDecisionAxis reduced)),
         let scopeHeads = map connectionIdText (axisResolutionHeads (reducedScopeAxis reduced)),
         let domainHeads = map connectionIdText (axisResolutionHeads (reducedDomainAxis reduced)),
@@ -2822,6 +2816,7 @@ relevantProjectionJson projection =
       ("as_of", JsonString (revisionResolved (relevantProjectionRevision projection))),
       ("file", relevantFileJson (relevantProjectionFile projection)),
       ("retrieval", relevantRetrievalJson (relevantProjectionRetrieval projection)),
+      ("pagination", paginationJson (relevantProjectionPagination projection)),
       ("results", JsonArray (map relevantResultJson (relevantProjectionResults projection)))
       ]
         <> maybe [] (\diagnostics -> [("diagnostics", relevantDiagnosticsJson diagnostics)]) (relevantProjectionDiagnostics projection)
@@ -2870,6 +2865,8 @@ relevantRetrievalJson retrieval =
   objectOmittingNulls
     ( [ ("implementation", JsonString (relevantRetrievalImplementation retrieval)),
         ("strategy", JsonString (relevantRetrievalStrategy retrieval)),
+        ("policy", JsonString "fixed-depth-10"),
+        ("policy_fingerprint", JsonString relevanceRetrievalFingerprint),
         ("semantic_vector_id", maybeJson JsonString (relevantRetrievalSemanticVectorId retrieval)),
         ("identifier_vector_id", maybeJson JsonString (relevantRetrievalIdentifierVectorId retrieval)),
         ("source_chunks", JsonNumber (fromIntegral (relevantRetrievalSourceChunks retrieval))),
@@ -3180,6 +3177,7 @@ compareProjectionJson projection =
   object
     [ ("cache", object (compareCache projection)),
       ("counts", compareCountsJson (compareCounts projection)),
+      ("pagination", paginationJson (comparePagination projection)),
       ("entries", JsonArray (map compareEntryJson (compareEntries projection))),
       ("from", JsonString (revisionResolved (compareFromRevision projection))),
       ("from_requested", JsonString (revisionRequested (compareFromRevision projection))),

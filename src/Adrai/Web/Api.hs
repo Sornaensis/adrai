@@ -76,7 +76,7 @@ import Adrai.Git
     revisionSpecText,
   )
 import Adrai.History (ActorSelector (..), HistoryOptions (..), HistoryOrder (..))
-import Adrai.Pagination (validatePage)
+import Adrai.Pagination (PageRequest (..), validatePage)
 import qualified Adrai.History as History
 import Adrai.Provenance (GitOid, encodeBase64Url, gitOidText, mkGitOid, sha256DigestFrames)
 import Adrai.Query (RelevantRequest (..), SearchRequest (..), defaultSearchRequest)
@@ -333,7 +333,7 @@ decodeApiRequest limits route query body = do
     RelevantRoute -> noBody >> ApiRelevantRequest <$> decodeRelevant limits parameters
     AdrRoute adr -> noBody >> ApiShowRequest <$> decodeShow adr parameters
     HistoryRoute -> noBody >> ApiHistoryRequest <$> decodeHistory limits parameters
-    CompareRoute -> noBody >> ApiCompareRequest <$> decodeCompare parameters
+    CompareRoute -> noBody >> ApiCompareRequest <$> decodeCompare limits parameters
     ConflictsRoute -> noBody >> ApiConflictsRequest <$> decodeRevision parameters
     DoctorRoute -> noBody >> ApiDoctorRequest <$> decodeRevision parameters
     EventsRoute -> noQuery parameters >> noBody >> Right ApiEventsRequest
@@ -377,6 +377,14 @@ queryValue = lookup
 requiredQuery :: Text -> [(Text, Text)] -> Either ApiError Text
 requiredQuery key values = maybe (Left (badField key "missing query field")) Right (queryValue key values)
 
+requestedPage :: [(Text, Text)] -> Either ApiError Integer
+requestedPage values = case queryValue "page" values of
+    Nothing -> Right 1
+    Just raw -> case readMaybe (Text.unpack raw) :: Maybe Integer of
+      Just value | not (Text.null raw), Text.all (\c -> c >= '0' && c <= '9') raw ->
+        value <$ first (const (badField "page" "page must be a positive supported integer")) (validatePage value)
+      _ -> Left (badField "page" "page must be a positive supported integer")
+
 decodeSearch :: ApiLimits -> [(Text, Text)] -> Either ApiError SearchServiceRequest
 decodeSearch limits values = do
   queryFields ["q", "at", "mode", "view", "include_obsolete", "domain", "all", "file", "limit", "page", "shallow", "actor", "since", "until"] values
@@ -386,12 +394,7 @@ decodeSearch limits values = do
   includeObsolete <- optionalBool "include_obsolete" False values
   shallow <- optionalBool "shallow" False values
   allDomains <- optionalBool "all" False values
-  page <- case queryValue "page" values of
-    Nothing -> Right 1
-    Just raw -> case readMaybe (Text.unpack raw) :: Maybe Integer of
-      Just value | not (Text.null raw), Text.all (\c -> c >= '0' && c <= '9') raw ->
-        value <$ first (const (badField "page" "page must be a positive supported integer")) (validatePage value)
-      _ -> Left (badField "page" "page must be a positive supported integer")
+  page <- requestedPage values
   limit <- boundedLimit limits 10 values
   actor <- traverse parseActorSelector (queryValue "actor" values)
   (since, untilBound) <- parseTimeWindow values
@@ -416,19 +419,20 @@ decodeSearch limits values = do
 
 decodeRelevant :: ApiLimits -> [(Text, Text)] -> Either ApiError RelevantRequest
 decodeRelevant limits values = do
-  queryFields ["file", "at", "include_obsolete", "limit", "worktree"] values
+  queryFields ["file", "at", "include_obsolete", "limit", "page", "worktree"] values
   rawPath <- requiredQuery "file" values
   path <- first (const (badField "file" "invalid repository path")) (mkRepoPath rawPath)
   includeObsolete <- optionalBool "include_obsolete" False values
   limit <- boundedLimitTo (min 100 (maximumResultLimit limits)) 10 values
+  page <- requestedPage values
   worktree <- optionalBool "worktree" False values
   if worktree then do
     case queryValue "at" values of
       Just _ -> Left (badField "at" "at is incompatible with worktree=true")
-      Nothing -> Right (RelevantRequest path WorkingRevision includeObsolete limit)
+      Nothing -> Right (RelevantRequest path WorkingRevision includeObsolete limit page)
     else do
       revision <- validatedRevision "at" (fromMaybe "HEAD" (queryValue "at" values))
-      Right (RelevantRequest path (AtRevision revision) includeObsolete limit)
+      Right (RelevantRequest path (AtRevision revision) includeObsolete limit page)
 
 decodeShow :: AdrId -> [(Text, Text)] -> Either ApiError ShowRequest
 decodeShow adr values = do
@@ -441,26 +445,35 @@ decodeShow adr values = do
 
 decodeHistory :: ApiLimits -> [(Text, Text)] -> Either ApiError HistoryRequest
 decodeHistory limits values = do
-  queryFields ["adr", "at", "limit", "order", "actor", "since", "until"] values
+  queryFields ["adr", "at", "limit", "page", "order", "actor", "since", "until"] values
   order <- case queryValue "order" values of
     Nothing -> Right NewestFirst
     Just "newest" -> Right NewestFirst
     Just "oldest" -> Right OldestFirst
     _ -> Left (badField "order" "expected newest or oldest")
   limit <- boundedLimit limits 20 values
+  page <- requestedPage values
   actor <- traverse parseActorSelector (queryValue "actor" values)
   (since, untilBound) <- parseTimeWindow values
   reference <- traverse validatedReference (queryValue "adr" values)
   revision <- validatedRevision "at" (fromMaybe "HEAD" (queryValue "at" values))
-  Right (HistoryRequest reference revision (HistoryOptions order limit actor since untilBound))
+  Right (HistoryRequest reference revision (HistoryOptions order limit actor since untilBound page))
 
-decodeCompare :: [(Text, Text)] -> Either ApiError CompareRequest
-decodeCompare values = do
-  queryFields ["from", "to", "include_unchanged"] values
+decodeCompare :: ApiLimits -> [(Text, Text)] -> Either ApiError CompareRequest
+decodeCompare limits values = do
+  queryFields ["from", "to", "include_unchanged", "limit", "page"] values
   before <- validatedRevision "from" =<< requiredQuery "from" values
   after <- validatedRevision "to" =<< requiredQuery "to" values
   includeUnchanged <- optionalBool "include_unchanged" False values
-  Right (CompareRequest before after includeUnchanged)
+  paging <- if queryValue "page" values == Nothing && queryValue "limit" values == Nothing
+    then Right Nothing
+    else do
+      page <- requestedPage values
+      let maximumSize = min 1000 (maximumResultLimit limits)
+      size <- boundedLimitTo maximumSize (min 20 maximumSize) values
+      if size < 1 then Left (badField "limit" "limit is outside the configured bound")
+        else Right (Just (PageRequest page size))
+  Right (CompareRequest before after includeUnchanged paging)
 
 decodeRevision :: [(Text, Text)] -> Either ApiError RevisionRequest
 decodeRevision values = do

@@ -51,7 +51,7 @@ where
 
 import Adrai.Compiler (ColdCompilerResult (..))
 import Adrai.Domain (Domain)
-import Adrai.Pagination (Pagination, paginationJson, renderPagination)
+import Adrai.Pagination (Pagination, PageRequest (..), paginationJson, renderPagination)
 import Adrai.History
   ( HistoryOptions (..),
     HistoryOrder (..),
@@ -459,6 +459,7 @@ data HistoryCommand = HistoryCommand
   , historyUntil    :: Maybe Integer
   , historyReverse  :: Bool
   , historyJson     :: Bool
+  , historyPage     :: Integer
   }
   deriving (Eq, Show)
 
@@ -481,6 +482,7 @@ historyCommandJson snapshot cmd =
             , historyOptionActor = selector
             , historyOptionSince = historySince cmd
             , historyOptionUntil = historyUntil cmd
+            , historyOptionPage = historyPage cmd
             }
           adrRef = case historyAdrId cmd of
             Nothing  -> Right Nothing
@@ -589,6 +591,7 @@ data RelevantCommand = RelevantCommand
   , relevantLimit           :: Int
   , relevantJson            :: Bool
   , relevantView            :: ViewMode
+  , relevantPage            :: Integer
   } deriving (Eq, Show)
 
 -- | Dispatch a relevant command on a read snapshot.
@@ -640,13 +643,13 @@ relevantCliJson :: ViewMode -> Query.RelevantProjection -> JsonValue
 relevantCliJson view projection =
   resultListJson "adrai/relevant-cli/v1"
     (Query.relevantRetrievalStrategy (Query.relevantProjectionRetrieval projection))
-    view (relevantCliRows projection) Nothing
+    view (relevantCliRows projection) (Just (Query.relevantProjectionPagination projection))
 
 renderSearchCli :: ViewMode -> Query.SearchProjection -> Text
 renderSearchCli view projection = renderResultList view (searchCliRows projection) <> renderPagination (Query.searchProjectionPagination projection)
 
 renderRelevantCli :: ViewMode -> Query.RelevantProjection -> Text
-renderRelevantCli view = renderResultList view . relevantCliRows
+renderRelevantCli view projection = renderResultList view (relevantCliRows projection) <> renderPagination (Query.relevantProjectionPagination projection)
 
 searchCliRows :: Query.SearchProjection -> [(AdrId, Text, Text, Double)]
 searchCliRows = map (\row -> (Query.searchResultAdr row, Query.searchResultTitle row, Query.searchResultSummary row, Query.searchResultScore row)) . Query.searchProjectionResults
@@ -692,7 +695,8 @@ relevantCommandRequest command = do
       { relevantRequestFile = path,
         relevantRequestRevision = revision,
         relevantRequestIncludeObsolete = relevantIncludeObsolete command,
-        relevantRequestLimit = relevantLimit command
+        relevantRequestLimit = relevantLimit command,
+        relevantRequestPage = relevantPage command
       }
 
 -- | CLI argument representation for the @compare@ command.
@@ -701,6 +705,8 @@ data CompareCommand = CompareCommand
   , compareAfter        :: Text  -- revision or path for "after" snapshot
   , compareUnchanged    :: Bool
   , compareJson         :: Bool
+  , compareLimit        :: Int
+  , comparePage         :: Integer
   } deriving (Eq, Show)
 
 -- | Dispatch a compare command given two read snapshots.
@@ -709,6 +715,7 @@ compareCommandJson beforeSnap afterSnap cmd =
   let options = CompareOptions
         { compareIncludeUnchanged = compareUnchanged cmd
         , compareCacheMetadata = []
+        , compareOptionPage = Just (PageRequest (comparePage cmd) (compareLimit cmd))
         }
   in case compareSnapshots options beforeSnap afterSnap of
        Left err -> pure $ Aeson.object

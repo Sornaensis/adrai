@@ -31,6 +31,7 @@ where
 import Adrai.Domain (domainRefinementText, domainText)
 import Adrai.Format.Document
 import Adrai.Format.Json
+import Adrai.Pagination (Pagination (..), PaginationError, paginate, paginationJson)
 import Adrai.Graph
 import Adrai.Provenance
 import Adrai.Scope (scopePatternText)
@@ -154,16 +155,18 @@ data HistoryOptions = HistoryOptions
     historyOptionLimit :: Int,
     historyOptionActor :: Maybe ActorSelector,
     historyOptionSince :: Maybe Integer,
-    historyOptionUntil :: Maybe Integer
+    historyOptionUntil :: Maybe Integer,
+    historyOptionPage :: Integer
   }
   deriving (Eq, Show)
 
 defaultHistoryOptions :: HistoryOptions
-defaultHistoryOptions = HistoryOptions NewestFirst 20 Nothing Nothing Nothing
+defaultHistoryOptions = HistoryOptions NewestFirst 20 Nothing Nothing Nothing 1
 
 data HistoryError
   = HistoryAdrNotFound AdrId
   | HistoryInvalidLimit Int
+  | HistoryInvalidPage PaginationError
   | HistorySnapshotInvalid SnapshotConsistencyError
   deriving (Eq, Show)
 
@@ -208,7 +211,8 @@ data HistoryProjection = HistoryProjection
     historyProjectionLimit :: Int,
     historyProjectionTruncated :: Bool,
     historyProjectionOptions :: HistoryOptions,
-    historyProjectionOperations :: [HistoryOperation]
+    historyProjectionOperations :: [HistoryOperation],
+    historyProjectionPagination :: Pagination
   }
   deriving (Eq, Show)
 
@@ -240,15 +244,17 @@ projectHistory snapshot requestedAdr options = do
   let oldest = historyOperationsOldestFirst snapshot requestedAdr
       displayed = case historyOptionOrder options of OldestFirst -> oldest; NewestFirst -> reverse oldest
       filtered = filter (matchesOptions options) displayed
+  (operations, pagination) <- either (Left . HistoryInvalidPage) Right (paginate (historyOptionPage options) (historyOptionLimit options) filtered)
   Right
     HistoryProjection
       { historyProjectionRevision = readSnapshotRevision snapshot,
         historyProjectionAdr = requestedAdr,
         historyProjectionOrder = historyOptionOrder options,
         historyProjectionLimit = historyOptionLimit options,
-        historyProjectionTruncated = length filtered > historyOptionLimit options,
+        historyProjectionTruncated = paginationHasNext pagination,
         historyProjectionOptions = options,
-        historyProjectionOperations = take (historyOptionLimit options) filtered
+        historyProjectionOperations = operations,
+        historyProjectionPagination = pagination
       }
 
 historyOperationsOldestFirst :: ReadSnapshot -> Maybe AdrId -> [HistoryOperation]
@@ -522,6 +528,7 @@ historyProjectionJson projection =
       ("as_of", JsonString (revisionResolved revision)),
       ("filters", filtersJson options),
       ("limit", JsonNumber (fromIntegral (historyProjectionLimit projection))),
+      ("pagination", paginationJson (historyProjectionPagination projection)),
       ("operations", JsonArray (map historyOperationJson (historyProjectionOperations projection))),
       ("order", JsonString (orderText (historyProjectionOrder projection))),
       ("schema", JsonString "adrai/history/v1"),
