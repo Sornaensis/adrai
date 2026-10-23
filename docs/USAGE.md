@@ -2,6 +2,15 @@
 
 ADRAI operates on an existing Git repository. Run `adrai --help` to see all 17 commands grouped by purpose. Pass `--repo PATH` before the command to target a repository other than the current directory (for example, `adrai --repo ../project show ADR_ID`). `web` must run in its worktree and rejects an explicit `--repo`.
 
+Run `adrai init` before using operational commands. `init` and its preview are
+exempt from the enablement check. Without a regular `.adrai.toml` file committed
+at the selected repository's current `HEAD`, all other operational commands,
+including previews, exit with code 2 and print `adrai not enabled here` to
+stderr, including with `--json`. Untracked or staged
+configuration does not enable ADRAI. A local deletion of committed configuration
+or an `--at` historical revision does not change enablement. Help, completion,
+and argument errors remain available before initialization.
+
 ## Quick start
 
 Initialize ADRAI in an existing Git repository:

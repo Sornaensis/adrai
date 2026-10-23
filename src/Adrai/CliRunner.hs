@@ -112,6 +112,7 @@ import qualified Adrai.Web.Api as WebApi
 import qualified Adrai.Web.Server as WebServer
 import Adrai.Domain (Domain, canonicalDomains, domainErrorText, domainText, domainRefinementText, mkDomain, parseDomainRefinement)
 import Adrai.Git (GitHeadState (..), GitOid (..), Repository, RevisionSpec (RevisionSpec), discoverRepository, gitBlobBytes, gitOidText, repositoryHeadState, repositoryWorktreeRoot, resolveRevision, systemGit)
+import qualified Adrai.Git as Git
 import Adrai.Identity (sortableAdrId, sortableRecordId)
 import qualified Adrai.Format as Format
 import Adrai.Format.Json (JsonValue (..), renderCanonicalJson)
@@ -154,7 +155,7 @@ import Adrai.Service.PostCommitIndex
     compilePostCommitIndexWithAttributionAndRefresh,
   )
 import Adrai.Service.PostCommitIndex.Internal (clonePostCommitIndexTrustedSource)
-import Adrai.Service.Transaction (TransactionError (..), TransactionConfig (..), GeneratedFile (..), ExpectedRepositoryBasis (..), observePreviewBasis, nullOid)
+import Adrai.Service.Transaction (TransactionError (..), TransactionConfig (..), GeneratedFile (..), ExpectedRepositoryBasis (..), observePreviewBasis, rejectPreviewPromisor, nullOid)
 import qualified Adrai.Service.Runtime as Runtime
 import Adrai.Compiler.CacheSync (syncProvenanceSnapshot)
 import Adrai.Compiler.Attribution
@@ -197,6 +198,7 @@ import Adrai.Types
      adrIdText,
      connectionIdText,
      mkActor,
+     mkRepoPath,
      mkAdrId,
      recordIdText,
      operationIdText,
@@ -857,13 +859,23 @@ dispatch :: CliInvocation -> IO ExitCode
 dispatch = dispatchWith productionCliDependencies
 
 dispatchWith :: CliDispatchDependencies -> CliInvocation -> IO ExitCode
-dispatchWith dependencies (CliInvocation config (CmdPreview command)) = dispatchPreview dependencies config command
-dispatchWith dependencies (CliInvocation config (CmdInit command)) = do
+dispatchWith dependencies invocation@(CliInvocation config command) = do
+  enabled <- case command of
+    CmdInit _ -> pure (Right ())
+    CmdPreview (CmdInit _) -> pure (Right ())
+    _ -> cliCheckEnabled dependencies config command
+  case enabled of
+    Left failure -> renderFailure failure
+    Right () -> dispatchEnabled dependencies invocation
+
+dispatchEnabled :: CliDispatchDependencies -> CliInvocation -> IO ExitCode
+dispatchEnabled dependencies (CliInvocation config (CmdPreview command)) = dispatchPreview dependencies config command
+dispatchEnabled dependencies (CliInvocation config (CmdInit command)) = do
   result <- cliRunInit dependencies config
   case result of
     Left failure -> renderFailure failure
     Right (initResult, indexResult) -> renderInitSuccess initResult indexResult (initJson command)
-dispatchWith dependencies (CliInvocation config (CmdCreate command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdCreate command)) = do
   requestResult <- cliMaterializeCreate dependencies command
   case requestResult of
     Left problem -> renderFailure (CliUserFailure problem)
@@ -872,7 +884,7 @@ dispatchWith dependencies (CliInvocation config (CmdCreate command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (createResult, indexResult) -> renderCreateSuccess command createResult (requestDomains request) indexResult
-dispatchWith dependencies (CliInvocation config (CmdAmend command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdAmend command)) = do
   requestResult <- cliMaterializeAmend dependencies command
   case requestResult of
     Left problem -> renderFailure (CliUserFailure problem)
@@ -881,7 +893,7 @@ dispatchWith dependencies (CliInvocation config (CmdAmend command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (amendResult, indexResult) -> renderAmendSuccess command amendResult indexResult
-dispatchWith dependencies (CliInvocation config (CmdObsolete command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdObsolete command)) = do
   requestResult <- cliMaterializeObsolete dependencies command
   case requestResult of
     Left problem -> renderFailure (CliUserFailure problem)
@@ -890,7 +902,7 @@ dispatchWith dependencies (CliInvocation config (CmdObsolete command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (obsoleteResult, indexResult) -> renderObsoleteSuccess command obsoleteResult indexResult
-dispatchWith dependencies (CliInvocation config (CmdReactivate command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdReactivate command)) = do
   requestResult <- cliMaterializeReactivate dependencies command
   case requestResult of
     Left problem -> renderFailure (CliUserFailure problem)
@@ -899,7 +911,7 @@ dispatchWith dependencies (CliInvocation config (CmdReactivate command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (reactivateResult, indexResult) -> renderReactivateSuccess command reactivateResult indexResult
-dispatchWith dependencies (CliInvocation config (CmdScope command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdScope command)) = do
   requestResult <- cliMaterializeScope dependencies command
   case requestResult of
     Left problem -> renderFailure (CliUserFailure problem)
@@ -908,7 +920,7 @@ dispatchWith dependencies (CliInvocation config (CmdScope command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (scopeResult, indexResult) -> renderScopeSuccess command scopeResult indexResult
-dispatchWith dependencies (CliInvocation config (CmdDomain command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdDomain command)) = do
   requestResult <- cliMaterializeDomain dependencies command
   case requestResult of
     Left problem -> renderFailure (CliUserFailure problem)
@@ -917,17 +929,17 @@ dispatchWith dependencies (CliInvocation config (CmdDomain command)) = do
       case result of
         Left failure -> renderFailure failure
         Right (domainResult, indexResult) -> renderDomainSuccess command domainResult indexResult
-dispatchWith dependencies (CliInvocation config (CmdCompile command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdCompile command)) = do
   result <- cliRunCompile dependencies config command
   case result of
     Left failure -> renderFailure failure
     Right compiled -> emitRendered (renderCompileOutcome command compiled)
-dispatchWith dependencies (CliInvocation config (CmdDoctor command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdDoctor command)) = do
   result <- cliRunDoctor dependencies config command
   case result of
     Left failure -> renderFailure failure
     Right output -> emitRendered (renderDoctorOutcome command output)
-dispatchWith dependencies (CliInvocation config (CmdShow command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdShow command)) = do
   if showRaw command && showView command /= ExplodedView
     then renderFailure (CliUserFailure "--raw requires --view exploded")
     else do
@@ -935,12 +947,12 @@ dispatchWith dependencies (CliInvocation config (CmdShow command)) = do
       case result of
         Left failure -> renderFailure failure
         Right projection -> renderShowSuccess command projection
-dispatchWith dependencies (CliInvocation config (CmdHistory command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdHistory command)) = do
   result <- cliRunHistory dependencies config command
   case result of
     Left failure -> renderFailure failure
     Right projection -> emitRendered (renderHistoryOutcome command projection)
-dispatchWith dependencies (CliInvocation config (CmdSearch command)) =
+dispatchEnabled dependencies (CliInvocation config (CmdSearch command)) =
   case searchCommandRequest command of
     Left problem -> renderFailure (CliUserFailure problem)
     Right request -> do
@@ -949,12 +961,12 @@ dispatchWith dependencies (CliInvocation config (CmdSearch command)) =
         Left failure -> renderFailure failure
         Right projection -> emitRendered (renderSearchOutcome command projection)
 
-dispatchWith dependencies (CliInvocation config (CmdDomains command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdDomains command)) = do
   result <- cliRunDomains dependencies config (DomainsRequest (domainsParent command) (domainsAt command) (domainsIncludeObsolete command) (domainsTree command))
   case result of
     Left failure -> renderFailure failure
     Right projection -> emitRendered (renderDomainsOutcome command projection)
-dispatchWith dependencies (CliInvocation config (CmdRelevant command)) =
+dispatchEnabled dependencies (CliInvocation config (CmdRelevant command)) =
   case relevantCommandRequest command of
     Left problem -> renderFailure (CliUserFailure problem)
     Right request -> do
@@ -962,16 +974,16 @@ dispatchWith dependencies (CliInvocation config (CmdRelevant command)) =
       case result of
         Left failure -> renderFailure failure
         Right projection -> emitRendered (renderRelevantOutcome command projection)
-dispatchWith dependencies (CliInvocation config (CmdCompare command)) = do
+dispatchEnabled dependencies (CliInvocation config (CmdCompare command)) = do
   result <- cliRunCompare dependencies config command
   case result of
     Left failure -> renderFailure failure
     Right projection -> emitRendered (renderCompareOutcome command projection)
-dispatchWith _ (CliInvocation config (CmdWeb options)) = do
+dispatchEnabled _ (CliInvocation config (CmdWeb options)) = do
   WebServer.runWebServerAt (configRepo config) options >>= \case
     Left problem -> renderFailure (CliUserFailure problem)
     Right () -> pure ExitSuccess
-dispatchWith _ (CliInvocation config CmdExplore) = do
+dispatchEnabled _ (CliInvocation config CmdExplore) = do
   actorResult <- pure (mkActor HumanActor "terminal-explorer" Nothing)
   case actorResult of
     Left problem -> renderFailure (CliUserFailure (Text.pack (show problem)))
@@ -986,7 +998,8 @@ dispatchWith _ (CliInvocation config CmdExplore) = do
         Right (Right ()) -> pure ExitSuccess
 
 data CliDispatchDependencies = CliDispatchDependencies
-  { cliRunCompile :: ~(CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult))
+  { cliCheckEnabled :: CliConfig -> CliCommand -> IO (Either CliFailure ())
+  , cliRunCompile :: ~(CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult))
   , cliRunDoctor :: ~(CliConfig -> DoctorCommand -> IO (Either CliFailure DoctorOutput))
   , cliRunShow :: ~(CliConfig -> ShowCommand -> IO (Either CliFailure ShowResult))
   , cliRunCompare :: ~(CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection))
@@ -1011,7 +1024,47 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies runProductionCompile runProductionDoctor runProductionShow runProductionCompare runProductionHistory runProductionSearch runProductionDomains runProductionRelevant materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies checkProductionEnabled runProductionCompile runProductionDoctor runProductionShow runProductionCompare runProductionHistory runProductionSearch runProductionDomains runProductionRelevant materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+
+-- Enablement belongs to the selected repository's current committed tree, not
+-- the worktree, index, requested historical revision, or parsed configuration.
+checkProductionEnabled :: CliConfig -> CliCommand -> IO (Either CliFailure ())
+checkProductionEnabled config command = discoverRepository systemGit (configRepo config) >>= \case
+  Left (Git.GitNotRepository _) -> pure (Left CliNotEnabled)
+  Left problem -> pure (Left (gitFailure problem))
+  Right repository -> do
+    admission <- case command of
+      -- Preserve preview's no-lazy-fetch admission before resolving objects.
+      CmdPreview _ -> fmap (first transactionFailure) (rejectPreviewPromisor repository)
+      _ -> pure (Right ())
+    revision <- case admission of
+      Left failure -> pure (Left failure)
+      Right () -> resolveRevision repository (RevisionSpec "HEAD") >>= \case
+        Left problem@(Git.GitUnknownRevision _) -> classifyUnborn repository problem
+        result -> pure (first gitFailure result)
+    case revision of
+      Left failure -> pure (Left failure)
+      Right oid | oid == nullOid -> pure (Left CliNotEnabled)
+      Right oid -> case mkRepoPath ".adrai.toml" of
+        Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+        Right path -> Git.lookupTreeEntryAt repository oid path >>= \case
+          Left problem -> pure (Left (gitFailure problem))
+          Right (Just entry)
+            | Git.gitTreeObjectType entry == Git.GitBlobObject
+                && Git.gitTreeMode entry `elem` [Git.GitRegularFile, Git.GitExecutableFile] -> pure (Right ())
+          Right _ -> pure (Left CliNotEnabled)
+  where
+    gitFailure = CliUserFailure . Text.pack . show
+    classifyUnborn repository original = repositoryHeadState repository >>= \case
+      Left problem -> pure (Left (gitFailure problem))
+      Right GitHeadDetached -> pure (Left (gitFailure original))
+      Right (GitHeadAttached ref) -> do
+        result <- Git.runRepository repository "enablement unborn branch"
+          ["show-ref", "--verify", "--quiet", Text.unpack (gitRefText ref)] ByteString.empty
+        pure $ case result of
+          Left problem -> Left (gitFailure problem)
+          Right response | Git.processExitCode response == ExitFailure 1 -> Left CliNotEnabled
+          Right _ -> Left (gitFailure original)
 
 runProductionCompile :: CliConfig -> CompileCommand -> IO (Either CliFailure CompileResult)
 runProductionCompile config command = do
@@ -1105,6 +1158,7 @@ runProductionCompileWithAttribution attribution config command = do
                                         withRefreshedTreeIdenticalProvenance repository (seedRegisteredOperationsFromLease lease) requestedRevision snapshot witness $ \snapshotRefresh ->
                                           syncProvenanceIntoCache candidatePath snapshotRefresh
                                       case refreshed of
+                                        Left CliNotEnabled -> ioError (userError "adrai not enabled here")
                                         Left (CliUserFailure problem) -> ioError (userError (Text.unpack problem))
                                         Left (CliConflictFailure problem) -> ioError (userError (Text.unpack problem))
                                         Right () -> pure ()
@@ -1892,7 +1946,8 @@ transactionConflict problem =
     _ -> False
 
 data CliFailure
-  = CliUserFailure Text
+  = CliNotEnabled
+  | CliUserFailure Text
   | CliConflictFailure Text
 
 data StructuredCreate = StructuredCreate
@@ -2343,6 +2398,7 @@ indexCommittedWithAttributionAndProvenance attribution database repository commi
       refreshed <- withRefreshedTreeIdenticalProvenance repository (seedRegisteredOperationsFromSemanticCache candidate) commit snapshot recoveryWitness $ \provenanceRefresh ->
         syncProvenanceIntoCache candidate provenanceRefresh
       case refreshed of
+        Left CliNotEnabled -> ioError (userError "adrai not enabled here")
         Left (CliUserFailure problem) -> ioError (userError (Text.unpack problem))
         Left (CliConflictFailure problem) -> ioError (userError (Text.unpack problem))
         Right () -> pure ()
@@ -2801,6 +2857,7 @@ renderFailure = emitRendered . renderFailureOutcome
 renderFailureOutcome :: CliFailure -> CliRendered
 renderFailureOutcome failure =
   case failure of
+    CliNotEnabled -> CliRendered "" "adrai not enabled here\n" (ExitFailure 2)
     CliUserFailure message -> CliRendered "" ("adrai: " <> message <> "\n") (ExitFailure 2)
     CliConflictFailure message -> CliRendered "" ("adrai: conflict: " <> message <> "\n") (ExitFailure 3)
 

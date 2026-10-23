@@ -982,6 +982,9 @@
         "ADRAI.P4-06.cli-contracts.JSON schema contracts.compare render outcome is exact canonical JSON or the established text renderer",
         "ADRAI.P4-06.cli-contracts.JSON schema contracts.history render outcome is exact canonical JSON or the established text renderer",
         "ADRAI.P4-06.cli-contracts.JSON schema contracts.all JSON output types have sorted keys (deterministic serialization)",
+        "ADRAI.P4-06.cli-contracts.repository enablement.denied dispatch precedes every operational handler and materializer",
+        "ADRAI.P4-06.cli-contracts.repository enablement.disabled locations reject before input or cache work with exact bytes",
+        "ADRAI.P4-06.cli-contracts.repository enablement.committed current HEAD enables the selected root and preserves query diagnostics",
         "ADRAI.P4-06.cli-contracts.init/create CLI contracts.global repo defaults before init",
         "ADRAI.P4-06.cli-contracts.init/create CLI contracts.preview aliases wrap only mutations and bypass normal dispatch",
         "ADRAI.P4-06.cli-contracts.init/create CLI contracts.explore is the one option-free public terminal command",
@@ -1103,7 +1106,7 @@
         "ADRAI.P7-05.initial event retries when publication lands between watcher sample and registration"
       ],
       "rationale": "The checked complement runs as the third exclusive resource group, preserving all internal concurrency and guards while excluding unrelated scheduler load; isolation is not a proven behavior remedy.",
-      "costProvenance": "Current static Rest count 602 after extracting the exclusive six-route HTTP mutation and physical-flight singletons; elapsed cost requires a matching complete snapshot."
+      "costProvenance": "Current static Rest count 605 after extracting the exclusive six-route HTTP mutation and physical-flight singletons; elapsed cost requires a matching complete snapshot."
     }
   ],
   "queue": [

@@ -93,7 +93,7 @@ import Adrai.Explorer.Render (renderHelp)
 import Adrai.Git (GitOid (..))
 import qualified Adrai.Git as Git
 import Adrai.RetainedNative.NativeFixture (copyNativeFixture, nativeProgramName)
-import Adrai.Integration.CLI (createTestRepo, createAdraiInit, createAdr, commitFile, spawnAdrai, parseCompileResult, prependExtraPathParts, requireExecutable, spawnAdraiWith)
+import Adrai.Integration.CLI (createTestRepo, createAdraiInit, createAdr, commitFile, spawnAdrai, parseCompileResult, prependExtraPathParts, requireExecutable, spawnAdraiWith, git, gitStdout)
 import Adrai.Domain (canonicalDomains, mkDomain, parseDomainRefinement)
 import Adrai.Scope (mkScopePattern)
 import Adrai.Service.Mutation (AmendResult (..), CreateResult (..), DomainChangeRequest (..), DomainChangeResult (..), InitResult (..), ObsoleteRequest (..), ObsoleteResult (..), ReactivateRequest (..), ReactivateResult (..), ScopeChangeRequest (..), ScopeChangeResult (..))
@@ -167,17 +167,20 @@ import System.Exit (ExitCode (..))
 import System.IO (IOMode (WriteMode), withBinaryFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import Control.Concurrent.STM (atomically)
 import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, fromException, throwIO, try)
 import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Foldable (for_)
 import Data.List (sort)
+import Data.Maybe (fromMaybe)
 import Control.Monad (when)
 import System.FilePath (searchPathSeparator, takeDirectory)
 import System.FilePath ((</>))
-import System.Directory (executable, getPermissions, setPermissions)
+import System.Directory (executable, getPermissions, setPermissions, createDirectoryIfMissing, doesDirectoryExist, listDirectory, removeFile)
 import System.Info (os)
+import qualified System.Process.Typed as Process
 
 -- | Fixture: a minimal CompileResult with known values for testing.
 humanFixture :: QueryMaterialization
@@ -290,7 +293,8 @@ expectArray context = \case
 unsupportedCliDispatchDependencies :: CliDispatchDependencies
 unsupportedCliDispatchDependencies =
   CliDispatchDependencies
-    { cliRunCompile = \_ _ -> error "compile service must not be selected"
+    { cliCheckEnabled = \_ _ -> pure (Right ())
+    , cliRunCompile = \_ _ -> error "compile service must not be selected"
     , cliRunDoctor = \_ _ -> error "doctor service must not be selected"
     , cliRunShow = \_ _ -> error "show service must not be selected"
     , cliRunCompare = \_ _ -> error "compare service must not be selected"
@@ -2516,6 +2520,125 @@ mutationCliContractTests =
 -- Integration CLI PATH harness tests
 -- ============================================================
 
+enablementTests :: TestTree
+enablementTests =
+  testGroup "repository enablement"
+    [ testCase "denied dispatch precedes every operational handler and materializer" $ do
+        let adr = "A0123456789ABCDEFGHJKMNPQRS"
+            operations =
+              [ ["compile"], ["doctor"], ["show", adr, "--raw"], ["history"], ["search"], ["domains"]
+              , ["relevant", "missing"], ["compare", "HEAD"], ["create", "--body-file", "missing"]
+              , ["amend", adr, "--stdin"], ["obsolete", adr, "--reason", "Review"]
+              , ["reactivate", adr, "--reason", "Review"], ["scope", adr], ["domain", adr]
+              , ["web", "--no-open"], ["explore"]
+              ]
+            previews =
+              [ ["create", "--stdin"], ["amend", adr, "--stdin"], ["obsolete", adr, "--reason", "Review"]
+              , ["reactivate", adr, "--reason", "Review"], ["scope", adr], ["domain", adr]
+              ]
+            denied = unsupportedCliDispatchDependencies
+              { cliCheckEnabled = \config _ -> (configRepo config @?= "selected disabled") >> pure (Left CliNotEnabled) }
+        for_ (operations <> map (<> ["--preview"]) previews) $ \arguments ->
+          parsed arguments >>= \invocation ->
+            dispatchWith denied (invocation {invocationConfig = defaultCliConfig {configRepo = "selected disabled"}}) >>= (@?= ExitFailure 2)
+        let exempt = unsupportedCliDispatchDependencies
+              { cliCheckEnabled = \_ _ -> error "init must bypass enablement"
+              , cliRunInit = \_ -> pure (Left (CliUserFailure "init reached"))
+              }
+        parsed ["init"] >>= dispatchWith exempt >>= (@?= ExitFailure 2)
+        withSystemTempDirectory "adrai init exemption" $ \temporary ->
+          parsed ["--repo", temporary, "init", "--preview"] >>= dispatchWith exempt >>= (@?= ExitFailure 2)
+        renderFailureOutcome CliNotEnabled @?= CliRendered "" "adrai not enabled here\n" (ExitFailure 2)
+    , testCase "disabled locations reject before input or cache work with exact bytes" $
+        withSystemTempDirectory "adrai disabled" $ \temporary -> do
+          assertDenied =<< spawnAdrai temporary ["compile", "--json"]
+          listDirectory temporary >>= (@?= [])
+          (helpExit, _, helpErrors) <- spawnAdrai temporary ["--help"]
+          helpExit @?= ExitSuccess
+          helpErrors @?= ""
+          repo <- createTestRepo temporary
+          let snapshot = (,) <$> gitStdout repo ["rev-parse", "HEAD"] <*> gitStdout repo ["status", "--porcelain=v1", "--untracked-files=all"]
+          before <- snapshot
+          for_ [["compile"], ["domains", "--json"], ["create", "--body-file", "missing"], ["create", "--stdin", "--preview"]] $ \arguments ->
+            assertDenied =<< spawnAdrai repo arguments
+          -- Leave stdin open and unwritten: the child must exit before reading it.
+          selected <- selectedAdrai
+          Process.withProcessWait
+            (Process.setWorkingDir repo $ Process.setStdin Process.createPipe $
+              Process.setStdout Process.byteStringOutput $ Process.setStderr Process.byteStringOutput $
+              Process.proc selected ["create", "--input-json", "-", "--json", "+RTS", "-N1", "-RTS"]) $ \child -> do
+                code <- Process.waitExitCode child
+                output <- atomically (Process.getStdout child)
+                errors <- atomically (Process.getStderr child)
+                assertDenied (code, output, errors)
+          snapshot >>= (@?= before)
+          doesDirectoryExist (repo </> ".adrai") >>= (@?= False)
+          git repo ["checkout", "--detach"]
+          assertDenied =<< spawnAdrai repo ["create", "--stdin", "--preview"]
+          git repo ["checkout", "main"]
+          let bare = temporary </> "bare.git"
+          git temporary ["clone", "--bare", repo, bare]
+          assertDenied =<< spawnAdrai bare ["create", "--stdin", "--preview"]
+          BS.writeFile (repo </> ".adrai.toml") "schema = 1\n"
+          assertDenied =<< spawnAdrai repo ["domains", "--json"]
+          git repo ["add", ".adrai.toml"]
+          staged <- snapshot
+          assertDenied =<< spawnAdrai repo ["domains"]
+          snapshot >>= (@?= staged)
+          git repo ["reset", "--", ".adrai.toml"]
+          removeFile (repo </> ".adrai.toml")
+          -- Reuse the established fixture, with its initial ref removed.
+          git repo ["update-ref", "-d", "refs/heads/main"]
+          git repo ["read-tree", "--empty"]
+          assertDenied =<< spawnAdrai repo ["domains", "--json"]
+          (initExit, _, initErrors) <- spawnAdrai repo ["init", "--json"]
+          initExit @?= ExitSuccess
+          initErrors @?= ""
+          assertEnabled =<< spawnAdrai repo ["domains", "--json"]
+    , testCase "committed current HEAD enables the selected root and preserves query diagnostics" $
+        withSystemTempDirectory "adrai enabled selection" $ \temporary -> do
+          repo <- createTestRepo temporary
+          preInit <- T.strip . Text.Encoding.decodeUtf8 . BL.toStrict <$> gitStdout repo ["rev-parse", "HEAD"]
+          (initExit, _, initErrors) <- spawnAdrai repo ["init", "--json"]
+          initExit @?= ExitSuccess
+          initErrors @?= ""
+          let nested = repo </> "nested"
+          createDirectoryIfMissing True nested
+          assertEnabled =<< spawnAdrai nested ["domains", "--json", "--at", T.unpack preInit]
+          selected <- selectedAdrai
+          let fromDirectory cwd arguments = Process.readProcess
+                (Process.setWorkingDir cwd $ Process.proc selected (arguments <> ["+RTS", "-N1", "-RTS"]))
+          assertEnabled =<< fromDirectory nested ["domains", "--json"]
+          assertDenied =<< fromDirectory temporary ["domains", "--json"]
+          assertEnabled =<< fromDirectory temporary ["--repo", repo, "domains", "--json"]
+          childRepo <- createTestRepo nested
+          assertDenied =<< fromDirectory childRepo ["domains", "--json"]
+          removeFile (repo </> ".adrai.toml")
+          assertEnabled =<< spawnAdrai repo ["domains", "--json"]
+          _ <- commitFile repo ".adrai.toml" "invalid TOML [\n"
+          (invalidExit, _, invalidErrors) <- spawnAdrai repo ["domains", "--json"]
+          invalidExit @?= ExitFailure 2
+          assertBool "malformed committed config retains command diagnostic"
+            ("adrai: " `BL.isPrefixOf` invalidErrors && invalidErrors /= "adrai not enabled here\n")
+          -- A symlink blob at the exact root is not a regular config file.
+          blob <- T.strip . Text.Encoding.decodeUtf8 . BL.toStrict <$> gitStdout repo ["hash-object", "-w", ".adrai.toml"]
+          git repo ["update-index", "--cacheinfo", "120000," <> T.unpack blob <> ",.adrai.toml"]
+          git repo ["commit", "-m", "nonregular configuration"]
+          assertDenied =<< spawnAdrai repo ["domains", "--json", "--at", T.unpack preInit]
+    ]
+  where
+    parsed arguments = case parseArguments arguments of
+      Right invocation -> pure invocation
+      Left rendered -> assertFailure (show arguments <> ": " <> show rendered) >> fail "unreachable"
+    selectedAdrai = lookupEnv "ADRAI_EXE" >>= requireExecutable . fromMaybe "adrai"
+    assertDenied (code, output, errors) = do
+      code @?= ExitFailure 2
+      output @?= ""
+      errors @?= "adrai not enabled here\n"
+    assertEnabled (code, _, errors) = do
+      code @?= ExitSuccess
+      errors @?= ""
+
 pathHarnessTests :: TestTree
 pathHarnessTests =
   testGroup "integration CLI PATH harness"
@@ -2582,5 +2705,6 @@ tests =
        cliTypeConstructorTests,
        schemaContractTests,
        mutationCliContractTests,
+       enablementTests,
        pathHarnessTests
      ]

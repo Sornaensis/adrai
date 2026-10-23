@@ -53,6 +53,7 @@ module Adrai.Service.Transaction
     commitBootstrapFilesWith,
     validatePreviewTransaction,
     observePreviewBasis,
+    rejectPreviewPromisor,
     observeTransactionBasis,
     validateBootstrapDestinations,
   )
