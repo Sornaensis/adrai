@@ -88,9 +88,10 @@ both page and page size. Ranking and ADR deduplication finish before paging.
 Ranked totals describe this retrieved result set, while blank-query totals
 describe the full filtered corpus.
 
-Every text response ends with one compact line showing returned/total results,
-page/total pages, and remaining results. Empty sets explicitly report 0 pages;
-positive pages beyond the last page return no rows and are marked out of range.
+Every text response ends with `RETURNED of TOTAL results — Page CURRENT of PAGES`,
+for example `2 of 5 results — Page 2 of 3`. Empty sets use the same format,
+such as `0 of 0 results — Page 1 of 0`; pages beyond the end also retain the
+requested page, such as `0 of 1 results — Page 2 of 1`.
 The CLI and rich JSON projections add a `pagination` object with `page`,
 `page_size`, `total_results`, `total_pages`, `returned`, `remaining`, and
 `has_next`. Empty sets have `total_pages: 0`. Existing result row fields and
@@ -174,7 +175,7 @@ Without `--worktree`, the file and ADR context come from the same resolved revis
 
 `--page N` selects a one-based page (default 1); `--limit N` sets its size
 (default 10, range 1–100). CLI and HTTP responses include the shared `pagination`
-fields described above; text always ends with shown/total, pages and remaining.
+fields described above; text uses the same compact returned/total and page footer.
 Totals describe the finalized distinct ADRs retrieved by a fixed depth-10 policy,
 not all `eligible_adrs`. That policy uses semantic shortlist 120, identifier seed
 60, union maximum 160, passage evidence 60 per source chunk and LSH section

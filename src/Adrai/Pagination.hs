@@ -75,11 +75,10 @@ paginationJson pagination = object
 
 renderPagination :: Pagination -> Text
 renderPagination pagination =
-  "Showing " <> count (paginationReturned pagination) <> " of " <> count (paginationTotalResults pagination) <> " results"
+  count (paginationReturned pagination) <> " of " <> count (paginationTotalResults pagination) <> " results"
     <> (case (paginationPage pagination, paginationTotalPages pagination) of
-          (Just page, Just 0) -> "; 0 pages (requested page " <> count page <> ")"
-          (Just page, Just pages) -> "; page " <> count page <> "/" <> count pages <> if page > pages then " (out of range)" else ""
+          (Just page, Just pages) -> " — Page " <> count page <> " of " <> count pages
           _ -> "")
-    <> "; " <> count (paginationRemaining pagination) <> " remaining.\n"
+    <> "\n"
   where
     count = Text.pack . show

@@ -945,7 +945,7 @@ schemaContractTests =
         renderedStdout jsonRendered @?= renderCanonicalJson (compareProjectionJson projection)
         renderedExitCode textRendered @?= ExitSuccess
         renderedStderr textRendered @?= ""
-        renderedStdout textRendered @?= "Compare base -> HEAD\nAdded: 1  Removed: 2  Changed: 3  Unchanged: 4\n\nchanged A0123456789ABCDEFGHJKMNPQRS Choix café\n  Changed: body\nShowing 1 of 1 results; 0 remaining.\n",
+        renderedStdout textRendered @?= "Compare base -> HEAD\nAdded: 1  Removed: 2  Changed: 3  Unchanged: 4\n\nchanged A0123456789ABCDEFGHJKMNPQRS Choix café\n  Changed: body\n1 of 1 results\n",
       testCase "history render outcome is exact canonical JSON or the established text renderer" $ do
         let options = HistoryOptions OldestFirst 7 Nothing Nothing Nothing 1
             projection = either (error . show) id (History.projectHistory (queryMaterializationSnapshot humanFixture) Nothing options)
@@ -963,7 +963,7 @@ schemaContractTests =
               first : _ -> first
               [] -> error "history fixture requires one operation"
         human @?= History.isoTimestampFromMs (History.historyOperationClaimedAt operation) <> " " <> Types.operationIdText (History.historyOperationId operation) <> " created " <> Types.adrIdText (History.historyOperationAdr operation) <> " Choix café [service:adrai-query-fixture]\n  Reason: Résumé utile.\n" <> renderPagination (historyProjectionPagination projection)
-        renderedStdout (renderHistoryOutcome textCommand (projection {historyProjectionOperations = [], historyProjectionPagination = Pagination (Just 1) (Just 7) 0 (Just 0) 0 0 False})) @?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n"
+        renderedStdout (renderHistoryOutcome textCommand (projection {historyProjectionOperations = [], historyProjectionPagination = Pagination (Just 1) (Just 7) 0 (Just 0) 0 0 False})) @?= "0 of 0 results — Page 1 of 0\n"
         assertBool "history emits one terminal newline without JSON escapes" (Text.isSuffixOf "\n" human && not (Text.isSuffixOf "\n\n" human) && not ("\\n" `Text.isInfixOf` human)),
       testCase "all JSON output types have sorted keys (deterministic serialization)" $ do
         -- Verify compileResultJson keys are sorted
@@ -1252,11 +1252,13 @@ mutationCliContractTests =
         let jsonRendered = renderSearchOutcome explicit projection
             plainRendered = renderSearchOutcome (explicit {searchJson = False}) projection
         jsonRendered @?= CliRendered (emptySearchCliJson 3 7 "exact-summary+identifier+section-rerank+weighted-rrf") "" ExitSuccess
-        plainRendered @?= CliRendered "Showing 0 of 0 results; 0 pages (requested page 3); 0 remaining.\n" "" ExitSuccess
+        plainRendered @?= CliRendered "0 of 0 results — Page 3 of 0\n" "" ExitSuccess
+        renderPagination (Pagination (Just 2) (Just 2) 5 (Just 3) 2 1 True) @?= "2 of 5 results — Page 2 of 3\n"
+        renderPagination (Pagination (Just 3) (Just 2) 5 (Just 3) 1 0 False) @?= "1 of 5 results — Page 3 of 3\n"
         let populated = projection {searchProjectionPagination = Pagination (Just 1) (Just 7) 2 (Just 1) 2 0 False, searchProjectionResults = [cliSearchRow, cliSearchRow {searchResultAdr = secondAdr, searchResultTitle = "[decision conflict]", searchResultSummary = "", searchResultScore = 0, searchResultConflicted = True, searchResultMatchedTitle = Just "Misleading matched head"}]}
             render view json = renderSearchOutcome (explicit {searchView = view, searchJson = json}) populated
-        render CollapsedView False @?= CliRendered (expectedList <> "Showing 2 of 2 results; page 1/1; 0 remaining.\n") "" ExitSuccess
-        render ExplodedView False @?= CliRendered (expectedExpandedList <> "Showing 2 of 2 results; page 1/1; 0 remaining.\n") "" ExitSuccess
+        render CollapsedView False @?= CliRendered (expectedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
+        render ExplodedView False @?= CliRendered (expectedExpandedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
         for_ [CollapsedView, ExplodedView] $ \view -> do
           assertCliListJson "adrai/search-cli/v1" "exact-summary+identifier+section-rerank+weighted-rrf" 0.012346 0 view (renderedStdout (render view True))
         for_ searchAlgorithms $ \(mode, algorithm) -> do
@@ -1359,11 +1361,11 @@ mutationCliContractTests =
         assertBool "rich service projection retains measured diagnostics"
           ("\"stale\": true" `Text.isInfixOf` serviceJson && "\"prepare_index\": 1.25" `Text.isInfixOf` serviceJson && "\"retrieve_candidates\": null" `Text.isInfixOf` serviceJson)
         renderRelevantOutcome (explicit {relevantJson = False}) projection
-          @?= CliRendered "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n" "" ExitSuccess
+          @?= CliRendered "0 of 0 results — Page 1 of 0\n" "" ExitSuccess
         let populated = diagnosed {relevantProjectionPagination = Pagination (Just 1) (Just 7) 2 (Just 1) 2 0 False, relevantProjectionResults = [cliRelevantRow, cliRelevantRow {relevantResultAdr = secondAdr, relevantResultTitle = "[decision conflict]", relevantResultSummary = "", relevantResultScore = 0, relevantResultMatchedTitle = Just "Misleading matched head"}]}
             render view json = renderRelevantOutcome (explicit {relevantView = view, relevantJson = json}) populated
-        render CollapsedView False @?= CliRendered (expectedList <> "Showing 2 of 2 results; page 1/1; 0 remaining.\n") "" ExitSuccess
-        render ExplodedView False @?= CliRendered (expectedExpandedList <> "Showing 2 of 2 results; page 1/1; 0 remaining.\n") "" ExitSuccess
+        render CollapsedView False @?= CliRendered (expectedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
+        render ExplodedView False @?= CliRendered (expectedExpandedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
         for_ [CollapsedView, ExplodedView] $ \view ->
           assertCliListJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" 0.765432 0 view (renderedStdout (render view True))
         let maximumScore = populated {relevantProjectionResults = [cliRelevantRow {relevantResultScore = 1}, (last (relevantProjectionResults populated)) {relevantResultScore = 0}]}
@@ -1435,7 +1437,7 @@ mutationCliContractTests =
                           <> ["summary" Aeson..= fixtureSummary | view == ExplodedView])]
                     ] <> ["pagination" Aeson..= toAesonValue (paginationJson (Pagination (Just 1) (Just 10) 1 (Just 1) 1 0 False)) | schema `elem` ["adrai/search-cli/v1", "adrai/relevant-cli/v1"]]))
               checkCommand command schema algorithm expectedScore = do
-                let footer = "Showing 1 of 1 results; page 1/1; 0 remaining.\n"
+                let footer = "1 of 1 results — Page 1 of 1\n"
                 runCli command >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n" <> footer)
                 runCli (command <> ["--view", "exploded"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n  " <> fixtureSummary <> "\n" <> footer)
                 for_ [CollapsedView, ExplodedView] $ \view -> checkJson command schema algorithm view expectedScore
@@ -1464,9 +1466,9 @@ mutationCliContractTests =
           assertBool "installed raw show emits semantic text with real newlines" (source `Text.isInfixOf` rawText && not ("\\n" `Text.isInfixOf` rawText) && not ("@adrai.begin" `Text.isInfixOf` rawText))
           historyText <- runCli ["history", adrArgument, "--limit", "1"]
           assertBool "installed history keeps title, operation, and reason without JSON"
-            ((" created " <> fixtureAdr <> " " <> fixtureTitle <> " [llm:planner]\n  Reason: " <> fixtureSummary <> "\nShowing 1 of 1 results; page 1/1; 0 remaining.\n") `Text.isSuffixOf` historyText && length (Text.lines historyText) == 3)
+            ((" created " <> fixtureAdr <> " " <> fixtureTitle <> " [llm:planner]\n  Reason: " <> fixtureSummary <> "\n1 of 1 results — Page 1 of 1\n") `Text.isSuffixOf` historyText && length (Text.lines historyText) == 3)
           runCli ["history", adrArgument, "--limit", "1", "--json"] >>= assertJsonOutput "history"
-          runCli ["history", adrArgument, "--actor", "human:missing"] >>= (@?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n")
+          runCli ["history", adrArgument, "--actor", "human:missing"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
           compareText <- runCli ["compare", "HEAD~1", "HEAD"]
           assertBool "installed comparison lists the added ADR" (("added " <> fixtureAdr <> " " <> fixtureTitle <> "\n") `Text.isInfixOf` compareText)
           runCli ["compare", "HEAD~1", "HEAD", "--json"] >>= assertJsonOutput "compare"
@@ -1489,17 +1491,17 @@ mutationCliContractTests =
           runCli ["domains", "storage.db.postgresql"] >>= (@?= "")
           runCli ["domains", "unknown"] >>= (@?= "")
           for_ [[], [" "], ["DURABLE_LEDGER_TOKEN"]] $ \query -> do
-            runCli (["search"] <> query <> ["--domain", "storage.db", "--mode", "fts"]) >>= (@?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n")
-            runCli (["search"] <> query <> ["--domain", "storage.db.postgresql", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\nShowing 1 of 1 results; page 1/1; 0 remaining.\n")
-            runCli (["search"] <> query <> ["--domain", "storage.db", "--all", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\nShowing 1 of 1 results; page 1/1; 0 remaining.\n")
-            runCli (["search"] <> query <> ["--domain", "stor", "--mode", "fts"]) >>= (@?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n")
-          runCli ["search", "--limit", "1", "--page", "2"] >>= (@?= "Showing 0 of 1 results; page 2/1 (out of range); 0 remaining.\n")
+            runCli (["search"] <> query <> ["--domain", "storage.db", "--mode", "fts"]) >>= (@?= "0 of 0 results — Page 1 of 0\n")
+            runCli (["search"] <> query <> ["--domain", "storage.db.postgresql", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
+            runCli (["search"] <> query <> ["--domain", "storage.db", "--all", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
+            runCli (["search"] <> query <> ["--domain", "stor", "--mode", "fts"]) >>= (@?= "0 of 0 results — Page 1 of 0\n")
+          runCli ["search", "--limit", "1", "--page", "2"] >>= (@?= "0 of 1 results — Page 2 of 1\n")
           _ <- runCli ["obsolete", Text.unpack fixtureAdr, "--reason", "Retire fixture", "--actor", "human:test"]
           runCli ["domains"] >>= (@?= "")
           runCli ["domains", "--include-obsolete"] >>= (@?= "storage 1\n")
           runCli ["domains", "--at", "HEAD~1"] >>= (@?= "storage 1\n")
-          runCli ["search", "--domain", "storage", "--all", "--mode", "fts"] >>= (@?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n")
-          runCli ["search", "--domain", "storage", "--all", "--include-obsolete", "--mode", "fts"] >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\nShowing 1 of 1 results; page 1/1; 0 remaining.\n")
+          runCli ["search", "--domain", "storage", "--all", "--mode", "fts"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
+          runCli ["search", "--domain", "storage", "--all", "--include-obsolete", "--mode", "fts"] >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
           _ <- runCli ["reactivate", Text.unpack fixtureAdr, "--reason", "Restore fixture", "--actor", "human:test"]
           checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" Nothing
           for_ searchAlgorithms $ \(mode, algorithm) -> do
@@ -1510,9 +1512,9 @@ mutationCliContractTests =
             checkJson ["search", "DURABLE_LEDGER_TOKEN", "--mode", modeText] "adrai/search-cli/v1" algorithm CollapsedView Nothing
             runCli ["search", "cache", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" algorithm)
             runCli ["search", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" "filtered-list")
-          runCli ["search", "zzzxqvplmn", "--mode", "fts"] >>= (@?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n")
+          runCli ["search", "zzzxqvplmn", "--mode", "fts"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
           BS.writeFile (repo </> "source.txt") "\n"
-          runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "Showing 0 of 0 results; 0 pages (requested page 1); 0 remaining.\n")
+          runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
           runCli ["relevant", "source.txt", "--worktree", "--json"] >>= (@?= emptyCliJson 10 "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank")
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
         let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True

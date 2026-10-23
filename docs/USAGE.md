@@ -84,8 +84,9 @@ Both commands emit their structured projections only with `--json`.
 operation (default page 1, size 20, maximum 1000). `truncated` is `has_next`;
 use the next `--page` to continue. `compare --page N --limit N` pages visible ADR
 entries (default page 1, size 20, maximum 1000), while summary category counts
-always cover the complete comparison. Both commands always print a compact
-shown/total, pages, and remaining footer, including empty and final pages.
+always cover the complete comparison. Both commands print
+`RETURNED of TOTAL results — Page CURRENT of PAGES`, including empty and final
+pages. Legacy unpaged comparisons use only `N of N results`.
 The compare service and HTTP API keep complete unpaged results when both
 `page` and `limit` are omitted; either parameter opts into pagination. Unpaged
 JSON has null `page`, `page_size`, and `total_pages`, full totals, and zero remaining.
@@ -117,9 +118,9 @@ domain, actor, and time filters also apply to the listing.
 to 1. A blank query pages the full filtered corpus, so `adrai search --limit 1000
 --page 2` can visit ADRs beyond the first 1000. Ranked queries page a documented
 fixed retrieved result set; changing page size does not change ranking budgets.
-Text always includes returned/total, page counts, and remaining results; JSON
-adds the same information under `pagination`, including empty and out-of-range
-pages. See [Search](SEARCH.md) for the retrieval policy and metadata fields.
+Text ends with `RETURNED of TOTAL results — Page CURRENT of PAGES`.
+JSON retains its full `pagination` metadata, including remaining counts and
+empty or out-of-range pages. See [Search](SEARCH.md) for the retrieval policy and metadata fields.
 Domain filters match exact assignments by default. Add `--all` to include dotted
 descendants of every requested `--domain`; obsolete ADRs still require
 `--include-obsolete`.
