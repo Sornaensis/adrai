@@ -814,7 +814,16 @@
       "data": {
         "as_of": "1111111111111111111111111111111111111111",
         "limit": 10,
-        "mode": "hybrid",
+        "mode": "fts",
+        "pagination": {
+          "has_next": false,
+          "page": 1,
+          "page_size": 10,
+          "remaining": 0,
+          "returned": 1,
+          "total_pages": 1,
+          "total_results": 1
+        },
         "results": [
           {
             "adr": "A00000000000000000000000000",
@@ -846,24 +855,22 @@
               "conflicted": true,
               "shallow_history": false
             },
-            "fts_score": 0.000008,
+            "fts_score": 8e-06,
             "id": "A00000000000000000000000000",
-            "identifier_vector_score": -0.00824,
+            "identifier_vector_score": 0.0,
             "matched_candidate": null,
             "matched_record": "R00000000000000000000000001",
             "matched_summary": null,
             "matched_title": null,
             "matches": {
               "actor_filter": null,
-              "best_section": "title-summary",
-              "best_section_score": 1.007202,
+              "best_section": null,
+              "best_section_score": null,
               "channel_ranks": {
                 "fts_identifier": 1,
                 "fts_phrase": 1,
                 "fts_stemmed": 1,
-                "fts_terms": 1,
-                "identifier_vector": 1,
-                "semantic_vector": 1
+                "fts_terms": 1
               },
               "domain_filter": [],
               "exact_phrase_fields": [
@@ -891,7 +898,7 @@
                 "decision",
                 "cdapi"
               ],
-              "vector": true
+              "vector": false
             },
             "obsolete": true,
             "record": "R00000000000000000000000001",
@@ -899,7 +906,7 @@
             "resolution_required": true,
             "resolved": false,
             "retrieval": {
-              "algorithm": "three-fts+exact-summary+section-rerank+weighted-rrf",
+              "algorithm": "three-fts+weighted-rrf",
               "aliases": [
                 "cdapi"
               ],
@@ -921,17 +928,16 @@
                   "terms": "\"current\" AND \"decision\" AND \"api\""
                 }
               },
+              "policy": "fixed-depth-10",
               "profile": "keyword",
               "vector": {
-                "algorithm": "exact-summary+bounded-exact-sections",
-                "identifier_corpus": 1,
-                "section_candidates": 1,
-                "sections_scanned": 7,
-                "summary_corpus": 1
-              },
-              "policy": "fixed-depth-10"
+                "algorithm": "fts-only",
+                "section_candidates": 0,
+                "sections_scanned": 0,
+                "summary_corpus": 0
+              }
             },
-            "score": 0.065619,
+            "score": 0.064119,
             "source_paths": [
               "architecture/adrai/decisions/R000/R00000000000000000000000001--current-decision-api-cdapi.decision.md",
               "architecture/adrai/connections/C000/C00000000000000000000000000--status.connection.md",
@@ -943,21 +949,12 @@
             "status": "obsolete",
             "summary": "Current summary",
             "title": "Current Decision API (CDAPI)",
-            "vector_score": 1,
+            "vector_score": 0.0,
             "view": "collapsed"
           }
         ],
         "schema": "adrai/search/v1",
-        "view": "collapsed",
-        "pagination": {
-          "has_next": false,
-          "page": 1,
-          "page_size": 10,
-          "remaining": 0,
-          "returned": 1,
-          "total_pages": 1,
-          "total_results": 1
-        }
+        "view": "collapsed"
       }
     },
     "search_conflicted": {
@@ -1073,13 +1070,22 @@
           "revision": "rationale-resolved",
           "source": "revision"
         },
+        "pagination": {
+          "has_next": false,
+          "page": 1,
+          "page_size": 10,
+          "remaining": 0,
+          "returned": 1,
+          "total_pages": 1,
+          "total_results": 1
+        },
         "results": [
           {
             "adr": "A00000000000000000000000000",
             "applies_to": [
               "src/current/**"
             ],
-            "confidence": "high",
+            "confidence": "low",
             "domains": [
               "current.domain"
             ],
@@ -1092,25 +1098,25 @@
                 ],
                 "lexical_score": 0.2,
                 "matched_terms": [
-                  "first",
-                  "second"
+                  "api",
+                  "current"
                 ],
                 "passage": 0,
-                "semantic_score": 0.352558
+                "semantic_score": 0.0
               }
             ],
             "lexical_bonus": 0.1,
             "lexical_score": 0.2,
-            "margin": 0.352558,
+            "margin": 0.0,
             "matched_candidate": null,
             "matched_record": "R00000000000000000000000001",
             "matched_title": null,
             "obsolete": true,
             "passages": [
               {
-                "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
-                "adr_excerpt": "decision first decision second",
-                "adr_section": "decision",
+                "adr_chunk": "A00000000000000000000000000/section/title-summary/0/1-2",
+                "adr_excerpt": "Current Decision API (CDAPI) Current summary",
+                "adr_section": "title-summary",
                 "candidate_record": "R00000000000000000000000001"
               }
             ],
@@ -1120,12 +1126,12 @@
             "resolved": false,
             "scope_bonus": 0.025,
             "scope_match": "exact",
-            "score": 0.477558,
-            "semantic_score": 0.352558,
+            "score": 0.125,
+            "semantic_score": 0.0,
             "source_information": 1.0,
             "status": "obsolete",
             "strongest_lexical_pair": 0.2,
-            "strongest_pair": 0.352558,
+            "strongest_pair": 0.0,
             "summary": "Current summary",
             "title": "Current Decision API (CDAPI)"
           }
@@ -1135,8 +1141,7 @@
           "candidate_search_items": 1,
           "eligible_adrs": 1,
           "eligible_search_items": 1,
-          "exact_rerank_candidates": 7,
-          "identifier_vector_id": "adrai-identifier:-JSyvxW6dxoDl9Pzpm6Q_aoG:768",
+          "exact_rerank_candidates": 6,
           "implementation": "structured-raw-text-cross-reference",
           "passage_fts": {
             "algorithm": "passage-exact+stemmed+identifier-fts",
@@ -1148,6 +1153,8 @@
             },
             "queries": 1
           },
+          "policy": "fixed-depth-10",
+          "policy_fingerprint": "sha256:r9TqKS1NZB2TOX9PckSRHQI_-MJU4O7ZFOHvozPqrPM",
           "scope_used_for_eligibility": false,
           "scoring": {
             "high_margin": 0.045,
@@ -1172,35 +1179,15 @@
           },
           "search_sections": 7,
           "sections": {
-            "algorithm": "exact-bounded-section-scan",
-            "bucket_hits": 0,
-            "candidates": 7,
-            "corpus": 7,
-            "fallback_chunks": 0
+            "algorithm": "fts-only",
+            "candidates": 0
           },
           "selected_source_chunks": 1,
-          "semantic_vector_id": "adrai-semantic:T_yApQ2sJvyBH21HYYBYuQ1X:1024",
           "source_chunks": 1,
-          "strategy": "exact-summary+passage-fts+bounded-section-rerank",
-          "summary": {
-            "algorithm": "exact",
-            "identifier_corpus": 1,
-            "semantic_corpus": 1
-          },
-          "policy": "fixed-depth-10",
-          "policy_fingerprint": "sha256:lvUo4JRdVf6Pw8RuteW1dq_ClswnjlMaXDQ5xN_d6d8"
+          "strategy": "passage-fts"
         },
         "schema": "adrai/relevant/v2",
-        "view": "relevant",
-        "pagination": {
-          "has_next": false,
-          "page": 1,
-          "page_size": 10,
-          "remaining": 0,
-          "returned": 1,
-          "total_pages": 1,
-          "total_results": 1
-        }
+        "view": "relevant"
       }
     },
     "relevant_worktree": {
@@ -1224,13 +1211,22 @@
           "revision": "1111111111111111111111111111111111111111",
           "source": "worktree"
         },
+        "pagination": {
+          "has_next": false,
+          "page": 1,
+          "page_size": 10,
+          "remaining": 0,
+          "returned": 1,
+          "total_pages": 1,
+          "total_results": 1
+        },
         "results": [
           {
             "adr": "A00000000000000000000000000",
             "applies_to": [
               "src/current/**"
             ],
-            "confidence": "high",
+            "confidence": "low",
             "domains": [
               "current.domain"
             ],
@@ -1243,25 +1239,25 @@
                 ],
                 "lexical_score": 0.2,
                 "matched_terms": [
-                  "first",
-                  "second"
+                  "api",
+                  "current"
                 ],
                 "passage": 0,
-                "semantic_score": 0.352558
+                "semantic_score": 0.0
               }
             ],
             "lexical_bonus": 0.1,
             "lexical_score": 0.2,
-            "margin": 0.352558,
+            "margin": 0.0,
             "matched_candidate": null,
             "matched_record": "R00000000000000000000000001",
             "matched_title": null,
             "obsolete": true,
             "passages": [
               {
-                "adr_chunk": "A00000000000000000000000000/section/decision/0/1-2",
-                "adr_excerpt": "decision first decision second",
-                "adr_section": "decision",
+                "adr_chunk": "A00000000000000000000000000/section/title-summary/0/1-2",
+                "adr_excerpt": "Current Decision API (CDAPI) Current summary",
+                "adr_section": "title-summary",
                 "candidate_record": "R00000000000000000000000001"
               }
             ],
@@ -1271,12 +1267,12 @@
             "resolved": false,
             "scope_bonus": 0.025,
             "scope_match": "exact",
-            "score": 0.477558,
-            "semantic_score": 0.352558,
+            "score": 0.125,
+            "semantic_score": 0.0,
             "source_information": 1.0,
             "status": "obsolete",
             "strongest_lexical_pair": 0.2,
-            "strongest_pair": 0.352558,
+            "strongest_pair": 0.0,
             "summary": "Current summary",
             "title": "Current Decision API (CDAPI)"
           }
@@ -1286,8 +1282,7 @@
           "candidate_search_items": 1,
           "eligible_adrs": 1,
           "eligible_search_items": 1,
-          "exact_rerank_candidates": 7,
-          "identifier_vector_id": "adrai-identifier:-JSyvxW6dxoDl9Pzpm6Q_aoG:768",
+          "exact_rerank_candidates": 6,
           "implementation": "structured-raw-text-cross-reference",
           "passage_fts": {
             "algorithm": "passage-exact+stemmed+identifier-fts",
@@ -1300,7 +1295,7 @@
             "queries": 1
           },
           "policy": "fixed-depth-10",
-          "policy_fingerprint": "sha256:lvUo4JRdVf6Pw8RuteW1dq_ClswnjlMaXDQ5xN_d6d8",
+          "policy_fingerprint": "sha256:r9TqKS1NZB2TOX9PckSRHQI_-MJU4O7ZFOHvozPqrPM",
           "scope_used_for_eligibility": false,
           "scoring": {
             "high_margin": 0.045,
@@ -1325,33 +1320,15 @@
           },
           "search_sections": 7,
           "sections": {
-            "algorithm": "exact-bounded-section-scan",
-            "bucket_hits": 0,
-            "candidates": 7,
-            "corpus": 7,
-            "fallback_chunks": 0
+            "algorithm": "fts-only",
+            "candidates": 0
           },
           "selected_source_chunks": 1,
-          "semantic_vector_id": "adrai-semantic:T_yApQ2sJvyBH21HYYBYuQ1X:1024",
           "source_chunks": 1,
-          "strategy": "exact-summary+passage-fts+bounded-section-rerank",
-          "summary": {
-            "algorithm": "exact",
-            "identifier_corpus": 1,
-            "semantic_corpus": 1
-          }
+          "strategy": "passage-fts"
         },
         "schema": "adrai/relevant/v2",
-        "view": "relevant",
-        "pagination": {
-          "has_next": false,
-          "page": 1,
-          "page_size": 10,
-          "remaining": 0,
-          "returned": 1,
-          "total_pages": 1,
-          "total_results": 1
-        }
+        "view": "relevant"
       }
     },
     "history": {
@@ -1386,7 +1363,7 @@
             "reason": "status update",
             "resolved": true,
             "status": "active",
-            "title": "Caf\u00e9 architecture v2"
+            "title": "Café architecture v2"
           },
           {
             "actor": "llm:reviewer",
@@ -1409,7 +1386,7 @@
             "reason": "reviewed amendment",
             "resolved": true,
             "status": "active",
-            "title": "Caf\u00e9 architecture v2"
+            "title": "Café architecture v2"
           },
           {
             "actor": "human:architect",
@@ -1433,10 +1410,10 @@
             "label": "created",
             "operation": "O11111111111111111111111111",
             "placement": "original",
-            "reason": "Caf\u00e9 architecture v1 summary",
+            "reason": "Café architecture v1 summary",
             "resolved": true,
             "status": "active",
-            "title": "Caf\u00e9 architecture v1"
+            "title": "Café architecture v1"
           }
         ],
         "order": "newest-first",
@@ -1515,7 +1492,7 @@
                 "C55555555555555555555555555"
               ],
               "summary": "new summary",
-              "title": "Caf\u00e9 architecture v2"
+              "title": "Café architecture v2"
             },
             "before": {
               "adr": "A11111111111111111111111111",
@@ -1554,8 +1531,8 @@
               "status_heads": [
                 "C33333333333333333333333333"
               ],
-              "summary": "Caf\u00e9 architecture v1 summary",
-              "title": "Caf\u00e9 architecture v1"
+              "summary": "Café architecture v1 summary",
+              "title": "Café architecture v1"
             },
             "changes": [
               {
@@ -1564,15 +1541,15 @@
                 "field": "record"
               },
               {
-                "after": "Caf\u00e9 architecture v2",
-                "before": "Caf\u00e9 architecture v1",
-                "diff": "--- before+++ after@@ -1 +1 @@-Caf\u00e9 architecture v1+Caf\u00e9 architecture v2",
+                "after": "Café architecture v2",
+                "before": "Café architecture v1",
+                "diff": "--- before+++ after@@ -1 +1 @@-Café architecture v1+Café architecture v2",
                 "field": "title"
               },
               {
                 "after": "new summary",
-                "before": "Caf\u00e9 architecture v1 summary",
-                "diff": "--- before+++ after@@ -1 +1 @@-Caf\u00e9 architecture v1 summary+new summary",
+                "before": "Café architecture v1 summary",
+                "diff": "--- before+++ after@@ -1 +1 @@-Café architecture v1 summary+new summary",
                 "field": "summary"
               },
               {
@@ -1601,7 +1578,7 @@
               }
             ],
             "kind": "changed",
-            "title": "Caf\u00e9 architecture v2"
+            "title": "Café architecture v2"
           },
           {
             "adr": "A22222222222222222222222222",

@@ -28,7 +28,6 @@ import Adrai.Query
     relevantRequestLimit,
     renderRelevantProjection,
     runRelevant,
-    runRelevantWithCorpus,
   )
 import Adrai.Retrieval
   ( SearchDocument (..),
@@ -47,6 +46,7 @@ import Adrai.Sqlite (initializeSearchSchema, replaceSearchMaterialization)
 import Adrai.Vector (DenseVector, dot)
 import Control.DeepSeq (NFData (rnf))
 import Control.Exception (onException)
+import Control.Monad (void, when)
 import Criterion.Main (bench, bgroup, defaultMain, envWithCleanup, nf, nfIO, whnfIO)
 import Data.ByteString (ByteString)
 import Data.List.NonEmpty qualified as NonEmpty
@@ -73,8 +73,7 @@ data RelevanceFixture = RelevanceFixture
     relevanceSnapshot :: ReadSnapshot,
     relevanceMaterialization :: SearchMaterialization,
     relevanceRequest :: RelevantRequest,
-    relevanceSource :: RelevantSource,
-    relevanceCorpus :: Maybe SearchVectorCorpus
+    relevanceSource :: RelevantSource
   }
 
 -- Criterion forces environments before timing. These instances deliberately
@@ -91,9 +90,7 @@ instance NFData CurrentSearchBenchmarkFixture where
 
 instance NFData RelevanceFixture where
   rnf fixture =
-    materializationChecksum (relevanceMaterialization fixture)
-      + maybe 0 corpusChecksum (relevanceCorpus fixture)
-      `seq` ()
+    materializationChecksum (relevanceMaterialization fixture) `seq` ()
 
 -- Criterion renders its human-readable report with the Unicode micro sign.
 -- Use UTF-8 before Criterion touches stdout or stderr so Windows console code
@@ -163,19 +160,15 @@ prepareRelevanceFixture reuseCorpus = do
   ( do
       requireRight "six-ADR SQLite schema" =<< initializeSearchSchema connection
       requireRight "six-ADR SQLite materialization" =<< replaceSearchMaterialization connection materialization
-      corpus <-
-        if reuseCorpus
-          then Just <$> requireRight "six-ADR vector corpus" (buildSearchVectorCorpus materialization)
-          else pure Nothing
-      pure
-        RelevanceFixture
-          { relevanceConnection = connection,
-            relevanceSnapshot = snapshot,
-            relevanceMaterialization = materialization,
-            relevanceRequest = request,
-            relevanceSource = source,
-            relevanceCorpus = corpus
-          }
+      let fixture = RelevanceFixture
+            { relevanceConnection = connection,
+              relevanceSnapshot = snapshot,
+              relevanceMaterialization = materialization,
+              relevanceRequest = request,
+              relevanceSource = source
+            }
+      when reuseCorpus (void (relevanceSearchCold fixture))
+      pure fixture
     ) `onException` close connection
 
 scaleMaterialization :: IO SearchMaterialization
@@ -220,20 +213,12 @@ relevanceSearchCold fixture = do
   renderRelevantProjection <$> requireRight "six-ADR cold relevance search" result
 
 relevanceSearchWarm :: RelevanceFixture -> IO ByteString
-relevanceSearchWarm fixture = do
-  corpus <- requireJust "six-ADR reusable vector corpus" (relevanceCorpus fixture)
-  result <-
-    runRelevantWithCorpus
-      (relevanceConnection fixture)
-      (relevanceSnapshot fixture)
-      (relevanceMaterialization fixture)
-      corpus
-      (relevanceRequest fixture)
-      (relevanceSource fixture)
-  renderRelevantProjection <$> requireRight "six-ADR warm relevance search" result
+relevanceSearchWarm = relevanceSearchCold
 
+-- Historical compatibility benchmark only. Production retrieval uses TEI and
+-- sqlite-vec; this leaf tracks the retained legacy API independently.
 -- | Force every dense vector through the unboxed implementation used by the
--- production scorer. 'dot vector vector' avoids a benchmark-only conversion
+-- historical compatibility helper. 'dot vector vector' avoids a benchmark-only conversion
 -- to boxed lists while still demanding every coordinate.
 forceCorpus :: Either problem SearchVectorCorpus -> Int
 forceCorpus result =
@@ -287,12 +272,6 @@ closeSqliteFixture = close . sqliteFixtureConnection
 
 closeRelevanceFixture :: RelevanceFixture -> IO ()
 closeRelevanceFixture = close . relevanceConnection
-
-requireJust :: String -> Maybe value -> IO value
-requireJust label value =
-  case value of
-    Nothing -> ioError (userError (label <> " was not prepared"))
-    Just result -> pure result
 
 requireRight :: Show problem => String -> Either problem value -> IO value
 requireRight label result =

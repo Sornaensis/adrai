@@ -16,7 +16,7 @@ import Adrai.Format.Json (JsonValue (..))
 import Adrai.Graph (GraphReduction (..), ReducedAdr (..))
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..), validateReadSnapshot)
 import Adrai.Query
-import Adrai.Retrieval (SearchDocument (..), SearchMaterialization (..))
+import Adrai.Retrieval (RetrievalMode (FtsRetrieval), SearchDocument (..), SearchMaterialization (..))
 import Adrai.SearchVectorCorpus
 import Adrai.Sqlite (initializeSearchSchema, replaceSearchMaterialization)
 import Adrai.Types
@@ -127,8 +127,10 @@ scaleContract = bracket (open ":memory:") close $ \connection -> do
   _ <-
     timed "sqlite-materialization" $ do
       replaceSearchMaterialization connection search >>= (@?= Right ())
+  -- Retain the historical corpus compatibility contract independently of
+  -- runtime retrieval, which is FTS-only without configured TEI.
   corpus <-
-    timed "vector-corpus-build" $ do
+    timed "historical-vector-corpus-build" $ do
       value <- mustCorpus (buildSearchVectorCorpus search)
       _ <-
         evaluate
@@ -210,9 +212,13 @@ assertSearchBounds :: String -> SearchProjection -> IO ()
 assertSearchBounds context projection = do
   diagnostics <- searchDiagnostics context projection
   TextIO.hPutStrLn stderr ("P3-06 scale evidence: " <> Text.pack context)
-  assertBool context (jsonIntegerAt ["vector", "summary_corpus"] diagnostics == exact scaleSummaryCorpus)
-  assertBool context (jsonIntegerAt ["vector", "identifier_corpus"] diagnostics == exact scaleIdentifierCorpus)
-  assertBool context (jsonIntegerAt ["vector", "section_candidates"] diagnostics == exact scaleSearchSectionCandidates)
+  searchProjectionMode projection @?= FtsRetrieval
+  assertBool context (jsonIntegerAt ["vector", "summary_corpus"] diagnostics == Just 0)
+  assertBool context (jsonIntegerAt ["vector", "identifier_corpus"] diagnostics == Nothing)
+  assertBool context (jsonIntegerAt ["vector", "section_candidates"] diagnostics == Just 0)
+  assertBool context (jsonIntegerAt ["vector", "sections_scanned"] diagnostics == Just 0)
+  assertBool context (all (\result -> searchResultVectorScore result == 0 && searchResultIdentifierVectorScore result == 0
+    && searchMatchFts (searchResultMatches result)) results)
   assertBool context (jsonIntegerAt ["field_rerank_candidates"] diagnostics == exact scaleFieldRerankCandidates)
   assertBool context (length results == 10)
   assertBool context (Set.size (Set.fromList actual) == length actual)
@@ -246,23 +252,31 @@ assertRelevantBounds fixture search probe projection = do
   assertBool context (relevantRetrievalEligibleSearchItems retrieval == scaleSearchDocuments contract)
   assertBool context (sections == scaleRelevanceSearchSections contract)
   assertBool context (sections == length (searchMaterializationPassages search))
-  assertBool context (relevantRetrievalAdrShortlist retrieval == scaleRelevanceAdrShortlist contract)
-  assertBool context (relevantRetrievalCandidateSearchItems retrieval == scaleRelevanceCandidateSearchItems contract)
-  assertBool context (relevantRetrievalAdrShortlist retrieval == relevantRetrievalCandidateSearchItems retrieval)
-  assertBool context (exactRerank == scaleRelevanceExactRerankCandidates contract)
-  case relevantRetrievalSummary retrieval of
-    Just summary -> do
-      assertBool context (jsonIntegerAt ["semantic_corpus"] summary == exact scaleSummaryCorpus)
-      assertBool context (jsonIntegerAt ["identifier_corpus"] summary == exact scaleIdentifierCorpus)
+  relevantRetrievalStrategy retrieval @?= "passage-fts"
+  relevantRetrievalSemanticVectorId retrieval @?= Nothing
+  relevantRetrievalIdentifierVectorId retrieval @?= Nothing
+  relevantRetrievalSummary retrieval @?= Nothing
+  let shortlisted = relevantRetrievalAdrShortlist retrieval
+      candidateItems = relevantRetrievalCandidateSearchItems retrieval
+  assertBool context (shortlisted > 0 && shortlisted <= scaleRelevanceAdrShortlist contract)
+  assertBool context (candidateItems > 0 && candidateItems <= scaleRelevanceCandidateSearchItems contract)
+  assertBool context (shortlisted == candidateItems)
+  -- FTS retains at most 60 passages per selected source chunk. Reranking is
+  -- over those lexical candidates, rather than an exhaustive vector scan.
+  assertBool context (exactRerank >= candidateItems && exactRerank <= selected * 60)
+  case relevantRetrievalPassageFts retrieval of
+    Just _ -> pure ()
     Nothing -> assertFailure context
-  -- The compact corpus stays on production's exact-section-scan path, whose
-  -- candidate count is every selected source chunk paired with every section.
-  assertBool context (exactRerank > 0 && exactRerank == selected * sections)
+  case relevantRetrievalSections retrieval of
+    Just details@(JsonObject fields) -> do
+      lookup "algorithm" fields @?= Just (JsonString "fts-only")
+      jsonIntegerAt ["candidates"] details @?= Just 0
+    _ -> assertFailure context
+  assertBool context (all (\result -> relevantResultSemanticScore result == 0 && relevantResultLexicalScore result > 0) results)
   assertBool context (length results == 10)
   assertBool context (Set.size (Set.fromList actual) == length actual)
   where
     contract = compactScaleDiagnosticsV1
-    exact field = Just (fromIntegral (field contract))
 
 assertExpectedRelevant :: QueryMaterialization -> RetrievalProbe -> RelevantProjection -> IO ()
 assertExpectedRelevant fixture probe projection =

@@ -55,9 +55,12 @@ obsoleteVisibilityContract = withRelevant p303RationaleSnapshot $ \connection ma
   relevantResultObsolete result @?= True
   assertBool "selected evidence retains line ranges and ADR chunks" (not (null (relevantResultEvidence result)))
   relevantRetrievalSearchSections (relevantProjectionRetrieval visible) @?= 7
-  lookupNested "algorithm" (relevantRetrievalSections (relevantProjectionRetrieval visible)) @?= Just (JsonString "exact-bounded-section-scan")
+  lookupNested "algorithm" (relevantRetrievalSections (relevantProjectionRetrieval visible)) @?= Just (JsonString "fts-only")
   lookupNested "candidates" (relevantRetrievalSections (relevantProjectionRetrieval visible))
-    @?= Just (JsonNumber (fromIntegral (relevantRetrievalExactRerankCandidates (relevantProjectionRetrieval visible))))
+    @?= Just (JsonNumber 0)
+  relevantRetrievalSemanticVectorId (relevantProjectionRetrieval visible) @?= Nothing
+  relevantRetrievalIdentifierVectorId (relevantProjectionRetrieval visible) @?= Nothing
+  assertBool "FTS passage evidence is scored without any vectors" (relevantRetrievalExactRerankCandidates (relevantProjectionRetrieval visible) > 0)
 
 scopeBonusContract :: IO ()
 scopeBonusContract = withRelevant p303RationaleSnapshot $ \connection materialization -> do

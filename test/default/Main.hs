@@ -16,6 +16,7 @@ import qualified Adrai.ColdCompilerGoldenTest
 import qualified Adrai.Compiler.CacheSelectionTest
 import qualified Adrai.Compiler.CacheSyncTest
 import qualified Adrai.Compiler.DocumentCacheTest
+import qualified Adrai.TextEmbeddingTest
 import qualified Adrai.CurrentSearchTest
 import qualified Adrai.CacheIntegrationTest
 import qualified Adrai.MutationE2ETest
@@ -111,6 +112,7 @@ import System.Environment
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
 import System.FilePath ((</>), takeDirectory, takeFileName)
 import System.IO (hClose, hFlush, hIsEOF, hSetBinaryMode, hWaitForInput, stdin, stdout, stderr)
+import System.IO.Temp (withSystemTempDirectory)
 import System.Process (StdStream (Inherit), createProcess, proc, std_in, waitForProcess, withCreateProcess)
 import Adrai.RetainedNative.NativeFixture (nativeProgramName)
 import Adrai.Integration.CLI (requireExecutable)
@@ -143,6 +145,7 @@ main = do
       case marker of
         Just "p6-03f-0a-native-hook-v1" -> referenceTransactionHook arguments
         _ -> exitWith (ExitFailure 64)
+    _ | "--tei-config-entry-probe" `elem` arguments -> Adrai.TextEmbeddingTest.configEntryProbe
     _ | "--integration-cli-path-probe" `elem` arguments -> integrationCliPathProbe
     _ | "--integration-cli-environment-probe" `elem` arguments -> integrationCliEnvironmentProbe arguments
     _ -> normalMain arguments
@@ -478,7 +481,12 @@ normalMain arguments = do
   -- contracts intentionally exercise the exact binary named by ADRAI_EXE;
   -- replacing it here with this machine's Stack install would silently test
   -- a different build.  ADRAI_EXE is therefore deliberately inherited.
-  normalMain' arguments
+  -- The ordinary suite must not contact an embedding service from the person's
+  -- real user config. Config-loading tests supply their own child-only roots.
+  withSystemTempDirectory "adrai-test-user" $ \directory -> do
+    setEnv "XDG_CONFIG_HOME" (directory </> "config")
+    setEnv "XDG_CACHE_HOME" (directory </> "cache")
+    normalMain' arguments
 
 normalMain' :: [String] -> IO ()
 normalMain' arguments =
@@ -628,7 +636,8 @@ tests =
           "P3-04"
           [ Adrai.SearchRankingTest.tests,
             Adrai.SearchRankingProperties.tests,
-            Adrai.CurrentSearchTest.tests,
+            Adrai.TextEmbeddingTest.tests,
+      Adrai.CurrentSearchTest.tests,
             Adrai.SearchResultGoldenTest.tests
           ],
       testGroup

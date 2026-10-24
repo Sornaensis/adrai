@@ -10,7 +10,7 @@
   "components": [
     {
       "name": "adrai-test",
-      "registrationCount": 929,
+      "registrationCount": 941,
       "registrationState": "source-declared; the canonical retained runner List checks exact registration equality",
       "staticEvidence": {
         "nativeHelperRootProcessesRound6": 12,
@@ -274,7 +274,7 @@
       {
         "id": "Q",
         "component": "adrai-test",
-        "selectedTests": 3,
+        "selectedTests": 4,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "The shared ExactQuerySeed resource is acquired once in this selected process.",
         "privateCopies": "Exactly three private seed copies serve the archive-hook, relevance-diagnostics, and acquisition cases; the transferred two-target history and archive are constructed in the shared seed.",
@@ -382,7 +382,7 @@
       {
         "id": "Rest",
         "component": "adrai-test",
-        "selectedTests": 600,
+        "selectedTests": 611,
         "selectedProcessLaunches": 1,
         "resourceSeeds": "Rest is the third exclusive resource group to exclude unrelated scheduler load, without a runtime promise or proven behavior remedy. Selected-resource constructors outside the thirteen anchored groups are input dependent; the P7-02/P7-03 runtime, P7-04 API, and P7-05 exact-archive diagnostic cases acquire bounded loopback, watcher, exact-compilation and archive-validation fixtures; exact construction count elsewhere is unmeasured.",
         "privateCopies": "Unmeasured; fixture-local private copies and temporary repositories are created by the selected cases.",

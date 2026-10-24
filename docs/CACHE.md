@@ -22,7 +22,7 @@ Both use the `adrai-cache/3` SQLite/FTS5 schema. They are derived artifacts and 
 
 `compile`, read commands, and post-mutation indexing resolve a commit before selecting a cache. ADRAI can reuse an exact snapshot or clone a compatible snapshot when Git proves that configuration and managed document trees are unchanged. Otherwise it performs a fresh compile. The published result is checked against its resolved revision and logical fingerprints.
 
-Vector corpora remain process-local. A corpus belongs to one exact search materialization and is rejected when document identities, passage identities, embedding inputs, or vector implementations differ. Query and relevance-source vectors are request-ephemeral.
+Optional TEI corpus embeddings use a separate disposable user cache, keyed by endpoint, live model identity/revision, dimensions and exact text digest. sqlite-vec indexes only eligible entries for each request. Query and relevance-source vectors remain request-ephemeral. Unavailable TEI or sqlite-vec uses FTS5, even with a warm embedding cache; this never rejects an immutable lexical archive. See [Search](SEARCH.md#optional-text-embeddings) for user configuration and cache paths.
 
 `relevant` first validates an exact revision-addressed archive and falls back to cold compilation when one is unavailable. Its `diagnostics.index_revision` names the commit represented by the context actually used, and `diagnostics.index_preparation` reports `cache-hit` or `cold-fallback`. The separately captured `checkout_head` supplies the freshness comparison; an intentionally historical archive remains valid even when `stale` is true. The mutable `index.sqlite` alias is not evidence of which revision a relevance query used.
 

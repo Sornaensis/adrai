@@ -106,16 +106,10 @@ threeModeContract = withSearch p303RationaleSnapshot $ \connection materializati
   hybrid <- mustSearch =<< run HybridRetrieval
   map (map searchResultAdr . searchProjectionResults) [fts, vector, hybrid]
     @?= replicate 3 [searchDocumentAdrId (onlyDocument materialization)]
-  algorithms (fts, vector, hybrid)
-    @?= [ "three-fts+weighted-rrf",
-          "exact-summary+identifier+section-rerank+weighted-rrf",
-          "three-fts+exact-summary+section-rerank+weighted-rrf"
-        ]
-  assertBool "vector evidence is finite and non-zero" (all ((> 0) . searchResultVectorScore . onlyResult) [vector, hybrid])
-  lookupJsonPath ["fts", "channel_candidates"] (searchResultRetrieval (onlyResult vector)) @?= Just (JsonObject [])
-  lookupJsonPath ["fts", "queries"] (searchResultRetrieval (onlyResult vector)) @?= Nothing
-  assertBool "FTS diagnostics retain channel counts" (nonEmptyJsonObject (lookupJsonPath ["fts", "channel_candidates"] (searchResultRetrieval (onlyResult fts))))
-  assertBool "hybrid diagnostics retain channel counts" (nonEmptyJsonObject (lookupJsonPath ["fts", "channel_candidates"] (searchResultRetrieval (onlyResult hybrid))))
+  algorithms (fts, vector, hybrid) @?= replicate 3 "three-fts+weighted-rrf"
+  map searchProjectionMode [fts, vector, hybrid] @?= replicate 3 FtsRetrieval
+  assertBool "no optional service means zero vector evidence" (all ((== 0) . searchResultVectorScore . onlyResult) [fts, vector, hybrid])
+  assertBool "all effective FTS paths retain channel counts" (all (nonEmptyJsonObject . lookupJsonPath ["fts", "channel_candidates"] . searchResultRetrieval . onlyResult) [fts, vector, hybrid])
   lookupJsonPath ["fts", "queries", "prefix"] (searchResultRetrieval (onlyResult fts)) @?= Just (JsonString "")
   semanticSummaryText (onlyDocument materialization)
     @?= Text.intercalate

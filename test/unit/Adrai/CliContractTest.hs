@@ -1255,7 +1255,7 @@ mutationCliContractTests =
         assertBool "invalid path is rejected" (either (const True) (const False) (searchCommandRequest (explicit {searchFile = Just "../outside"})))
         let jsonRendered = renderSearchOutcome explicit projection
             plainRendered = renderSearchOutcome (explicit {searchJson = False}) projection
-        jsonRendered @?= CliRendered (emptySearchCliJson 3 7 "exact-summary+identifier+section-rerank+weighted-rrf") "" ExitSuccess
+        jsonRendered @?= CliRendered (emptySearchCliJson 3 7 "tei+sqlite-vec+weighted-rrf") "" ExitSuccess
         plainRendered @?= CliRendered "0 of 0 results — Page 3 of 0\n" "" ExitSuccess
         renderPagination (Pagination (Just 2) (Just 2) 5 (Just 3) 2 1 True) @?= "2 of 5 results — Page 2 of 3\n"
         renderPagination (Pagination (Just 3) (Just 2) 5 (Just 3) 1 0 False) @?= "1 of 5 results — Page 3 of 3\n"
@@ -1264,7 +1264,7 @@ mutationCliContractTests =
         render CollapsedView False @?= CliRendered (expectedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
         render ExplodedView False @?= CliRendered (expectedExpandedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
         for_ [CollapsedView, ExplodedView] $ \view -> do
-          assertCliListJson "adrai/search-cli/v1" "exact-summary+identifier+section-rerank+weighted-rrf" 0.012346 0 view (renderedStdout (render view True))
+          assertCliListJson "adrai/search-cli/v1" "tei+sqlite-vec+weighted-rrf" 0.012346 0 view (renderedStdout (render view True))
         for_ searchAlgorithms $ \(mode, algorithm) -> do
           let emptyProjection = projection {searchProjectionMode = mode}
               output query = renderedStdout (renderSearchOutcome (explicit {searchMode = mode, searchQuery = query}) emptyProjection)
@@ -1316,7 +1316,7 @@ mutationCliContractTests =
             retrieval =
               RelevantRetrieval
                 { relevantRetrievalImplementation = "structured-raw-text-cross-reference"
-                , relevantRetrievalStrategy = "exact-summary+passage-fts+bounded-section-rerank"
+                , relevantRetrievalStrategy = "passage-fts"
                 , relevantRetrievalSemanticVectorId = Nothing
                 , relevantRetrievalIdentifierVectorId = Nothing
                 , relevantRetrievalSourceChunks = 1
@@ -1357,7 +1357,7 @@ mutationCliContractTests =
           @?= Left "relevant --at and --worktree are mutually exclusive"
         assertBool "relevant rejects outside paths" (either (const True) (const False) (relevantCommandRequest (defaulted {relevantFile = "../outside"})))
         renderRelevantOutcome explicit projection
-          @?= CliRendered (emptyCliJson 7 "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank") "" ExitSuccess
+          @?= CliRendered (emptyCliJson 7 "adrai/relevant-cli/v1" "passage-fts") "" ExitSuccess
         let diagnosed = projection { relevantProjectionDiagnostics = Just (RelevantDiagnostics "0123456789abcdef0123456789abcdef01234567" "1111111111111111111111111111111111111111" True "cache-hit" 1.25 Nothing Nothing) }
             diagnosedJson = renderedStdout (renderRelevantOutcome explicit diagnosed)
         diagnosedJson @?= renderedStdout (renderRelevantOutcome explicit projection)
@@ -1371,9 +1371,9 @@ mutationCliContractTests =
         render CollapsedView False @?= CliRendered (expectedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
         render ExplodedView False @?= CliRendered (expectedExpandedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
         for_ [CollapsedView, ExplodedView] $ \view ->
-          assertCliListJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" 0.765432 0 view (renderedStdout (render view True))
+          assertCliListJson "adrai/relevant-cli/v1" "passage-fts" 0.765432 0 view (renderedStdout (render view True))
         let maximumScore = populated {relevantProjectionResults = [cliRelevantRow {relevantResultScore = 1}, (last (relevantProjectionResults populated)) {relevantResultScore = 0}]}
-        assertCliListJson "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" 1 0 CollapsedView
+        assertCliListJson "adrai/relevant-cli/v1" "passage-fts" 1 0 CollapsedView
           (renderedStdout (renderRelevantOutcome (explicit {relevantView = CollapsedView}) maximumScore))
         selectedRepo <- newIORef Nothing
         selectedRequest <- newIORef Nothing
@@ -1507,19 +1507,19 @@ mutationCliContractTests =
           runCli ["search", "--domain", "storage", "--all", "--mode", "fts"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
           runCli ["search", "--domain", "storage", "--all", "--include-obsolete", "--mode", "fts"] >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
           _ <- runCli ["reactivate", Text.unpack fixtureAdr, "--reason", "Restore fixture", "--actor", "human:test"]
-          checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank" Nothing
-          for_ searchAlgorithms $ \(mode, algorithm) -> do
+          checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1" "passage-fts" Nothing
+          for_ searchAlgorithms $ \(mode, _algorithm) -> do
             let modeText = case mode of
                   FtsRetrieval -> "fts"
                   VectorRetrieval -> "vector"
                   HybridRetrieval -> "hybrid"
-            checkJson ["search", "DURABLE_LEDGER_TOKEN", "--mode", modeText] "adrai/search-cli/v1" algorithm CollapsedView Nothing
-            runCli ["search", "cache", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" algorithm)
+            checkJson ["search", "DURABLE_LEDGER_TOKEN", "--mode", modeText] "adrai/search-cli/v1" "three-fts+weighted-rrf" CollapsedView Nothing
+            runCli ["search", "cache", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" "three-fts+weighted-rrf")
             runCli ["search", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" "filtered-list")
           runCli ["search", "zzzxqvplmn", "--mode", "fts"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
           BS.writeFile (repo </> "source.txt") "\n"
           runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
-          runCli ["relevant", "source.txt", "--worktree", "--json"] >>= (@?= emptyCliJson 10 "adrai/relevant-cli/v1" "exact-summary+passage-fts+bounded-section-rerank")
+          runCli ["relevant", "source.txt", "--worktree", "--json"] >>= (@?= emptyCliJson 10 "adrai/relevant-cli/v1" "passage-fts")
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
         let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True
         parseCli ["show", "R0123456789ABCDEFGHJKMNPQRS", "--view", "exploded", "--at", "refs/heads/release", "--raw", "--json"]
@@ -2342,8 +2342,8 @@ mutationCliContractTests =
        ("pagination", paginationJson (Pagination (Just page) (Just size) 0 (Just 0) 0 0 False))])
     searchAlgorithms =
       [ (FtsRetrieval, "three-fts+weighted-rrf")
-      , (VectorRetrieval, "exact-summary+identifier+section-rerank+weighted-rrf")
-      , (HybridRetrieval, "three-fts+exact-summary+section-rerank+weighted-rrf")
+      , (VectorRetrieval, "tei+sqlite-vec+weighted-rrf")
+      , (HybridRetrieval, "three-fts+tei+sqlite-vec+weighted-rrf")
       ]
     assertCliListJson schema algorithm firstScore secondScore view output =
       Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output)

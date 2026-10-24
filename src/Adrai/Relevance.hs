@@ -200,9 +200,8 @@ relevanceSectionLimit = 40
 
 relevanceRetrievalFingerprint :: Text
 relevanceRetrievalFingerprint = renderDigest . sha256Digest . TextEncoding.encodeUtf8 $
-  "fixed-depth-10:semantic=" <> count relevanceSemanticShortlistSize
-    <> ";identifier=" <> count relevanceIdentifierSeedSize <> ";union=" <> count relevanceAdrShortlistMax
-    <> ";passage=" <> count relevancePassageLimit <> ";section=" <> count relevanceSectionLimit
+  "fixed-depth-10:tei-sqlite-vec-cosine+passage-fts:passage=" <> count relevancePassageLimit
+    <> ";section=" <> count relevanceSectionLimit <> ";source=" <> count relevanceMaxSourceQueryChunks
   where
     count = Text.pack . show
 

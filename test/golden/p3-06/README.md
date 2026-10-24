@@ -2,6 +2,8 @@
 
 This Haskell-owned evidence freezes the executable six-ADR quality summary, the qualified result-only Dropwire aggregate, the canonical float32-origin in-memory SearchVectorCorpus, cold/reused exact-byte digests, and deterministic diagnostics from the separately executable 2,000-ADR scale integration test.
 
+Current query quality here uses FTS5 with isolated user configuration. SearchVectorCorpus sections retain historical compatibility evidence; they do not validate external embeddings. Optional TEI and native sqlite-vec are covered by `test/integration/Adrai/TextEmbeddingTest.hs`.
+
 Normal tests are read-only. Regeneration is maintenance that writes these owned fixtures, not retained
 verification. It is explicit through `stack test adrai:adrai-test --test-arguments=--write-p3-06-goldens` and never executes or imports the protected Python prototype.
 
@@ -10,4 +12,4 @@ incremental invalidation, branch isolation, and corrupt-cache recovery are
 implemented separately; see [Cache](../../../docs/CACHE.md) and
 `Adrai.Service.Compilation` for their current contracts.
 
-- `quality.golden` is 7513 bytes; SHA-256: `9706FA8B39AC9B6A1CAEC8685DCD8152AF73026A459A3C819CA72BDF7A4BF2A8`
+- `quality.golden` is 7507 bytes; SHA-256: `5BF7AA77EAC54085C845C0F68489DB565BBCC9D5FC619C00515EDD57FAD52A0B`

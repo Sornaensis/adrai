@@ -636,8 +636,8 @@ searchCliJson command projection =
       | Text.null (Text.strip (searchQuery command)) = "filtered-list"
       | otherwise = case Query.searchProjectionMode projection of
           FtsRetrieval -> "three-fts+weighted-rrf"
-          VectorRetrieval -> "exact-summary+identifier+section-rerank+weighted-rrf"
-          HybridRetrieval -> "three-fts+exact-summary+section-rerank+weighted-rrf"
+          VectorRetrieval -> "tei+sqlite-vec+weighted-rrf"
+          HybridRetrieval -> "three-fts+tei+sqlite-vec+weighted-rrf"
 
 relevantCliJson :: ViewMode -> Query.RelevantProjection -> JsonValue
 relevantCliJson view projection =

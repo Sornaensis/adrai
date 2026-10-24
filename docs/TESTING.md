@@ -218,8 +218,8 @@ admission priority; only a matching Complete establishes actual runtime and
 acceptance, and a cancelled duration remains censored.
 
 The current queue has 21 selected jobs and 21 registration-listing processes,
-for a direct process lower bound of 42. The current ledger has 978 unique
-tests and the named repeat gives 979 planned executions. These are source counts;
+for a direct process lower bound of 42. The current ledger has 984 unique
+tests and the named repeat gives 985 planned executions. These are source counts;
 a matching Complete result establishes actual execution and wall time.
 
 The runner derives the required job-ID

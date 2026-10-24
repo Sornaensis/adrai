@@ -4,6 +4,9 @@ license: BSD-3-Clause
 language: GHC2021
 
 extra-source-files:
+  - src/Adrai/TextEmbedding/Native/*.h
+  - src/Adrai/TextEmbedding/Native/LICENSE-*
+  - src/Adrai/TextEmbedding/Native/README.md
   - web/elm.json
   - web/package.json
   - web/package-lock.json
@@ -33,6 +36,8 @@ dependencies:
   - filepath
   - fsnotify
   - http-types
+  - http-client
+  - direct-sqlite
   - memory
   - network
   - optparse-applicative
@@ -114,6 +119,7 @@ library:
     - Adrai.Sqlite
     - Adrai.State
     - Adrai.Types
+    - Adrai.TextEmbedding
     - Adrai.Vector
     - Adrai.Web.Api
     - Adrai.Web.Application
@@ -127,6 +133,12 @@ library:
 internal-libraries:
   internal:
     source-dirs: src
+    c-sources:
+      - src/Adrai/TextEmbedding/Native/sqlite-vec.c
+      - src/Adrai/TextEmbedding/Native/register.c
+      - src/Adrai/TextEmbedding/Native/connect.c
+    include-dirs: src/Adrai/TextEmbedding/Native
+    cc-options: [-DSQLITE_VEC_STATIC, -DSQLITE_CORE]
     visibility: private
     # These modules stay implementation-only even within the package.
     other-modules:

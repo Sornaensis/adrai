@@ -1103,7 +1103,13 @@
         "ADRAI.P7-05.injected archive busy preserves durable commit and types read 503",
         "ADRAI.P7-05.physical exact archive contention types mixed HTTP consumers and recovers without cold compile",
         "ADRAI.P7-05.initial event reports watcher failure and a later reconnect observes recovery",
-        "ADRAI.P7-05.initial event retries when publication lands between watcher sample and registration"
+        "ADRAI.P7-05.initial event retries when publication lands between watcher sample and registration",
+        "ADRAI.P3-04.optional TEI and sqlite-vec.user config is optional and validates bounded service settings",
+        "ADRAI.P3-04.optional TEI and sqlite-vec.native cosine retrieval, pre-K eligibility, warm reuse and input/model invalidation",
+        "ADRAI.P3-04.optional TEI and sqlite-vec.outage and malformed responses fall back even after warming",
+        "ADRAI.P3-04.optional TEI and sqlite-vec.request timeout is bounded and async cancellation propagates",
+        "ADRAI.P3-04.optional TEI and sqlite-vec.search, explicit FTS, blank, vector fallback and relevance share optional provider",
+        "ADRAI.P3-04.optional TEI and sqlite-vec.production config loading reaches CLI and web projections and relevant"
       ],
       "rationale": "The checked complement runs as the third exclusive resource group, preserving all internal concurrency and guards while excluding unrelated scheduler load; isolation is not a proven behavior remedy.",
       "costProvenance": "Current static Rest count 605 after extracting the exclusive six-route HTTP mutation and physical-flight singletons; elapsed cost requires a matching complete snapshot."

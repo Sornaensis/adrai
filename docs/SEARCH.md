@@ -35,11 +35,11 @@ For nonblank search queries, the algorithm labels are:
 | Mode | Algorithm |
 | --- | --- |
 | `fts` | `three-fts+weighted-rrf` |
-| `vector` | `exact-summary+identifier+section-rerank+weighted-rrf` |
-| `hybrid` | `three-fts+exact-summary+section-rerank+weighted-rrf` |
+| `vector` | `tei+sqlite-vec+weighted-rrf` |
+| `hybrid` | `three-fts+tei+sqlite-vec+weighted-rrf` |
 
-Relevance reports its retrieval strategy,
-`exact-summary+passage-fts+bounded-section-rerank`. Score and algorithm metadata
+Relevance reports `tei+sqlite-vec+passage-fts` when the embedding service is available,
+or `passage-fts` when it uses lexical retrieval alone. Score and algorithm metadata
 appear only in JSON; plain and expanded text remain ID/title lists with optional
 summaries.
 
@@ -58,7 +58,8 @@ adrai search "lease token" --mode vector --limit 5 --json
 Retrieval modes are:
 
 - `fts`: SQLite FTS5 with exact, phrase, proximity, prefix, stemming, and identifier channels.
-- `vector`: built-in semantic and identifier embeddings.
+- `vector`: external TEI text embeddings retrieved with sqlite-vec cosine distance.
+  If the optional service or vector runtime is unavailable, it uses FTS5.
 - `hybrid`: weighted reciprocal-rank fusion of the active FTS and vector channels; this is the default.
 
 Filters include file scope, repeatable domains, actor, inclusive timestamps, obsolete state, and immutable revision. Filters are applied before candidates are ranked. A blank query returns a deterministic filtered ADR listing.
@@ -81,10 +82,10 @@ it does not change the page size or include obsolete decisions.
 Ranked queries page the complete distinct ADR result set produced by a fixed
 retrieval policy anchored to retrieval depth 10. The policy allows 300 hits per
 individual FTS query, retains the existing union of exact/near/prefix terms,
-uses a prefix fallback threshold of `min(30, allowed items)`, selects up to 120
-documents for section scoring and 10 forced candidates per channel, and reranks
-up to 80 documents plus their competing heads. These budgets are independent of
-both page and page size. Ranking and ADR deduplication finish before paging.
+uses a prefix fallback threshold of `min(30, allowed items)`, retrieves at most
+300 eligible document/passage vector neighbours, and reranks up to 80 documents
+plus their competing heads. These budgets are independent of both page and page
+size. Ranking and ADR deduplication finish before paging.
 Ranked totals describe this retrieved result set, while blank-query totals
 describe the full filtered corpus.
 
@@ -98,6 +99,51 @@ The CLI and rich JSON projections add a `pagination` object with `page`,
 schema names are preserved; this metadata is additive.
 
 Collapsed results group competing decision heads by ADR. `--view exploded` adds summaries; use `adrai show ADR_ID --view exploded` for operation-level detail. Use `--include-obsolete` to include obsolete ADRs.
+
+## Optional text embeddings
+
+Configure your local TEI service in the **user** file `adrai/config.toml` under
+`System.Directory.getXdgDirectory XdgConfig`: normally
+`~/.config/adrai/config.toml` on Linux and `%APPDATA%\adrai\config.toml` on
+Windows. `XDG_CONFIG_HOME` overrides the config base directory. This is separate
+from the committed repository configuration. ADRAI does not create this file or
+assume an endpoint. For example, replacing the endpoint with yours:
+
+```toml
+[text_embedding]
+endpoint = "http://localhost:8080"
+timeout_ms = 2000
+batch_size = 16
+```
+
+The optional `model = "your-model-id"` setting must exactly match TEI `/info`
+`model_id`; omit it to use the live model. `endpoint` is the local TEI `http://`
+base URL, using `localhost`, numeric IPv4, or bracketed numeric IPv6, without
+credentials, query or fragment. `localhost` uses IPv4 loopback. Other hostnames
+and HTTPS endpoints select FTS5-only retrieval. Proxy environment settings are
+bypassed; no DNS lookup is performed.
+ADRAI calls `GET /info` and `POST /embed` with `inputs`, `normalize=true`
+and `truncate=true`. TEI truncates text beyond its model token limit; evidence
+still uses the original text. This policy is part of the vector cache identity.
+`timeout_ms` is the per-request timeout (100-10000 ms,
+default 2000). The complete optional phase has a 30-second deadline; leaving an
+in-flight native socket operation can add up to one configured socket interval. `batch_size`
+is 1-64 (default 16). Each text is limited to 32768 UTF-8 bytes and responses to
+8 MiB. Malformed configuration, unavailable services, HTTP errors, model mismatch,
+invalid response counts/dimensions/nonfinite or zero vectors, and sqlite-vec
+failures all select FTS5-only retrieval. Explicit `--mode vector` also falls back.
+Detailed search `mode` and algorithm metadata describe the effective retrieval.
+Explicit `--mode fts` and blank listings make no service calls.
+
+The optional vector cache lives under `getXdgDirectory XdgCache` in
+`adrai/text-embeddings-v1`. It stores float32 corpus vectors by endpoint, live
+model ID/revision, dimensions, format and input digest. Changed corpus text or a
+changed provider/model cannot reuse incompatible vectors. Source/query embeddings
+remain request-local. The model and query embeddings must succeed on each request,
+so an outage uses FTS5 even after the corpus cache has warmed. Cache failures do
+not invalidate immutable lexical archives. This cache is disposable and can be
+removed while ADRAI is stopped. sqlite-vec v0.1.6 is bundled; no extension install
+or shared-library path is needed.
 
 ## Browse domains
 
@@ -177,15 +223,14 @@ Without `--worktree`, the file and ADR context come from the same resolved revis
 (default 10, range 1–100). CLI and HTTP responses include the shared `pagination`
 fields described above; text uses the same compact returned/total and page footer.
 Totals describe the finalized distinct ADRs retrieved by a fixed depth-10 policy,
-not all `eligible_adrs`. That policy uses semantic shortlist 120, identifier seed
-60, union maximum 160, passage evidence 60 per source chunk and LSH section
-candidates 40, with the existing fixed source-chunk and scope bounds. Exact
-fallback is unchanged. Retrieval diagnostics publish `policy: fixed-depth-10`
-and its `policy_fingerprint`. Changing page size never changes these budgets.
+not all `eligible_adrs`. Each selected source chunk retrieves up to 60 lexical
+passages and 40 vector passages. Up to 24 informative source chunks participate.
+Only eligible passages enter sqlite-vec, before its K-neighbour limit.
+Changing page size never changes these budgets.
 All competitors contribute to confidence and margins before a page is selected,
 so concatenating pages preserves complete-result order, evidence and confidence.
 
-Input is limited to 4 MiB. Binary-like input, NUL bytes, and very short or uninformative text are rejected or produce no weak match. Informative text is chunked, shortlisted through exact, FTS, and vector channels, and reranked against stored ADR passages. File scope affects ranking but does not exclude an otherwise relevant ADR.
+Input is limited to 4 MiB. Binary-like input, NUL bytes, and very short or uninformative text are rejected or produce no weak match. Informative text is chunked and retrieved through passage FTS and optional text embeddings. The retrieved passages are ranked and aggregated per ADR. File scope affects ranking but does not exclude an otherwise relevant ADR.
 
 ### Detailed relevance service and HTTP JSON contract
 

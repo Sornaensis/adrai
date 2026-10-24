@@ -7,7 +7,9 @@ import qualified Adrai.FixturePlanTest
 import qualified Adrai.FixtureProperties
 import qualified Adrai.LargeRepositoryStressTest
 import qualified Adrai.RetrievalScaleTest
-import System.Environment (getArgs, withArgs)
+import System.Environment (getArgs, setEnv, withArgs)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.IO (hPutStrLn, stderr)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -23,6 +25,14 @@ main = do
 
 normalMain :: [String] -> IO ()
 normalMain arguments =
+  withSystemTempDirectory "adrai-stress-user" $ \directory -> do
+    -- Provider-absent scale fixtures must never use the person's TEI config.
+    setEnv "XDG_CONFIG_HOME" (directory </> "config")
+    setEnv "XDG_CACHE_HOME" (directory </> "cache")
+    normalMain' arguments
+
+normalMain' :: [String] -> IO ()
+normalMain' arguments =
   case arguments of
     -- `stack test --test-arguments=...` passes a legacy maintenance mode to
     -- every enabled component.  The ordinary suite owns these modes; making

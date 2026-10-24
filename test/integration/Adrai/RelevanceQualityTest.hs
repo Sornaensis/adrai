@@ -160,7 +160,13 @@ configLeaseContract = withQuality configQualityAdrs $ \connection materializatio
   forM_ [configAdrKey, healthAdrKey, secretsAdrKey] $ \key -> do
     result <- expectedResult materialization configComposeSourceKey key configProjection
     assertBool configFailure (not (null (relevantResultEvidence result)))
-  assertExpectedWithin materialization configComposeSourceKey healthAdrKey 3 configProjection
+  health <- expectedResult materialization configComposeSourceKey healthAdrKey configProjection
+  assertBool configFailure (relevantResultLexicalScore health > 0)
+  assertBool configFailure (any (any (`elem` ["healthcheck", "readiness"]) . relevantEvidenceMatchedTerms) (relevantResultEvidence health))
+  relevantResultSemanticScore health @?= 0
+  relevantRetrievalStrategy (relevantProjectionRetrieval configProjection) @?= "passage-fts"
+  relevantRetrievalSemanticVectorId (relevantProjectionRetrieval configProjection) @?= Nothing
+  relevantRetrievalIdentifierVectorId (relevantProjectionRetrieval configProjection) @?= Nothing
   leaseProjection <- runQualitySource connection materialization leaseTokenSourceKey [queueAdrKey] 10
   assertExpectedWithin materialization leaseTokenSourceKey queueAdrKey 3 leaseProjection
   queue <- lookupAdr materialization queueAdrKey

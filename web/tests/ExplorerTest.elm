@@ -37,7 +37,7 @@ tests =
                             case List.head envelope.data.results |> Maybe.andThen (\hit -> List.head hit.evidence) of
                                 Just evidence ->
                                     Expect.equal
-                                        ( "current decision api context first decision second consequence current domain cache lease token", "decision first decision second", "decision" )
+                                        ( "current decision api context first decision second consequence current domain cache lease token", "Current Decision API (CDAPI) Current summary", "title-summary" )
                                         ( evidence.fileExcerpt, evidence.adrExcerpt, evidence.section )
 
                                 Nothing ->

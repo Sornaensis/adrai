@@ -133,7 +133,7 @@ fullEnvWithPath path = do
   -- Keep intentional Git identity/editor scrubbing, while respecting external
   -- fixture routing and the native executable loader/locale requirements.
   let identity key = if os == "mingw32" then map toUpper key else key
-      forwarded = filter (\(key, _) -> identity key `elem` ["TEMP", "TMP", "TMPDIR", "SYSTEMROOT", "WINDIR", "PATHEXT", "LANG", "LC_ALL", "LC_CTYPE"]) inherited
+      forwarded = filter (\(key, _) -> identity key `elem` ["TEMP", "TMP", "TMPDIR", "SYSTEMROOT", "WINDIR", "PATHEXT", "LANG", "LC_ALL", "LC_CTYPE", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"]) inherited
   pure (("PATH", path) : gitEnv <> forwarded)
 
 -- Child failures retain useful command and bounded stderr context without

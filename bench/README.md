@@ -129,7 +129,7 @@ refer to runnable legacy profiles or files.
 | Legacy profile | Native mapping | Scope decision |
 | --- | --- | --- |
 | `default` | None | Intentionally excluded: it times the entire correctness suite and Stack/test-process startup rather than one production operation. |
-| `retrieval-2k` | `adrai/corpus/construction-2000-adr`, `adrai/sqlite/replacement-warm-2000-adr`, `adrai/search/current-cold-2000-adr`, and `adrai/search/current-warm-2000-adr` | Provides isolated 2,000-ADR corpus construction, warmed SQLite replacement, and current-search operations. |
+| `retrieval-2k` | `adrai/corpus/construction-2000-adr`, `adrai/sqlite/replacement-warm-2000-adr`, `adrai/search/current-cold-2000-adr`, and `adrai/search/current-warm-2000-adr` | Provides historical custom-corpus compatibility construction, warmed SQLite replacement, and current production search operations. |
 | `compiler-search-storage` | `adrai/sqlite/replacement-warm-2000-adr`, plus the 2,000-ADR search workloads | Retains SQLite replacement/search materialization measurement; mixed compiler/test-suite and Stack-process costs are intentionally excluded. |
 | `cli-heavy` | None | Intentionally excluded: CLI mutation coverage measures executable/process-tree behaviour, not the library workloads owned by this component. |
 
@@ -176,10 +176,11 @@ profile command below passes `-N1` explicitly as provenance. Compare action and
 control only when they have the same iteration count, resolver/compiler,
 profile way, and RTS settings.
 
-The shared fixture constructor fully forces the materialization and reusable
-vector corpus before returning. Criterion uses that exact forcing checksum for
-its environment, and the profile driver receives the same fixture-ready state
-before its major GC and `action-start` marker.
+The shared fixture constructor fully forces the lexical materialization before
+returning. A warm fixture then runs one complete production query outside the
+measured action. Criterion uses that exact forcing checksum for its environment,
+and the profile driver receives the same fixture-ready state before its major GC
+and `action-start` marker.
 
 ```sh
 profile_dir="$(mktemp -d "${TMPDIR:?set an external OS temporary directory}/adrai-profile.XXXXXX")"
@@ -373,28 +374,19 @@ arguments before it constructs a 2,000-ADR materialization, opens SQLite, or
 builds a reusable corpus. Selecting one workload therefore never keeps another
 workload's database or corpus live.
 
-- `adrai/corpus/construction-2000-adr` builds and fully forces a reusable
-  vector corpus from the frozen 2,000-logical-ADR retrieval materialization.
-  The materialization itself is constructed before measurement.
-- `adrai/sqlite/replacement-warm-2000-adr` replaces the same 2,000-ADR search
-  materialization in an already initialized in-memory SQLite schema. It
-  measures clear-and-repopulate work, not opening a database or creating its
-  schema.
-- `adrai/search/current-cold-2000-adr` builds a new vector corpus during every
-  current-search invocation, then runs the hybrid tail probe against the
-  preloaded 2,000-ADR SQLite FTS indexes. Its `warm` counterpart,
-  `adrai/search/current-warm-2000-adr`, reuses the corpus built and fully
-  forced during fixture setup. Both fully force the emitted public JSON.
-- `adrai/relevance/cold-six-adr` builds a new corpus during every relevance
-  invocation for the frozen `cache-python` source. Its `warm` counterpart,
-  `adrai/relevance/warm-six-adr`, reuses the corpus prepared for the separately
-  preloaded six-ADR quality fixture. Both variants use that fixture's SQLite
-  indexes and fully force their public JSON.
+- `adrai/corpus/construction-2000-adr` is a historical compatibility benchmark
+  for the retained custom-vector API. It is not used by production retrieval and
+  does not measure TEI or sqlite-vec.
+- `adrai/sqlite/replacement-warm-2000-adr` measures lexical materialization
+  replacement in a preinitialized SQLite database.
+- `adrai/search/current-cold-2000-adr` and `adrai/relevance/cold-six-adr` execute
+  the current production request without an explicit setup query.
+- `adrai/search/current-warm-2000-adr` and `adrai/relevance/warm-six-adr` run one
+  complete production request in setup before the timed requests. This warms the
+  optional external embedding cache when a TEI service is configured.
 
-The `cold` names mean a new in-memory vector corpus is built in each timed
-invocation; the materialization and SQLite indexes remain the deterministic,
-preloaded fixture. The `warm` names mean a reusable corpus has reached the
-stated ready state before Criterion begins. Neither state hides an external
-warm-up loop. The SQLite replacement case is intentionally warm because it
-measures index replacement rather than database/schema creation. Use `--list`
-to enumerate the exact selectable names before collecting artifacts.
+The stable `cold` names describe absence of an explicit fixture warm-up; they do
+not claim a cold disk/provider cache. User caches are never deleted by benchmarks.
+With no configured healthy service, production workloads use FTS5 only. Record
+the user configuration, model identity and service/cache state when comparing
+embedding runs; do not compare them with the former local hash-vector timings.
