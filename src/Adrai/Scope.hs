@@ -103,10 +103,11 @@ scopePatternText (ScopePattern value _) = value
 scopeMatches :: ScopePattern -> RepoPath -> Bool
 scopeMatches (ScopePattern _ tokens) path = matchGlob tokens (Text.unpack (repoPathText path))
 
--- | Specificity is separate from whether the scope axis is resolved. Count
--- complete literal components from parsed tokens, so character classes and
--- recursive wildcards cannot masquerade as literal directory names.
-data ScopeSpecificity = ScopeBroad | ScopePath | ScopeLiteral
+-- | Specificity is separate from whether the scope axis is resolved. A
+-- constrained terminal component names a file or file type; constraints in
+-- earlier components only restrict a directory. Unrestricted wildcards remain
+-- broad. Count complete literal components separately for deterministic ties.
+data ScopeSpecificity = ScopeBroad | ScopePath | ScopeFile | ScopeLiteral
   deriving (Eq, Ord, Show)
 
 data ScopeMatchEvidence = ScopeMatchEvidence
@@ -134,11 +135,21 @@ patternEvidence (ScopePattern value tokens) =
   ScopeMatchEvidence value specificity literalComponents wildcards
   where
     wildcards = length (filter (not . literalToken) tokens)
-    literalComponents = length (filter (\component -> not (null component) && all literalToken component) (components tokens))
+    tokenComponents = components tokens
+    literalComponents = length (filter (\component -> not (null component) && all literalToken component) tokenComponents)
     specificity
       | wildcards == 0 = ScopeLiteral
-      | literalComponents > 0 = ScopePath
+      | terminalConstrained = ScopeFile
+      | any (any constrainsName) tokenComponents = ScopePath
       | otherwise = ScopeBroad
+    terminalConstrained = case reverse tokenComponents of
+      -- A double star can cross a slash even inside a component. Only its
+      -- suffix can constrain the final filename (prefix** is a directory glob).
+      terminal : _ -> any constrainsName (takeWhile (/= GlobDoubleStar) (reverse terminal))
+      [] -> False
+    constrainsName (GlobLiteral _) = True
+    constrainsName (GlobClass _) = True
+    constrainsName _ = False
     literalToken (GlobLiteral _) = True
     literalToken _ = False
     components = go []

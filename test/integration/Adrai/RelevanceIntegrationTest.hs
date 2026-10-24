@@ -3,6 +3,7 @@
 module Adrai.RelevanceIntegrationTest (tests, resolvedRelevantProjection, outsideScopeRelevantProjection, conflictedRelevantProjection) where
 
 import Adrai.Compiler (materializeCurrentSearch)
+import qualified Adrai.CliTypes as Cli
 import Adrai.CompilerMaterializationTest (p303RationaleSnapshot)
 import Adrai.CurrentSearchTest (p304ConflictSnapshot)
 import Adrai.Fixture.Prng (mkSeed)
@@ -36,6 +37,7 @@ import Control.Exception (SomeException, bracket, try)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.Text as Text
 import Database.SQLite.Simple (Connection, close, open)
@@ -87,9 +89,9 @@ scopeBonusContract = withRelevant p303RationaleSnapshot $ \connection materializ
   relevantResultScopeMatch exactResult @?= RelevanceScopeExact
   relevantResultScopeMatch outsideResult @?= RelevanceScopeNone
   relevantResultSemanticScore exactResult @?= relevantResultSemanticScore outsideResult
-  relevantResultScopeBonus exactResult @?= 0.175
+  relevantResultScopeBonus exactResult @?= 0.10
   relevantResultScopeBonus outsideResult @?= 0
-  assertClose 0.175 (relevantResultScore exactResult - relevantResultScore outsideResult)
+  assertClose 0.10 (relevantResultScore exactResult - relevantResultScore outsideResult)
   let weakBytes = "unrelated graphics rendering shader texture widget interface animation layout"
       weakSource = RevisionRelevantSource basePath "rationale-resolved" "blob-weak" weakBytes
   weak <- mustRelevant =<< runCurrent connection materialization baseRequest weakSource
@@ -105,13 +107,17 @@ scopeOnlyContract = withRelevant snapshot $ \connection materialization -> do
   mapM_ (\bytes -> do
     projection <- run bytes request
     let results = relevantProjectionResults projection
-    map relevantResultScore results @?= [0.30, 0.175, 0.15]
-    map (fmap scopeEvidencePattern . relevantResultScopeEvidence) results @?= map Just ["src/simulation/Entity.rs", "src/simulation/**", "**/Entity.rs"]
-    map (fmap scopeEvidenceSpecificity . relevantResultScopeEvidence) results @?= map Just [ScopeLiteral, ScopePath, ScopePath]
-    paginationTotalResults (relevantProjectionPagination projection) @?= 3
+    map relevantResultScore results @?= [1, 0.60, 0.60, 0.10]
+    map (Text.takeWhile (/= ' ')) (take 4 (Text.lines (Cli.renderRelevantCli Cli.CollapsedView projection)))
+      @?= ["1.00", "0.60", "0.60", "0.10"]
+    Set.fromList (map (fmap scopeEvidencePattern . relevantResultScopeEvidence) results)
+      @?= Set.fromList (map Just ["src/simulation/Entity.rs", "src/simulation/**", "**/Entity.rs", "**/*.rs"])
+    map (fmap scopeEvidenceSpecificity . relevantResultScopeEvidence) results @?= map Just [ScopeLiteral, ScopeFile, ScopeFile, ScopePath]
+    paginationTotalResults (relevantProjectionPagination projection) @?= 4
     relevantRetrievalEligibleAdrs (relevantProjectionRetrieval projection) @?= 5
-    relevantRetrievalScopeCandidates (relevantProjectionRetrieval projection) @?= 3
-    relevantRetrievalAdrShortlist (relevantProjectionRetrieval projection) @?= 3
+    relevantRetrievalScopeCandidates (relevantProjectionRetrieval projection) @?= 4
+    relevantRetrievalAdrShortlist (relevantProjectionRetrieval projection) @?= 4
+    relevantRetrievalSemanticVectorId (relevantProjectionRetrieval projection) @?= Nothing
     relevantRetrievalExactRerankCandidates (relevantProjectionRetrieval projection) @?= 0
     assertBool "resolved scope-only rows retain their logical record" (all ((/= Nothing) . relevantResultRecord) results)
     case lookupNested "results" (Just (relevantProjectionJson projection)) of
@@ -120,21 +126,54 @@ scopeOnlyContract = withRelevant snapshot $ \connection materialization -> do
         lookupNested "matched_record" (Just row) @?= Just JsonNull
         lookupNested "matched_title" (Just row) @?= Just JsonNull
         lookupNested "evidence" (Just row) @?= Just (JsonArray [])
-        lookupNested "passages" (Just row) @?= Just (JsonArray [])) rows
+        lookupNested "passages" (Just row) @?= Just (JsonArray [])
+        case lookupNested "scope_evidence" (Just row) of
+          Just scope -> assertBool "rich specificity exposes the file tier"
+            (lookupNested "specificity" (Just scope) `elem` map (Just . JsonString) ["literal", "file", "path"])
+          _ -> assertFailure "scope-only row lost scope evidence") rows
       _ -> assertFailure "scope-only JSON lost its result rows"
     mapM_ assertScopeOnly results) ["", "tiny"]
   first <- run "" (request {relevantRequestLimit = 1})
   second <- run "" (request {relevantRequestLimit = 1, relevantRequestPage = 2})
-  paginationTotalResults (relevantProjectionPagination first) @?= 3
-  map relevantResultScore (relevantProjectionResults second) @?= [0.175]
-  let unrelated = mustRepoPath "other/Else.rs"
+  paginationTotalResults (relevantProjectionPagination first) @?= 4
+  map relevantResultScore (relevantProjectionResults second) @?= [0.60]
+  let unrelated = mustRepoPath "other/Else.py"
   broad <- mustRelevant =<< runRelevantWithEmbedding noContentProvider (RelevantTimingHooks (pure ()) (pure ())) connection snapshot materialization
     (request {relevantRequestFile = unrelated}) (RevisionRelevantSource unrelated resolved "blob-broad" "")
   relevantProjectionResults broad @?= []
   relevantRetrievalScopeCandidates (relevantProjectionRetrieval broad) @?= 0
   withoutDocuments <- mustRelevant =<< runRelevantWithEmbedding noContentProvider (RelevantTimingHooks (pure ()) (pure ())) connection snapshot (SearchMaterialization [] [] []) request (source "nebula quasars photons telescope astronomy celestial galaxies")
-  map relevantResultScore (relevantProjectionResults withoutDocuments) @?= [0.30, 0.175, 0.15]
+  map relevantResultScore (relevantProjectionResults withoutDocuments) @?= [1, 0.60, 0.60, 0.10]
   relevantRetrievalEligibleSearchItems (relevantProjectionRetrieval withoutDocuments) @?= 0
+  let otherRust = mustRepoPath "other/Else.rs"
+  typed <- mustRelevant =<< runRelevantWithEmbedding noContentProvider (RelevantTimingHooks (pure ()) (pure ())) connection snapshot materialization
+    (request {relevantRequestFile = otherRust}) (RevisionRelevantSource otherRust resolved "blob-type" "")
+  relevantResultScore (onlyResult typed) @?= 0.60
+  fmap scopeEvidencePattern (relevantResultScopeEvidence (onlyResult typed)) @?= Just "**/*.rs"
+  case lookupNested "results" (Just (relevantProjectionJson typed)) of
+    Just (JsonArray [row]) ->
+      lookupNested "specificity" (lookupNested "scope_evidence" (Just row)) @?= Just (JsonString "file")
+    _ -> assertFailure "file-type result lost its rich specificity"
+  -- Actual vector availability selects the floor even when no content pair
+  -- matches. Directory-only scope is below 0.58; file and literal scope survive
+  -- with honest empty evidence. The same source retains the 0.10 row in fallback.
+  let missedSource = source "chocolate penguins glacier avalanche basalt volcano cartography"
+      activeProvider _ queries _ = pure (Just (EmbeddingRetrieval "scope-fixture" 2 (replicate (length queries) Map.empty)))
+      fallbackProvider _ _ _ = pure Nothing
+      runProvider provider selectedRequest = mustRelevant =<< runRelevantWithEmbedding provider (RelevantTimingHooks (pure ()) (pure ())) connection snapshot materialization selectedRequest missedSource
+  hybrid <- runProvider activeProvider request
+  map relevantResultScore (relevantProjectionResults hybrid) @?= [1, 0.60, 0.60]
+  paginationTotalResults (relevantProjectionPagination hybrid) @?= 3
+  relevantRetrievalSemanticVectorId (relevantProjectionRetrieval hybrid) @?= Just "scope-fixture"
+  relevantRetrievalScopeCandidates (relevantProjectionRetrieval hybrid) @?= 4
+  mapM_ assertScopeOnly (relevantProjectionResults hybrid)
+  hybridNext <- runProvider activeProvider (request {relevantRequestLimit = 1, relevantRequestPage = 4})
+  relevantProjectionResults hybridNext @?= []
+  paginationTotalResults (relevantProjectionPagination hybridNext) @?= 3
+  fallback <- runProvider fallbackProvider request
+  map relevantResultScore (relevantProjectionResults fallback) @?= [1, 0.60, 0.60, 0.10]
+  relevantRetrievalSemanticVectorId (relevantProjectionRetrieval fallback) @?= Nothing
+  mapM_ assertScopeOnly (relevantProjectionResults fallback)
   -- A conflicting decision remains one honest logical row with no selected head.
   withRelevant p304ConflictSnapshot $ \conflictConnection conflictMaterialization -> do
     conflict <- mustRelevant =<< runRelevantWithEmbedding noContentProvider (RelevantTimingHooks (pure ()) (pure ())) conflictConnection p304ConflictSnapshot conflictMaterialization conflictRequest (conflictSource {relevantSourceBytes = ""})
@@ -152,7 +191,7 @@ scopeOnlyContract = withRelevant snapshot $ \connection materialization -> do
       if literal
         then do
           let result = onlyResult projection
-          assertClose 0.12 (relevantResultScore result)
+          assertClose 0.40 (relevantResultScore result)
           relevantResultScopeMatch result @?= RelevanceScopeAmbiguous
           assertScopeOnly result
         else do
@@ -249,7 +288,7 @@ sourceValidationContract = withRelevant p303RationaleSnapshot $ \connection mate
   runCurrent connection materialization baseRequest (WorktreeRelevantSource basePath "rationale-resolved" sourceBytes)
     >>= (@?= Left (RelevantSourceMismatch "historical revision requires a revision source"))
   short <- mustRelevant =<< runCurrent connection materialization baseRequest (baseSource {relevantSourceBytes = "tiny"})
-  relevantResultScore (onlyResult short) @?= 0.175
+  relevantResultScore (onlyResult short) @?= 0.10
   relevantResultEvidence (onlyResult short) @?= []
   relevantFileQueryChunks (relevantProjectionFile short) @?= 0
 
@@ -260,7 +299,7 @@ lenientBoundaryContract = withRelevant p303RationaleSnapshot $ \connection mater
   projection <- mustRelevant =<< runCurrent connection materialization baseRequest source
   relevantFileBytes (relevantProjectionFile projection) @?= ByteString.length bytes
   relevantFileChunks (relevantProjectionFile projection) @?= 0
-  relevantResultScore (onlyResult projection) @?= 0.175
+  relevantResultScore (onlyResult projection) @?= 0.10
   relevantResultEvidence (onlyResult projection) @?= []
 
 emptyTermsPassageContract :: IO ()
@@ -328,31 +367,40 @@ floorAdmissionContract connection materialization = do
       run primaryScore otherScore selectedRequest = mustRelevant =<<
         runRelevantWithEmbedding (provider primaryScore otherScore) (RelevantTimingHooks (pure ()) (pure ()))
           connection multiAdrSnapshot materialization selectedRequest source
-  below <- run 0.0999996 0.08 request
+  below <- run 0.579999 0.56 request
   relevantProjectionResults below @?= []
   paginationTotalResults (relevantProjectionPagination below) @?= 0
   paginationTotalPages (relevantProjectionPagination below) @?= Just 0
   mapM_ (\score -> do
-    included <- run score 0.08 request
+    included <- run score 0.56 request
     relevantResultAdr (onlyResult included) @?= primary
     assertClose score (relevantResultScore (onlyResult included))
     assertClose 0.02 (relevantResultMargin (onlyResult included))
     paginationTotalResults (relevantProjectionPagination included) @?= 1
     paginationTotalPages (relevantProjectionPagination included) @?= Just 1
-    next <- run score 0.08 (request {relevantRequestPage = 2})
+    next <- run score 0.56 (request {relevantRequestPage = 2})
     relevantProjectionResults next @?= []
-    paginationTotalResults (relevantProjectionPagination next) @?= 1) [0.1, 0.1000004]
-  strong <- run 0.34 0.08 request
+    paginationTotalResults (relevantProjectionPagination next) @?= 1) [0.58, 0.5800004]
+  strong <- run 0.82 0.56 request
   relevantResultConfidence (onlyResult strong) @?= HighConfidence
   assertClose 0.26 (relevantResultMargin (onlyResult strong))
-  -- Both display as 0.10; their original numeric scores still decide order.
-  closeScores <- run 0.1 0.1000004 (request {relevantRequestLimit = 100})
-  map relevantResultScore (relevantProjectionResults closeScores) @?= [0.1000004, 0.1]
+  -- Both display as 0.58; their original numeric scores still decide order.
+  closeScores <- run 0.58 0.5800004 (request {relevantRequestLimit = 100})
+  map relevantResultScore (relevantProjectionResults closeScores) @?= [0.5800004, 0.58]
+  map (Text.takeWhile (/= ' ')) (take 2 (Text.lines (Cli.renderRelevantCli Cli.CollapsedView closeScores)))
+    @?= ["0.58", "0.58"]
   map relevantResultMargin (relevantProjectionResults closeScores) @?= [0, 0]
   paginationTotalResults (relevantProjectionPagination closeScores) @?= 2
-  tied <- run 0.34 0.34 (request {relevantRequestLimit = 100})
+  tied <- run 0.82 0.82 (request {relevantRequestLimit = 100})
   map relevantResultMargin (relevantProjectionResults tied) @?= [0, 0]
   map relevantResultConfidence (relevantProjectionResults tied) @?= [MediumConfidence, MediumConfidence]
+  precise <- run 0.5800014 0.56 request
+  assertClose 0.5800014 (relevantResultScore (onlyResult precise))
+  case lookupNested "results" (Just (Cli.relevantCliJson Cli.CollapsedView precise)) of
+    Just (JsonArray [row@(JsonObject fields)]) -> do
+      lookupNested "score" (Just row) @?= Just (JsonDecimal 0.580001)
+      Set.fromList (map fst fields) @?= Set.fromList ["adr", "title", "score"]
+    _ -> assertFailure "compact relevance JSON lost its result row"
 
 worktreeContract :: IO ()
 worktreeContract = withRelevant headSnapshot $ \connection materialization -> do

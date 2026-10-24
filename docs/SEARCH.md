@@ -225,10 +225,13 @@ Without `--worktree`, the file and ADR context come from the same resolved revis
 `--page N` selects a one-based page (default 1); `--limit N` sets its size
 (default 10, range 1–100). CLI and HTTP responses include the shared `pagination`
 fields described above; text uses the same compact returned/total and page footer.
-Only ADRs with an overall raw score of at least `0.1` are returned. This inclusive
-floor is applied before counting and paging, using the unrounded score. Confidence
+Only ADRs with an overall raw score of at least `0.58` are returned when vector
+retrieval succeeds. Lexical fallback uses the lower `0.10` floor. The actual
+retrieval backend selects the floor; merely configuring TEI does not activate the
+higher threshold. Empty or short files skip embeddings and use `0.10`.
+These inclusive floors are applied before counting and paging, using the unrounded score. Confidence
 and margins still use every retrieved competitor, including those below the floor.
-The floor applies to `relevant`; `search` retains its existing ranking score scale
+These floors apply to `relevant`; `search` retains its existing ranking score scale
 and admission behavior.
 Totals describe retained distinct ADRs from content retrieval and specific
 matching scopes, not all `eligible_adrs`. Content uses a fixed depth-10 policy.
@@ -242,20 +245,31 @@ so concatenating pages preserves complete-result order, evidence and confidence.
 Input is limited to 4 MiB; binary-like input and NUL bytes are rejected.
 Informative text is chunked and retrieved through passage FTS and optional text
 embeddings. Specific matching `applies_to` patterns independently add ADR
-candidates, including for valid empty or short files. Broad patterns such as
-`**` and `**/*.hs` require content evidence and cannot introduce candidates alone.
+candidates, including for valid empty or short files. Filename/type globs such as
+`**/*.hs` can introduce candidates without a literal directory component.
+Unrestricted broad patterns such as `**` and `**/*` require content evidence and
+cannot introduce candidates alone.
 Strong content matches remain eligible outside the declared file scope.
 
 One best matching pattern contributes to each ADR; overlapping patterns do not
-accumulate. Literal files score `0.30`. A wildcard pattern with at least one
-complete literal path component scores `0.15 + 0.025 × min(4, components − 1)`.
-Thus `src/**` scores `0.15`, `src/cache/**` scores `0.175`, and
-`**/Storage.hs` scores `0.15`. Patterns without a complete literal component
-score `0.025`. Conflicted scope axes multiply these contributions by `0.4`;
-the overall `0.1` floor still applies. These are ranking weights, not probabilities.
-Best-pattern ties prefer more literal components, fewer wildcard tokens, then
-canonical pattern text. Matching remains case-sensitive and uses the documented
-glob semantics.
+accumulate. A literal exact path contributes `1.00`; a filename/type-constrained
+glob such as `src/**/*.rs`, `**/*.rs`, or `**/Storage.hs` contributes `0.60`.
+Directory globs such as `src/**`, `src/**/*`, `src*/**`, and `[st]rc/**` contribute
+`0.10`. Unrestricted broad patterns such as `**` and `**/*` retain `0.025`.
+Classification uses parsed components: literal characters or character classes
+constrain a filename or directory; bare wildcards do not. Because `**` can cross
+directories even within a component, `src/prefix**` is a directory glob, whereas
+the suffix in `src/**.rs` constrains a filename. Exact paths outrank filename/type
+globs, which outrank directory globs. Best-pattern ties prefer more literal
+components, fewer wildcard tokens, then canonical pattern text.
+
+These contributions are added to independent semantic and lexical evidence,
+with the overall score capped at `1.00`. A file-type match can therefore score
+above `0.60` when content also matches. Directory applicability alone is below
+the hybrid floor; file-type and exact-path applicability can qualify by
+themselves. Conflicted scope axes multiply contributions by `0.4`. These are
+ranking weights, not probabilities. Matching remains case-sensitive and uses
+the documented glob semantics.
 
 ### Detailed relevance service and HTTP JSON contract
 
@@ -266,7 +280,7 @@ signal uses source content and localized source-definition phrases. The reported
 `semantic_score`, `lexical_score`, `scope_match`, `scope_bonus`, `margin`,
 strongest-pair scores, and `source_information` explain ranking and confidence.
 `scope_evidence` is null without a scope match; otherwise it reports the selected
-`pattern`, `specificity` (`literal`, `path`, or `broad`), `literal_components`, and
+`pattern`, `specificity` (`literal`, `file`, `path`, or `broad`), `literal_components`, and
 `wildcard_tokens`. `scope_match: exact` still means a resolved scope axis, rather
 than a literal filename. `retrieval.scope_candidates` counts independently seeded
 ADRs before the overall floor. The `retrieval.scoring` object lists the weights;
@@ -313,6 +327,10 @@ times and embedding-cache row counts. The lexical archive is prepared separately
 the embedding service is already running, so an initial request is not a claim
 of a cold model/GPU. A repeated request is warm only when its corpus vectors were
 successfully published. Fallback remains explicitly labeled.
+
+The higher hybrid floor trades recall for a shorter result list. An expected
+paraphrase can fall below it; evaluation keeps the original positive labels and
+reports those misses rather than changing the oracle to fit the threshold.
 
 Paired warm vector searches compare plain queries with an explicit retrieval
 instruction in the query text. This is a diagnostic for instruction-aware

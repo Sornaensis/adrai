@@ -107,11 +107,11 @@ largeRegionContract = withQuality baseQualityAdrs $ \connection materialization 
       search = queryMaterializationSearch materialization
       request = (defaultRelevantRequest (relevantSourcePath source))
         { relevantRequestRevision = AtRevision (revisionRequested (readSnapshotRevision snapshot)), relevantRequestLimit = 6 }
-      -- Controlled semantic evidence keeps the original region-selection and
-      -- line-range assertions independent of the new lexical admission floor.
+      -- Controlled semantic evidence above the hybrid floor keeps the original
+      -- region-selection and line-range assertions independent of admission.
       provider _ queries _ = pure (Just (EmbeddingRetrieval "large-region-fixture" 2 (map scores queries)))
       scores query = Map.fromList
-        [ (searchPassageId passage, 0.5)
+        [ (searchPassageId passage, 0.8)
         | passage <- searchMaterializationPassages search
         , searchPassageSectionKind passage == DecisionSection
         , (searchPassageAdrId passage == cacheId && "cache identity" `Text.isInfixOf` query)
@@ -174,7 +174,7 @@ hardNegativeContract = withQuality baseQualityAdrs $ \connection materialization
   case find ((== cache) . relevantResultAdr) (relevantProjectionResults scoped) of
     Nothing -> pure ()
     Just result -> do
-      assertBool scopedFailure (relevantResultScopeBonus result == 0.175)
+      assertBool scopedFailure (relevantResultScopeBonus result == 0.10)
       relevantResultSemanticScore result @?= 0
       relevantResultLexicalScore result @?= 0
       relevantResultEvidence result @?= []
@@ -187,14 +187,15 @@ configLeaseContract = withQuality configQualityAdrs $ \connection materializatio
   healthId <- lookupAdr materialization healthAdrKey
   secret <- expectedResult materialization configComposeSourceKey secretsAdrKey fallback
   fallbackAuth <- expectedResult materialization configComposeSourceKey authAdrKey fallback
-  roundSix (relevantResultScore secret) @?= 0.25
+  roundSix (relevantResultScore secret) @?= 0.20
+  assertBool "natural lexical fallback retains secret evidence" (not (null (relevantResultEvidence secret)))
   roundSix (relevantResultScore fallbackAuth) @?= 0.1
   let fallbackIds = map relevantResultAdr (relevantProjectionResults fallback)
   assertBool "specific deployment scopes admit config and health decisions"
     (configId `elem` fallbackIds && healthId `elem` fallbackIds)
   forM_ [configAdrKey, healthAdrKey] $ \key -> do
     scoped <- expectedResult materialization configComposeSourceKey key fallback
-    relevantResultScopeBonus scoped @?= 0.15
+    relevantResultScopeBonus scoped @?= 0.10
     relevantResultConfidence scoped @?= LowConfidence
   forM_ (relevantProjectionResults fallback) $ \row -> do
     relevantResultSemanticScore row @?= 0
@@ -207,20 +208,22 @@ configLeaseContract = withQuality configQualityAdrs $ \connection materializatio
   let search = queryMaterializationSearch materialization
       provider _ queries _ = pure (Just (EmbeddingRetrieval "config-evidence-fixture" 2
         (replicate (length queries) (Map.fromList
-          [ (searchPassageId passage, 0.2)
+          [ (searchPassageId passage, 0.6)
           | passage <- searchMaterializationPassages search
           , searchPassageSectionKind passage == DecisionSection
           , searchPassageAdrId passage `elem` [configId, healthId] ]))))
-  configProjection <- runQualitySourceWithEmbedding provider connection materialization configComposeSourceKey [configAdrKey, healthAdrKey, secretsAdrKey] 10
+  configProjection <- runQualitySourceWithEmbedding provider connection materialization configComposeSourceKey [configAdrKey, healthAdrKey] 10
   let configResults = relevantProjectionResults configProjection
       actual = Set.fromList (map relevantResultAdr configResults)
-      configFailure = qualityFailure materialization configComposeSourceKey [configAdrKey, healthAdrKey, secretsAdrKey] configProjection
+      configFailure = qualityFailure materialization configComposeSourceKey [configAdrKey, healthAdrKey] configProjection
   assertQualityProjection configFailure configProjection
-  expected <- traverse (lookupAdr materialization) [configAdrKey, healthAdrKey, secretsAdrKey]
+  expected <- traverse (lookupAdr materialization) [configAdrKey, healthAdrKey]
   assertBool
     configFailure
     (Set.fromList expected `Set.isSubsetOf` actual)
-  forM_ [configAdrKey, healthAdrKey, secretsAdrKey] $ \key -> do
+  secretId <- lookupAdr materialization secretsAdrKey
+  assertBool "the hybrid floor excludes lexical-only secret support" (secretId `Set.notMember` actual)
+  forM_ [configAdrKey, healthAdrKey] $ \key -> do
     result <- expectedResult materialization configComposeSourceKey key configProjection
     assertBool configFailure (not (null (relevantResultEvidence result)))
   health <- expectedResult materialization configComposeSourceKey healthAdrKey configProjection
@@ -256,7 +259,7 @@ terseIdentifierContract = withQuality correlationQualityAdrs $ \connection mater
   let search = queryMaterializationSearch materialization
       provider _ queries _ = pure (Just (EmbeddingRetrieval "correlation-evidence-fixture" 2
         (replicate (length queries) (Map.fromList
-          [ (searchPassageId passage, 0.2)
+          [ (searchPassageId passage, 0.6)
           | passage <- searchMaterializationPassages search
           , searchPassageSectionKind passage == DecisionSection
           , searchPassageAdrId passage == correlationId ]))))
@@ -285,9 +288,12 @@ mcpResponseContract = withQuality mcpQualityAdrs $ \connection materialization -
   assertBool failure (take 1 ranked == [directId])
   incidental <- expectedResult materialization mcpToolsSourceKey planningAdrKey projection
   assertBool "declared applicability admits planning while direct content still ranks first" (incidentalId `elem` ranked)
-  relevantResultScopeBonus incidental @?= 0.30
+  relevantResultScopeBonus incidental @?= 1.00
   relevantResultConfidence incidental @?= LowConfidence
-  roundSix (relevantResultScore direct) @?= 0.8
+  roundSix (relevantResultScore direct) @?= 1.00
+  relevantResultScore direct @?= relevantResultScore incidental
+  assertBool "content evidence breaks the exact-path score tie"
+    (relevantResultLexicalScore direct > relevantResultLexicalScore incidental)
   assertBool failure (relevantResultLexicalScore direct > 0)
   assertBool failure (any (elem "compact" . relevantEvidenceMatchedTerms) (relevantResultEvidence direct))
   assertBool failure (any ((> 240) . relevantEvidenceFileLineStart) (relevantResultEvidence direct))

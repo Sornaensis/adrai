@@ -175,15 +175,24 @@ aggregationContract = do
   confidenceLabel 0.8 0.8 0.8 (aggregateSourceInformation repetitiveAggregate) @?= LowConfidence
   let literal = ScopeMatchEvidence "src/cache.hs" ScopeLiteral 2 0
       path = ScopeMatchEvidence "src/deep/nested/cache/lib/**" ScopePath 5 1
+      fileType = ScopeMatchEvidence "**/*.hs" ScopeFile 0 2
       scopeOnly = expectAggregate (aggregateRelevance [pair 0 "weak" "weak" 0.074 0.035] (Just (RelevanceScopeExact, literal)))
-  aggregateScore scopeOnly @?= 0.30
+  aggregateScore scopeOnly @?= 1
   aggregateSemanticScore scopeOnly @?= 0
   aggregateLexicalScore scopeOnly @?= 0
   aggregateSourceInformation scopeOnly @?= 0
   aggregateEvidence scopeOnly @?= []
   aggregateRelevance [] (Just (RelevanceScopeExact, broadScope)) @?= Nothing
-  assertClose 0.12 (scopeBonus (Just (RelevanceScopeAmbiguous, literal)))
-  assertClose 0.1 (scopeBonus (Just (RelevanceScopeAmbiguous, path)))
+  assertClose 0.10 (scopeBonus (Just (RelevanceScopeExact, path)))
+  assertClose 0.60 (scopeBonus (Just (RelevanceScopeExact, fileType)))
+  assertClose 0.40 (scopeBonus (Just (RelevanceScopeAmbiguous, literal)))
+  assertClose 0.24 (scopeBonus (Just (RelevanceScopeAmbiguous, fileType)))
+  assertClose 0.04 (scopeBonus (Just (RelevanceScopeAmbiguous, path)))
+  let fileOnly = expectAggregate (aggregateRelevance [] (Just (RelevanceScopeExact, fileType)))
+      withContent = expectAggregate (aggregateRelevance [pair 0 "content" "cache implementation" 0.5 0.2] (Just (RelevanceScopeExact, fileType)))
+  aggregateScore fileOnly @?= 0.60
+  aggregateEvidence fileOnly @?= []
+  aggregateScore withContent @?= 1
 
 confidenceContract :: IO ()
 confidenceContract = do
@@ -210,11 +219,12 @@ fingerprintContract = do
         ("third_evidence_weight", 0.05),
         ("scope_bonus_exact", 0.025),
         ("scope_bonus_ambiguous", 0.010),
-        ("scope_bonus_literal", 0.30),
-        ("scope_bonus_path_base", 0.15),
-        ("scope_bonus_path_component_increment", 0.025),
-        ("scope_bonus_path_component_cap", 4),
+        ("scope_bonus_literal", 1.00),
+        ("scope_bonus_file", 0.60),
+        ("scope_bonus_path", 0.10),
         ("scope_ambiguity_factor", 0.4),
+        ("minimum_overall_score_fts", 0.10),
+        ("minimum_overall_score_hybrid", 0.58),
         ("minimum_pair_score", 0.075),
         ("minimum_lexical_pair_score", 0.036),
         ("lexical_rank_weight", 0.50),

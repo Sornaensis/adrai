@@ -12,4 +12,4 @@ incremental invalidation, branch isolation, and corrupt-cache recovery are
 implemented separately; see [Cache](../../../docs/CACHE.md) and
 `Adrai.Service.Compilation` for their current contracts.
 
-- `quality.golden` is 7507 bytes; SHA-256: `97F422E639A1129E21FC4FD526A12C3C254B29D35F0E8422AC987CCADFA140F7`
+- `quality.golden` is 7507 bytes; SHA-256: `094D804FD83A97E37C8E3F558986417CF4AB198FCA27D9728B06588253739B35`

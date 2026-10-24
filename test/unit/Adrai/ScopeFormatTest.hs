@@ -48,11 +48,24 @@ tests =
         patterns <- mapM scopeOrFail ["**", "**/*.hs", "src/**", "src/Adrai/**", "src/Adrai/Query.hs"]
         path <- pathOrFail "src/Adrai/Query.hs"
         bestScopeMatch patterns path @?= Just (ScopeMatchEvidence "src/Adrai/Query.hs" ScopeLiteral 3 0)
-        bestScopeMatch (take 4 patterns) path @?= Just (ScopeMatchEvidence "src/Adrai/**" ScopePath 2 1)
-        assertSpecificity "**/Query.hs" "Query.hs" ScopePath 1 1
+        bestScopeMatch (take 4 patterns) path @?= Just (ScopeMatchEvidence "**/*.hs" ScopeFile 0 2)
+        assertSpecificity "**/Query.hs" "Query.hs" ScopeFile 1 1
         assertSpecificity "**/simulation/**" "simulation/cache.rs" ScopePath 1 2
-        assertSpecificity "**/*.hs" "src/Query.hs" ScopeBroad 0 2
-        assertSpecificity "src/[a-z]/Query.hs" "src/a/Query.hs" ScopePath 2 1
+        assertSpecificity "**/*.hs" "src/Query.hs" ScopeFile 0 2
+        assertSpecificity "src/[a-z]/Query.hs" "src/a/Query.hs" ScopeFile 2 1
+        assertSpecificity "src/**/*.rs" "src/Entity.rs" ScopeFile 1 2
+        assertSpecificity "src/**/*.rs" "src/simulation/Entity.rs" ScopeFile 1 2
+        assertMatch False "src/**/*.rs" "src/simulation/Entity.py"
+        assertSpecificity "**/[A-Z]*" "nested/Entity" ScopeFile 0 3
+        assertSpecificity "src/*" "src/Entity.rs" ScopePath 1 1
+        assertSpecificity "src/**/*" "src/simulation/Entity.rs" ScopePath 1 2
+        assertSpecificity "src*/**" "src-generated/Entity.rs" ScopePath 0 2
+        assertSpecificity "[st]rc/**" "src/Entity.rs" ScopePath 0 2
+        assertSpecificity "src/prefix**" "src/prefix-dir/Entity.rs" ScopePath 1 1
+        assertSpecificity "src**" "src/simulation/Entity.rs" ScopePath 0 1
+        assertSpecificity "src/**.rs" "src/simulation/Entity.rs" ScopeFile 1 1
+        assertSpecificity "**" "src/Entity.rs" ScopeBroad 0 1
+        assertSpecificity "**/*" "src/Entity.rs" ScopeBroad 0 2
     ]
 
 canonical :: Text -> Either ScopePatternError Text

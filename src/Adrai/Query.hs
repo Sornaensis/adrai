@@ -1753,7 +1753,8 @@ buildRelevantProjection :: RelevantRequest -> ReadSnapshot -> RelevantFileInfo -
 buildRelevantProjection request snapshot fileInfo retrieval allResults = do
   -- Finalization computes confidence against every competitor before this
   -- admission floor. Count and page only retained ADRs, using unrounded scores.
-  let retained = filter ((>= 0.1) . relevantResultScore) allResults
+  let scoreFloor = maybe relevanceFtsScoreFloor (const relevanceHybridScoreFloor) (relevantRetrievalSemanticVectorId retrieval)
+      retained = filter ((>= scoreFloor) . relevantResultScore) allResults
   (results, pagination) <- mapLeft RelevantInvalidPage (paginate (relevantRequestPage request) (relevantRequestLimit request) retained)
   Right (RelevantProjection (readSnapshotRevision snapshot) fileInfo retrieval results Nothing pagination)
 
@@ -2738,7 +2739,7 @@ relevantResultJson result =
 scopeEvidenceJson :: ScopeMatchEvidence -> JsonValue
 scopeEvidenceJson evidence = object
   [ ("pattern", JsonString (scopeEvidencePattern evidence)),
-    ("specificity", JsonString (case scopeEvidenceSpecificity evidence of ScopeLiteral -> "literal"; ScopePath -> "path"; ScopeBroad -> "broad")),
+    ("specificity", JsonString (case scopeEvidenceSpecificity evidence of ScopeLiteral -> "literal"; ScopeFile -> "file"; ScopePath -> "path"; ScopeBroad -> "broad")),
     ("literal_components", intJson (scopeEvidenceLiteralComponents evidence)),
     ("wildcard_tokens", intJson (scopeEvidenceWildcardTokens evidence))
   ]

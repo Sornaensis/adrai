@@ -34,6 +34,8 @@ module Adrai.Relevance
     thirdEvidenceWeight,
     scopeBonusExact,
     scopeBonusAmbiguous,
+    relevanceFtsScoreFloor,
+    relevanceHybridScoreFloor,
     minimumPairScore,
     minimumLexicalPairScore,
     lexicalRankWeight,
@@ -226,6 +228,17 @@ scopeBonusExact = 0.025
 
 scopeBonusAmbiguous :: Double
 scopeBonusAmbiguous = 0.010
+
+relevanceFtsScoreFloor :: Double
+relevanceFtsScoreFloor = 0.10
+
+relevanceHybridScoreFloor :: Double
+relevanceHybridScoreFloor = 0.58
+
+scopeBonusLiteral, scopeBonusFile, scopeBonusPath :: Double
+scopeBonusLiteral = 1.00
+scopeBonusFile = 0.60
+scopeBonusPath = 0.10
 
 minimumPairScore :: Double
 minimumPairScore = 0.075
@@ -658,8 +671,9 @@ scopeBonus (Just (state, evidence)) = factor * base
       RelevanceScopeAmbiguous -> 0.4
       RelevanceScopeNone -> 0
     base = case scopeEvidenceSpecificity evidence of
-      ScopeLiteral -> 0.30
-      ScopePath -> 0.15 + 0.025 * fromIntegral (min 4 (max 0 (scopeEvidenceLiteralComponents evidence - 1)))
+      ScopeLiteral -> scopeBonusLiteral
+      ScopeFile -> scopeBonusFile
+      ScopePath -> scopeBonusPath
       ScopeBroad -> scopeBonusExact
 scopeBonus _ = 0
 
@@ -815,11 +829,12 @@ relevanceScoringContract =
       ("third_evidence_weight", thirdEvidenceWeight),
       ("scope_bonus_exact", scopeBonusExact),
       ("scope_bonus_ambiguous", scopeBonusAmbiguous),
-      ("scope_bonus_literal", 0.30),
-      ("scope_bonus_path_base", 0.15),
-      ("scope_bonus_path_component_increment", 0.025),
-      ("scope_bonus_path_component_cap", 4),
+      ("scope_bonus_literal", scopeBonusLiteral),
+      ("scope_bonus_file", scopeBonusFile),
+      ("scope_bonus_path", scopeBonusPath),
       ("scope_ambiguity_factor", 0.4),
+      ("minimum_overall_score_fts", relevanceFtsScoreFloor),
+      ("minimum_overall_score_hybrid", relevanceHybridScoreFloor),
       ("minimum_pair_score", minimumPairScore),
       ("minimum_lexical_pair_score", minimumLexicalPairScore),
       ("lexical_rank_weight", lexicalRankWeight),

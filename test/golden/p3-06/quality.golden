@@ -1,11 +1,11 @@
 {
   "cold_reused_equality": {
     "relevance": {
-      "bytes": 4381,
-      "cold_sha256": "sha256:ePut-kvbo7SnQ4y80mb1T3VcQYOSVcfDN40TQy1Kgxw",
+      "bytes": 4389,
+      "cold_sha256": "sha256:h9v6oKECJlP2pCxbrTQK7bDvjtNqgGDhIlxJy5hwB88",
       "rendered_bytes_equal": true,
-      "repeated_sha256": "sha256:ePut-kvbo7SnQ4y80mb1T3VcQYOSVcfDN40TQy1Kgxw",
-      "reused_sha256": "sha256:ePut-kvbo7SnQ4y80mb1T3VcQYOSVcfDN40TQy1Kgxw",
+      "repeated_sha256": "sha256:h9v6oKECJlP2pCxbrTQK7bDvjtNqgGDhIlxJy5hwB88",
+      "reused_sha256": "sha256:h9v6oKECJlP2pCxbrTQK7bDvjtNqgGDhIlxJy5hwB88",
       "typed_equal": true
     },
     "search": {
@@ -100,7 +100,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000001",
         "expected_adr_key": 1,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:ePut-kvbo7SnQ4y80mb1T3VcQYOSVcfDN40TQy1Kgxw",
+        "projection_sha256": "sha256:h9v6oKECJlP2pCxbrTQK7bDvjtNqgGDhIlxJy5hwB88",
         "rank": 1,
         "source_key": "cache-python",
         "within_top3": true
@@ -113,7 +113,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000002",
         "expected_adr_key": 2,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:2CWEFZ8K-3spWZyL_CmQ7Ufy5McS02gDNVKjxTeOwCQ",
+        "projection_sha256": "sha256:xPLQOgQ0FulrhpwztbnSyK-zCrAomUaiAgOz4d6gxyo",
         "rank": 1,
         "source_key": "auth-text",
         "within_top3": true
@@ -126,7 +126,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000003",
         "expected_adr_key": 3,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:X8_MITLSl7D3dSDHh8cq0RgeIuQ_YVJEmzAPvTBxlPo",
+        "projection_sha256": "sha256:Gp2UFCEUR903LpsY__oIsoJ0Xxe5M7rjJ3Y5XKWf89A",
         "rank": 1,
         "source_key": "queue-compose",
         "within_top3": true
@@ -139,7 +139,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000004",
         "expected_adr_key": 4,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:RnxGt5X9xAkRmzxtbesDgUll7ZtV9PGvjfek2TqG4u4",
+        "projection_sha256": "sha256:bIaPRtA0GON7z-V1rVJk_rvTwxX7yaBzLTTUtI3moEI",
         "rank": 1,
         "source_key": "storage-sql",
         "within_top3": true
@@ -152,7 +152,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000005",
         "expected_adr_key": 5,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:dNWOd8jq8jrfEU6cnXM-6ttFweSnUcurGevfqFknfRc",
+        "projection_sha256": "sha256:o8ewz224S2cIVdVBwMHRnJVle-7GvgLkAkvZDGf4PUw",
         "rank": 1,
         "source_key": "observability-custom",
         "within_top3": true
@@ -165,7 +165,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000006",
         "expected_adr_key": 6,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:x9RJEqQbn0fyeHDMBun_NScvWs6jtqaUo3uh_G8PJ5w",
+        "projection_sha256": "sha256:_8yPjFqEaAfo6rjyUGoBiuJhyGCsKpfl2DP_2b-Sbs4",
         "rank": 1,
         "source_key": "deployment-extensionless",
         "within_top3": true
