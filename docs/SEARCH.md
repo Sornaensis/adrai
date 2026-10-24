@@ -230,25 +230,58 @@ floor is applied before counting and paging, using the unrounded score. Confiden
 and margins still use every retrieved competitor, including those below the floor.
 The floor applies to `relevant`; `search` retains its existing ranking score scale
 and admission behavior.
-Totals describe the retained distinct ADRs retrieved by a fixed depth-10 policy,
-not all `eligible_adrs`. Each selected source chunk retrieves up to 60 lexical
+Totals describe retained distinct ADRs from content retrieval and specific
+matching scopes, not all `eligible_adrs`. Content uses a fixed depth-10 policy.
+Each selected source chunk retrieves up to 60 lexical
 passages and 40 vector passages. Up to 24 informative source chunks participate.
 Only eligible passages enter sqlite-vec, before its K-neighbour limit.
 Changing page size never changes these budgets.
 All competitors contribute to confidence and margins before a page is selected,
 so concatenating pages preserves complete-result order, evidence and confidence.
 
-Input is limited to 4 MiB. Binary-like input, NUL bytes, and very short or uninformative text are rejected or produce no weak match. Informative text is chunked and retrieved through passage FTS and optional text embeddings. The retrieved passages are ranked and aggregated per ADR. File scope affects ranking but does not exclude an otherwise relevant ADR.
+Input is limited to 4 MiB; binary-like input and NUL bytes are rejected.
+Informative text is chunked and retrieved through passage FTS and optional text
+embeddings. Specific matching `applies_to` patterns independently add ADR
+candidates, including for valid empty or short files. Broad patterns such as
+`**` and `**/*.hs` require content evidence and cannot introduce candidates alone.
+Strong content matches remain eligible outside the declared file scope.
+
+One best matching pattern contributes to each ADR; overlapping patterns do not
+accumulate. Literal files score `0.30`. A wildcard pattern with at least one
+complete literal path component scores `0.15 + 0.025 × min(4, components − 1)`.
+Thus `src/**` scores `0.15`, `src/cache/**` scores `0.175`, and
+`**/Storage.hs` scores `0.15`. Patterns without a complete literal component
+score `0.025`. Conflicted scope axes multiply these contributions by `0.4`;
+the overall `0.1` floor still applies. These are ranking weights, not probabilities.
+Best-pattern ties prefer more literal components, fewer wildcard tokens, then
+canonical pattern text. Matching remains case-sensitive and uses the documented
+glob semantics.
 
 ### Detailed relevance service and HTTP JSON contract
 
 The service projection and the `data` member of `/api/v1/relevant` use `adrai/relevant/v2`. CLI consumers migrating from that rich projection should use `adrai/relevant-cli/v1` for lists, or the HTTP API for detailed evidence and diagnostics. The API route version describes the HTTP envelope; the `data.schema` value identifies this projection. Each `results` entry is one ADR, ordered by descending `score`, `semantic_score`, `lexical_score`, then ADR ID. `record` identifies the resolved decision record; a conflict has `record: null`, while `matched_record` and `matched_title` identify the head that supplied the strongest evidence. `title`, `summary`, `domains`, `applies_to`, status, replacement, and resolution fields retain decision context.
 
-`score` combines semantic evidence, `lexical_bonus`, and `scope_bonus`. The lexical signal uses source content and localized source-definition phrases, with file scope a small bonus. The reported `semantic_score`, `lexical_score`, `scope_match`, `scope_bonus`, `margin`, strongest-pair scores, and `source_information` explain ranking and confidence. Scope alone cannot produce high confidence. The `retrieval.scoring` object lists the scoring constants. Result order and evidence order are deterministic for the same revision and file bytes.
+`score` combines semantic evidence, `lexical_bonus`, and `scope_bonus`. The lexical
+signal uses source content and localized source-definition phrases. The reported
+`semantic_score`, `lexical_score`, `scope_match`, `scope_bonus`, `margin`,
+strongest-pair scores, and `source_information` explain ranking and confidence.
+`scope_evidence` is null without a scope match; otherwise it reports the selected
+`pattern`, `specificity` (`literal`, `path`, or `broad`), `literal_components`, and
+`wildcard_tokens`. `scope_match: exact` still means a resolved scope axis, rather
+than a literal filename. `retrieval.scope_candidates` counts independently seeded
+ADRs before the overall floor. The `retrieval.scoring` object lists the weights;
+its `scope_bonus_exact` and `scope_bonus_ambiguous` fields are the broad-pattern
+baselines. Result order and evidence order are deterministic for the same
+revision and file bytes.
+
+A scope-only result has zero semantic, lexical, strongest-pair and source-information
+scores, empty `passages` and `evidence`, low confidence, and null
+`matched_candidate`, `matched_record`, and `matched_title`. Its logical resolved
+`record` is retained. Scope never raises semantic confidence.
 
 Service and HTTP relevance responses also include `diagnostics`. `index_revision` is the exact commit in the validated archive or cold-compiled snapshot actually queried; `checkout_head` is a separate observation of the checkout's HEAD at query start. `stale` means these commits differ. An explicit historical `--at` is therefore expected to be stale when the checkout has advanced. A worktree source still uses HEAD for ADR context; its bytes come from the working file.
 
-`index_preparation` is `cache-hit` or `cold-fallback`. All `timing_ms` values are measured elapsed milliseconds from a monotonic clock. `prepare_index` runs from exact-archive acquisition/validation (including a rejected attempt) through source loading, or through cold snapshot analysis and compilation, until the compiled context and source are ready. `retrieve_candidates` covers source preparation, vector and FTS retrieval, shortlist and fully evaluated passage-pair construction. `rank_results` covers aggregation, ordering, result scoring, and materialization of the published JSON projection, including evidence excerpts and resolution fields. The latter two are `null` when a short or empty source skips candidate work. Timings are observational; they do not affect result scores or ordering and are not latency targets.
+`index_preparation` is `cache-hit` or `cold-fallback`. All `timing_ms` values are measured elapsed milliseconds from a monotonic clock. `prepare_index` runs from exact-archive acquisition/validation (including a rejected attempt) through source loading, or through cold snapshot analysis and compilation, until the compiled context and source are ready. `retrieve_candidates` covers source preparation, vector and FTS retrieval, shortlist and fully evaluated passage-pair construction. `rank_results` covers aggregation, ordering, result scoring, and materialization of the published JSON projection, including evidence excerpts and resolution fields. The latter two are `null` when a short or empty source skips content work; scope-only ranking still runs without those content-phase measurements. Timings are observational; they do not affect result scores or ordering and are not latency targets.
 
 Each result has at most three ranked `evidence` entries and at most three distinct `passages`. A passage stores `adr_chunk`, `adr_section`, `candidate_record`, and an `adr_excerpt` once. Each evidence entry has a zero-based `passage` index, source `file_lines`, semantic and lexical pair scores, and `matched_terms`. The first evidence entry also carries `file_excerpt`; later entries use the source line range and passage reference to avoid repeating large excerpts. The first entry and its passage can therefore be read directly from one result.
 
@@ -257,6 +290,42 @@ To inspect any supporting entry in full, read `file.path` at `file.revision` and
 #### Migrating from `adrai/relevant/v1`
 
 The result and retrieval metadata fields remain in place. The evidence layout changed, so clients should branch on `schema`. For each v1 `evidence[n]`, v2 `evidence[n].passage` points to `results[i].passages[index]`; that passage holds the old `adr_chunk`, `adr_section`, `candidate_record`, and `adr_excerpt`. The v1 `adr_candidate` is the prefix of `adr_chunk` before `/section/`, and v1 evidence `score` equals `semantic_score`. V2 includes `file_excerpt` only on the highest-ranked entry; use `file_lines` and the revision-bound file for later entries. The v1 projection is a historical contract and is no longer emitted by these current relevance endpoints.
+
+### Local retrieval evaluation
+
+After building, run the Haskell harness with an unused artifact directory and the
+absolute path to the built executable:
+
+```console
+stack exec runghc -- -Wall -Werror -package=adrai tools/RelevanceFixture.hs create REPOSITORY ARTIFACT ADRAI_EXE
+stack exec runghc -- -Wall -Werror -package=adrai tools/RelevanceFixture.hs evaluate ARTIFACT ADRAI_EXE
+```
+
+The first command clones the existing repository, disables pushes from the clone,
+and creates synthetic scope-only, paraphrase, lexical, representative-format and
+hard-negative cases. The artifact retains its generated ADR labels and source
+revision. It does not initialize Git or change the seed repository.
+
+Evaluation compares isolated FTS-only configuration with a copy of the current
+non-secret embedding settings. User configuration is never edited. It records
+actual effective backends, scores, selected positive/negative ranks, elapsed
+times and embedding-cache row counts. The lexical archive is prepared separately;
+the embedding service is already running, so an initial request is not a claim
+of a cold model/GPU. A repeated request is warm only when its corpus vectors were
+successfully published. Fallback remains explicitly labeled.
+
+Paired warm vector searches compare plain queries with an explicit retrieval
+instruction in the query text. This is a diagnostic for instruction-aware
+embedding models, not a change to production prompting. Labels are selected
+positives and hard negatives, rather than an exhaustive precision benchmark.
+
+An optional `external ARTIFACT ADRAI_EXE PRIVATE_MANIFEST` mode evaluates an
+isolated, pinned, no-checkout clone. The local JSON manifest contains
+`source_repository`, `revision`, and `cases`; each case has `name`, optional
+repository-relative `file` and `query`, and logical ADR IDs in `expected` and
+`excluded`. Keep that manifest, private corpus and receipts outside this source
+tree. Remove temporary external clones/caches after review; retain only bounded
+sanitized receipts. The synthetic repository is the persistent test deliverable.
 
 ## Indexing and conflicts
 

@@ -64,6 +64,7 @@ module Adrai.Relevance
     codePassageLexicalEvidence,
     sourceDefinitionNames,
     scopeBonus,
+    scopeCanSeed,
     sourceInformationScore,
     aggregateRelevance,
     confidenceLabel,
@@ -75,6 +76,7 @@ where
 
 import Adrai.Format (renderDigest)
 import Adrai.Provenance (sha256Digest)
+import Adrai.Scope (ScopeMatchEvidence (..), ScopeSpecificity (..))
 import Adrai.Vector (identifierTerms, semanticTokens, splitIdentifier, stem)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
@@ -202,6 +204,7 @@ relevanceRetrievalFingerprint :: Text
 relevanceRetrievalFingerprint = renderDigest . sha256Digest . TextEncoding.encodeUtf8 $
   "fixed-depth-10:tei-sqlite-vec-cosine+passage-fts:passage=" <> count relevancePassageLimit
     <> ";section=" <> count relevanceSectionLimit <> ";source=" <> count relevanceMaxSourceQueryChunks
+    <> ";scope=specific-pattern-v1"
   where
     count = Text.pack . show
 
@@ -217,6 +220,7 @@ secondEvidenceWeight = 0.10
 thirdEvidenceWeight :: Double
 thirdEvidenceWeight = 0.05
 
+-- Broad-scope baselines. Specific parsed patterns use the policy in scopeBonus.
 scopeBonusExact :: Double
 scopeBonusExact = 0.025
 
@@ -646,10 +650,22 @@ withoutPathMentions sourcePath passageText =
           let start = Text.length prefix
            in Text.take start content <> " " <> removeReference path (Text.drop (start + Text.length path) content)
 
-scopeBonus :: Maybe RelevanceScopeMatch -> Double
-scopeBonus (Just RelevanceScopeExact) = scopeBonusExact
-scopeBonus (Just RelevanceScopeAmbiguous) = scopeBonusAmbiguous
+scopeBonus :: Maybe (RelevanceScopeMatch, ScopeMatchEvidence) -> Double
+scopeBonus (Just (state, evidence)) = factor * base
+  where
+    factor = case state of
+      RelevanceScopeExact -> 1
+      RelevanceScopeAmbiguous -> 0.4
+      RelevanceScopeNone -> 0
+    base = case scopeEvidenceSpecificity evidence of
+      ScopeLiteral -> 0.30
+      ScopePath -> 0.15 + 0.025 * fromIntegral (min 4 (max 0 (scopeEvidenceLiteralComponents evidence - 1)))
+      ScopeBroad -> scopeBonusExact
 scopeBonus _ = 0
+
+scopeCanSeed :: Maybe (RelevanceScopeMatch, ScopeMatchEvidence) -> Bool
+scopeCanSeed (Just (state, evidence)) = state /= RelevanceScopeNone && scopeEvidenceSpecificity evidence /= ScopeBroad
+scopeCanSeed Nothing = False
 
 sourceInformationScore :: Text -> Double
 sourceInformationScore text
@@ -658,14 +674,19 @@ sourceInformationScore text
   where
     normalizedLines = filter (not . Text.null) (map embeddingText (Text.splitOn "\n" (normalizeNewlines text)))
 
-aggregateRelevance :: [PairMatch] -> Maybe RelevanceScopeMatch -> Maybe RelevanceAggregate
+aggregateRelevance :: [PairMatch] -> Maybe (RelevanceScopeMatch, ScopeMatchEvidence) -> Maybe RelevanceAggregate
 aggregateRelevance matches scopeMatch =
   case ordered of
-    [] -> Nothing
+    [] -> scopeOnly
     strongest : _
-      | pairScore strongest < minimumPairScore && pairLexicalScore strongest < minimumLexicalPairScore -> Nothing
+      | pairScore strongest < minimumPairScore && pairLexicalScore strongest < minimumLexicalPairScore -> scopeOnly
       | otherwise -> buildAggregate (selectIndependent ordered)
   where
+    scopeOnly
+      | scopeCanSeed scopeMatch = Just (RelevanceAggregate 0 0 0 bonus bonus 0 0 0 [])
+      | otherwise = Nothing
+      where
+        bonus = scopeBonus scopeMatch
     bestBySource = foldl' insertBest Map.empty matches
     ordered = sortBy pairOrder (Map.elems bestBySource)
     buildAggregate [] = Nothing
@@ -794,6 +815,11 @@ relevanceScoringContract =
       ("third_evidence_weight", thirdEvidenceWeight),
       ("scope_bonus_exact", scopeBonusExact),
       ("scope_bonus_ambiguous", scopeBonusAmbiguous),
+      ("scope_bonus_literal", 0.30),
+      ("scope_bonus_path_base", 0.15),
+      ("scope_bonus_path_component_increment", 0.025),
+      ("scope_bonus_path_component_cap", 4),
+      ("scope_ambiguity_factor", 0.4),
       ("minimum_pair_score", minimumPairScore),
       ("minimum_lexical_pair_score", minimumLexicalPairScore),
       ("lexical_rank_weight", lexicalRankWeight),

@@ -97,7 +97,7 @@ import Adrai.History
 import Adrai.Provenance
 import Adrai.Relevance
 import Adrai.Retrieval
-import Adrai.Scope (ScopePattern, scopeMatches, scopePatternText)
+import Adrai.Scope (ScopePattern, ScopeMatchEvidence (..), ScopeSpecificity (..), bestScopeMatch, scopeMatches, scopePatternText)
 import Adrai.SearchVectorCorpus
   ( SearchVectorCorpus, SearchVectorCorpusError, searchVectorSemanticSummaryText, validateSearchVectorCorpus )
 import Adrai.Sqlite
@@ -498,6 +498,7 @@ data RelevantResult = RelevantResult
     relevantResultLexicalScore :: Double,
     relevantResultLexicalBonus :: Double,
     relevantResultScopeMatch :: RelevanceScopeMatch,
+    relevantResultScopeEvidence :: Maybe ScopeMatchEvidence,
     relevantResultScopeBonus :: Double,
     relevantResultConfidence :: ConfidenceLabel,
     relevantResultMargin :: Double,
@@ -519,6 +520,7 @@ data RelevantRetrieval = RelevantRetrieval
     relevantRetrievalEligibleSearchItems :: Int,
     relevantRetrievalSearchSections :: Int,
     relevantRetrievalAdrShortlist :: Int,
+    relevantRetrievalScopeCandidates :: Int,
     relevantRetrievalCandidateSearchItems :: Int,
     relevantRetrievalSummary :: Maybe JsonValue,
     relevantRetrievalPassageFts :: Maybe JsonValue,
@@ -1499,6 +1501,7 @@ buildSearchProjection snapshot request allResults = do
 
 data RelevantPrepared = RelevantPrepared
   { preparedRelevantReduced :: Map AdrId ReducedAdr,
+    preparedRelevantScopeMatches :: Map AdrId (RelevanceScopeMatch, ScopeMatchEvidence),
     preparedRelevantDocuments :: Map Text SearchDocument,
     preparedRelevantPassages :: [SearchPassage],
     preparedRelevantSourceName :: Text,
@@ -1526,7 +1529,8 @@ data RelevantAggregated = RelevantAggregated
     relevantAggregatedReduced :: ReducedAdr,
     relevantAggregatedValue :: RelevanceAggregate,
     relevantAggregatedEvidence :: [RelevantEvidence],
-    relevantAggregatedMatchedItem :: Text
+    relevantAggregatedMatchedItem :: Maybe Text,
+    relevantAggregatedScope :: Maybe (RelevanceScopeMatch, ScopeMatchEvidence)
   }
 
 runRelevant :: Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
@@ -1551,8 +1555,7 @@ runRelevantWithEmbedding provider timingHooks connection snapshot materializatio
           label = "file " <> repoPathText (relevantRequestFile request)
           finishZero =
             let fileInfo = relevantFileInfo request source prepared [] []
-             in pure
-                    (buildRelevantProjection request snapshot fileInfo (emptyRelevantRetrieval [] []) [])
+             in pure (scopeOnlyRelevantProjection request snapshot prepared fileInfo [] [])
        in if meaningfulAlnumByteCount bytes == 0
             then
               case validateTextBytes label bytes of
@@ -1565,7 +1568,7 @@ runRelevantWithEmbedding provider timingHooks connection snapshot materializatio
                   let meaningfulCount = meaningfulAlnumCount decoded
                       finish allChunks selectedChunks =
                         let fileInfo = relevantFileInfo request source prepared allChunks selectedChunks
-                            emptyProjection = buildRelevantProjection request snapshot fileInfo (emptyRelevantRetrieval allChunks selectedChunks) []
+                            emptyProjection = scopeOnlyRelevantProjection request snapshot prepared fileInfo allChunks selectedChunks
                          in if meaningfulCount < minMeaningfulAlnum || null selectedChunks
                               then pure emptyProjection
                               else runRelevantCandidates provider timingHooks connection snapshot request prepared fileInfo allChunks selectedChunks
@@ -1590,6 +1593,7 @@ prepareRelevant snapshot materialization request source = do
   Right
     RelevantPrepared
       { preparedRelevantReduced = eligibleReduced,
+        preparedRelevantScopeMatches = Map.mapMaybe (relevantScopeMatch (relevantRequestFile request)) eligibleReduced,
         preparedRelevantDocuments = eligibleDocuments,
         preparedRelevantPassages = eligiblePassages,
         preparedRelevantSourceName = sourceName,
@@ -1668,6 +1672,7 @@ emptyRelevantRetrieval allChunks selectedChunks =
       relevantRetrievalEligibleSearchItems = 0,
       relevantRetrievalSearchSections = 0,
       relevantRetrievalAdrShortlist = 0,
+      relevantRetrievalScopeCandidates = 0,
       relevantRetrievalCandidateSearchItems = 0,
       relevantRetrievalSummary = Nothing,
       relevantRetrievalPassageFts = Nothing,
@@ -1677,7 +1682,7 @@ emptyRelevantRetrieval allChunks selectedChunks =
 
 runRelevantCandidates :: EmbeddingProvider -> RelevantTimingHooks -> Connection -> ReadSnapshot -> RelevantRequest -> RelevantPrepared -> RelevantFileInfo -> [TextChunk] -> [TextChunk] -> IO (Either RelevantError RelevantProjection)
 runRelevantCandidates provider timingHooks connection snapshot request prepared fileInfo allChunks selectedChunks
-  | Map.null documents = pure (buildRelevantProjection request snapshot fileInfo (emptyRelevantRetrieval allChunks selectedChunks) [])
+  | Map.null documents = pure (scopeOnlyRelevantProjection request snapshot prepared fileInfo allChunks selectedChunks)
   | otherwise = do
       embedded <- provider
         [(searchPassageId p, searchPassageText p) | p <- passages]
@@ -1694,16 +1699,13 @@ runRelevantCandidates provider timingHooks connection snapshot request prepared 
             Right (matchesByAdr, auxByMatch) -> do
               _ <- evaluate (forceRelevantCandidates matchesByAdr auxByMatch)
               relevantCandidatesRetrieved timingHooks
-              let aggregated = aggregateRelevantMatches request prepared documents matchesByAdr auxByMatch
-                  results = finalizeRelevantResults snapshot (relevantRequestFile request) documents (sortBy relevantAggregatedOrder aggregated)
-                  candidateItems = Set.fromList [searchPassageDocumentItemId p | p <- passages, any (Set.member (searchPassageId p)) candidates]
-                  retrieval = (emptyRelevantRetrieval allChunks selectedChunks)
+              let aggregated = aggregateRelevantMatches prepared matchesByAdr auxByMatch
+                  results = finalizeRelevantResults snapshot documents (sortBy relevantAggregatedOrder aggregated)
+                  candidateItems = Set.union (scopeCandidateItems prepared) (Set.fromList [searchPassageDocumentItemId p | p <- passages, any (Set.member (searchPassageId p)) candidates])
+                  retrieval = (preparedRelevantRetrieval prepared allChunks selectedChunks)
                     { relevantRetrievalStrategy = maybe "passage-fts" (const "tei+sqlite-vec+passage-fts") embedded,
                       relevantRetrievalSemanticVectorId = embeddingRetrievalIdentity <$> embedded,
-                      relevantRetrievalEligibleAdrs = Map.size (preparedRelevantReduced prepared),
-                      relevantRetrievalEligibleSearchItems = Map.size documents,
-                      relevantRetrievalSearchSections = length passages,
-                      relevantRetrievalAdrShortlist = Set.size (Set.fromList [searchDocumentAdrId d | (key,d) <- Map.toList documents, Set.member key candidateItems]),
+                      relevantRetrievalAdrShortlist = Set.size (Set.union (scopeCandidateAdrs prepared) (Map.keysSet matchesByAdr)),
                       relevantRetrievalCandidateSearchItems = Set.size candidateItems,
                       relevantRetrievalPassageFts = Just passageDiagnostics,
                       relevantRetrievalSections = Just (object [("algorithm", JsonString (maybe "fts-only" (const "sqlite-vec-cosine") embedded)), ("candidates", intJson (sum (map Map.size scores)))]),
@@ -1718,6 +1720,34 @@ runRelevantCandidates provider timingHooks connection snapshot request prepared 
   where
     documents = preparedRelevantDocuments prepared
     passages = preparedRelevantPassages prepared
+
+scopeCandidateAdrs :: RelevantPrepared -> Set AdrId
+scopeCandidateAdrs = Map.keysSet . Map.filter (scopeCanSeed . Just) . preparedRelevantScopeMatches
+
+scopeCandidateItems :: RelevantPrepared -> Set Text
+scopeCandidateItems prepared = Map.keysSet (Map.filter (\document -> Set.member (searchDocumentAdrId document) selected) (preparedRelevantDocuments prepared))
+  where
+    selected = scopeCandidateAdrs prepared
+
+preparedRelevantRetrieval :: RelevantPrepared -> [TextChunk] -> [TextChunk] -> RelevantRetrieval
+preparedRelevantRetrieval prepared allChunks selectedChunks =
+  (emptyRelevantRetrieval allChunks selectedChunks)
+    { relevantRetrievalEligibleAdrs = Map.size (preparedRelevantReduced prepared),
+      relevantRetrievalEligibleSearchItems = Map.size (preparedRelevantDocuments prepared),
+      relevantRetrievalSearchSections = length (preparedRelevantPassages prepared),
+      relevantRetrievalAdrShortlist = Set.size (scopeCandidateAdrs prepared),
+      relevantRetrievalScopeCandidates = Set.size (scopeCandidateAdrs prepared),
+      relevantRetrievalCandidateSearchItems = Set.size (scopeCandidateItems prepared)
+    }
+
+-- Valid empty/short files still have declared applicability. No content
+-- provider is consulted and no passage evidence is invented for these rows.
+scopeOnlyRelevantProjection :: RelevantRequest -> ReadSnapshot -> RelevantPrepared -> RelevantFileInfo -> [TextChunk] -> [TextChunk] -> Either RelevantError RelevantProjection
+scopeOnlyRelevantProjection request snapshot prepared fileInfo allChunks selectedChunks =
+  buildRelevantProjection request snapshot fileInfo (preparedRelevantRetrieval prepared allChunks selectedChunks) results
+  where
+    aggregated = aggregateRelevantMatches prepared Map.empty Map.empty
+    results = finalizeRelevantResults snapshot (preparedRelevantDocuments prepared) (sortBy relevantAggregatedOrder aggregated)
 
 buildRelevantProjection :: RelevantRequest -> ReadSnapshot -> RelevantFileInfo -> RelevantRetrieval -> [RelevantResult] -> Either RelevantError RelevantProjection
 buildRelevantProjection request snapshot fileInfo retrieval allResults = do
@@ -1924,20 +1954,21 @@ zip4 :: [a] -> [b] -> [c] -> [d] -> [(a, b, c, d)]
 zip4 (a : as) (b : bs) (c : cs) (d : ds) = (a, b, c, d) : zip4 as bs cs ds
 zip4 _ _ _ _ = []
 
-aggregateRelevantMatches :: RelevantRequest -> RelevantPrepared -> Map Text SearchDocument -> Map AdrId [PairMatch] -> Map RelevantAuxKey RelevantMatchAux -> [RelevantAggregated]
-aggregateRelevantMatches request prepared _documents matchesByAdr auxByMatch =
-  mapMaybe aggregateOne (Map.toList matchesByAdr)
+aggregateRelevantMatches :: RelevantPrepared -> Map AdrId [PairMatch] -> Map RelevantAuxKey RelevantMatchAux -> [RelevantAggregated]
+aggregateRelevantMatches prepared matchesByAdr auxByMatch =
+  mapMaybe aggregateOne (Map.toList candidates)
   where
+    candidates = Map.union matchesByAdr (Map.fromSet (const []) (scopeCandidateAdrs prepared))
     aggregateOne (adr, matches) = do
       reduced <- Map.lookup adr (preparedRelevantReduced prepared)
-      let scopeMatch = relevanceScopeMatch (logicalScopeMatch (Just (relevantRequestFile request)) reduced)
-      value <- aggregateRelevance matches (Just scopeMatch)
+      let scopeMatch = Map.lookup adr (preparedRelevantScopeMatches prepared)
+      value <- aggregateRelevance matches scopeMatch
       let selected = aggregateEvidence value
           evidence = mapMaybe (toEvidence adr) selected
           matchedItem = case selected of
-            match : _ -> maybe (adrIdText adr) relevantAuxCandidateItem (Map.lookup (textChunkOrdinal (pairFileChunk match), adr, pairAdrItemId match) auxByMatch)
-            [] -> adrIdText adr
-      Just (RelevantAggregated adr reduced value evidence matchedItem)
+            match : _ -> relevantAuxCandidateItem <$> Map.lookup (textChunkOrdinal (pairFileChunk match), adr, pairAdrItemId match) auxByMatch
+            [] -> Nothing
+      Just (RelevantAggregated adr reduced value evidence matchedItem scopeMatch)
     toEvidence adr match = do
       aux <- Map.lookup (textChunkOrdinal (pairFileChunk match), adr, pairAdrItemId match) auxByMatch
       let passage = relevantAuxPassage aux
@@ -1958,10 +1989,13 @@ aggregateRelevantMatches request prepared _documents matchesByAdr auxByMatch =
             relevantEvidenceMatchedTerms = relevantAuxMatchedTerms aux
           }
 
-relevanceScopeMatch :: Maybe ScopeFilterMatch -> RelevanceScopeMatch
-relevanceScopeMatch (Just ScopeExact) = RelevanceScopeExact
-relevanceScopeMatch (Just ScopeAmbiguous) = RelevanceScopeAmbiguous
-relevanceScopeMatch _ = RelevanceScopeNone
+relevantScopeMatch :: RepoPath -> ReducedAdr -> Maybe (RelevanceScopeMatch, ScopeMatchEvidence)
+relevantScopeMatch path reduced = do
+  evidence <- bestScopeMatch (concatMap (`scopeEffective` reduced) heads) path
+  let state = if length heads == 1 then RelevanceScopeExact else RelevanceScopeAmbiguous
+  Just (state, evidence)
+  where
+    heads = axisResolutionHeads (reducedScopeAxis reduced)
 
 relevantAggregatedOrder :: RelevantAggregated -> RelevantAggregated -> Ordering
 relevantAggregatedOrder =
@@ -1970,19 +2004,25 @@ relevantAggregatedOrder =
     <> comparing (Down . aggregateLexicalScore . relevantAggregatedValue)
     <> comparing (Down . relevantAggregatedAdr)
 
-finalizeRelevantResults :: ReadSnapshot -> RepoPath -> Map Text SearchDocument -> [RelevantAggregated] -> [RelevantResult]
-finalizeRelevantResults snapshot sourcePath documents aggregated = zipWith build [0 :: Int ..] aggregated
+finalizeRelevantResults :: ReadSnapshot -> Map Text SearchDocument -> [RelevantAggregated] -> [RelevantResult]
+finalizeRelevantResults snapshot documents aggregated = map build aggregated
   where
     rawSemantic = map (aggregateSemanticScore . relevantAggregatedValue) aggregated
-    publishedSemantic = map roundSix rawSemantic
-    build index item =
+    rawMaxima = twoLargest rawSemantic
+    publishedMaxima = twoLargest (map roundSix rawSemantic)
+    -- Including duplicate maxima preserves the exact all-other-ADR margin,
+    -- while avoiding a quadratic scan after scope-only candidates are added.
+    twoLargest = foldl' (\(largest, second) value -> if value >= largest then (value, largest) else (largest, max second value)) (0, 0)
+    competitor (largest, second) value = if value == largest then second else largest
+    build item =
       let value = relevantAggregatedValue item
           reduced = relevantAggregatedReduced item
           matchedItem = relevantAggregatedMatchedItem item
-          matchedDocument = Map.lookup matchedItem documents
-          rawCompetitor = maximum (0 : [score | (otherIndex, score) <- zip [0 ..] rawSemantic, otherIndex /= index])
+          matchedDocument = matchedItem >>= (`Map.lookup` documents)
+          matchedCandidate = matchedItem >>= (\identifier -> if identifier == adrIdText (relevantAggregatedAdr item) then Nothing else Just identifier)
+          rawCompetitor = competitor rawMaxima (aggregateSemanticScore value)
           rawMargin = max 0 (aggregateSemanticScore value - rawCompetitor)
-          publishedCompetitor = maximum (0 : [score | (otherIndex, score) <- zip [0 ..] publishedSemantic, otherIndex /= index])
+          publishedCompetitor = competitor publishedMaxima (roundSix (aggregateSemanticScore value))
           publishedMargin = roundSix (roundSix (aggregateSemanticScore value) - publishedCompetitor)
           confidence = confidenceLabel (aggregateSemanticScore value) (aggregateStrongestPair value) rawMargin (aggregateSourceInformation value)
           resolution = resolutionFor snapshot reduced
@@ -1990,9 +2030,9 @@ finalizeRelevantResults snapshot sourcePath documents aggregated = zipWith build
        in RelevantResult
             { relevantResultAdr = relevantAggregatedAdr item,
               relevantResultRecord = decisionRecord <$> logicalDecision,
-              relevantResultMatchedCandidate = if matchedItem == adrIdText (relevantAggregatedAdr item) then Nothing else Just matchedItem,
+              relevantResultMatchedCandidate = matchedCandidate,
               relevantResultMatchedRecord = searchDocumentCandidateRecordId <$> matchedDocument,
-              relevantResultMatchedTitle = if matchedItem == adrIdText (relevantAggregatedAdr item) then Nothing else searchDocumentTitle <$> matchedDocument,
+              relevantResultMatchedTitle = if matchedCandidate == Nothing then Nothing else searchDocumentTitle <$> matchedDocument,
               relevantResultTitle = logicalDecisionTitle reduced,
               relevantResultSummary = logicalDecisionSummary reduced,
               relevantResultDomains = map domainText (axisResolutionEffective (reducedDomainAxis reduced)),
@@ -2005,7 +2045,8 @@ finalizeRelevantResults snapshot sourcePath documents aggregated = zipWith build
               relevantResultSemanticScore = aggregateSemanticScore value,
               relevantResultLexicalScore = aggregateLexicalScore value,
               relevantResultLexicalBonus = aggregateLexicalBonus value,
-              relevantResultScopeMatch = relevanceScopeMatch (logicalScopeMatch (Just sourcePath) reduced),
+              relevantResultScopeMatch = maybe RelevanceScopeNone fst (relevantAggregatedScope item),
+              relevantResultScopeEvidence = snd <$> relevantAggregatedScope item,
               relevantResultScopeBonus = aggregateScopeBonus value,
               relevantResultConfidence = confidence,
               relevantResultMargin = max 0 publishedMargin,
@@ -2629,8 +2670,12 @@ relevantRetrievalJson retrieval =
         ("source_chunks", JsonNumber (fromIntegral (relevantRetrievalSourceChunks retrieval))),
         ("selected_source_chunks", JsonNumber (fromIntegral (relevantRetrievalSelectedSourceChunks retrieval))),
         ("eligible_adrs", JsonNumber (fromIntegral (relevantRetrievalEligibleAdrs retrieval))),
+        ("eligible_search_items", JsonNumber (fromIntegral (relevantRetrievalEligibleSearchItems retrieval))),
         ("search_sections", JsonNumber (fromIntegral (relevantRetrievalSearchSections retrieval))),
         ("adr_shortlist", JsonNumber (fromIntegral (relevantRetrievalAdrShortlist retrieval))),
+        ("scope_candidates", JsonNumber (fromIntegral (relevantRetrievalScopeCandidates retrieval))),
+        ("candidate_search_items", JsonNumber (fromIntegral (relevantRetrievalCandidateSearchItems retrieval))),
+        ("scope_used_for_eligibility", JsonBool False),
         ("exact_rerank_candidates", JsonNumber (fromIntegral (relevantRetrievalExactRerankCandidates retrieval))),
         ( "scoring",
           object
@@ -2640,12 +2685,9 @@ relevantRetrievalJson retrieval =
         <> if relevantRetrievalPassageFts retrieval == Nothing
           then []
           else
-            [ ("eligible_search_items", JsonNumber (fromIntegral (relevantRetrievalEligibleSearchItems retrieval))),
-              ("candidate_search_items", JsonNumber (fromIntegral (relevantRetrievalCandidateSearchItems retrieval))),
-              ("summary", fromMaybe JsonNull (relevantRetrievalSummary retrieval)),
+            [ ("summary", fromMaybe JsonNull (relevantRetrievalSummary retrieval)),
               ("passage_fts", fromMaybe JsonNull (relevantRetrievalPassageFts retrieval)),
-              ("sections", fromMaybe JsonNull (relevantRetrievalSections retrieval)),
-              ("scope_used_for_eligibility", JsonBool False)
+              ("sections", fromMaybe JsonNull (relevantRetrievalSections retrieval))
             ]
     )
 
@@ -2671,6 +2713,7 @@ relevantResultJson result =
       ("lexical_score", scoreJson (relevantResultLexicalScore result)),
       ("lexical_bonus", scoreJson (relevantResultLexicalBonus result)),
       ("scope_match", JsonString (relevanceScopeMatchText (relevantResultScopeMatch result))),
+      ("scope_evidence", maybeJson scopeEvidenceJson (relevantResultScopeEvidence result)),
       ("scope_bonus", scoreJson (relevantResultScopeBonus result)),
       ("confidence", JsonString (confidenceLabelText (relevantResultConfidence result))),
       ("margin", scoreJson (relevantResultMargin result)),
@@ -2691,6 +2734,14 @@ relevantResultJson result =
       | otherwise = (Set.insert chunk seen, evidence : collected)
       where
         chunk = relevantEvidenceAdrChunk evidence
+
+scopeEvidenceJson :: ScopeMatchEvidence -> JsonValue
+scopeEvidenceJson evidence = object
+  [ ("pattern", JsonString (scopeEvidencePattern evidence)),
+    ("specificity", JsonString (case scopeEvidenceSpecificity evidence of ScopeLiteral -> "literal"; ScopePath -> "path"; ScopeBroad -> "broad")),
+    ("literal_components", intJson (scopeEvidenceLiteralComponents evidence)),
+    ("wildcard_tokens", intJson (scopeEvidenceWildcardTokens evidence))
+  ]
 
 relevantPassageJson :: RelevantEvidence -> JsonValue
 relevantPassageJson evidence =

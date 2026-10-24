@@ -16,3 +16,12 @@ These counts are not interchangeable. In particular, the retrieval corpus has 2,
 Generated repositories are temporary interpreter outputs and must not be
 committed as golden fixtures. The retained stress contract uses compact selected
 shapes; the larger logical plans above do not establish executed capacity coverage. Stable contracts are asserted through the compact Haskell summary and its SHA-256 digest.
+
+For an explicitly retained local retrieval experiment, `tools/RelevanceFixture.hs`
+creates a controlled clone of an existing repository, adds synthetic ADRs and
+labeled source cases, and evaluates the production query service. It never runs
+Git initialization. The generated repository and sanitized receipts live outside
+this source tree; only the generic harness and synthetic definitions are committed.
+See [Search](../../docs/SEARCH.md#local-retrieval-evaluation) for usage. External
+private corpora are supplied through a local manifest and are never embedded in
+the harness or checked-in fixtures.

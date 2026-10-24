@@ -3,6 +3,7 @@
 module Adrai.RelevanceTest (tests) where
 
 import Adrai.Relevance
+import Adrai.Scope (ScopeMatchEvidence (..), ScopeSpecificity (..))
 import Adrai.Vector (SectionIndexMode (..), sectionIndexMode)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
@@ -142,8 +143,8 @@ lexicalEvidenceContract = do
 
 directEvidenceRankingContract :: IO ()
 directEvidenceRankingContract = do
-  let direct = expectAggregate (aggregateRelevance [pair 0 "response" "compact response preview" 0.20 0.8] (Just RelevanceScopeExact))
-      incidental = expectAggregate (aggregateRelevance [pair 0 "planning" "planning status" 0.28 0.1] (Just RelevanceScopeExact))
+  let direct = expectAggregate (aggregateRelevance [pair 0 "response" "compact response preview" 0.20 0.8] (Just (RelevanceScopeExact, broadScope)))
+      incidental = expectAggregate (aggregateRelevance [pair 0 "planning" "planning status" 0.28 0.1] (Just (RelevanceScopeExact, broadScope)))
   assertBool "content evidence lifts the direct decision above incidental semantic similarity" (aggregateScore direct > aggregateScore incidental)
   assertBool "scope is equal and does not explain the ordering" (aggregateScopeBonus direct == aggregateScopeBonus incidental)
 
@@ -157,7 +158,7 @@ aggregationContract = do
           pair 5 "fifth" "observability trace" 0.30 0
         ]
       plain = expectAggregate (aggregateRelevance matches Nothing)
-      scoped = expectAggregate (aggregateRelevance matches (Just RelevanceScopeExact))
+      scoped = expectAggregate (aggregateRelevance matches (Just (RelevanceScopeExact, broadScope)))
   map pairAdrItemId (aggregateEvidence plain) @?= ["z", "third", "fifth"]
   assertClose 0.505 (aggregateSemanticScore plain)
   assertClose 0.41 (aggregateLexicalScore plain)
@@ -172,6 +173,17 @@ aggregationContract = do
       repetitiveAggregate = expectAggregate (aggregateRelevance [pair 0 "repeat" repetitive 0.8 0] Nothing)
   assertClose 0.1 (aggregateSourceInformation repetitiveAggregate)
   confidenceLabel 0.8 0.8 0.8 (aggregateSourceInformation repetitiveAggregate) @?= LowConfidence
+  let literal = ScopeMatchEvidence "src/cache.hs" ScopeLiteral 2 0
+      path = ScopeMatchEvidence "src/deep/nested/cache/lib/**" ScopePath 5 1
+      scopeOnly = expectAggregate (aggregateRelevance [pair 0 "weak" "weak" 0.074 0.035] (Just (RelevanceScopeExact, literal)))
+  aggregateScore scopeOnly @?= 0.30
+  aggregateSemanticScore scopeOnly @?= 0
+  aggregateLexicalScore scopeOnly @?= 0
+  aggregateSourceInformation scopeOnly @?= 0
+  aggregateEvidence scopeOnly @?= []
+  aggregateRelevance [] (Just (RelevanceScopeExact, broadScope)) @?= Nothing
+  assertClose 0.12 (scopeBonus (Just (RelevanceScopeAmbiguous, literal)))
+  assertClose 0.1 (scopeBonus (Just (RelevanceScopeAmbiguous, path)))
 
 confidenceContract :: IO ()
 confidenceContract = do
@@ -198,6 +210,11 @@ fingerprintContract = do
         ("third_evidence_weight", 0.05),
         ("scope_bonus_exact", 0.025),
         ("scope_bonus_ambiguous", 0.010),
+        ("scope_bonus_literal", 0.30),
+        ("scope_bonus_path_base", 0.15),
+        ("scope_bonus_path_component_increment", 0.025),
+        ("scope_bonus_path_component_cap", 4),
+        ("scope_ambiguity_factor", 0.4),
         ("minimum_pair_score", 0.075),
         ("minimum_lexical_pair_score", 0.036),
         ("lexical_rank_weight", 0.50),
@@ -220,6 +237,9 @@ chunk ordinal text = TextChunk ordinal (ordinal + 1) (ordinal + 1) text
 
 pair :: Int -> Text.Text -> Text.Text -> Double -> Double -> PairMatch
 pair ordinal item text semantic lexical = PairMatch (chunk ordinal text) item text semantic lexical
+
+broadScope :: ScopeMatchEvidence
+broadScope = ScopeMatchEvidence "**" ScopeBroad 0 1
 
 expectAggregate :: Maybe RelevanceAggregate -> RelevanceAggregate
 expectAggregate Nothing = error "expected relevance aggregate"

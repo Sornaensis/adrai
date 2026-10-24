@@ -174,7 +174,10 @@ hardNegativeContract = withQuality baseQualityAdrs $ \connection materialization
   case find ((== cache) . relevantResultAdr) (relevantProjectionResults scoped) of
     Nothing -> pure ()
     Just result -> do
-      assertBool scopedFailure (relevantResultScopeBonus result == 0.025)
+      assertBool scopedFailure (relevantResultScopeBonus result == 0.175)
+      relevantResultSemanticScore result @?= 0
+      relevantResultLexicalScore result @?= 0
+      relevantResultEvidence result @?= []
       assertBool scopedFailure (relevantResultConfidence result /= HighConfidence)
 
 configLeaseContract :: IO ()
@@ -184,11 +187,15 @@ configLeaseContract = withQuality configQualityAdrs $ \connection materializatio
   healthId <- lookupAdr materialization healthAdrKey
   secret <- expectedResult materialization configComposeSourceKey secretsAdrKey fallback
   fallbackAuth <- expectedResult materialization configComposeSourceKey authAdrKey fallback
-  roundSix (relevantResultScore secret) @?= 0.125
+  roundSix (relevantResultScore secret) @?= 0.25
   roundSix (relevantResultScore fallbackAuth) @?= 0.1
   let fallbackIds = map relevantResultAdr (relevantProjectionResults fallback)
-  assertBool "weaker config and health lexical matches fall below the overall floor"
-    (configId `notElem` fallbackIds && healthId `notElem` fallbackIds)
+  assertBool "specific deployment scopes admit config and health decisions"
+    (configId `elem` fallbackIds && healthId `elem` fallbackIds)
+  forM_ [configAdrKey, healthAdrKey] $ \key -> do
+    scoped <- expectedResult materialization configComposeSourceKey key fallback
+    relevantResultScopeBonus scoped @?= 0.15
+    relevantResultConfidence scoped @?= LowConfidence
   forM_ (relevantProjectionResults fallback) $ \row -> do
     relevantResultSemanticScore row @?= 0
     assertBool "fallback retains only above-floor ADRs" (relevantResultScore row >= 0.1)
@@ -276,8 +283,11 @@ mcpResponseContract = withQuality mcpQualityAdrs $ \connection materialization -
   assertBool failure (relevantFileChunks (relevantProjectionFile projection) > relevanceMaxSourceQueryChunks)
   assertBool failure (relevantFileQueryChunks (relevantProjectionFile projection) == relevanceMaxSourceQueryChunks)
   assertBool failure (take 1 ranked == [directId])
-  assertBool "incidental planning is below the overall admission floor" (incidentalId `notElem` ranked)
-  roundSix (relevantResultScore direct) @?= 0.525
+  incidental <- expectedResult materialization mcpToolsSourceKey planningAdrKey projection
+  assertBool "declared applicability admits planning while direct content still ranks first" (incidentalId `elem` ranked)
+  relevantResultScopeBonus incidental @?= 0.30
+  relevantResultConfidence incidental @?= LowConfidence
+  roundSix (relevantResultScore direct) @?= 0.8
   assertBool failure (relevantResultLexicalScore direct > 0)
   assertBool failure (any (elem "compact" . relevantEvidenceMatchedTerms) (relevantResultEvidence direct))
   assertBool failure (any ((> 240) . relevantEvidenceFileLineStart) (relevantResultEvidence direct))
@@ -315,8 +325,17 @@ compactJsonContract = withQuality mcpQualityAdrs $ \connection materialization -
       forM_ rows $ \row ->
         case (jsonField "passages" row, jsonField "evidence" row) of
           (Just (JsonArray passages), Just (JsonArray evidence)) -> do
-            assertBool failure (not (null evidence) && length evidence <= 3)
-            assertBool failure (not (null passages) && length passages <= length evidence)
+            assertBool failure (length evidence <= 3)
+            assertBool failure (length passages <= length evidence)
+            if null evidence
+              then do
+                passages @?= []
+                jsonField "semantic_score" row @?= Just (JsonNumber 0)
+                jsonField "lexical_score" row @?= Just (JsonNumber 0)
+                jsonField "confidence" row @?= Just (JsonString "low")
+                jsonField "matched_record" row @?= Just JsonNull
+                assertBool failure (jsonField "scope_evidence" row /= Just JsonNull)
+              else assertBool failure (not (null passages))
             let chunks = [chunk | passage <- passages, Just (JsonString chunk) <- [jsonField "adr_chunk" passage]]
             length chunks @?= length passages
             Set.size (Set.fromList chunks) @?= length passages

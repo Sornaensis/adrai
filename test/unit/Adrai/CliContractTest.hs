@@ -166,6 +166,8 @@ import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, info)
 import System.Exit (ExitCode (..))
 import System.IO (IOMode (WriteMode), withBinaryFile)
+import qualified System.IO as PhaseIO
+import GHC.Clock (getMonotonicTimeNSec)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Concurrent.STM (atomically)
@@ -1331,6 +1333,7 @@ mutationCliContractTests =
                 , relevantRetrievalEligibleSearchItems = 0
                 , relevantRetrievalSearchSections = 0
                 , relevantRetrievalAdrShortlist = 0
+                , relevantRetrievalScopeCandidates = 0
                 , relevantRetrievalCandidateSearchItems = 0
                 , relevantRetrievalSummary = Nothing
                 , relevantRetrievalPassageFts = Nothing
@@ -1410,21 +1413,39 @@ mutationCliContractTests =
         readIORef selectedRequest >>= (@?= either (const Nothing) Just (relevantCommandRequest explicit))
         -- The existing process harness owns each CLI descendant; the bracketed
         -- fixture directory is disposed at the end of this test, on any outcome.
+        phaseTraceEnabled <- (== Just "1") <$> lookupEnv "ADRAI_TEST_CONCISE_CLI_PHASES"
+        let tracePhase caption = when phaseTraceEnabled $ do
+              timestamp <- getMonotonicTimeNSec
+              PhaseIO.hPutStrLn PhaseIO.stderr ("concise-cli phase_ns=" <> show timestamp <> " " <> caption)
         withSystemTempDirectory "adrai concise CLI output" $ \temporary -> do
+          tracePhase ("fixture setup: " <> temporary)
           repo <- createTestRepo temporary
+          tracePhase "fixture ADRAI setup"
           createAdraiInit repo
           let source = "DURABLE_LEDGER_TOKEN transactions keep journal writes atomic.\nStorage recovery replays committed transactions using the durable ledger.\n"
               fixtureTitle = "Durable ledger café"
               fixtureSummary = "Keep DURABLE_LEDGER_TOKEN transactions atomic."
+          tracePhase "fixture source commit"
           _ <- commitFile repo "source.txt" (Text.Encoding.encodeUtf8 source)
+          tracePhase "fixture ADR create"
           created <- createAdr repo fixtureTitle fixtureSummary source ["storage.db.postgresql"] ["source.txt"]
           fixtureAdr <- case created of
             Aeson.Object fields -> case KM.lookup "adr" fields of
               Just (Aeson.String value) -> pure value
               _ -> assertFailure "create omitted ADR ID" >> fail "unreachable"
             _ -> assertFailure "create returned a non-object" >> fail "unreachable"
+          phaseCounter <- newIORef (0 :: Int)
           let runCli arguments = do
+                ordinal <- readIORef phaseCounter
+                writeIORef phaseCounter (ordinal + 1)
+                let commandName = case arguments of command : _ -> command; [] -> "[empty]"
+                    flags = filter (Text.isPrefixOf "--" . Text.pack) arguments
+                    caption = "command=" <> commandName <> " number=" <> show (ordinal + 1) <> " flags=" <> unwords flags
+                tracePhase ("request " <> caption)
+                started <- getMonotonicTimeNSec
                 (code, stdout, stderr) <- spawnAdrai repo arguments
+                ended <- getMonotonicTimeNSec
+                tracePhase ("response " <> caption <> " elapsed_ms=" <> show (fromIntegral (ended - started) / 1000000 :: Double) <> " exit=" <> show code)
                 code @?= ExitSuccess
                 stderr @?= ""
                 pure (Text.Encoding.decodeUtf8 (BL.toStrict stdout))
@@ -1538,8 +1559,10 @@ mutationCliContractTests =
             runCli ["search", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" "filtered-list")
           runCli ["search", "zzzxqvplmn", "--mode", "fts"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
           BS.writeFile (repo </> "source.txt") "\n"
-          runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
-          runCli ["relevant", "source.txt", "--worktree", "--json"] >>= (@?= emptyCliJson 10 "adrai/relevant-cli/v1" "passage-fts")
+          runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "0.30 " <> fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
+          _ <- checkJson ["relevant", "source.txt", "--worktree"] "adrai/relevant-cli/v1" "passage-fts" CollapsedView (Just 0.3)
+          tracePhase "fixture body complete; cleanup pending"
+        tracePhase "fixture cleanup complete"
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
         let expected = ShowCommand "R0123456789ABCDEFGHJKMNPQRS" ExplodedView "refs/heads/release" True True
         parseCli ["show", "R0123456789ABCDEFGHJKMNPQRS", "--view", "exploded", "--at", "refs/heads/release", "--raw", "--json"]
@@ -2425,6 +2448,7 @@ mutationCliContractTests =
       , relevantResultLexicalScore = 1
       , relevantResultLexicalBonus = 0
       , relevantResultScopeMatch = RelevanceScopeExact
+      , relevantResultScopeEvidence = Nothing
       , relevantResultScopeBonus = 0
       , relevantResultConfidence = HighConfidence
       , relevantResultMargin = 1

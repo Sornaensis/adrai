@@ -45,6 +45,14 @@ tests =
         assertMatch True "docs/FORMAT.md" "docs/FORMAT.md"
         assertMatch False "docs/FORMAT.md" "docs/archive/FORMAT.md"
         assertMatch True "docs/**" "docs/archive/v1/FORMAT.md"
+        patterns <- mapM scopeOrFail ["**", "**/*.hs", "src/**", "src/Adrai/**", "src/Adrai/Query.hs"]
+        path <- pathOrFail "src/Adrai/Query.hs"
+        bestScopeMatch patterns path @?= Just (ScopeMatchEvidence "src/Adrai/Query.hs" ScopeLiteral 3 0)
+        bestScopeMatch (take 4 patterns) path @?= Just (ScopeMatchEvidence "src/Adrai/**" ScopePath 2 1)
+        assertSpecificity "**/Query.hs" "Query.hs" ScopePath 1 1
+        assertSpecificity "**/simulation/**" "simulation/cache.rs" ScopePath 1 2
+        assertSpecificity "**/*.hs" "src/Query.hs" ScopeBroad 0 2
+        assertSpecificity "src/[a-z]/Query.hs" "src/a/Query.hs" ScopePath 2 1
     ]
 
 canonical :: Text -> Either ScopePatternError Text
@@ -75,6 +83,12 @@ assertMatch expected patternText pathText = do
   scopePattern <- scopeOrFail patternText
   repoPath <- pathOrFail pathText
   scopeMatches scopePattern repoPath @?= expected
+
+assertSpecificity :: Text -> Text -> ScopeSpecificity -> Int -> Int -> IO ()
+assertSpecificity patternText pathText kind literalCount wildcardCount = do
+  pattern <- scopeOrFail patternText
+  path <- pathOrFail pathText
+  bestScopeMatch [pattern] path @?= Just (ScopeMatchEvidence patternText kind literalCount wildcardCount)
 
 scopeOrFail :: Text -> IO ScopePattern
 scopeOrFail value =

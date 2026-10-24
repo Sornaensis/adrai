@@ -4,6 +4,7 @@ module Adrai.RelevanceProperties (tests) where
 
 import Adrai.Property.Generators (sampledPermutation)
 import Adrai.Relevance
+import Adrai.Scope (ScopeMatchEvidence (..), ScopeSpecificity (ScopeBroad))
 import qualified Data.ByteString as ByteString
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -95,8 +96,8 @@ propInformativePermutation = withTests 80 . property $ do
 propAggregatePermutation :: Property
 propAggregatePermutation = withTests 100 . property $ do
   shuffled <- forAll (sampledPermutation aggregateMatches)
-  aggregateRelevance shuffled (Just RelevanceScopeAmbiguous)
-    === aggregateRelevance aggregateMatches (Just RelevanceScopeAmbiguous)
+  aggregateRelevance shuffled (Just (RelevanceScopeAmbiguous, broadScope))
+    === aggregateRelevance aggregateMatches (Just (RelevanceScopeAmbiguous, broadScope))
   case aggregateRelevance shuffled Nothing of
     Nothing -> assert False
     Just result ->
@@ -107,7 +108,7 @@ propAggregateFinite :: Property
 propAggregateFinite = withTests 120 . property $ do
   semantic <- forAll score
   lexical <- forAll score
-  let result = aggregateRelevance [PairMatch (TextChunk 0 1 1 "unique source fact") "item" "adr" semantic lexical] (Just RelevanceScopeExact)
+  let result = aggregateRelevance [PairMatch (TextChunk 0 1 1 "unique source fact") "item" "adr" semantic lexical] (Just (RelevanceScopeExact, broadScope))
   case result of
     Nothing -> assert (semantic < minimumPairScore && lexical < minimumLexicalPairScore)
     Just aggregate -> do
@@ -120,6 +121,9 @@ propAggregateFinite = withTests 120 . property $ do
 
 tokenText :: Gen Text.Text
 tokenText = Gen.text (Range.linear 1 8) (Gen.element ['a' .. 'z'])
+
+broadScope :: ScopeMatchEvidence
+broadScope = ScopeMatchEvidence "**" ScopeBroad 0 1
 
 score :: Gen Double
 score = (/ 1000) . fromIntegral <$> Gen.int (Range.linear (-1000) 1000)

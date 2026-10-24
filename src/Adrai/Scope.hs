@@ -7,11 +7,16 @@ module Adrai.Scope
     ScopePatternError (..),
     scopePatternErrorText,
     scopeMatches,
+    ScopeSpecificity (..),
+    ScopeMatchEvidence (..),
+    bestScopeMatch,
   )
 where
 
 import Adrai.Types (RepoPath, repoPathText)
 import Data.Char (isAscii, isControl)
+import Data.List (sortBy)
+import Data.Ord (Down (..), comparing)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -97,6 +102,50 @@ scopePatternText (ScopePattern value _) = value
 -- memoized by pattern/path suffix, so wildcard backtracking is deterministic.
 scopeMatches :: ScopePattern -> RepoPath -> Bool
 scopeMatches (ScopePattern _ tokens) path = matchGlob tokens (Text.unpack (repoPathText path))
+
+-- | Specificity is separate from whether the scope axis is resolved. Count
+-- complete literal components from parsed tokens, so character classes and
+-- recursive wildcards cannot masquerade as literal directory names.
+data ScopeSpecificity = ScopeBroad | ScopePath | ScopeLiteral
+  deriving (Eq, Ord, Show)
+
+data ScopeMatchEvidence = ScopeMatchEvidence
+  { scopeEvidencePattern :: Text,
+    scopeEvidenceSpecificity :: ScopeSpecificity,
+    scopeEvidenceLiteralComponents :: Int,
+    scopeEvidenceWildcardTokens :: Int
+  }
+  deriving (Eq, Show)
+
+bestScopeMatch :: [ScopePattern] -> RepoPath -> Maybe ScopeMatchEvidence
+bestScopeMatch patterns path =
+  case sortBy specificityOrder [patternEvidence pattern | pattern <- patterns, scopeMatches pattern path] of
+    strongest : _ -> Just strongest
+    [] -> Nothing
+  where
+    specificityOrder =
+      comparing (Down . scopeEvidenceSpecificity)
+        <> comparing (Down . scopeEvidenceLiteralComponents)
+        <> comparing scopeEvidenceWildcardTokens
+        <> comparing scopeEvidencePattern
+
+patternEvidence :: ScopePattern -> ScopeMatchEvidence
+patternEvidence (ScopePattern value tokens) =
+  ScopeMatchEvidence value specificity literalComponents wildcards
+  where
+    wildcards = length (filter (not . literalToken) tokens)
+    literalComponents = length (filter (\component -> not (null component) && all literalToken component) (components tokens))
+    specificity
+      | wildcards == 0 = ScopeLiteral
+      | literalComponents > 0 = ScopePath
+      | otherwise = ScopeBroad
+    literalToken (GlobLiteral _) = True
+    literalToken _ = False
+    components = go []
+    go current [] = [reverse current]
+    go current (GlobLiteral '/' : rest) = reverse current : go [] rest
+    go current (GlobDoubleStarSlash : rest) = reverse (GlobDoubleStar : current) : go [] rest
+    go current (token : rest) = go (token : current) rest
 
 data GlobToken
   = GlobLiteral Char
