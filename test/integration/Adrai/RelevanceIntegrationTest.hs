@@ -18,12 +18,14 @@ import Adrai.Property.Generators
 import Adrai.Query
 import Adrai.Pagination (Pagination (..), PaginationError (..))
 import Adrai.Relevance
-import Adrai.Retrieval (SearchMaterialization)
+import Adrai.Retrieval (SearchMaterialization (..), SearchPassage (..), SectionKind (DecisionSection))
+import Adrai.TextEmbedding (EmbeddingRetrieval (..))
 import Adrai.Sqlite (initializeSearchSchema, replaceSearchMaterialization)
 import Adrai.Types (RepoPath, RevisionSelector (..), mkRepoPath, recordIdText)
 import Control.Exception (SomeException, bracket, try)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Database.SQLite.Simple (Connection, close, open)
 import Test.Tasty (TestTree, testGroup)
@@ -173,6 +175,8 @@ globalConfidenceContract = withRelevant multiAdrSnapshot $ \connection materiali
     concatMap relevantProjectionResults projections @?= relevantProjectionResults complete
     mapM_ (\projection -> relevantProjectionRetrieval projection @?= relevantProjectionRetrieval complete) projections) [1, 2, 3]
   let total = length (relevantProjectionResults complete)
+      scores = map relevantResultScore (relevantProjectionResults complete)
+  assertBool "relevant ADRs descend by unrounded numeric score" (and (zipWith (>=) scores (drop 1 scores)))
   paginationTotalResults (relevantProjectionPagination limited) @?= total
   beyond <- mustRelevant =<< runRelevant connection multiAdrSnapshot materialization (request {relevantRequestPage = toInteger (maxBound :: Int)}) source
   relevantProjectionResults beyond @?= []
@@ -186,6 +190,48 @@ globalConfidenceContract = withRelevant multiAdrSnapshot $ \connection materiali
       relevantResultConfidence limitedTop @?= relevantResultConfidence completeTop
       relevantResultMargin limitedTop @?= relevantResultMargin completeTop
     _ -> assertFailure "expected at least two complete results and one limited result"
+  floorAdmissionContract connection materialization
+
+-- Inject exact decision-passage similarities so the public service boundary,
+-- rather than a rounded JSON value or the lexical retrieval order, decides admission.
+floorAdmissionContract :: Connection -> SearchMaterialization -> IO ()
+floorAdmissionContract connection materialization = do
+  let path = mustRepoPath "notes/floor.txt"
+      request = (defaultRelevantRequest path)
+        { relevantRequestRevision = AtRevision "after", relevantRequestIncludeObsolete = True, relevantRequestLimit = 1 }
+      source = RevisionRelevantSource path "after-resolved" "blob-floor" "nebula quasars photons telescope astronomy celestial galaxies"
+      decisions = filter ((== DecisionSection) . searchPassageSectionKind) (searchMaterializationPassages materialization)
+      primary = case decisions of
+        passage : _ -> searchPassageAdrId passage
+        [] -> error "floor fixture needs decision passages"
+      provider primaryScore otherScore _ queries _ = pure (Just (EmbeddingRetrieval "floor-fixture" 2
+        (replicate (length queries) (Map.fromList
+          [ (searchPassageId passage, if searchPassageAdrId passage == primary then primaryScore else otherScore)
+          | passage <- decisions ]))))
+      run primaryScore otherScore selectedRequest = mustRelevant =<<
+        runRelevantWithEmbedding (provider primaryScore otherScore) (RelevantTimingHooks (pure ()) (pure ()))
+          connection multiAdrSnapshot materialization selectedRequest source
+  below <- run 0.0999996 0.08 request
+  relevantProjectionResults below @?= []
+  paginationTotalResults (relevantProjectionPagination below) @?= 0
+  paginationTotalPages (relevantProjectionPagination below) @?= Just 0
+  mapM_ (\score -> do
+    included <- run score 0.08 request
+    relevantResultAdr (onlyResult included) @?= primary
+    assertClose score (relevantResultScore (onlyResult included))
+    assertClose 0.02 (relevantResultMargin (onlyResult included))
+    paginationTotalResults (relevantProjectionPagination included) @?= 1
+    paginationTotalPages (relevantProjectionPagination included) @?= Just 1
+    next <- run score 0.08 (request {relevantRequestPage = 2})
+    relevantProjectionResults next @?= []
+    paginationTotalResults (relevantProjectionPagination next) @?= 1) [0.1, 0.1000004]
+  strong <- run 0.34 0.08 request
+  relevantResultConfidence (onlyResult strong) @?= HighConfidence
+  assertClose 0.26 (relevantResultMargin (onlyResult strong))
+  -- Both display as 0.10; their original numeric scores still decide order.
+  closeScores <- run 0.1 0.1000004 (request {relevantRequestLimit = 100})
+  map relevantResultScore (relevantProjectionResults closeScores) @?= [0.1000004, 0.1]
+  paginationTotalResults (relevantProjectionPagination closeScores) @?= 2
 
 worktreeContract :: IO ()
 worktreeContract = withRelevant headSnapshot $ \connection materialization -> do

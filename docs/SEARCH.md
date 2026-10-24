@@ -6,7 +6,10 @@ ADRAI exposes two related commands:
 - `relevant FILE` ranks ADRs against a source file.
 
 Both operate against a resolved Git revision. By default, each result is a single
-line containing its ADR ID and title. `--view exploded` adds the summary below
+line containing its raw score, ADR ID and title, in descending numeric score
+order. Scores use two decimal places (`0.10`, `0.03`, `1.00`), at most three
+digits plus the decimal point; rounding is for display only. Equal-score blank
+listings retain ADR ID order. `--view exploded` adds the summary below
 each title, indented by two spaces. Every response ends with a compact page footer,
 including no matches; successful queries produce no stderr output. Result order and limits are unchanged by the
 output format. Conflicted ADRs retain their conflict title rather than displaying
@@ -39,9 +42,9 @@ For nonblank search queries, the algorithm labels are:
 | `hybrid` | `three-fts+tei+sqlite-vec+weighted-rrf` |
 
 Relevance reports `tei+sqlite-vec+passage-fts` when the embedding service is available,
-or `passage-fts` when it uses lexical retrieval alone. Score and algorithm metadata
-appear only in JSON; plain and expanded text remain ID/title lists with optional
-summaries.
+or `passage-fts` when it uses lexical retrieval alone. Algorithm metadata remains
+in JSON, and JSON scores retain six-decimal precision. Plain and expanded text show the
+two-decimal score before the ID/title, with optional summaries.
 
 Detailed service and HTTP projections remain available separately. Relevance
 results and ordering are deterministic for the same revision and source bytes;
@@ -222,7 +225,12 @@ Without `--worktree`, the file and ADR context come from the same resolved revis
 `--page N` selects a one-based page (default 1); `--limit N` sets its size
 (default 10, range 1–100). CLI and HTTP responses include the shared `pagination`
 fields described above; text uses the same compact returned/total and page footer.
-Totals describe the finalized distinct ADRs retrieved by a fixed depth-10 policy,
+Only ADRs with an overall raw score of at least `0.1` are returned. This inclusive
+floor is applied before counting and paging, using the unrounded score. Confidence
+and margins still use every retrieved competitor, including those below the floor.
+The floor applies to `relevant`; `search` retains its existing ranking score scale
+and admission behavior.
+Totals describe the retained distinct ADRs retrieved by a fixed depth-10 policy,
 not all `eligible_adrs`. Each selected source chunk retrieves up to 60 lexical
 passages and 40 vector passages. Up to 24 informative source chunks participate.
 Only eligible passages enter sqlite-vec, before its K-neighbour limit.

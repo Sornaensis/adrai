@@ -20,6 +20,7 @@ import Adrai.Fixture.Types (AdrKey, AdrTemplate)
 import Adrai.Format.Json (JsonValue (..))
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..))
 import Adrai.Query
+import Adrai.Pagination (Pagination (..))
 import Adrai.Relevance
   ( ConfidenceLabel (..),
     RelevanceScopeMatch (RelevanceScopeNone),
@@ -27,10 +28,13 @@ import Adrai.Relevance
     repetitiveChunkLowConfidence,
   )
 import Adrai.Sqlite (initializeSearchSchema, replaceSearchMaterialization)
+import Adrai.Retrieval (SearchMaterialization (..), SearchPassage (..), SectionKind (DecisionSection))
+import Adrai.TextEmbedding (EmbeddingProvider, EmbeddingRetrieval (..))
 import Adrai.Types (AdrId, RevisionSelector (AtRevision), adrIdText, repoPathText)
 import Control.Exception (bracket)
 import Control.Monad (forM_)
 import qualified Data.ByteString as ByteString
+import qualified Data.Map.Strict as Map
 import Data.List (elemIndex, find)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.Set as Set
@@ -89,7 +93,34 @@ crossFormatContract = withQuality baseQualityAdrs $ \connection materialization 
 
 largeRegionContract :: IO ()
 largeRegionContract = withQuality baseQualityAdrs $ \connection materialization -> do
-  projection <- runQualitySource connection materialization largeRegionSourceKey [cacheAdrKey, observabilityAdrKey] 6
+  lexical <- runQualitySource connection materialization largeRegionSourceKey [] 6
+  -- Repetition reduces these lexical-only scores below the public admission
+  -- floor, even though the informative region still retrieves real candidates.
+  relevantProjectionResults lexical @?= []
+  paginationTotalResults (relevantProjectionPagination lexical) @?= 0
+  assertBool "the region still retrieves multiple lexical ADR candidates"
+    (relevantRetrievalAdrShortlist (relevantProjectionRetrieval lexical) >= 2)
+  cacheId <- lookupAdr materialization cacheAdrKey
+  telemetryId <- lookupAdr materialization observabilityAdrKey
+  source <- mustSource materialization largeRegionSourceKey
+  let snapshot = queryMaterializationSnapshot materialization
+      search = queryMaterializationSearch materialization
+      request = (defaultRelevantRequest (relevantSourcePath source))
+        { relevantRequestRevision = AtRevision (revisionRequested (readSnapshotRevision snapshot)), relevantRequestLimit = 6 }
+      -- Controlled semantic evidence keeps the original region-selection and
+      -- line-range assertions independent of the new lexical admission floor.
+      provider _ queries _ = pure (Just (EmbeddingRetrieval "large-region-fixture" 2 (map scores queries)))
+      scores query = Map.fromList
+        [ (searchPassageId passage, 0.5)
+        | passage <- searchMaterializationPassages search
+        , searchPassageSectionKind passage == DecisionSection
+        , (searchPassageAdrId passage == cacheId && "cache identity" `Text.isInfixOf` query)
+          || (searchPassageAdrId passage == telemetryId && "request" `Text.isInfixOf` query && "structured logs" `Text.isInfixOf` query)
+        ]
+  outcome <- runRelevantWithEmbedding provider (RelevantTimingHooks (pure ()) (pure ())) connection snapshot search request source
+  projection <- case outcome of
+    Right value -> pure value
+    Left problem -> assertFailure (qualityRunFailure materialization largeRegionSourceKey [cacheAdrKey, observabilityAdrKey] problem) >> error "unreachable"
   let failure = qualityFailure materialization largeRegionSourceKey [cacheAdrKey, observabilityAdrKey] projection
   assertQualityProjection failure projection
   assertBool failure (relevantFileChunks (relevantProjectionFile projection) > relevanceMaxSourceQueryChunks)
@@ -148,7 +179,32 @@ hardNegativeContract = withQuality baseQualityAdrs $ \connection materialization
 
 configLeaseContract :: IO ()
 configLeaseContract = withQuality configQualityAdrs $ \connection materialization -> do
-  configProjection <- runQualitySource connection materialization configComposeSourceKey [configAdrKey, healthAdrKey, secretsAdrKey] 10
+  fallback <- runQualitySource connection materialization configComposeSourceKey [secretsAdrKey, authAdrKey] 10
+  configId <- lookupAdr materialization configAdrKey
+  healthId <- lookupAdr materialization healthAdrKey
+  secret <- expectedResult materialization configComposeSourceKey secretsAdrKey fallback
+  fallbackAuth <- expectedResult materialization configComposeSourceKey authAdrKey fallback
+  roundSix (relevantResultScore secret) @?= 0.125
+  roundSix (relevantResultScore fallbackAuth) @?= 0.1
+  let fallbackIds = map relevantResultAdr (relevantProjectionResults fallback)
+  assertBool "weaker config and health lexical matches fall below the overall floor"
+    (configId `notElem` fallbackIds && healthId `notElem` fallbackIds)
+  forM_ (relevantProjectionResults fallback) $ \row -> do
+    relevantResultSemanticScore row @?= 0
+    assertBool "fallback retains only above-floor ADRs" (relevantResultScore row >= 0.1)
+  relevantRetrievalStrategy (relevantProjectionRetrieval fallback) @?= "passage-fts"
+  relevantRetrievalSemanticVectorId (relevantProjectionRetrieval fallback) @?= Nothing
+  relevantRetrievalIdentifierVectorId (relevantProjectionRetrieval fallback) @?= Nothing
+  -- Keep the config/health lexical evidence assertions under independently
+  -- supplied semantic support, without changing the natural fallback scores.
+  let search = queryMaterializationSearch materialization
+      provider _ queries _ = pure (Just (EmbeddingRetrieval "config-evidence-fixture" 2
+        (replicate (length queries) (Map.fromList
+          [ (searchPassageId passage, 0.2)
+          | passage <- searchMaterializationPassages search
+          , searchPassageSectionKind passage == DecisionSection
+          , searchPassageAdrId passage `elem` [configId, healthId] ]))))
+  configProjection <- runQualitySourceWithEmbedding provider connection materialization configComposeSourceKey [configAdrKey, healthAdrKey, secretsAdrKey] 10
   let configResults = relevantProjectionResults configProjection
       actual = Set.fromList (map relevantResultAdr configResults)
       configFailure = qualityFailure materialization configComposeSourceKey [configAdrKey, healthAdrKey, secretsAdrKey] configProjection
@@ -163,10 +219,7 @@ configLeaseContract = withQuality configQualityAdrs $ \connection materializatio
   health <- expectedResult materialization configComposeSourceKey healthAdrKey configProjection
   assertBool configFailure (relevantResultLexicalScore health > 0)
   assertBool configFailure (any (any (`elem` ["healthcheck", "readiness"]) . relevantEvidenceMatchedTerms) (relevantResultEvidence health))
-  relevantResultSemanticScore health @?= 0
-  relevantRetrievalStrategy (relevantProjectionRetrieval configProjection) @?= "passage-fts"
-  relevantRetrievalSemanticVectorId (relevantProjectionRetrieval configProjection) @?= Nothing
-  relevantRetrievalIdentifierVectorId (relevantProjectionRetrieval configProjection) @?= Nothing
+  assertBool configFailure (relevantResultSemanticScore health > 0)
   leaseProjection <- runQualitySource connection materialization leaseTokenSourceKey [queueAdrKey] 10
   assertExpectedWithin materialization leaseTokenSourceKey queueAdrKey 3 leaseProjection
   queue <- lookupAdr materialization queueAdrKey
@@ -187,7 +240,20 @@ configLeaseContract = withQuality configQualityAdrs $ \connection materializatio
 
 terseIdentifierContract :: IO ()
 terseIdentifierContract = withQuality correlationQualityAdrs $ \connection materialization -> do
-  projection <- runQualitySource connection materialization terseCorrelationSourceKey [correlationAdrKey] 5
+  fallback <- runQualitySource connection materialization terseCorrelationSourceKey [] 5
+  relevantProjectionResults fallback @?= []
+  paginationTotalResults (relevantProjectionPagination fallback) @?= 0
+  assertBool "the below-floor source still reaches identifier retrieval"
+    (identifierChannelHits (relevantRetrievalPassageFts (relevantProjectionRetrieval fallback)) > 0)
+  correlationId <- lookupAdr materialization correlationAdrKey
+  let search = queryMaterializationSearch materialization
+      provider _ queries _ = pure (Just (EmbeddingRetrieval "correlation-evidence-fixture" 2
+        (replicate (length queries) (Map.fromList
+          [ (searchPassageId passage, 0.2)
+          | passage <- searchMaterializationPassages search
+          , searchPassageSectionKind passage == DecisionSection
+          , searchPassageAdrId passage == correlationId ]))))
+  projection <- runQualitySourceWithEmbedding provider connection materialization terseCorrelationSourceKey [correlationAdrKey] 5
   let failure = qualityFailure materialization terseCorrelationSourceKey [correlationAdrKey] projection
   assertQualityProjection failure projection
   target <- expectedResult materialization terseCorrelationSourceKey correlationAdrKey projection
@@ -204,18 +270,17 @@ mcpResponseContract = withQuality mcpQualityAdrs $ \connection materialization -
       ranked = map relevantResultAdr (relevantProjectionResults projection)
   assertBool failure (not (null ranked))
   direct <- expectedResult materialization mcpToolsSourceKey mcpResponseAdrKey projection
-  incidental <- expectedResult materialization mcpToolsSourceKey planningAdrKey projection
   directId <- lookupAdr materialization mcpResponseAdrKey
   incidentalId <- lookupAdr materialization planningAdrKey
   assertQualityProjection failure projection
   assertBool failure (relevantFileChunks (relevantProjectionFile projection) > relevanceMaxSourceQueryChunks)
   assertBool failure (relevantFileQueryChunks (relevantProjectionFile projection) == relevanceMaxSourceQueryChunks)
   assertBool failure (take 1 ranked == [directId])
-  assertBool failure (elemIndex directId ranked < elemIndex incidentalId ranked)
+  assertBool "incidental planning is below the overall admission floor" (incidentalId `notElem` ranked)
+  roundSix (relevantResultScore direct) @?= 0.525
   assertBool failure (relevantResultLexicalScore direct > 0)
   assertBool failure (any (elem "compact" . relevantEvidenceMatchedTerms) (relevantResultEvidence direct))
   assertBool failure (any ((> 240) . relevantEvidenceFileLineStart) (relevantResultEvidence direct))
-  assertBool failure (relevantResultConfidence incidental /= HighConfidence)
 
 pathAlignedSymbolContract :: IO ()
 pathAlignedSymbolContract = withQuality authTokenQualityAdrs $ \connection materialization -> do
@@ -293,6 +358,18 @@ runQualitySource connection materialization sourceKey expected limit = do
           }
   result <- runRelevant connection snapshot (queryMaterializationSearch materialization) request source
   case result of
+    Right projection -> pure projection
+    Left problem -> assertFailure (qualityRunFailure materialization sourceKey expected problem) >> error "unreachable"
+
+runQualitySourceWithEmbedding :: EmbeddingProvider -> Connection -> QueryMaterialization -> Text -> [AdrKey] -> Int -> IO RelevantProjection
+runQualitySourceWithEmbedding provider connection materialization sourceKey expected limit = do
+  source <- mustSource materialization sourceKey
+  let snapshot = queryMaterializationSnapshot materialization
+      request = (defaultRelevantRequest (relevantSourcePath source))
+        { relevantRequestRevision = AtRevision (revisionRequested (readSnapshotRevision snapshot)), relevantRequestLimit = limit }
+  outcome <- runRelevantWithEmbedding provider (RelevantTimingHooks (pure ()) (pure ()))
+    connection snapshot (queryMaterializationSearch materialization) request source
+  case outcome of
     Right projection -> pure projection
     Left problem -> assertFailure (qualityRunFailure materialization sourceKey expected problem) >> error "unreachable"
 

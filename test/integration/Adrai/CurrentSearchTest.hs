@@ -302,6 +302,8 @@ repeatStabilityContract = withSearch p304ConflictSnapshot $ \connection material
             pure (concatMap searchProjectionResults (initial : rest))
       whole <- run rankedRequest
       assertBool "ranked paging fixture has multiple ADRs" (length (searchProjectionResults whole) > 1)
+      let scores = map searchResultScore (searchProjectionResults whole)
+      assertBool "search ADRs descend by unrounded numeric score" (and (zipWith (>=) scores (drop 1 scores)))
       forM_ (searchProjectionResults whole) $ \row ->
         lookupJsonPath ["policy"] (searchResultRetrieval row) @?= Just (JsonString "fixed-depth-10")
       pages 1 >>= (@?= searchProjectionResults whole)

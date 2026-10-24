@@ -116,6 +116,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Control.Exception (bracket)
 import Database.SQLite.Simple (Connection, close, open)
+import Numeric (showFFloat)
 import Adrai.Format.Json (JsonValue (..), jsonNumberRounded6)
 import qualified Adrai.Query as Query
 
@@ -672,8 +673,8 @@ resultListJson schema algorithm view rows pagination = JsonObject $
 renderResultList :: ViewMode -> [(AdrId, Text, Text, Double)] -> Text
 renderResultList view = Text.concat . map renderRow
   where
-    renderRow (adr, title, summary, _) =
-      adrIdText adr <> " " <> singleLine title <> "\n"
+    renderRow (adr, title, summary, score) =
+      Text.pack (showFFloat (Just 2) score "") <> " " <> adrIdText adr <> " " <> singleLine title <> "\n"
         <> if view == ExplodedView
           then Text.concat ["  " <> Text.filter (\c -> not (isControl c)) (Text.map horizontalSpace line) <> "\n" | line <- Text.lines summary]
           else ""

@@ -108,14 +108,17 @@ flat JSON remains `adrai/domains/v1`. Domain reads reuse exact archives publishe
 by `compile` or successful mutation indexing. A miss reads committed state without
 creating an archive; repeated misses remain cold. See [Search](SEARCH.md).
 
-`search` and `relevant` print simple ADR ID and title lists by default. Add
+`search` and `relevant` print the raw score, ADR ID and title by default, in
+descending numeric score order. Text scores use two decimal places (`0.10`,
+`0.03`, `1.00`), with at most three digits plus the decimal point. Add
 `--view exploded` to include indented summaries. JSON requires `--json` and
 contains `schema`, `algorithm`, `pagination` and `results`, with `adr`, `title` and a
 numeric `score` in `[0,1]` in each result, plus `summary` in the exploded view.
-Scores preserve the existing ranking totals rounded to six decimal places;
+JSON scores preserve the existing ranking totals rounded to six decimal places;
 they are not confidence levels or rescaled against the response. Blank search
-uses `filtered-list` with score `1` as an eligibility sentinel. Score metadata
-appears only in JSON. The CLI schemas are `adrai/search-cli/v1`
+uses `filtered-list` with score `1` as an eligibility sentinel. `relevant`
+excludes overall raw scores below `0.1` before counting and paging; `search`
+keeps its existing admission behavior. The CLI schemas are `adrai/search-cli/v1`
 and `adrai/relevant-cli/v1`; see [Search](SEARCH.md) for details.
 
 Omitting the search query or supplying blank text lists non-obsolete ADRs in ADR

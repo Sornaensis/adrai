@@ -159,6 +159,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import qualified Data.Vector as Vector
 import qualified Data.Map.Strict as Map
+import Numeric (showFFloat)
 import Data.Vector ((!))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
@@ -1261,8 +1262,13 @@ mutationCliContractTests =
         renderPagination (Pagination (Just 3) (Just 2) 5 (Just 3) 1 0 False) @?= "1 of 5 results — Page 3 of 3\n"
         let populated = projection {searchProjectionPagination = Pagination (Just 1) (Just 7) 2 (Just 1) 2 0 False, searchProjectionResults = [cliSearchRow, cliSearchRow {searchResultAdr = secondAdr, searchResultTitle = "[decision conflict]", searchResultSummary = "", searchResultScore = 0, searchResultConflicted = True, searchResultMatchedTitle = Just "Misleading matched head"}]}
             render view json = renderSearchOutcome (explicit {searchView = view, searchJson = json}) populated
-        render CollapsedView False @?= CliRendered (expectedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
-        render ExplodedView False @?= CliRendered (expectedExpandedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
+        render CollapsedView False @?= CliRendered (expectedList "0.01" <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
+        render ExplodedView False @?= CliRendered (expectedExpandedList "0.01" <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
+        for_ scoreDisplayCases $ \(score, displayed) ->
+          for_ [CollapsedView, ExplodedView] $ \view -> do
+            let scored = populated {searchProjectionResults = [cliSearchRow {searchResultScore = score}]}
+                output = renderedStdout (renderSearchOutcome (explicit {searchView = view, searchJson = False}) scored)
+            assertBool "search prints the bounded raw score first" ((displayed <> " A0123456789ABCDEFGHJKMNPQRS ") `Text.isPrefixOf` output)
         for_ [CollapsedView, ExplodedView] $ \view -> do
           assertCliListJson "adrai/search-cli/v1" "tei+sqlite-vec+weighted-rrf" 0.012346 0 view (renderedStdout (render view True))
         for_ searchAlgorithms $ \(mode, algorithm) -> do
@@ -1368,8 +1374,13 @@ mutationCliContractTests =
           @?= CliRendered "0 of 0 results — Page 1 of 0\n" "" ExitSuccess
         let populated = diagnosed {relevantProjectionPagination = Pagination (Just 1) (Just 7) 2 (Just 1) 2 0 False, relevantProjectionResults = [cliRelevantRow, cliRelevantRow {relevantResultAdr = secondAdr, relevantResultTitle = "[decision conflict]", relevantResultSummary = "", relevantResultScore = 0, relevantResultMatchedTitle = Just "Misleading matched head"}]}
             render view json = renderRelevantOutcome (explicit {relevantView = view, relevantJson = json}) populated
-        render CollapsedView False @?= CliRendered (expectedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
-        render ExplodedView False @?= CliRendered (expectedExpandedList <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
+        render CollapsedView False @?= CliRendered (expectedList "0.77" <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
+        render ExplodedView False @?= CliRendered (expectedExpandedList "0.77" <> "2 of 2 results — Page 1 of 1\n") "" ExitSuccess
+        for_ scoreDisplayCases $ \(score, displayed) ->
+          for_ [CollapsedView, ExplodedView] $ \view -> do
+            let scored = populated {relevantProjectionResults = [cliRelevantRow {relevantResultScore = score}]}
+                output = renderedStdout (renderRelevantOutcome (explicit {relevantView = view, relevantJson = False}) scored)
+            assertBool "relevant prints the bounded raw score first" ((displayed <> " A0123456789ABCDEFGHJKMNPQRS ") `Text.isPrefixOf` output)
         for_ [CollapsedView, ExplodedView] $ \view ->
           assertCliListJson "adrai/relevant-cli/v1" "passage-fts" 0.765432 0 view (renderedStdout (render view True))
         let maximumScore = populated {relevantProjectionResults = [cliRelevantRow {relevantResultScore = 1}, (last (relevantProjectionResults populated)) {relevantResultScore = 0}]}
@@ -1440,11 +1451,18 @@ mutationCliContractTests =
                         (["adr" Aeson..= fixtureAdr, "title" Aeson..= fixtureTitle, "score" Aeson..= score]
                           <> ["summary" Aeson..= fixtureSummary | view == ExplodedView])]
                     ] <> ["pagination" Aeson..= toAesonValue (paginationJson (Pagination (Just 1) (Just 10) 1 (Just 1) 1 0 False)) | schema `elem` ["adrai/search-cli/v1", "adrai/relevant-cli/v1"]]))
+                pure score
               checkCommand command schema algorithm expectedScore = do
-                let footer = "1 of 1 results — Page 1 of 1\n"
-                runCli command >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n" <> footer)
-                runCli (command <> ["--view", "exploded"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n  " <> fixtureSummary <> "\n" <> footer)
-                for_ [CollapsedView, ExplodedView] $ \view -> checkJson command schema algorithm view expectedScore
+                score <- checkJson command schema algorithm CollapsedView expectedScore
+                let displayed = case score of
+                      Aeson.Number value -> Text.pack (showFFloat (Just 2) (realToFrac value :: Double) "")
+                      _ -> error "checkJson accepted a nonnumeric score"
+                    footer = "1 of 1 results — Page 1 of 1\n"
+                    row = displayed <> " " <> fixtureAdr <> " " <> fixtureTitle
+                runCli command >>= (@?= row <> "\n" <> footer)
+                runCli (command <> ["--view", "exploded"]) >>= (@?= row <> "\n  " <> fixtureSummary <> "\n" <> footer)
+                _ <- checkJson command schema algorithm ExplodedView expectedScore
+                pure ()
           let adrArgument = Text.unpack fixtureAdr
               assertJsonOutput label output = case Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output) of
                 Right (Aeson.Object _) -> pure ()
@@ -1496,8 +1514,10 @@ mutationCliContractTests =
           runCli ["domains", "unknown"] >>= (@?= "")
           for_ [[], [" "], ["DURABLE_LEDGER_TOKEN"]] $ \query -> do
             runCli (["search"] <> query <> ["--domain", "storage.db", "--mode", "fts"]) >>= (@?= "0 of 0 results — Page 1 of 0\n")
-            runCli (["search"] <> query <> ["--domain", "storage.db.postgresql", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
-            runCli (["search"] <> query <> ["--domain", "storage.db", "--all", "--mode", "fts"]) >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
+            let listedScore = if null query || query == [" "] then "1.00" else "0.06"
+                expectedRow = listedScore <> " " <> fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n"
+            runCli (["search"] <> query <> ["--domain", "storage.db.postgresql", "--mode", "fts"]) >>= (@?= expectedRow)
+            runCli (["search"] <> query <> ["--domain", "storage.db", "--all", "--mode", "fts"]) >>= (@?= expectedRow)
             runCli (["search"] <> query <> ["--domain", "stor", "--mode", "fts"]) >>= (@?= "0 of 0 results — Page 1 of 0\n")
           runCli ["search", "--limit", "1", "--page", "2"] >>= (@?= "0 of 1 results — Page 2 of 1\n")
           _ <- runCli ["obsolete", Text.unpack fixtureAdr, "--reason", "Retire fixture", "--actor", "human:test"]
@@ -1505,7 +1525,7 @@ mutationCliContractTests =
           runCli ["domains", "--include-obsolete"] >>= (@?= "storage 1\n")
           runCli ["domains", "--at", "HEAD~1"] >>= (@?= "storage 1\n")
           runCli ["search", "--domain", "storage", "--all", "--mode", "fts"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
-          runCli ["search", "--domain", "storage", "--all", "--include-obsolete", "--mode", "fts"] >>= (@?= fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
+          runCli ["search", "--domain", "storage", "--all", "--include-obsolete", "--mode", "fts"] >>= (@?= "1.00 " <> fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
           _ <- runCli ["reactivate", Text.unpack fixtureAdr, "--reason", "Restore fixture", "--actor", "human:test"]
           checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1" "passage-fts" Nothing
           for_ searchAlgorithms $ \(mode, _algorithm) -> do
@@ -1513,7 +1533,7 @@ mutationCliContractTests =
                   FtsRetrieval -> "fts"
                   VectorRetrieval -> "vector"
                   HybridRetrieval -> "hybrid"
-            checkJson ["search", "DURABLE_LEDGER_TOKEN", "--mode", modeText] "adrai/search-cli/v1" "three-fts+weighted-rrf" CollapsedView Nothing
+            _ <- checkJson ["search", "DURABLE_LEDGER_TOKEN", "--mode", modeText] "adrai/search-cli/v1" "three-fts+weighted-rrf" CollapsedView Nothing
             runCli ["search", "cache", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" "three-fts+weighted-rrf")
             runCli ["search", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" "filtered-list")
           runCli ["search", "zzzxqvplmn", "--mode", "fts"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
@@ -2332,8 +2352,9 @@ mutationCliContractTests =
     secondAdr = requireRight (mkAdrId "A1123456789ABCDEFGHJKMNPQRS")
     title = "Storage\tchoice\nü\ESC[0m"
     summary = "First\tsummary line.\nSecond summary line."
-    expectedList = "A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\nA1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
-    expectedExpandedList = "A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\n  First summary line.\n  Second summary line.\nA1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
+    expectedList score = score <> " A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\n0.00 A1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
+    expectedExpandedList score = score <> " A0123456789ABCDEFGHJKMNPQRS Storage choice ü [0m\n  First summary line.\n  Second summary line.\n0.00 A1123456789ABCDEFGHJKMNPQRS [decision conflict]\n"
+    scoreDisplayCases = [(0, "0.00"), (0.0049, "0.00"), (0.0051, "0.01"), (0.0999, "0.10"), (0.1, "0.10"), (0.123, "0.12"), (0.9999, "1.00"), (1, "1.00")]
     emptyCliJson size schema algorithm = renderCanonicalJson (JsonObject
       [("schema", JsonString schema), ("algorithm", JsonString algorithm), ("results", JsonArray []),
        ("pagination", paginationJson (Pagination (Just 1) (Just size) 0 (Just 0) 0 0 False))])

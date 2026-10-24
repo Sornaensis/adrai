@@ -1721,7 +1721,10 @@ runRelevantCandidates provider timingHooks connection snapshot request prepared 
 
 buildRelevantProjection :: RelevantRequest -> ReadSnapshot -> RelevantFileInfo -> RelevantRetrieval -> [RelevantResult] -> Either RelevantError RelevantProjection
 buildRelevantProjection request snapshot fileInfo retrieval allResults = do
-  (results, pagination) <- mapLeft RelevantInvalidPage (paginate (relevantRequestPage request) (relevantRequestLimit request) allResults)
+  -- Finalization computes confidence against every competitor before this
+  -- admission floor. Count and page only retained ADRs, using unrounded scores.
+  let retained = filter ((>= 0.1) . relevantResultScore) allResults
+  (results, pagination) <- mapLeft RelevantInvalidPage (paginate (relevantRequestPage request) (relevantRequestLimit request) retained)
   Right (RelevantProjection (readSnapshotRevision snapshot) fileInfo retrieval results Nothing pagination)
 
 -- The retrieval clock stops only after the pair scores and passage payloads
