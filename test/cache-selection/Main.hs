@@ -112,7 +112,7 @@ prepareFocusedSeed repository = do
   initialiseRepository repository
   basis <- repositoryHead repository
   files <- fixtureOrFail (healthyCompilerFiles basis)
-  _ <- writeAndCommit repository "compiler fixture" files
+  _ <- writeAndCommit repository "compiler fixture" ((".adrai.toml", "schema = 1\n") : files)
   removeCurrentIndex repository
   cold <- compile "cold compile" repository
   revision <- repositoryHead repository

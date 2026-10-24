@@ -189,7 +189,7 @@ prepareIntegrationSeed root = do
   files <- case healthyCompilerFiles basis of
     Left problem -> assertFailure (T.unpack problem) >> fail "unreachable"
     Right value -> pure value
-  revision <- commitFiles repository files
+  revision <- commitFiles repository ((".adrai.toml", "schema = 1\n") : files)
   compiled <- adraiJsonOrThrow repository ["compile", "--json"]
   case parseCompileResult compiled of
     Nothing -> assertFailure "production seed compile result did not decode" >> fail "unreachable"
@@ -226,7 +226,7 @@ prepareSimpleIntegrationSeed root = do
   (operationId, files) <- case healthySimpleCompilerFiles basis of
     Left problem -> assertFailure (T.unpack problem) >> fail "unreachable"
     Right value -> pure value
-  revision <- commitFiles repository files
+  revision <- commitFiles repository ((".adrai.toml", "schema = 1\n") : files)
   compiled <- adraiJsonOrThrow repository ["compile", "--json"]
   result <- case parseCompileResult compiled of
     Nothing -> assertFailure "production simple seed compile result did not decode" >> fail "unreachable"
