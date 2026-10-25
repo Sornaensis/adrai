@@ -456,12 +456,12 @@ domainsContract = do
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= Just [storage]
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage.postgresql")) False) @?= Just [postgres]
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "unknown")) False) @?= Just []
-  renderDomainsProjection tree @?= "platform 1 (1001 descendants)\n├── api 1001 (0 descendants)\n└── storage 0 (1001 descendants)\n    └── postgresql 1001 (0 descendants)\nplatforms 0 (1 descendants)\n└── storage 1 (0 descendants)\n"
+  renderDomainsProjection tree @?= "platform 1 (1001)\n├── api 1001\n└── storage 0 (1001)\n    └── postgresql 1001\nplatforms 0 (1)\n└── storage 1\n"
   renderDomainsProjection (projectDomains snapshot (Just (domain "platform.storage")) False) @?= "platform.storage.postgresql 1001\n"
-  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= "platform.storage 0 (1001 descendants)\n└── postgresql 1001 (0 descendants)\n"
+  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) False) @?= "platform.storage 0 (1001)\n└── postgresql 1001\n"
   domainsProjectionTree (projectDomainsTree snapshot (Just (domain "platform.storage")) True) @?= Just
     [branch "platform.storage" 1002 0 1002 [postgres, branch "platform.storage.redis" 1 1 0 []]]
-  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) True) @?= "platform.storage 0 (1002 descendants)\n├── postgresql 1001 (0 descendants)\n└── redis 1 (0 descendants)\n"
+  renderDomainsProjection (projectDomainsTree snapshot (Just (domain "platform.storage")) True) @?= "platform.storage 0 (1002)\n├── postgresql 1001\n└── redis 1\n"
   let overlapping = snapshotFor "overlapping-domains"
         (recordsFor 1 ["platform", "platform.api", "platform.api.http"] StatusActive
           <> recordsFor 2 ["platform.api.http", "platform.storage"] StatusActive) []

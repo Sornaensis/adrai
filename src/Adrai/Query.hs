@@ -1361,7 +1361,7 @@ renderDomainsProjection projection = Text.unlines $ case domainsProjectionTree p
   where
     renderEntry label entry = label (domainEntryName entry) <> " " <> Text.pack (show (domainEntryAdrCount entry))
     renderTreeEntry label node = label (domainEntryName (domainTreeEntry node)) <> " " <> Text.pack (show (domainTreeDirectAdrCount node))
-      <> " (" <> Text.pack (show (domainTreeDescendantAdrCount node)) <> " descendants)"
+      <> (if domainTreeDescendantAdrCount node > 0 then " (" <> Text.pack (show (domainTreeDescendantAdrCount node)) <> ")" else "")
     renderChildren _ [] = []
     renderChildren prefix (node : rest) =
       (prefix <> (if null rest then "└── " else "├── ") <> renderTreeEntry (Text.takeWhileEnd (/= '.')) node)

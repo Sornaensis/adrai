@@ -1185,13 +1185,13 @@ mutationCliContractTests =
         let treeProjection = projection {domainsProjectionTree = Just [DomainTreeEntry (DomainEntry "platform.storage" 1001) 0 1001 [DomainTreeEntry (DomainEntry "platform.storage.postgresql" 1001) 1001 0 []]]}
             expectedTreeJson = Aeson.object ["schema" Aeson..= ("adrai/domains-tree/v1" :: Text), "as_of" Aeson..= ("resolved-oid" :: Text), "parent" Aeson..= ("platform.storage" :: Text), "domains" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage" :: Text), "adr_count" Aeson..= (1001 :: Int), "direct_adr_count" Aeson..= (0 :: Int), "descendant_adr_count" Aeson..= (1001 :: Int), "children" Aeson..= [Aeson.object ["domain" Aeson..= ("platform.storage.postgresql" :: Text), "adr_count" Aeson..= (1001 :: Int), "direct_adr_count" Aeson..= (1001 :: Int), "descendant_adr_count" Aeson..= (0 :: Int), "children" Aeson..= ([] :: [Aeson.Value])]]]]]
         Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 (renderedStdout (renderDomainsOutcome explicit treeProjection))) @?= Right expectedTreeJson
-        renderDomainsOutcome defaulted treeProjection @?= CliRendered "platform.storage 0 (1001 descendants)\n└── postgresql 1001 (0 descendants)\n" "" ExitSuccess
+        renderDomainsOutcome defaulted treeProjection @?= CliRendered "platform.storage 0 (1001)\n└── postgresql 1001\n" "" ExitSuccess
         let branch name count direct descendants children = DomainTreeEntry (DomainEntry name count) direct descendants children
             branchingTree = projection {domainsProjectionTree = Just
               [branch "platform" 12 0 12
                 [branch "platform.api" 7 0 7 [branch "platform.api.rest" 7 7 0 []],
                  branch "platform.storage" 8 0 8 [branch "platform.storage.postgresql" 5 5 0 [], branch "platform.storage.redis" 3 3 0 []]]]}
-        renderDomainsOutcome defaulted branchingTree @?= CliRendered "platform 0 (12 descendants)\n├── api 0 (7 descendants)\n│   └── rest 7 (0 descendants)\n└── storage 0 (8 descendants)\n    ├── postgresql 5 (0 descendants)\n    └── redis 3 (0 descendants)\n" "" ExitSuccess
+        renderDomainsOutcome defaulted branchingTree @?= CliRendered "platform 0 (12)\n├── api 0 (7)\n│   └── rest 7\n└── storage 0 (8)\n    ├── postgresql 5\n    └── redis 3\n" "" ExitSuccess
         received <- newIORef Nothing
         let dependencies = unsupportedCliDispatchDependencies
               { cliRunDomains = \config receivedRequest -> do
@@ -1527,9 +1527,9 @@ mutationCliContractTests =
           runCli ["domains"] >>= (@?= "storage 1\n")
           runCli ["domains", "storage"] >>= (@?= "storage.db 1\n")
           runCli ["domains", "storage.db"] >>= (@?= "storage.db.postgresql 1\n")
-          runCli ["domains", "--tree"] >>= (@?= "storage 0 (1 descendants)\n└── db 0 (1 descendants)\n    └── postgresql 1 (0 descendants)\n")
-          runCli ["domains", "storage.db", "--tree"] >>= (@?= "storage.db 0 (1 descendants)\n└── postgresql 1 (0 descendants)\n")
-          runCli ["domains", "storage.db.postgresql", "--tree"] >>= (@?= "storage.db.postgresql 1 (0 descendants)\n")
+          runCli ["domains", "--tree"] >>= (@?= "storage 0 (1)\n└── db 0 (1)\n    └── postgresql 1\n")
+          runCli ["domains", "storage.db", "--tree"] >>= (@?= "storage.db 0 (1)\n└── postgresql 1\n")
+          runCli ["domains", "storage.db.postgresql", "--tree"] >>= (@?= "storage.db.postgresql 1\n")
           runCli ["domains", "unknown", "--tree"] >>= (@?= "")
           runCli ["domains", "storage.db.postgresql"] >>= (@?= "")
           runCli ["domains", "unknown"] >>= (@?= "")

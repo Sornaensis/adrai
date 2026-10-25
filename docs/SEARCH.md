@@ -182,18 +182,18 @@ envelope with an empty array.
 Add `--tree` to draw every level, with separate distinct ADR counts at each
 node. With a parent argument, the tree includes that parent as its root; a leaf
 therefore produces one row, and an unknown parent produces none. Each row is
-`domain D (N descendants)`: D counts exact assignments, while N counts assignments
-strictly below that domain. Each set deduplicates ADRs, including conflicting
-domain heads. An ADR assigned both directly and below appears in both counts;
+`domain D`: D counts exact assignments, followed by `(N)` only when N is positive.
+N counts assignments strictly below that domain. Each set deduplicates ADRs,
+including conflicting domain heads. An ADR assigned both directly and below appears in both counts;
 N is not computed by subtracting D from the inclusive total. Inferred parents
 can have zero direct assignments. Each root keeps its fully qualified
 name; descendants display only their local segment:
 
 ```text
-platform 0 (12 descendants)
-├── api 7 (0 descendants)
-└── storage 3 (5 descendants)
-    └── postgresql 5 (0 descendants)
+platform 0 (12)
+├── api 7
+└── storage 3 (5)
+    └── postgresql 5
 ```
 
 `--tree --json` uses `adrai/domains-tree/v1`. It keeps `as_of`, `parent`, and

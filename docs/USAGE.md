@@ -101,7 +101,8 @@ The compare service and HTTP API keep complete unpaged results when both
 JSON has null `page`, `page_size`, and `total_pages`, full totals, and zero remaining.
 
 `domains DOMAIN --tree` includes the parent and every descendant, showing
-`domain D (N descendants)` for distinct exact and strictly descendant assignments.
+`domain D` for distinct exact assignments, followed by `(N)` only when there are
+N distinct ADRs assigned strictly below that domain.
 The same ADR can belong to both counts. Flat domain rows keep inclusive counts.
 Combine `--tree --json` for nested `children` (`adrai/domains-tree/v1`); default
 flat JSON remains `adrai/domains/v1`. Domain reads reuse exact archives published
