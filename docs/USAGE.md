@@ -159,6 +159,12 @@ For `domain`, choose exactly one mode: `--add`/`--remove` (which may be
 combined), repeatable `--refine FROM=TO`, repeatable `--set`, or `--clear`.
 The four domain modes are mutually exclusive.
 
+`adrai domain ADR_ID ...` changes one ADR's assigned domains and requires its
+full identifier (for example, `A0123456789ABCDEFGHJKMNPQRS`). To browse a domain,
+use `adrai domains development.automation`; to find ADRs assigned there, use
+`adrai search --domain development.automation`. Add `--all` to include dotted
+descendants of that domain.
+
 ### Review before committing
 
 Add `--preview` or its synonymous `--dry-run` to `init`, `create`, `amend`,

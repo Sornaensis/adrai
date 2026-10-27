@@ -504,7 +504,7 @@ parser =
         ( Opt.commandGroup "Change decisions:"
      <> Opt.command "amend" (commandInfoWithFooter (previewParser (CmdAmend <$> amendParser)) "amend an ADR; requires content, a change summary, and an actor" ("Read the current decision first; use --expect with its state token when checking for intervening changes. Provide exactly one of --body, --body-file, --stdin, or --input-json. Amendment JSON requires body and change_summary (or --change-summary); optional title and summary inherit current values when omitted. JSON also accepts actor, model, input_digest, prompt_digest, and context_digest. " <> authoringGuidance <> " Use scope or domain for metadata changes. Example: adrai amend ADR_ID --body 'Require compatible migrations.' --change-summary 'Preserve compatibility during rollout' --actor human:alice"))
      <> Opt.command "scope" (commandInfoWithFooter (previewParser (CmdScope <$> scopeParser)) "change file scope; provide ADR, --add/--remove/--set, --reason, --actor" "Record path applicability here rather than in the title, summary, body, or reason. Combine --add and --remove for a delta, or use --set for a reviewed replacement. --set cannot be combined with --add or --remove. Give a brief rationale for the applicability change; preserve the decision's sensible domain hierarchy.")
-     <> Opt.command "domain" (commandInfoWithFooter (previewParser (CmdDomain <$> domainParser)) "change domains; provide ADR, change option, --reason, --actor" "Always choose a sensible dot-separated domain hierarchy, such as platform.storage.postgresql. Choose exactly one mode: --add/--remove (which may be combined), --refine, --set, or --clear. These four modes are mutually exclusive. Prefer a meaningful hierarchy over clearing domains; give a brief rationale without incidental paths, commits, or references to other ADRs.")
+     <> Opt.command "domain" (commandInfoWithFooter (previewParser (CmdDomain <$> domainParser)) "change one ADR's domains; provide ADR_ID, change option, --reason, --actor" "The singular domain command changes domains assigned to an ADR; ADR_ID is a full ADR identifier, not a domain name. Browse with adrai domains DOMAIN. Find ADRs with adrai search --domain DOMAIN; add --all to include dotted descendants. Always choose a sensible dot-separated domain hierarchy, such as platform.storage.postgresql. Choose exactly one mode: --add/--remove (which may be combined), --refine, --set, or --clear. These four modes are mutually exclusive. Prefer a meaningful hierarchy over clearing domains; give a brief rationale without incidental paths, commits, or references to other ADRs.")
      <> Opt.command "obsolete" (commandInfoWithFooter (previewParser (CmdObsolete <$> obsoleteParser)) "mark ADR obsolete; provide ADR, --reason, --actor" "Read the current decision before retiring it; use --expect with its state token to check for intervening changes. Give a brief standalone reason. Use --replacement only when a specific active replacement is necessary; omit incidental paths, commits, and other ADR references from the reason. Use --resolve only for a status-only conflict.")
      <> Opt.command "reactivate" (commandInfoWithFooter (previewParser (CmdReactivate <$> reactivateParser)) "reactivate ADR; provide ADR, --reason, --actor" "Read the obsolete decision before restoring it; use --expect with its state token to check for intervening changes. Give a brief standalone reason without paths, commits, or other ADR references unless essential. Check that applicability and a sensible domain hierarchy still fit. Use --resolve only for a status-only conflict.")
         )
@@ -591,7 +591,7 @@ createParser =
 amendParser :: Parser AmendCommand
 amendParser =
   AmendCommand
-    <$> strArgument (metavar "ADR" <> help "ADR identifier to amend")
+    <$> strArgument (metavar "ADR_ID" <> help "full ADR identifier to amend")
     <*> maybeText "title" "TEXT" "replacement title (inherits current title if omitted)"
     <*> maybeText "summary" "TEXT" "replacement summary (inherits current summary if omitted)"
     <*> maybeText "change-summary" "TEXT" "required nonblank rationale (or JSON change_summary)"
@@ -612,9 +612,9 @@ amendParser =
 obsoleteParser :: Parser ObsoleteCommand
 obsoleteParser =
   ObsoleteCommand
-    <$> strArgument (metavar "ADR" <> help "ADR identifier to obsolete")
+    <$> strArgument (metavar "ADR_ID" <> help "full ADR identifier to obsolete")
     <*> strOption (long "reason" <> metavar "TEXT" <> help "nonblank obsolete rationale")
-    <*> optional (strOption (long "replacement" <> metavar "ADR" <> help "active replacement ADR"))
+    <*> optional (strOption (long "replacement" <> metavar "ADR_ID" <> help "full identifier of the active replacement ADR"))
     <*> optional (strOption (long "expect" <> metavar "STATE_TOKEN" <> help "expected current ADR state token"))
     <*> switch (long "resolve" <> help "resolve a status-only conflict")
     <*> optional (strOption (long "actor" <> metavar "ACTOR" <> help "actor as kind:identifier"))
@@ -629,7 +629,7 @@ obsoleteParser =
 reactivateParser :: Parser ReactivateCommand
 reactivateParser =
   ReactivateCommand
-    <$> strArgument (metavar "ADR" <> help "ADR identifier to reactivate")
+    <$> strArgument (metavar "ADR_ID" <> help "full ADR identifier to reactivate")
     <*> strOption (long "reason" <> metavar "TEXT" <> help "nonblank reactivate rationale")
     <*> optional (strOption (long "expect" <> metavar "STATE_TOKEN" <> help "expected current ADR state token"))
     <*> switch (long "resolve" <> help "resolve a status-only conflict")
@@ -645,7 +645,7 @@ reactivateParser =
 scopeParser :: Parser ScopeCommand
 scopeParser =
   ScopeCommand
-    <$> strArgument (metavar "ADR" <> help "ADR identifier whose scope changes")
+    <$> strArgument (metavar "ADR_ID" <> help "full ADR identifier whose scope changes")
     <*> many (optionalText "add" "PATTERN" "scope pattern to add (repeatable)")
     <*> many (optionalText "remove" "PATTERN" "scope pattern to remove (repeatable)")
     <*> many (optionalText "set" "PATTERN" "reviewed replacement scope pattern (repeatable)")
@@ -666,7 +666,7 @@ scopeParser =
 domainParser :: Parser DomainCommand
 domainParser =
   DomainCommand
-    <$> strArgument (metavar "ADR" <> help "ADR identifier whose domains change")
+    <$> strArgument (metavar "ADR_ID" <> help "full ADR identifier whose domains change, not a domain name")
     <*> many (optionalText "add" "DOMAIN" "domain to add (repeatable)")
     <*> many (optionalText "remove" "DOMAIN" "domain to remove (repeatable)")
     <*> many (optionalText "refine" "FROM=TO" "strict domain refinement (repeatable)")
@@ -1677,14 +1677,14 @@ dispatchPreview dependencies config command = case command of
         (domainRequestAdr request) (domainRequestExpectedState request) (domainRequestReason request) (domainRequestChange request)
         (ProvenanceInputs (domainRequestInputDigest request) (domainRequestPromptDigest request) (domainRequestContextDigest request))
   CmdObsolete cmd -> materializePreview (obsoleteJson cmd) (cliMaterializeObsolete dependencies cmd) $ \request ->
-    case mkAdrId (obsoleteAdrSpec cmd) of
-      Left err -> pure (Left (CliUserFailure (Text.pack (show err))))
+    case parseCliAdrId "obsolete" "ADR_ID" (obsoleteAdrSpec cmd) of
+      Left err -> pure (Left (CliUserFailure err))
       Right adr -> runPreviewAction "obsolete" config (Just adr) $ \repo basis -> withPreviewSnapshot repo basis $ \snapshot ->
         Mutation.prepareObsoleteCommand basis repo (repositorySnapshotManagedPaths snapshot) (obsoleteRequestActor request)
           adr (obsoleteIntent request) (obsoleteRequestInputs request)
   CmdReactivate cmd -> materializePreview (reactivateJson cmd) (cliMaterializeReactivate dependencies cmd) $ \request ->
-    case mkAdrId (reactivateAdrSpec cmd) of
-      Left err -> pure (Left (CliUserFailure (Text.pack (show err))))
+    case parseCliAdrId "reactivate" "ADR_ID" (reactivateAdrSpec cmd) of
+      Left err -> pure (Left (CliUserFailure err))
       Right adr -> runPreviewAction "reactivate" config (Just adr) $ \repo basis -> withPreviewSnapshot repo basis $ \snapshot ->
         Mutation.prepareReactivateCommand basis repo (repositorySnapshotManagedPaths snapshot) (reactivateRequestActor request)
           adr (reactivateIntent request) (reactivateRequestInputs request)
@@ -1852,8 +1852,8 @@ runProductionObsolete config adrText request = do
           snapshotResult <- repositorySnapshot repository (RevisionSpec "HEAD")
           case snapshotResult of
             Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
-            Right snapshot -> case mkAdrId adrText of
-              Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+            Right snapshot -> case parseCliAdrId "obsolete" "ADR_ID" adrText of
+              Left problem -> pure (Left (CliUserFailure problem))
               Right adr -> do
                 result <- obsoleteCommand repository (repositorySnapshotManagedPaths snapshot) (obsoleteRequestActor request) adr (obsoleteIntent request) (obsoleteRequestInputs request)
                 case result of
@@ -1873,8 +1873,8 @@ runProductionReactivate config adrText request = do
           snapshotResult <- repositorySnapshot repository (RevisionSpec "HEAD")
           case snapshotResult of
             Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
-            Right snapshot -> case mkAdrId adrText of
-              Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+            Right snapshot -> case parseCliAdrId "reactivate" "ADR_ID" adrText of
+              Left problem -> pure (Left (CliUserFailure problem))
               Right adr -> do
                 result <- reactivateCommand repository (repositorySnapshotManagedPaths snapshot) (reactivateRequestActor request) adr (reactivateIntent request) (reactivateRequestInputs request)
                 case result of
@@ -2058,7 +2058,7 @@ materializeAmendWithStdin readInput command = do
             inputDigest = amendInputDigest command <|> structuredAmendInputDigest structured
             promptDigest = amendPromptDigest command <|> structuredAmendPromptDigest structured
             contextDigest = amendContextDigest command <|> structuredAmendContextDigest structured
-        adr <- first (Text.pack . show) (mkAdrId (amendAdrSpec command))
+        adr <- parseCliAdrId "amend" "ADR_ID" (amendAdrSpec command)
         expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (amendExpectedState command)
         rationale <- maybe (Left "amend requires --change-summary or structured change_summary") Right changeSummary
         if Text.null (Text.strip rationale)
@@ -2090,7 +2090,7 @@ materializeScope command = do
   pure $ do
     promptFileDigest <- promptFromFile
     contextFileDigest <- contextFromFile
-    adr <- first (Text.pack . show) (mkAdrId (scopeAdrSpec command))
+    adr <- parseCliAdrId "scope" "ADR_ID" (scopeAdrSpec command)
     expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (scopeExpectedState command)
     reason <- maybe (Left "scope requires --reason") Right (scopeReason command)
     if Text.null (Text.strip reason)
@@ -2126,7 +2126,7 @@ materializeDomain command = do
   pure $ do
     promptFileDigest <- promptFromFile
     contextFileDigest <- contextFromFile
-    adr <- first (Text.pack . show) (mkAdrId (domainAdrSpec command))
+    adr <- parseCliAdrId "domain" "ADR_ID" (domainAdrSpec command)
     expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (domainExpectedState command)
     reason <- maybe (Left "domain requires --reason") Right (domainReason command)
     if Text.null (Text.strip reason) then Left "domain reason must be nonblank" else Right ()
@@ -2154,6 +2154,20 @@ selectDomainRequest command =
     parseDomain = first domainErrorText . mkDomain
     parseRefinement = first domainErrorText . parseDomainRefinement
 
+-- Keep public mutation argument errors separate from internal ID violations.
+-- 'show' escapes control characters in the supplied value before display.
+parseCliAdrId :: Text -> Text -> Text -> Either Text AdrId
+parseCliAdrId command argument value = first (const message) (mkAdrId value)
+  where
+    message = "invalid " <> argument <> " " <> Text.pack (show value) <> " for " <> command
+      <> "; expected a full ADR ID (A followed by 26 Crockford Base32 characters, e.g. A0123456789ABCDEFGHJKMNPQRS). "
+      <> guidance <> " See 'adrai " <> command <> " --help'."
+    guidance
+      | command == "domain" = "'domain' changes an ADR's domains. Browse with 'adrai domains " <> domain
+          <> "'; find ADRs with 'adrai search --domain " <> domain <> " --all' to include dotted descendants."
+      | otherwise = "Find ADR IDs with 'adrai search'."
+    domain = either (const "DOMAIN") domainText (mkDomain value)
+
 materializeObsolete :: ObsoleteCommand -> IO (Either Text ObsoleteCliRequest)
 materializeObsolete command = do
   environmentActor <- lookupEnv "ADRAI_ACTOR"
@@ -2162,8 +2176,8 @@ materializeObsolete command = do
   pure $ do
     promptFileDigest <- promptFromFile
     contextFileDigest <- contextFromFile
-    _ <- first (Text.pack . show) (mkAdrId (obsoleteAdrSpec command))
-    replacement <- traverse (first (Text.pack . show) . mkAdrId) (obsoleteReplacementSpec command)
+    _ <- parseCliAdrId "obsolete" "ADR_ID" (obsoleteAdrSpec command)
+    replacement <- traverse (parseCliAdrId "obsolete" "--replacement") (obsoleteReplacementSpec command)
     expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (obsoleteExpectedStateSpec command)
     let reason = obsoleteReasonSpec command
     if Text.null (Text.strip reason) then Left "obsolete reason must be nonblank" else Right ()
@@ -2182,7 +2196,7 @@ materializeReactivate command = do
   pure $ do
     promptFileDigest <- promptFromFile
     contextFileDigest <- contextFromFile
-    _ <- first (Text.pack . show) (mkAdrId (reactivateAdrSpec command))
+    _ <- parseCliAdrId "reactivate" "ADR_ID" (reactivateAdrSpec command)
     expected <- traverse (first (Text.pack . show) . Format.parseStateToken) (reactivateExpectedStateSpec command)
     let reason = reactivateReasonSpec command
     if Text.null (Text.strip reason) then Left "reactivate reason must be nonblank" else Right ()

@@ -181,6 +181,7 @@ import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Foldable (for_)
+import Data.Char (isControl)
 import Data.List (sort)
 import Data.Maybe (fromMaybe)
 import Control.Monad (when)
@@ -1900,6 +1901,55 @@ mutationCliContractTests =
         materializeDomain (domainCommand ["platform"] [] ["platform=platform.api"] [] False (Just "Reason")) >>= (@?= Left "domain modes --add/--remove, --refine, --set, and --clear are mutually exclusive")
         materializeDomain (domainCommand [] [] [] ["platform"] True (Just "Reason")) >>= (@?= Left "domain modes --add/--remove, --refine, --set, and --clear are mutually exclusive")
         materializeDomain (domainCommand [] [] [] [] False (Just "  ")) >>= (@?= Left "domain reason must be nonblank")
+        let materializeMutation arguments = case parseCli arguments of
+              Left problem -> assertFailure problem >> fail "unreachable"
+              Right (CliInvocation _ command) -> case command of
+                CmdAmend value -> fmap (fmap (const ())) (materializeAmend value)
+                CmdScope value -> fmap (fmap (const ())) (materializeScope value)
+                CmdDomain value -> fmap (fmap (const ())) (materializeDomain value)
+                CmdObsolete value -> fmap (fmap (const ())) (materializeObsolete value)
+                CmdReactivate value -> fmap (fmap (const ())) (materializeReactivate value)
+                _ -> assertFailure "expected a mutation command" >> fail "unreachable"
+            mutationArguments command value = case command of
+              "amend" -> [command, value, "--body", "Decision", "--change-summary", "Reason", "--actor", "human:cli"]
+              "scope" -> [command, value, "--add", "src/**", "--reason", "Reason", "--actor", "human:cli"]
+              "domain" -> [command, value, "--add", "platform", "--reason", "Reason", "--actor", "human:cli"]
+              _ -> [command, value, "--reason", "Reason", "--actor", "human:cli"]
+            assertInvalid command argument value arguments = materializeMutation arguments >>= \case
+              Right () -> assertFailure "invalid ADR argument materialized"
+              Left problem -> do
+                for_ ["invalid " <> argument, Text.pack (show (Text.pack value)), "for " <> Text.pack command,
+                      "expected a full ADR ID", "A followed by 26 Crockford Base32 characters", "adrai " <> Text.pack command <> " --help"] $ \expected ->
+                  assertBool ("missing argument diagnostic " <> Text.unpack expected) (expected `Text.isInfixOf` problem)
+                for_ ["IdWrongLength", "IdWrongKind", "IdInvalidPayloadCharacter"] $ \internal ->
+                  assertBool "internal ID constructor leaked" (not (internal `Text.isInfixOf` problem))
+                assertBool "supplied argument injected terminal controls" (not (Text.any isControl problem))
+                let rendered = renderFailureOutcome (CliUserFailure problem)
+                renderedExitCode rendered @?= ExitFailure 2
+                renderedStdout rendered @?= ""
+                renderedStderr rendered @?= "adrai: " <> problem <> "\n"
+                Text.count "\n" (renderedStderr rendered) @?= 1
+            validAdr = "A0123456789ABCDEFGHJKMNPQRS"
+            invalidValues = ["development.automation", "development", "R0123456789ABCDEFGHJKMNPQRS", "A0123456789ABCDEFGHJKMNPQRO", "development\n", "development\n\ESC[31m\"\\"]
+        for_ ["amend", "scope", "domain", "obsolete", "reactivate"] $ \command -> do
+          materializeMutation (mutationArguments command validAdr) >>= (@?= Right ())
+          for_ invalidValues $ \value -> assertInvalid command "ADR_ID" value (mutationArguments command value)
+        for_ invalidValues $ \value ->
+          assertInvalid "obsolete" "--replacement" value (mutationArguments "obsolete" validAdr <> ["--replacement", value])
+        for_ ["development.automation", "development"] $ \value ->
+          materializeDomain ((domainCommand [] [] [] [] False Nothing) {domainAdrSpec = value}) >>= \case
+            Right _ -> assertFailure "domain name accepted as an ADR ID"
+            Left problem -> for_ ["'domain' changes an ADR's domains", "adrai domains " <> value, "adrai search --domain " <> value <> " --all", "include dotted descendants"] $ \guidance ->
+              assertBool "domain misuse guidance omitted" (guidance `Text.isInfixOf` problem)
+        materializeDomain ((domainCommand [] [] [] [] False Nothing) {domainAdrSpec = " DEVELOPMENT . automation\t"}) >>= \case
+          Right _ -> assertFailure "domain name accepted as an ADR ID"
+          Left problem -> do
+            assertBool "normalized domain guidance omitted" ("adrai domains development.automation" `Text.isInfixOf` problem)
+            assertBool "normalized domain guidance injected controls" (not (Text.any isControl problem))
+        let dependencies = unsupportedCliDispatchDependencies {cliMaterializeDomain = materializeDomain}
+            invalidDomain = (domainCommand [] [] [] [] False Nothing) {domainAdrSpec = "development.automation"}
+        for_ [CmdDomain invalidDomain, CmdPreview (CmdDomain invalidDomain)] $ \command ->
+          dispatchWith dependencies (CliInvocation defaultCliConfig command) >>= (@?= ExitFailure 2)
     , testCase "domain materialization types token, environment actor, and direct or file provenance digests" $
         withSystemTempDirectory "adrai domain materialize" $ \temporary -> do
           let promptPath = temporary <> "/prompt.txt"
@@ -1969,7 +2019,7 @@ mutationCliContractTests =
           , ("compile", ["--at REVISION", "content or metadata"])
           , ("amend", ["structured amendment JSON", "exactly one", "body and change_summary", "--change-summary", "inherit current values", "--actor human:alice", "concise standalone decision", "unless essential", "--applies-to/applies_to or scope", "platform.storage.postgresql"])
           , ("scope", ["--set cannot be combined with --add or --remove", "path applicability here", "brief rationale", "domain hierarchy"])
-          , ("domain", ["Choose exactly one mode", "mutually exclusive", "Always choose a sensible dot-separated domain hierarchy", "platform.storage.postgresql"])
+          , ("domain", ["ADR_ID is a full ADR identifier, not a domain name", "adrai domains DOMAIN", "adrai search --domain DOMAIN", "--all to include dotted descendants", "Choose exactly one mode", "mutually exclusive", "Always choose a sensible dot-separated domain hierarchy", "platform.storage.postgresql"])
           , ("obsolete", ["brief standalone reason", "--replacement only when", "--expect", "status-only conflict"])
           , ("reactivate", ["brief standalone reason", "unless essential", "domain hierarchy", "status-only conflict"])
           , ("web", ["--no-open", "concise standalone decision", "--applies-to/applies_to or scope", "platform.storage.postgresql"])
