@@ -155,6 +155,7 @@ import qualified Data.ByteString as BS
 import qualified Data.Text.Encoding as Text.Encoding
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
 import qualified Data.Vector as Vector
@@ -2100,20 +2101,30 @@ mutationCliContractTests =
               emitRenderedToHandles output errorOutput tree >>= (@?= ExitSuccess)
           BS.readFile treeStdout >>= (@?= Text.Encoding.encodeUtf8 (renderedStdout tree))
           BS.readFile treeStderr >>= (@?= Text.Encoding.encodeUtf8 (renderedStderr tree))
-          -- Model the Windows console boundary: the device consumes its code
-          -- page, not UTF-8. The old raw byte writer produces mojibake here.
-          let console = CliRendered "├── branch\n│   └── leaf\n" "└── error\n" (ExitFailure 2)
+          -- This device reports isTerminal=True but is not a native Windows
+          -- console HANDLE. Its restricted encoder reproduces the old failure;
+          -- such pseudo-terminal output must now bypass that encoder as UTF-8.
+          legacy <- try @SomeException $ withCodePageTerminal treeStdout $ \output ->
+            TextIO.hPutStr output "1 of 1 results — Page 1 of 1\n漢字 😀\n"
+          assertBool "restricted terminal encoder reproduces the Unicode failure"
+            (either (Text.isInfixOf "cannot encode" . Text.pack . show) (const False) legacy)
+          let console = CliRendered "├── café 漢字 😀\n│   └── leaf\n1 of 1 results — Page 1 of 1\n" "└── error — 漢字 😀\n" (ExitFailure 2)
           withCodePageTerminal treeStdout $ \output ->
-            withCodePageTerminal treeStderr $ \errorOutput ->
+            withCodePageTerminal treeStderr $ \errorOutput -> do
+              TextIO.hPutStr output "buffered prefix:"
               emitRenderedToHandles output errorOutput console >>= (@?= ExitFailure 2)
-          let expectedStdout
-                | os == "mingw32" = "\195\196\196 branch\n\179   \192\196\196 leaf\n"
-                | otherwise = Text.Encoding.encodeUtf8 (renderedStdout console)
-              expectedStderr
-                | os == "mingw32" = "\192\196\196 error\n"
-                | otherwise = Text.Encoding.encodeUtf8 (renderedStderr console)
-          BS.readFile treeStdout >>= (@?= expectedStdout)
-          BS.readFile treeStderr >>= (@?= expectedStderr)
+          BS.readFile treeStdout >>= (@?= "buffered prefix:" <> Text.Encoding.encodeUtf8 (renderedStdout console))
+          BS.readFile treeStderr >>= (@?= Text.Encoding.encodeUtf8 (renderedStderr console))
+          case parseArguments ["search", "--help"] of
+            Left help -> do
+              renderedExitCode help @?= ExitSuccess
+              assertBool "search help retains the Unicode pagination example" ("—" `Text.isInfixOf` renderedStdout help)
+              withCodePageTerminal treeStdout $ \output ->
+                withCodePageTerminal treeStderr $ \errorOutput ->
+                  emitRenderedToHandles output errorOutput help >>= (@?= ExitSuccess)
+              BS.readFile treeStdout >>= (@?= Text.Encoding.encodeUtf8 (renderedStdout help))
+              BS.readFile treeStderr >>= (@?= BS.empty)
+            Right _ -> assertFailure "search help unexpectedly dispatched a command"
     , testCase "create plain output uses canonical ID order and index failure remains success" $ do
         let rendered = renderCreateOutcome createResult [] indexFailureResult False
         renderedExitCode rendered @?= ExitSuccess
@@ -2800,8 +2811,8 @@ pathHarnessTests =
               assertBool "a selected non-executable is not replaced by another tool" (either (const True) (const False) refused)
     ]
 
--- A file-backed terminal device lets the output boundary be checked without
--- allocating a visible console or changing the process-wide Windows code page.
+-- A file-backed pseudo terminal reproduces a restricted text encoder without
+-- allocating a console or changing the process-wide Windows code page.
 newtype CodePageTerminal = CodePageTerminal FD.FD
 
 instance Device.RawIO CodePageTerminal where

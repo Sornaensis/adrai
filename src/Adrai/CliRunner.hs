@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE StrictData #-}
@@ -234,9 +235,6 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as ByteString
-#if defined(mingw32_HOST_OS)
-import qualified Data.Text.IO as TextIO
-#endif
 import Data.Bifunctor (first)
 import Data.Char (isControl)
 import Data.List (isPrefixOf)
@@ -257,7 +255,12 @@ import System.Environment (getArgs, lookupEnv)
 import System.FilePath ((</>), takeDirectory)
 import System.IO (Handle, hGetContents, stderr, stdin, stdout)
 #if defined(mingw32_HOST_OS)
-import System.IO (hIsTerminalDevice, hSetNewlineMode, noNewlineTranslation)
+import Control.Concurrent (runInBoundThread)
+import Data.Word (Word16)
+import Foreign (Ptr, alloca, castPtr, nullPtr, peek, peekElemOff, plusPtr)
+import Foreign.C.Types (CInt (..))
+import System.IO (hFlush)
+import System.Win32.Types (DWORD, HANDLE, failWith, getLastError, withHandleToHANDLE)
 #endif
 import System.Random (randomRIO)
 import Control.Monad (replicateM, when)
@@ -819,7 +822,7 @@ run = do
         writeUtf8 (if exitCode == ExitSuccess then stdout else stderr)
           (if exitCode == ExitSuccess then successfulHelpText message else Text.pack (message <> guidance))
         exitWith exitCode
-      Opt.CompletionInvoked completion -> Opt.execCompletion completion "adrai" >>= putStr
+      Opt.CompletionInvoked completion -> Opt.execCompletion completion "adrai" >>= writeUtf8 stdout . Text.pack
   where
     parserInfo = cliParserInfo
 
@@ -2871,10 +2874,9 @@ renderFailureOutcome failure =
 emitRendered :: CliRendered -> IO ExitCode
 emitRendered = emitRenderedToHandles stdout stderr
 
--- | Preserve LF output and use the Windows terminal's text encoding when
--- attached to a console. Windows devices decode raw writes using their code page,
--- so sending UTF-8 bytes directly corrupts Unicode tree connectors. Redirected
--- output remains exact UTF-8, independent of the handle's text encoding.
+-- | Native Windows consoles receive Unicode directly, without a locale encoder
+-- or byte/code-page conversion. Pipes, files and pseudo terminals receive exact
+-- UTF-8 with LF, independent of the Handle's text encoding.
 emitRenderedToHandles :: Handle -> Handle -> CliRendered -> IO ExitCode
 emitRenderedToHandles output errorOutput rendered = do
   if Text.null (renderedStdout rendered) then pure () else writeUtf8 output (renderedStdout rendered)
@@ -2884,12 +2886,56 @@ emitRenderedToHandles output errorOutput rendered = do
 writeUtf8 :: Handle -> Text -> IO ()
 #if defined(mingw32_HOST_OS)
 writeUtf8 handle text = do
-  terminal <- hIsTerminalDevice handle
-  if terminal
-    then do
-      hSetNewlineMode handle noNewlineTranslation
-      TextIO.hPutStr handle text
+  -- Flush before borrowing the native handle, so buffered output stays ordered.
+  hFlush handle
+  console <- try (withHandleToHANDLE handle isWindowsConsole) :: IO (Either IOException Bool)
+  if either (const False) id console
+    then runInBoundThread $ withHandleToHANDLE handle $ \native -> writeWindowsConsole native text
     else ByteString.hPut handle (TextEncoding.encodeUtf8 text)
+
+isWindowsConsole :: HANDLE -> IO Bool
+isWindowsConsole native = alloca $ \mode -> (/= 0) <$> getConsoleMode native mode
+
+writeWindowsConsole :: HANDLE -> Text -> IO ()
+writeWindowsConsole native text =
+  ByteString.useAsCStringLen (TextEncoding.encodeUtf16LE text) $ \(bytes, byteCount) ->
+    writeChunks (castPtr bytes) (byteCount `div` 2)
+  where
+    writeChunks :: Ptr Word16 -> Int -> IO ()
+    writeChunks pointer remaining
+      | remaining == 0 = pure ()
+      | otherwise = do
+          let proposed = min 16384 remaining
+          lastUnit <- peekElemOff pointer (proposed - 1)
+          -- Keep an encoded surrogate pair together at manual chunk boundaries.
+          let count = if proposed < remaining && lastUnit >= 0xD800 && lastUnit <= 0xDBFF then proposed - 1 else proposed
+          writeChunk pointer count
+          writeChunks (pointer `plusPtr` (count * 2)) (remaining - count)
+    writeChunk :: Ptr Word16 -> Int -> IO ()
+    writeChunk _ 0 = pure ()
+    writeChunk pointer remaining = alloca $ \writtenPointer -> do
+      success <- writeConsoleWide native pointer (fromIntegral remaining) writtenPointer nullPtr
+      if success == 0
+        then getLastError >>= failWith "WriteConsoleW"
+        else do
+          written <- fromIntegral <$> peek writtenPointer
+          if written <= 0 || written > remaining
+            then ioError (userError "WriteConsoleW made invalid write progress")
+            else writeChunk (pointer `plusPtr` (written * 2)) (remaining - written)
+
+#if defined(i386_HOST_ARCH)
+foreign import stdcall unsafe "GetConsoleMode"
+#else
+foreign import ccall unsafe "GetConsoleMode"
+#endif
+  getConsoleMode :: HANDLE -> Ptr DWORD -> IO CInt
+
+#if defined(i386_HOST_ARCH)
+foreign import stdcall safe "WriteConsoleW"
+#else
+foreign import ccall safe "WriteConsoleW"
+#endif
+  writeConsoleWide :: HANDLE -> Ptr Word16 -> DWORD -> Ptr DWORD -> Ptr () -> IO CInt
 #else
 writeUtf8 handle = ByteString.hPut handle . TextEncoding.encodeUtf8
 #endif
