@@ -46,7 +46,7 @@ adrai domains platform.storage
 adrai domains --tree
 adrai search --domain platform.storage
 adrai search "transactional database"
-adrai relevant src/Storage.hs --worktree
+adrai relevant src/Storage.hs
 adrai doctor
 ```
 
@@ -66,7 +66,7 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 | `history` | Display operation history, optionally filtered by ADR or actor. |
 | `search` | Search ADRs with FTS, vector, or hybrid retrieval, or list non-obsolete ADRs with no query. |
 | `domains [DOMAIN]` | Browse top-level domains or immediate children with recursive distinct ADR counts; `--tree` draws every level. |
-| `relevant` | Rank ADRs against a committed or worktree file. |
+| `relevant` | Rank ADRs against the current worktree file, including untracked files; use `--at REVISION` for committed bytes. |
 | `compare` | Compare two immutable revisions. |
 | `compile` | Build or reuse the repository's derived SQLite index. |
 | `doctor` | Report source, graph, provenance, and cache diagnostics. |

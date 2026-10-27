@@ -31,7 +31,7 @@ ADRAI selects only exact `*.decision.md` and `*.connection.md` suffixes under th
 
 Managed paths are derived from record identity and content. Line endings, field ordering, lists, identifiers, and the provenance capsule are validated canonically. Prefer `adrai create` and the mutation commands over hand-editing these files.
 
-Repository reads are revision-local: sparse checkouts, staged changes, dirty files, and untracked files cannot replace bytes from the resolved Git commit. The explicit `relevant --worktree` mode is the exception for relevance input; its ADR context still comes from `HEAD`.
+Repository reads are revision-local: sparse checkouts, staged changes, dirty files, and untracked files cannot replace bytes from the resolved Git commit. CLI `relevant FILE` is the exception for relevance input: it reads the current worktree file by default, including dirty or untracked files, while its ADR context still comes from `HEAD`. `--worktree` explicitly selects that default; `--at REVISION` binds both relevance input and ADR context to the resolved commit.
 
 ## Generated database
 

@@ -595,7 +595,9 @@ data RelevantCommand = RelevantCommand
   , relevantPage            :: Integer
   } deriving (Eq, Show)
 
--- | Dispatch a relevant command on a read snapshot.
+-- | Dispatch relevance with a caller-supplied snapshot and source. Unlike the
+-- executable's default worktree read, an implicit selector here stays bound to
+-- that supplied snapshot; this helper does not load a source from disk.
 relevantCommandJson
   :: ReadSnapshot
   -> RelevantSource
@@ -690,7 +692,7 @@ relevantCommandRequest command = do
     (Just _, True) -> Left "relevant --at and --worktree are mutually exclusive"
     (Just requested, False) -> Right (AtRevision requested)
     (Nothing, True) -> Right WorkingRevision
-    (Nothing, False) -> Right (AtRevision "HEAD")
+    (Nothing, False) -> Right WorkingRevision
   Right
     RelevantRequest
       { relevantRequestFile = path,

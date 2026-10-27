@@ -1363,7 +1363,7 @@ mutationCliContractTests =
         assertParserFailure ["relevant", "src/query ü.txt", "--view", "other"]
         for_ [["relevant", "--file", "src/query.txt"], ["relevant", "src/query.txt", "--revision", "HEAD"], ["relevant", "src/query.txt", "--working"]] assertParserFailure
         relevantCommandRequest defaulted
-          @?= Right (RelevantRequest (RepoPath "src/query ü.txt") (AtRevision "HEAD") False 10 1)
+          @?= Right (RelevantRequest (RepoPath "src/query ü.txt") WorkingRevision False 10 1)
         relevantCommandRequest worktree
           @?= Right (RelevantRequest (RepoPath "src/query ü.txt") WorkingRevision False 10 1)
         relevantCommandRequest (explicit {relevantWorktree = True})
@@ -1411,10 +1411,11 @@ mutationCliContractTests =
                 , cliRunScope = \_ _ -> error "scope service must not be selected"
                 , cliRunDomain = \_ _ -> error "domain service must not be selected"
                 }
-        dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "relevant repo"}) (CmdRelevant explicit))
-          >>= (@?= ExitSuccess)
-        readIORef selectedRepo >>= (@?= Just "relevant repo")
-        readIORef selectedRequest >>= (@?= either (const Nothing) Just (relevantCommandRequest explicit))
+        for_ [defaulted, worktree, explicit] $ \command -> do
+          dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "relevant repo"}) (CmdRelevant command))
+            >>= (@?= ExitSuccess)
+          readIORef selectedRepo >>= (@?= Just "relevant repo")
+          readIORef selectedRequest >>= (@?= either (const Nothing) Just (relevantCommandRequest command))
         -- The existing process harness owns each CLI descendant; the bracketed
         -- fixture directory is disposed at the end of this test, on any outcome.
         phaseTraceEnabled <- (== Just "1") <$> lookupEnv "ADRAI_TEST_CONCISE_CLI_PHASES"
@@ -1431,6 +1432,7 @@ mutationCliContractTests =
               fixtureSummary = "Keep DURABLE_LEDGER_TOKEN transactions atomic."
           tracePhase "fixture source commit"
           _ <- commitFile repo "source.txt" (Text.Encoding.encodeUtf8 source)
+          _ <- commitFile repo "content.txt" (Text.Encoding.encodeUtf8 source)
           tracePhase "fixture ADR create"
           created <- createAdr repo fixtureTitle fixtureSummary source ["storage.db.postgresql"] ["source.txt"]
           fixtureAdr <- case created of
@@ -1545,6 +1547,7 @@ mutationCliContractTests =
             runCli (["search"] <> query <> ["--domain", "storage.db", "--all", "--mode", "fts"]) >>= (@?= expectedRow)
             runCli (["search"] <> query <> ["--domain", "stor", "--mode", "fts"]) >>= (@?= "0 of 0 results — Page 1 of 0\n")
           runCli ["search", "--limit", "1", "--page", "2"] >>= (@?= "0 of 1 results — Page 2 of 1\n")
+          historicalRevision <- Text.strip . Text.Encoding.decodeUtf8 . BL.toStrict <$> gitStdout repo ["rev-parse", "HEAD"]
           _ <- runCli ["obsolete", Text.unpack fixtureAdr, "--reason", "Retire fixture", "--actor", "human:test"]
           runCli ["domains"] >>= (@?= "")
           runCli ["domains", "--include-obsolete"] >>= (@?= "storage 1\n")
@@ -1553,6 +1556,20 @@ mutationCliContractTests =
           runCli ["search", "--domain", "storage", "--all", "--include-obsolete", "--mode", "fts"] >>= (@?= "1.00 " <> fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
           _ <- runCli ["reactivate", Text.unpack fixtureAdr, "--reason", "Restore fixture", "--actor", "human:test"]
           checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1" "passage-fts" Nothing
+          committedRelevance <- runCli ["relevant", "source.txt", "--at", "HEAD", "--json"]
+          committedContentRelevance <- runCli ["relevant", "content.txt", "--at", "HEAD", "--json"]
+          assertBool "committed unscoped content finds the fixture ADR" (fixtureAdr `Text.isInfixOf` committedContentRelevance)
+          let untrackedFile = "new ü.txt"
+              sourceFailure command = do
+                (code, stdout, stderr) <- spawnAdrai repo command
+                code @?= ExitFailure 2
+                stdout @?= ""
+                assertBool "source failures stay explicit" ("relevance source failure" `Text.isInfixOf` Text.Encoding.decodeUtf8 (BL.toStrict stderr))
+          BS.writeFile (repo </> untrackedFile) (Text.Encoding.encodeUtf8 source)
+          _ <- checkJson ["relevant", untrackedFile] "adrai/relevant-cli/v1" "passage-fts" CollapsedView Nothing
+          untrackedRelevance <- runCli ["relevant", untrackedFile, "--json"]
+          runCli ["relevant", untrackedFile, "--worktree", "--json"] >>= (@?= untrackedRelevance)
+          sourceFailure ["relevant", untrackedFile, "--at", "HEAD"]
           for_ searchAlgorithms $ \(mode, _algorithm) -> do
             let modeText = case mode of
                   FtsRetrieval -> "fts"
@@ -1563,8 +1580,28 @@ mutationCliContractTests =
             runCli ["search", "--mode", modeText, "--domain", "absent", "--json"] >>= (@?= emptyCliJson 10 "adrai/search-cli/v1" "filtered-list")
           runCli ["search", "zzzxqvplmn", "--mode", "fts"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
           BS.writeFile (repo </> "source.txt") "\n"
-          runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "0.30 " <> fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
-          _ <- checkJson ["relevant", "source.txt", "--worktree"] "adrai/relevant-cli/v1" "passage-fts" CollapsedView (Just 0.3)
+          -- Literal applicability alone scores 1.00; use the unscoped tracked
+          -- file below to distinguish current bytes from committed bytes.
+          runCli ["relevant", "source.txt"] >>= (@?= "1.00 " <> fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
+          _ <- checkJson ["relevant", "source.txt"] "adrai/relevant-cli/v1" "passage-fts" CollapsedView (Just 1)
+          runCli ["relevant", "source.txt", "--worktree"] >>= (@?= "1.00 " <> fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
+          _ <- checkJson ["relevant", "source.txt", "--worktree"] "adrai/relevant-cli/v1" "passage-fts" CollapsedView (Just 1)
+          BS.writeFile (repo </> "content.txt") "\n"
+          runCli ["relevant", "content.txt"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
+          runCli ["relevant", "content.txt", "--json"] >>= (@?= emptyCliJson 10 "adrai/relevant-cli/v1" "passage-fts")
+          runCli ["relevant", "content.txt", "--worktree", "--json"] >>= (@?= emptyCliJson 10 "adrai/relevant-cli/v1" "passage-fts")
+          runCli ["relevant", "content.txt", "--at", "HEAD", "--json"] >>= (@?= committedContentRelevance)
+          runCli ["relevant", "content.txt", "--at", Text.unpack historicalRevision, "--json"] >>= (@?= committedContentRelevance)
+          runCli ["relevant", "source.txt", "--at", "HEAD", "--json"] >>= (@?= committedRelevance)
+          runCli ["relevant", "source.txt", "--at", Text.unpack historicalRevision, "--json"] >>= (@?= committedRelevance)
+          removeFile (repo </> "source.txt")
+          sourceFailure ["relevant", "source.txt"]
+          runCli ["relevant", "source.txt", "--at", "HEAD", "--json"] >>= (@?= committedRelevance)
+          sourceFailure ["relevant", "missing.txt"]
+          (outsideCode, outsideStdout, outsideStderr) <- spawnAdrai repo ["relevant", "../outside.txt"]
+          outsideCode @?= ExitFailure 2
+          outsideStdout @?= ""
+          assertBool "outside paths fail before file access" ("invalid relevant file path" `Text.isInfixOf` Text.Encoding.decodeUtf8 (BL.toStrict outsideStderr))
           tracePhase "fixture body complete; cleanup pending"
         tracePhase "fixture cleanup complete"
     , testCase "show has only its canonical view, revision, raw, and JSON options" $ do
@@ -1925,7 +1962,7 @@ mutationCliContractTests =
           , ("search", ["omitted or blank", "non-obsolete ADRs", "1-1000", "default 10", "adrai search --limit 1000", "--include-obsolete", "--domain", "--file", "concise standalone decision", "collapsed lists ADR IDs and titles", "exploded adds summaries", "--json"])
           , ("show", ["requires --view exploded", "before editing", "decision and its rationale"])
           , ("history", ["Omit ADR_ID", "--at", "unless essential"])
-          , ("relevant", ["--at", "--worktree", "--applies-to/applies_to or scope", "--view", "collapsed lists ADR IDs and titles", "exploded adds summaries", "--json"])
+          , ("relevant", ["--at", "--worktree", "current worktree file by default", "including untracked files", "HEAD as ADR context", "--applies-to/applies_to or scope", "--view", "collapsed lists ADR IDs and titles", "exploded adds summaries", "--json"])
           , ("compare", ["TO defaults to HEAD", "--include-unchanged", "unless essential"])
           , ("doctor", ["--at REVISION", "before relying on retrieved guidance"])
           , ("compile", ["--at REVISION", "content or metadata"])

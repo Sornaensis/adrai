@@ -220,7 +220,7 @@ adrai relevant src/Storage.hs --worktree
 adrai relevant src/Storage.hs --at main~1 --json
 ```
 
-Without `--worktree`, the file and ADR context come from the same resolved revision (`HEAD` by default). `--worktree` reads the current file safely from the worktree while keeping ADR context bound to `HEAD`; it cannot be combined with `--at`.
+By default, `relevant FILE` reads the current regular file safely from the worktree, including untracked files that have never been committed, while keeping ADR context bound to `HEAD`. Dirty tracked files use their current bytes. `--worktree` explicitly selects this same behavior. `--at REVISION` reads both the file and ADR context from that immutable revision; use `--at HEAD` for the committed file. `--at` cannot be combined with `--worktree`. A missing worktree file fails in the default mode; a missing revision path fails with `--at`, even if a local file exists.
 
 `--page N` selects a one-based page (default 1); `--limit N` sets its size
 (default 10, range 1–100). CLI and HTTP responses include the shared `pagination`
