@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE StrictData #-}
@@ -233,6 +234,9 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as ByteString
+#if defined(mingw32_HOST_OS)
+import qualified Data.Text.IO as TextIO
+#endif
 import Data.Bifunctor (first)
 import Data.Char (isControl)
 import Data.List (isPrefixOf)
@@ -252,6 +256,9 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize, r
 import System.Environment (getArgs, lookupEnv)
 import System.FilePath ((</>), takeDirectory)
 import System.IO (Handle, hGetContents, stderr, stdin, stdout)
+#if defined(mingw32_HOST_OS)
+import System.IO (hIsTerminalDevice, hSetNewlineMode, noNewlineTranslation)
+#endif
 import System.Random (randomRIO)
 import Control.Monad (replicateM, when)
 import Control.Exception (IOException, SomeAsyncException, SomeException, bracket, displayException, finally, fromException, throwIO, try)
@@ -2864,9 +2871,10 @@ renderFailureOutcome failure =
 emitRendered :: CliRendered -> IO ExitCode
 emitRendered = emitRenderedToHandles stdout stderr
 
--- | Emit CLI output as raw UTF-8 bytes.  This deliberately avoids the
--- platform text-mode newline translation performed by 'hPutStr' on Windows,
--- so canonical JSON's LF bytes stay canonical on every supported platform.
+-- | Preserve LF output and use the Windows terminal's text encoding when
+-- attached to a console. Windows devices decode raw writes using their code page,
+-- so sending UTF-8 bytes directly corrupts Unicode tree connectors. Redirected
+-- output remains exact UTF-8, independent of the handle's text encoding.
 emitRenderedToHandles :: Handle -> Handle -> CliRendered -> IO ExitCode
 emitRenderedToHandles output errorOutput rendered = do
   if Text.null (renderedStdout rendered) then pure () else writeUtf8 output (renderedStdout rendered)
@@ -2874,4 +2882,14 @@ emitRenderedToHandles output errorOutput rendered = do
   pure (renderedExitCode rendered)
 
 writeUtf8 :: Handle -> Text -> IO ()
+#if defined(mingw32_HOST_OS)
+writeUtf8 handle text = do
+  terminal <- hIsTerminalDevice handle
+  if terminal
+    then do
+      hSetNewlineMode handle noNewlineTranslation
+      TextIO.hPutStr handle text
+    else ByteString.hPut handle (TextEncoding.encodeUtf8 text)
+#else
 writeUtf8 handle = ByteString.hPut handle . TextEncoding.encodeUtf8
+#endif

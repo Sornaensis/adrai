@@ -167,11 +167,15 @@ import Options.Applicative (ParserResult (..), defaultPrefs, execParserPure, inf
 import System.Exit (ExitCode (..))
 import System.IO (IOMode (WriteMode), withBinaryFile)
 import qualified System.IO as PhaseIO
+import qualified GHC.IO.Device as Device
+import qualified GHC.IO.BufferedIO as Buffered
+import qualified GHC.IO.FD as FD
+import GHC.IO.Handle.Internals (mkFileHandle)
 import GHC.Clock (getMonotonicTimeNSec)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Concurrent.STM (atomically)
-import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, fromException, throwIO, try)
+import Control.Exception (AsyncException (ThreadKilled), SomeException, bracket, fromException, mask_, onException, throwIO, try)
 import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
 import Data.IORef (newIORef, readIORef, writeIORef)
@@ -2051,6 +2055,28 @@ mutationCliContractTests =
           assertBool "canonical JSON LF bytes were translated to CRLF" (not ("\r\n" `BS.isInfixOf` successBytes))
           BS.readFile successStderr >>= (@?= BS.empty)
           BS.readFile failureStdout >>= (@?= BS.empty)
+          let tree = CliRendered "├── café 漢字\n│   └── leaf\n" "└── error\n" ExitSuccess
+              treeStdout = temporary <> "/tree.stdout"
+              treeStderr = temporary <> "/tree.stderr"
+          withBinaryFile treeStdout WriteMode $ \output ->
+            withBinaryFile treeStderr WriteMode $ \errorOutput ->
+              emitRenderedToHandles output errorOutput tree >>= (@?= ExitSuccess)
+          BS.readFile treeStdout >>= (@?= Text.Encoding.encodeUtf8 (renderedStdout tree))
+          BS.readFile treeStderr >>= (@?= Text.Encoding.encodeUtf8 (renderedStderr tree))
+          -- Model the Windows console boundary: the device consumes its code
+          -- page, not UTF-8. The old raw byte writer produces mojibake here.
+          let console = CliRendered "├── branch\n│   └── leaf\n" "└── error\n" (ExitFailure 2)
+          withCodePageTerminal treeStdout $ \output ->
+            withCodePageTerminal treeStderr $ \errorOutput ->
+              emitRenderedToHandles output errorOutput console >>= (@?= ExitFailure 2)
+          let expectedStdout
+                | os == "mingw32" = "\195\196\196 branch\n\179   \192\196\196 leaf\n"
+                | otherwise = Text.Encoding.encodeUtf8 (renderedStdout console)
+              expectedStderr
+                | os == "mingw32" = "\192\196\196 error\n"
+                | otherwise = Text.Encoding.encodeUtf8 (renderedStderr console)
+          BS.readFile treeStdout >>= (@?= expectedStdout)
+          BS.readFile treeStderr >>= (@?= expectedStderr)
     , testCase "create plain output uses canonical ID order and index failure remains success" $ do
         let rendered = renderCreateOutcome createResult [] indexFailureResult False
         renderedExitCode rendered @?= ExitSuccess
@@ -2736,6 +2762,39 @@ pathHarnessTests =
               refused <- try @SomeException (requireExecutable selected)
               assertBool "a selected non-executable is not replaced by another tool" (either (const True) (const False) refused)
     ]
+
+-- A file-backed terminal device lets the output boundary be checked without
+-- allocating a visible console or changing the process-wide Windows code page.
+newtype CodePageTerminal = CodePageTerminal FD.FD
+
+instance Device.RawIO CodePageTerminal where
+  read (CodePageTerminal fd) = Device.read fd
+  readNonBlocking (CodePageTerminal fd) = Device.readNonBlocking fd
+  write (CodePageTerminal fd) = Device.write fd
+  writeNonBlocking (CodePageTerminal fd) = Device.writeNonBlocking fd
+
+instance Device.IODevice CodePageTerminal where
+  ready (CodePageTerminal fd) = Device.ready fd
+  close (CodePageTerminal fd) = Device.close fd
+  isTerminal _ = pure True
+  devType _ = pure Device.Stream
+
+instance Buffered.BufferedIO CodePageTerminal where
+  newBuffer (CodePageTerminal fd) = Buffered.newBuffer fd
+  fillReadBuffer (CodePageTerminal fd) = Buffered.fillReadBuffer fd
+  fillReadBuffer0 (CodePageTerminal fd) = Buffered.fillReadBuffer0 fd
+  flushWriteBuffer (CodePageTerminal fd) = Buffered.flushWriteBuffer fd
+  flushWriteBuffer0 (CodePageTerminal fd) = Buffered.flushWriteBuffer0 fd
+
+withCodePageTerminal :: FilePath -> (PhaseIO.Handle -> IO a) -> IO a
+withCodePageTerminal path action = do
+  encoding <- PhaseIO.mkTextEncoding "CP437"
+  let open = mask_ $ do
+        (fd, _) <- FD.openFile path WriteMode False
+        mkFileHandle (CodePageTerminal fd) path WriteMode (Just encoding)
+          (PhaseIO.NewlineMode PhaseIO.LF PhaseIO.CRLF)
+          `onException` Device.close fd
+  bracket open PhaseIO.hClose action
 
 -- ============================================================
 -- Top-level tests
