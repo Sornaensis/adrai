@@ -4,7 +4,7 @@ import Api
 import Browser
 import Dict exposing (Dict)
 import Html exposing (Html, article, button, details, div, fieldset, h1, h2, h3, h4, header, input, label, li, main_, option, p, pre, section, select, small, span, strong, summary, text, textarea, ul)
-import Html.Attributes exposing (checked, class, disabled, for, id, selected, type_, value)
+import Html.Attributes exposing (attribute, checked, class, disabled, for, id, readonly, selected, type_, value)
 import Html.Events exposing (onCheck, onClick, onInput)
 import Json.Decode as D
 import Json.Encode as E
@@ -1292,6 +1292,7 @@ results model =
                 Just window ->
                     div []
                         [ p [ class "meta" ] [ text ("Source: " ++ window.file ++ " · " ++ window.source) ]
+                        , preparationNotice model window.asOf window.embeddingPreparation
                         , ul [ class "result-list" ]
                             (List.map (\hit ->
                                 li []
@@ -1372,6 +1373,7 @@ searchResults model =
         Just window ->
             div []
                 [ p [ class "meta" ] [ text ("At " ++ window.asOf ++ " · " ++ String.fromInt (List.length window.results) ++ " results in a bounded window") ]
+                , preparationNotice model window.asOf window.embeddingPreparation
                 , if List.length window.results >= window.limit then p [ class "notice" ] [ text "Result window full; more may exist." ] else text ""
                 , pager model
                 , ul [ class "result-list" ]
@@ -1385,6 +1387,35 @@ searchResults model =
                             ]
                       ) (Route.pageSlice model.page window.results))
                 ]
+
+
+preparationNotice : Model -> String -> Maybe Api.EmbeddingPreparation -> Html Msg
+preparationNotice model revision progress =
+    if not model.queryReady || model.viewStale || model.queryAsOf /= Just revision then
+        text ""
+    else
+        case progress of
+            Nothing -> text ""
+            Just preparation ->
+                section [ class "notice", id "embedding-preparation", attribute "aria-label" "Embedding preparation" ]
+                    [ h3 [] [ text (case preparation.status of
+                        Api.PreparationPending -> "Embedding preparation pending"
+                        Api.PreparationUnavailable -> "Embedding preparation unavailable") ]
+                    , p [] [ text "Lexical results remain available. Vector retrieval requires a complete eligible corpus." ]
+                    , p [] [ text ("Corpus texts: " ++ String.fromInt preparation.totalTexts
+                        ++ " · Prepared this request: " ++ String.fromInt preparation.preparedTexts
+                        ++ (preparation.cacheHits |> Maybe.map (\count -> " · Cached: " ++ String.fromInt count) |> Maybe.withDefault "")
+                        ++ (preparation.remainingTexts |> Maybe.map (\count -> " · Remaining: " ++ String.fromInt count) |> Maybe.withDefault "")) ]
+                    , p [] [ text (case preparation.reason of
+                        Just "not_configured" -> "Configure your local TEI service before preparing embeddings."
+                        Just "invalid_configuration" -> "Correct the user text_embedding configuration."
+                        Just "service_unavailable" -> "Restore the configured local TEI service, then retry."
+                        Just "cache_unavailable" -> "Check access to the disposable embedding cache."
+                        Just "native_unavailable" -> "Restore sqlite-vec availability."
+                        Just "invalid_response" -> "Check the configured TEI model and responses."
+                        _ -> "Validated progress is retained. Run preparation in your terminal, then reload this view.") ]
+                    , label [] [ text "Terminal command (select and copy)", input [ type_ "text", readonly True, attribute "aria-label" "Preparation command", value ("adrai prepare-embeddings --at " ++ preparation.at) ] [] ]
+                    ]
 
 
 pager : Model -> Html Msg

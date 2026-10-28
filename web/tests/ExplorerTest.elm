@@ -89,6 +89,91 @@ tests =
 
                         _ -> Expect.fail "both real conflicted views must decode"
             ]
+        , describe "embedding preparation readiness"
+            [ test "older ready search and relevance payloads omit preparation" <|
+                \_ ->
+                    case ( fixture "search_ranked" (Api.response Api.search), fixture "relevant_committed" (Api.response Api.relevant) ) of
+                        ( Ok search, Ok relevant ) -> Expect.equal ( Nothing, Nothing ) ( search.data.embeddingPreparation, relevant.data.embeddingPreparation )
+                        _ -> Expect.fail "ready fixtures decode"
+            , test "pending counts and resolved action decode for both windows" <|
+                \_ ->
+                    case ( D.decodeValue Api.search (preparationData "search_ranked" "pending" True), D.decodeValue Api.relevant (preparationData "relevant_committed" "pending" True) ) of
+                        ( Ok search, Ok relevant ) ->
+                            Expect.equal ( Just ( Api.PreparationPending, ( Just 8, 4, Just 28 ) ), True )
+                                ( Maybe.map (\p -> ( p.status, ( p.cacheHits, p.preparedTexts, p.remainingTexts ) )) search.embeddingPreparation, relevant.embeddingPreparation /= Nothing )
+                        _ -> Expect.fail "pending metadata decodes"
+            , test "pending notice offers a selectable command and ready replacement clears it" <|
+                \_ ->
+                    let
+                        pending = preparationModel
+                        loading = Tuple.first (Main.update Main.Load pending)
+                        readyWindowState = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-3" "search_ranked")) loading)
+                        notice = Query.fromHtml (Main.view pending) |> Query.find [ Selector.id "embedding-preparation" ]
+                    in
+                    Expect.all
+                        [ \_ -> notice |> Query.has [ Selector.text "Embedding preparation pending" ]
+                        , \_ -> notice |> Query.has [ Selector.text "Cached: 8" ]
+                        , \_ -> notice |> Query.find [ Selector.tag "input" ] |> Query.has [ Selector.attribute (Attr.readonly True), Selector.attribute (Attr.value ("adrai prepare-embeddings --at " ++ fixtureRevision "search_ranked")) ]
+                        , \_ -> Query.fromHtml (Main.view readyWindowState) |> Query.hasNot [ Selector.id "embedding-preparation" ]
+                        , \_ -> Expect.equal (Just Nothing) (Maybe.map .embeddingPreparation readyWindowState.search)
+                        ] ()
+            , test "unavailable relevance never invents unknown cached or remaining counts" <|
+                \_ ->
+                    case D.decodeValue Api.relevant (preparationData "relevant_worktree" "unavailable" False) of
+                        Ok window ->
+                            let
+                                base = Tuple.first (Main.init { hasCredential = False })
+                                query = base.query
+                                state = { base | query = { query | view = Route.Relevant }, relevant = Just window, queryReady = True, repositoryReady = True, queryAsOf = Just window.asOf, viewStale = False }
+                                notice = Query.fromHtml (Main.view state) |> Query.find [ Selector.id "embedding-preparation" ]
+                            in
+                            Expect.all
+                                [ \_ -> notice |> Query.has [ Selector.text "Embedding preparation unavailable" ]
+                                , \_ -> notice |> Query.hasNot [ Selector.text "Remaining:" ]
+                                , \_ -> notice |> Query.hasNot [ Selector.text "Cached:" ]
+                                ] ()
+                        Err _ -> Expect.fail "unknown progress remains nullable"
+            , test "filter and revision edits hide old readiness and reject delayed responses" <|
+                \_ ->
+                    let
+                        pending = preparationModel
+                        filtered = Tuple.first (Main.update (Main.EditQuery "domain" "other") pending)
+                        revised = Tuple.first (Main.update (Main.EditQuery "revision" "previous") filtered)
+                        loading = Tuple.first (Main.update Main.Load revised)
+                        delayed = Tuple.first (Main.update (Main.FromJs (transportData "ui-2" "search_ranked" (preparationData "search_ranked" "unavailable" False))) loading)
+                        readyWindowState = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-3" "search_ranked")) delayed)
+                        late = Tuple.first (Main.update (Main.FromJs (transportData "ui-2" "search_ranked" (preparationData "search_ranked" "pending" True))) readyWindowState)
+                    in
+                    Expect.all
+                        [ \_ -> Query.fromHtml (Main.view revised) |> Query.hasNot [ Selector.id "embedding-preparation" ]
+                        , \_ -> Expect.equal False delayed.queryReady
+                        , \_ -> Expect.equal readyWindowState.search late.search
+                        , \_ -> Expect.equal (Just Nothing) (Maybe.map .embeddingPreparation late.search)
+                        ] ()
+            , test "view navigation does not carry a search notice into relevance" <|
+                \_ ->
+                    let
+                        pending = preparationModel
+                        file = Tuple.first (Main.update (Main.EditQuery "file" "src/current.hs") pending)
+                        relevant = Tuple.first (Main.update (Main.ChooseView Route.Relevant) file)
+                        delayed = Tuple.first (Main.update (Main.FromJs (transportData "ui-2" "search_ranked" (preparationData "search_ranked" "pending" True))) relevant)
+                    in
+                    Expect.all
+                        [ \_ -> Expect.equal Nothing delayed.relevant
+                        , \_ -> Query.fromHtml (Main.view delayed) |> Query.hasNot [ Selector.id "embedding-preparation" ]
+                        ] ()
+            , test "present malformed progress and mismatched action revisions fail" <|
+                \_ ->
+                    let
+                        malformed =
+                            [ E.null, preparationValue "wrong-revision" "pending" True, E.object [ ( "status", E.string "complete" ) ]
+                            , preparationWith [ ( "prepared_texts", E.int 35 ), ( "remaining_texts", E.null ) ]
+                            , preparationWith [ ( "prepared_texts", E.int 15 ), ( "cache_hits", E.null ) ]
+                            , preparationWith [ ( "total_texts", E.int -1 ) ]
+                            ]
+                    in
+                    Expect.equal True (List.all (\value -> isError (D.decodeValue Api.search (inspectionSet "search_ranked" ( "embedding_preparation", value )))) malformed)
+            ]
         , describe "strict Word64 generations"
             [ test "rejects every invalid wire form" <|
                 \_ ->
@@ -1199,6 +1284,55 @@ fixtureValue : String -> Maybe E.Value
 fixtureValue key =
     D.decodeString (D.at [ "cases", key ] D.value) FixtureData.document
         |> Result.toMaybe
+
+
+fixtureRevision : String -> String
+fixtureRevision key =
+    fixtureValue key |> Maybe.andThen (D.decodeValue (D.at [ "data", "as_of" ] D.string) >> Result.toMaybe) |> Maybe.withDefault "missing"
+
+
+preparationValue : String -> String -> Bool -> E.Value
+preparationValue revision status known =
+    E.object
+        [ ( "status", E.string status )
+        , ( "reason", E.string (if status == "pending" then "corpus_missing" else "service_unavailable") )
+        , ( "total_texts", E.int 40 )
+        , ( "cache_hits", if known then E.int 8 else E.null )
+        , ( "prepared_texts", E.int (if known then 4 else 0) )
+        , ( "remaining_texts", if known then E.int 28 else E.null )
+        , ( "action", E.object [ ( "command", E.string "prepare-embeddings" ), ( "at", E.string revision ) ] )
+        ]
+
+
+preparationData : String -> String -> Bool -> E.Value
+preparationData key status known =
+    inspectionSet key ( "embedding_preparation", preparationValue (fixtureRevision key) status known )
+
+
+preparationWith : List ( String, E.Value ) -> E.Value
+preparationWith fields =
+    case D.decodeValue (D.dict D.value) (preparationValue (fixtureRevision "search_ranked") "pending" True) of
+        Ok base -> E.object (Dict.toList (Dict.union (Dict.fromList fields) base))
+        Err _ -> E.null
+
+
+transportData : String -> String -> E.Value -> E.Value
+transportData requestId key data =
+    case fixtureValue key |> Maybe.andThen (D.decodeValue (D.field "metadata" D.value) >> Result.toMaybe) of
+        Just metadata -> E.object
+            [ ( "type", E.string "response" ), ( "request_id", E.string requestId ), ( "status", E.int 200 )
+            , ( "body", E.object [ ( "schema", E.string "adrai/api/v1" ), ( "metadata", metadata ), ( "data", data ) ] )
+            ]
+        Nothing -> E.null
+
+
+preparationModel : Main.Model
+preparationModel =
+    let
+        base = Tuple.first (Main.init { hasCredential = False })
+        repository = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-1" "repository")) base)
+    in
+    Tuple.first (Main.update (Main.FromJs (transportData "ui-2" "search_ranked" (preparationData "search_ranked" "pending" True))) repository)
 
 
 inspectionWith : ( String, E.Value ) -> E.Value

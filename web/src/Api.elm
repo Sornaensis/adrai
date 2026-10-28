@@ -1,4 +1,4 @@
-module Api exposing (AsOf(..), Envelope, Metadata, Repository, SearchWindow, SearchHit, RelevantWindow, RelevantHit, Evidence, Inspection, CandidateRecord, CandidateSet, Operation, OperationItem, Provenance, HistoryWindow, HistoryItem, CompareWindow, CompareEntry, CompareSnapshot, CompareChange, ConflictWindow, ConflictEntry, ConflictCandidate, Doctor, Issue, MutationOutcome, Failure, Event, generation, compareGeneration, response, failure, repository, search, relevant, inspection, history, comparison, conflicts, doctor, mutation, event, request)
+module Api exposing (AsOf(..), Envelope, Metadata, Repository, PreparationStatus(..), EmbeddingPreparation, SearchWindow, SearchHit, RelevantWindow, RelevantHit, Evidence, Inspection, CandidateRecord, CandidateSet, Operation, OperationItem, Provenance, HistoryWindow, HistoryItem, CompareWindow, CompareEntry, CompareSnapshot, CompareChange, ConflictWindow, ConflictEntry, ConflictCandidate, Doctor, Issue, MutationOutcome, Failure, Event, generation, compareGeneration, response, failure, repository, search, relevant, inspection, history, comparison, conflicts, doctor, mutation, event, request)
 
 import Dict
 import Json.Decode as D exposing (Decoder)
@@ -24,7 +24,16 @@ type alias Repository =
 
 
 type alias SearchWindow =
-    { asOf : String, limit : Int, results : List SearchHit }
+    { asOf : String, limit : Int, results : List SearchHit, embeddingPreparation : Maybe EmbeddingPreparation }
+
+
+type PreparationStatus
+    = PreparationPending
+    | PreparationUnavailable
+
+
+type alias EmbeddingPreparation =
+    { status : PreparationStatus, reason : Maybe String, totalTexts : Int, cacheHits : Maybe Int, preparedTexts : Int, remainingTexts : Maybe Int, at : String }
 
 
 type alias SearchHit =
@@ -32,7 +41,7 @@ type alias SearchHit =
 
 
 type alias RelevantWindow =
-    { asOf : String, file : String, source : String, results : List RelevantHit }
+    { asOf : String, file : String, source : String, results : List RelevantHit, embeddingPreparation : Maybe EmbeddingPreparation }
 
 
 type alias RelevantHit =
@@ -217,10 +226,48 @@ repository =
 
 search : Decoder SearchWindow
 search =
-    D.map3 SearchWindow
+    D.map4 SearchWindow
         (D.field "as_of" D.string)
         (D.field "limit" D.int)
         (D.field "results" (D.list searchHit))
+        (optional "embedding_preparation" (D.map Just embeddingPreparation) Nothing)
+        |> D.andThen (\window -> preparationAt window.asOf window.embeddingPreparation |> D.map (\_ -> window))
+
+
+embeddingPreparation : Decoder EmbeddingPreparation
+embeddingPreparation =
+    D.map7 EmbeddingPreparation
+        (D.field "status" D.string |> D.andThen (\status ->
+            case status of
+                "pending" -> D.succeed PreparationPending
+                "unavailable" -> D.succeed PreparationUnavailable
+                _ -> D.fail "unsupported embedding preparation status"))
+        (optional "reason" (D.nullable (D.string |> D.andThen (\reason ->
+            if List.member reason [ "corpus_missing", "budget_exhausted", "not_configured", "invalid_configuration", "service_unavailable", "invalid_response", "cache_unavailable", "native_unavailable" ] then D.succeed reason else D.fail "unsupported embedding preparation reason"))) Nothing)
+        (D.field "total_texts" nonnegative)
+        (optional "cache_hits" (D.nullable nonnegative) Nothing)
+        (D.field "prepared_texts" nonnegative)
+        (optional "remaining_texts" (D.nullable nonnegative) Nothing)
+        (D.field "action" (D.map2 (\_ at -> at)
+            (D.field "command" D.string |> D.andThen (\command -> if command == "prepare-embeddings" then D.succeed () else D.fail "unsupported preparation action"))
+            (D.field "at" D.string)))
+        |> D.andThen (\progress ->
+            if progress.preparedTexts + Maybe.withDefault 0 progress.cacheHits + Maybe.withDefault 0 progress.remainingTexts > progress.totalTexts
+                || (case ( progress.cacheHits, progress.remainingTexts ) of
+                        ( Just hits, Just remaining ) -> hits + progress.preparedTexts + remaining /= progress.totalTexts
+                        _ -> False) then
+                D.fail "inconsistent embedding preparation counts"
+            else D.succeed progress)
+
+
+nonnegative : Decoder Int
+nonnegative =
+    D.int |> D.andThen (\count -> if count >= 0 then D.succeed count else D.fail "negative preparation count")
+
+
+preparationAt : String -> Maybe EmbeddingPreparation -> Decoder ()
+preparationAt revision progress =
+    if Maybe.map .at progress |> Maybe.withDefault revision |> (==) revision then D.succeed () else D.fail "preparation action revision mismatch"
 
 
 searchHit : Decoder SearchHit
@@ -255,11 +302,13 @@ relevant =
         |> D.andThen
             (\schema ->
                 if schema == "adrai/relevant/v2" then
-                    D.map4 RelevantWindow
+                    D.map5 RelevantWindow
                         (D.field "as_of" D.string)
                         (D.at [ "file", "path" ] D.string)
                         (D.at [ "file", "source" ] D.string)
                         (D.field "results" (D.list relevantHit))
+                        (optional "embedding_preparation" (D.map Just embeddingPreparation) Nothing)
+                        |> D.andThen (\window -> preparationAt window.asOf window.embeddingPreparation |> D.map (\_ -> window))
                 else
                     D.fail "unsupported relevant schema"
             )

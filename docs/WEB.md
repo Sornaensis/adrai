@@ -53,6 +53,23 @@ Search's comma-separated `domain` filter requires each exact canonical assignmen
 by default; `all=true` includes each requested domain and its dotted descendants.
 This option is independent of `include_obsolete=true`.
 Search also accepts one-based `page` (default 1), with `limit` as its page size.
+
+## Optional embedding preparation
+
+Search and relevance can include request-local `embedding_preparation` metadata.
+The explorer distinguishes pending corpus preparation from unavailable optional
+retrieval and keeps lexical results visible. It shows total/prepared corpus texts
+and only known cached/remaining counts; an unknown count is not displayed as zero.
+The notice provides a read-only selectable `adrai prepare-embeddings --at REVISION`
+command bound to the response's resolved revision. Run it in your terminal, then
+reload the view. The browser does not execute commands or start preparation.
+
+Ready responses omit the metadata and remove an earlier notice. Query/filter or
+revision changes hide old readiness while the new response loads; existing request
+identity checks reject delayed responses. Explicit FTS and blank listings do not
+show preparation notices. Small edits still use the shared bounded automatic
+repair path. There is no polling worker or preparation HTTP endpoint. See
+[Search](SEARCH.md#optional-text-embeddings) for configuration and resumable budgets.
 Both CLI and shared search projections add `pagination` metadata: `page`,
 `page_size`, `total_results`, `total_pages`, `returned`, `remaining`, and `has_next`.
 Blank-query totals cover the full filtered corpus, including more than 1000
