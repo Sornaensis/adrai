@@ -158,7 +158,8 @@ cacheContract = withTei $ \config behavior model inputs cache -> do
   assertBool "batch limit applies" (all ((<=2) . length) batches)
   cacheReadBoundaryContract
 
--- More than two SQL chunks, with a duplicate text and a non-full final chunk.
+-- More than two cache-read and vector-insert chunks, with a duplicate text and
+-- a non-full final chunk.
 -- The result oracle is independent of cache row order and request item order.
 cacheReadBoundaryContract :: IO ()
 cacheReadBoundaryContract = withTei $ \config _ _ inputs cache -> do
@@ -172,6 +173,18 @@ cacheReadBoundaryContract = withTei $ \config _ _ inputs cache -> do
   warm <- retrieve (reverse corpus)
   fmap embeddingRetrievalScores warm @?= expected
   readIORef inputs >>= (@?= [["query"]])
+  -- More than one insert chunk of only less-similar eligible items must still
+  -- fill K. The many cached, closer items must never enter this request's KNN.
+  let eligible = filter (("opposite" `Text.isInfixOf`) . snd) corpus
+      restricted values limit = retrieveTextEmbeddingsWith config cache values ["query"] limit
+  length eligible @?= 257
+  subset <- restricted eligible (length corpus)
+  fmap embeddingRetrievalScores subset @?= Just [Map.fromList [(key, 0) | (key, _) <- eligible]]
+  tied <- restricted eligible 17
+  reordered <- restricted (reverse eligible) 17
+  reordered @?= tied
+  fmap (map Map.size . embeddingRetrievalScores) tied @?= Just [17]
+  assertBool "tied neighbours are all eligible" (maybe False (all (all (`elem` map fst eligible) . Map.keys) . embeddingRetrievalScores) tied)
   files <- listDirectory cache
   case files of
     [file] -> bracket (open (cache </> file)) close $ \stored -> do

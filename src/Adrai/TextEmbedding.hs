@@ -182,10 +182,12 @@ retrieveTextEmbeddingsWith config cacheDirectory corpus queries limit
             -- Eligibility precedes KNN: only the caller's eligible corpus is
             -- inserted. No post-K filter can hide eligible neighbours.
             execute_ vectors (Query ("CREATE VIRTUAL TABLE candidates USING vec0(item_id TEXT PRIMARY KEY,embedding float[" <> Text.pack (show dimensions) <> "] distance_metric=cosine)"))
-            withTransaction vectors $ forM_ (Map.toAscList (Map.fromList corpus)) $ \(key, text) ->
-              case Map.lookup (digest (Encoding.encodeUtf8 text)) stored of
-                Nothing -> fail "incomplete embedding cache"
-                Just bytes -> execute vectors "INSERT INTO candidates(item_id,embedding) VALUES (?,?)" (key, bytes)
+            withTransaction vectors $ forM_ (batches 256 (Map.toAscList (Map.fromList corpus))) $ \chunk -> do
+              rows <- forM chunk $ \(key, text) ->
+                case Map.lookup (digest (Encoding.encodeUtf8 text)) stored of
+                  Nothing -> fail "incomplete embedding cache"
+                  Just bytes -> pure (key, bytes)
+              executeMany vectors "INSERT INTO candidates(item_id,embedding) VALUES (?,?)" rows
             scores <- forM queryVectors $ \vector -> do
               rows <- query vectors "SELECT item_id,distance FROM candidates WHERE embedding MATCH ? AND k=? ORDER BY distance" (packFloat32 vector, min limit (length corpus)) :: IO [(Text, Double)]
               unless (all (finite . snd) rows) (fail "nonfinite sqlite-vec distance")
