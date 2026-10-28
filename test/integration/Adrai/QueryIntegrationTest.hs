@@ -23,7 +23,7 @@ import Adrai.Git (Repository, RevisionSpec (..), discoverRepository, gitOidText,
 import Adrai.Integration.CLI hiding (parseCompareResults, parseHistory, parseSearchResults)
 import Adrai.Compiler (materializeCurrentSearch)
 import Adrai.History (CommitPlacementEvidence (..), LineLandingEvidence (..), PlacementEvidence (..), ReadSnapshot (..), RevisionIdentity (..))
-import Adrai.Query (DomainEntry (..), DomainTreeEntry (..), DomainsProjection (..), RelevantDiagnostics (..), RelevantFileInfo (..), RelevantProjection (..), RelevantRequest (..), SearchProjection (..), defaultRelevantRequest, defaultSearchRequest, projectDomainsTree)
+import Adrai.Query (DomainEntry (..), DomainTreeEntry (..), DomainsProjection (..), RelevantDiagnostics (..), RelevantFileInfo (..), RelevantProjection (..), RelevantRequest (..), RelevantResult (..), SearchProjection (..), defaultRelevantRequest, defaultSearchRequest, projectDomainsTree)
 import Adrai.Provenance
   ( GitOid,
     ProvenanceCapsuleInput (..),
@@ -43,8 +43,9 @@ import Adrai.RetainedCache.RepositorySeed
   )
 import Adrai.Repository (resolveRepositoryRevision, resolvedCommitOid)
 import Adrai.Retrieval (SearchDocument (..), SearchMaterialization (..))
+import Adrai.Relevance (RelevanceScopeMatch (RelevanceScopeExact))
 import Adrai.SearchVectorCorpus (buildSearchVectorCorpus)
-import Adrai.Scope (mkScopePattern)
+import Adrai.Scope (ScopeMatchEvidence (..), ScopeSpecificity (ScopePath), mkScopePattern)
 import Adrai.TextEmbedding (TextEmbeddingConfig (..), EmbeddingPreparation (..), EmbeddingPreparationStatus (..))
 import Adrai.TextEmbeddingTest (withTei, Behavior (..))
 import Adrai.Service.Query
@@ -270,12 +271,27 @@ testRelevantDiagnostics getSeed =
       current <- inspect "fresh cold fallback" newHead newHead False "cold-fallback" =<< runRelevantQuery repository request
       relevantProjectionResults current @?= relevantProjectionResults cached
       BS.writeFile (repoPath </> exactQuerySeedSourceRelativePath payload) "tiny"
-      empty <- requireRight "empty worktree relevance" =<< runRelevantQuery repository (request { relevantRequestRevision = WorkingRevision })
-      let emptyDiagnostics = relevantProjectionDiagnostics empty
-      relevantFileSource (relevantProjectionFile empty) @?= "worktree"
-      relevantProjectionResults empty @?= []
-      case emptyDiagnostics of
-        Nothing -> assertFailure "empty worktree relevance omitted diagnostics"
+      scopeOnly <- requireRight "scope-only worktree relevance" =<< runRelevantQuery repository (request { relevantRequestRevision = WorkingRevision })
+      let scopeOnlyDiagnostics = relevantProjectionDiagnostics scopeOnly
+      relevantFileSource (relevantProjectionFile scopeOnly) @?= "worktree"
+      expectedAdr <- requireRight "scope-only applicable ADR" (mkAdrId (fixtureId 'A' '1'))
+      case relevantProjectionResults scopeOnly of
+        [result] -> do
+          relevantResultAdr result @?= expectedAdr
+          relevantResultScopeMatch result @?= RelevanceScopeExact
+          relevantResultScopeEvidence result @?= Just (ScopeMatchEvidence "src/cache/**" ScopePath 2 1)
+          relevantResultScopeBonus result @?= 0.1
+          relevantResultScore result @?= 0.1
+          relevantResultSemanticScore result @?= 0
+          relevantResultLexicalScore result @?= 0
+          relevantResultLexicalBonus result @?= 0
+          relevantResultStrongestPair result @?= 0
+          relevantResultStrongestLexicalPair result @?= 0
+          relevantResultSourceInformation result @?= 0
+          relevantResultEvidence result @?= []
+        results -> assertFailure ("expected the single declared scope-only ADR, got " <> show results)
+      case scopeOnlyDiagnostics of
+        Nothing -> assertFailure "scope-only worktree relevance omitted diagnostics"
         Just diagnostics -> do
           relevantIndexRevision diagnostics @?= newHead
           relevantCheckoutHead diagnostics @?= newHead
