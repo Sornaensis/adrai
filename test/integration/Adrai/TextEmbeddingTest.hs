@@ -22,13 +22,14 @@ import qualified Data.Aeson.Types as Aeson
 import Data.Aeson ((.:), (.=))
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.ByteString as BS
 import Data.IORef
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
-import Database.SQLite.Simple (Only (..), close, open, query_)
+import Database.SQLite.Simple (Only (..), close, execute, execute_, open, query_)
 import Network.HTTP.Types (status200, status503)
 import Network.Wai (Application, pathInfo, responseLBS, responseStream, strictRequestBody)
 import Network.Wai.Handler.Warp (testWithApplication)
@@ -155,6 +156,47 @@ cacheContract = withTei $ \config behavior model inputs cache -> do
   assertBool "endpoint change invalidates identity" (isJust alternate && fmap embeddingRetrievalIdentity alternate /= fmap embeddingRetrievalIdentity dimensional)
   batches <- readIORef inputs
   assertBool "batch limit applies" (all ((<=2) . length) batches)
+  cacheReadBoundaryContract
+
+-- More than two SQL chunks, with a duplicate text and a non-full final chunk.
+-- The result oracle is independent of cache row order and request item order.
+cacheReadBoundaryContract :: IO ()
+cacheReadBoundaryContract = withTei $ \config _ _ inputs cache -> do
+  let unique = [("item-" <> Text.pack (show index), (if even index then "same-" else "opposite-") <> Text.pack (show index)) | index <- [1 :: Int .. 513]]
+      corpus = unique <> [("duplicate-text", "same-2")]
+      retrieve values = retrieveTextEmbeddingsWith config cache values ["query"] (length corpus)
+      expected = Just [Map.fromList [(key, if "opposite" `Text.isInfixOf` text then 0 else 1) | (key, text) <- corpus]]
+  first <- retrieve corpus
+  fmap embeddingRetrievalScores first @?= expected
+  writeIORef inputs []
+  warm <- retrieve (reverse corpus)
+  fmap embeddingRetrievalScores warm @?= expected
+  readIORef inputs >>= (@?= [["query"]])
+  files <- listDirectory cache
+  case files of
+    [file] -> bracket (open (cache </> file)) close $ \stored -> do
+      rows <- query_ stored "SELECT input_hash,vector FROM embedding ORDER BY input_hash" :: IO [(Text, BS.ByteString)]
+      length rows @?= length unique
+      (missingHash, corruptHash, bytes) <- case (rows, drop 256 rows) of
+        ((firstHash, _) : _, (laterHash, laterBytes) : _) -> pure (firstHash, laterHash, laterBytes)
+        _ -> fail "expected cache rows across the SQL chunk boundary"
+      execute stored "DELETE FROM embedding WHERE input_hash=?" (Only missingHash)
+      execute stored "UPDATE embedding SET vector=? WHERE input_hash=?" (BS.take 1 bytes, corruptHash)
+      execute_ stored "INSERT INTO embedding(input_hash,vector) VALUES ('unrelated','not a requested vector')"
+      writeIORef inputs []
+      repaired <- retrieve corpus
+      fmap embeddingRetrievalScores repaired @?= expected
+      requested <- readIORef inputs
+      length requested @?= 2 -- the query plus one batch for two distinct misses
+      length (concat requested) @?= 3
+      assertBool "only the query and missing corpus texts are embedded" (all (`elem` ("query" : map snd unique)) (concat requested))
+      unrelated <- query_ stored "SELECT vector FROM embedding WHERE input_hash='unrelated'" :: IO [Only Text]
+      unrelated @?= [Only "not a requested vector"]
+      writeIORef inputs []
+      rejected <- retrieve [("duplicate-item", "same-1"), ("duplicate-item", "opposite")]
+      assertBool "duplicate item IDs remain rejected" (isNothing rejected)
+      readIORef inputs >>= (@?= [["query"]])
+    _ -> fail "expected one cache file for bounded-read contract"
 
 unavailableContract :: IO ()
 unavailableContract = withTei $ \config behavior _ _ cache -> do

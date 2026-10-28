@@ -169,9 +169,7 @@ retrieveTextEmbeddingsWith config cacheDirectory corpus queries limit
         bracket (open (cacheDirectory </> cacheName)) close $ \cache -> do
           execute_ cache "PRAGMA busy_timeout=250"
           execute_ cache "CREATE TABLE IF NOT EXISTS embedding(input_hash TEXT PRIMARY KEY,vector BLOB NOT NULL)"
-          cached <- fmap Map.fromList $ forM (Map.keys inputs) $ \key -> do
-            rows <- query cache "SELECT vector FROM embedding WHERE input_hash=?" (Only key) :: IO [Only BS.ByteString]
-            pure (key, case rows of [Only bytes] | BS.length bytes == dimensions * 4 -> Just bytes; _ -> Nothing)
+          cached <- readCachedVectors cache dimensions (Map.keys inputs)
           let missing = [(key, text) | (key, text) <- Map.toAscList inputs, Map.findWithDefault Nothing key cached == Nothing]
           newVectors <- embedTexts manager (map snd missing)
           _ <- validateVectors (Just dimensions) (length missing) newVectors
@@ -255,6 +253,17 @@ retrieveTextEmbeddingsWith config cacheDirectory corpus queries limit
         vectors <- either (const (fail "invalid TEI embeddings")) pure (Aeson.parseEither Aeson.parseJSON value)
         _ <- validateVectors Nothing (length batch) vectors
         pure vectors
+
+-- Read only the requested text hashes, with a bounded number of SQL parameters.
+-- Reconstruct by hash because SQLite does not promise the order of IN results.
+-- A missing, wrong-length or duplicated row remains an unusable cache entry.
+readCachedVectors :: Connection -> Int -> [Text] -> IO (Map Text (Maybe BS.ByteString))
+readCachedVectors cache dimensions hashes =
+  fmap Map.unions $ forM (batches 256 hashes) $ \chunk -> do
+    let statement = Query ("SELECT input_hash,vector FROM embedding WHERE input_hash IN (" <> Text.intercalate "," (replicate (length chunk) "?") <> ")")
+    rows <- query cache statement chunk :: IO [(Text, BS.ByteString)]
+    pure (Map.fromListWith (\_ _ -> Nothing)
+      [(key, if BS.length bytes == dimensions * 4 then Just bytes else Nothing) | (key, bytes) <- rows])
 
 validateVectors :: Maybe Int -> Int -> [[Double]] -> IO Int
 validateVectors expected count vectors = do
