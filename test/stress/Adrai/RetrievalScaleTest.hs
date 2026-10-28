@@ -15,6 +15,7 @@ import Adrai.Fixture.Types
 import Adrai.Format.Json (JsonValue (..))
 import Adrai.Graph (GraphReduction (..), ReducedAdr (..))
 import Adrai.History (ReadSnapshot (..), RevisionIdentity (..), validateReadSnapshot)
+import Adrai.Pagination (Pagination (..))
 import Adrai.Query
 import Adrai.Retrieval (RetrievalMode (FtsRetrieval), SearchDocument (..), SearchMaterialization (..))
 import Adrai.SearchVectorCorpus
@@ -273,7 +274,31 @@ assertRelevantBounds fixture search probe projection = do
       jsonIntegerAt ["candidates"] details @?= Just 0
     _ -> assertFailure context
   assertBool context (all (\result -> relevantResultSemanticScore result == 0 && relevantResultLexicalScore result > 0) results)
-  assertBool context (length results == 10)
+  let admittedKeys = case onlyExpectedKey probe of
+        AdrKey 99 -> [AdrKey 99, AdrKey 96]
+        AdrKey 37 -> [AdrKey 97, AdrKey 94, AdrKey 37]
+        key -> error ("missing retained floor-admission oracle for " <> show key)
+      admitted = map (mustRightValue "floor-admitted ADR" . (`lookupQueryMaterializationAdr` fixture)) admittedKeys
+      count = length results
+  actual @?= admitted
+  assertBool context (count > 0 && count <= retrievalProbeTopK probe && count <= shortlisted)
+  assertBool context (all ((>= 0.10) . relevantResultScore) results)
+  map relevantResultScore results @?= replicate count 0.10
+  relevantProjectionPagination projection @?= Pagination (Just 1) (Just 10) count (Just 1) count 0 False
+  forM_ results $ \result -> do
+    relevantResultLexicalScore result @?= 0.20
+    relevantResultSemanticScore result @?= 0
+    relevantResultScopeBonus result @?= 0
+    relevantResultSourceInformation result @?= 1
+    let evidence = relevantResultEvidence result
+    assertBool context (not (null evidence))
+    forM_ evidence $ \item -> do
+      assertBool context (relevantEvidenceFileLineStart item >= 1 && relevantEvidenceFileLineEnd item >= relevantEvidenceFileLineStart item)
+      assertBool context (not (Text.null (Text.strip (relevantEvidenceFileExcerpt item))))
+      assertBool context (not (Text.null (Text.strip (relevantEvidenceAdrExcerpt item))))
+      assertBool context (not (null (relevantEvidenceMatchedTerms item)))
+      relevantEvidenceLexicalScore item @?= 0.20
+      relevantEvidenceSemanticScore item @?= 0
   assertBool context (Set.size (Set.fromList actual) == length actual)
   where
     contract = compactScaleDiagnosticsV1
