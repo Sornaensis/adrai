@@ -81,6 +81,20 @@
   },
   "conflict": {
     "as_of": "p3-04-conflict-resolved",
+    "embedding_preparation": {
+      "action": {
+        "at": "p3-04-conflict-resolved",
+        "command": "prepare-embeddings"
+      },
+      "cache_hits": null,
+      "dimensions": null,
+      "model_identity": null,
+      "prepared_texts": 0,
+      "reason": "not_configured",
+      "remaining_texts": null,
+      "status": "unavailable",
+      "total_texts": 8
+    },
     "limit": 10,
     "mode": "fts",
     "pagination": {
@@ -362,6 +376,20 @@
   },
   "hybrid": {
     "as_of": "rationale-resolved",
+    "embedding_preparation": {
+      "action": {
+        "at": "rationale-resolved",
+        "command": "prepare-embeddings"
+      },
+      "cache_hits": null,
+      "dimensions": null,
+      "model_identity": null,
+      "prepared_texts": 0,
+      "reason": "not_configured",
+      "remaining_texts": null,
+      "status": "unavailable",
+      "total_texts": 8
+    },
     "limit": 10,
     "mode": "fts",
     "pagination": {
@@ -509,6 +537,20 @@
   "schema": "adrai/p3-04-search-golden/v1",
   "vector": {
     "as_of": "rationale-resolved",
+    "embedding_preparation": {
+      "action": {
+        "at": "rationale-resolved",
+        "command": "prepare-embeddings"
+      },
+      "cache_hits": null,
+      "dimensions": null,
+      "model_identity": null,
+      "prepared_texts": 0,
+      "reason": "not_configured",
+      "remaining_texts": null,
+      "status": "unavailable",
+      "total_texts": 8
+    },
     "limit": 10,
     "mode": "fts",
     "pagination": {

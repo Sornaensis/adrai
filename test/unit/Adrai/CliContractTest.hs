@@ -1233,6 +1233,7 @@ mutationCliContractTests =
                 , searchProjectionPagination = Pagination (Just 3) (Just 7) 0 (Just 0) 0 0 False
                 , searchProjectionResults = []
                 , searchProjectionExplodedDetails = Map.empty
+                , searchProjectionEmbeddingPreparation = Nothing
                 }
         parseCli ["search"] @?= Right (CliInvocation defaultCliConfig (CmdSearch defaulted))
         parseCli
@@ -1354,6 +1355,7 @@ mutationCliContractTests =
                 , relevantProjectionResults = []
                 , relevantProjectionDiagnostics = Nothing
                 , relevantProjectionPagination = Pagination (Just 1) (Just 7) 0 (Just 0) 0 0 False
+                , relevantProjectionEmbeddingPreparation = Nothing
                 }
         parseCli ["relevant", "src/query ü.txt"] @?= Right (CliInvocation defaultCliConfig (CmdRelevant defaulted))
         parseCli ["relevant", "src/query ü.txt", "--at", "refs/heads/release", "--include-obsolete", "--limit", "7", "--json", "--view", "exploded"]

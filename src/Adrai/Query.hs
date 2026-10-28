@@ -74,9 +74,13 @@ module Adrai.Query
     mergeRelevantSectionCandidates,
     runCurrentSearch,
     runCurrentSearchWithEmbedding,
+    runCurrentSearchWithEmbeddingOutcome,
+    embeddingPreparationCorpus,
+    embeddingPreparationJson,
     runCurrentSearchWithCorpus,
     runRelevant,
     runRelevantWithEmbedding,
+    runRelevantWithEmbeddingOutcome,
     runRelevantWithTimingHooks,
     runRelevantWithCorpus,
     searchProjectionJson,
@@ -110,7 +114,8 @@ import Adrai.Sqlite
     runPassageFtsChannels,
   )
 import Adrai.Types
-import Adrai.TextEmbedding (EmbeddingProvider, EmbeddingRetrieval (..), retrieveTextEmbeddings)
+import Adrai.TextEmbedding (EmbeddingProvider, EmbeddingRetrieval (..), EmbeddingOutcome (..), EmbeddingOutcomeProvider,
+  EmbeddingPreparation (..), EmbeddingPreparationStatus (..), EmbeddingPreparationReason (..), embeddingOutcomeRetrieval, retrieveTextEmbeddingsOutcome)
 import Adrai.Vector (VectorError)
 import Control.Exception (evaluate)
 import Data.Array (Array, (!), listArray)
@@ -399,7 +404,8 @@ data SearchProjection = SearchProjection
     searchProjectionLimit :: Int,
     searchProjectionPagination :: Pagination,
     searchProjectionResults :: [SearchResult],
-    searchProjectionExplodedDetails :: Map AdrId ExplodedProjection
+    searchProjectionExplodedDetails :: Map AdrId ExplodedProjection,
+    searchProjectionEmbeddingPreparation :: Maybe EmbeddingPreparation
   }
   deriving (Eq, Show)
 
@@ -535,7 +541,8 @@ data RelevantProjection = RelevantProjection
     relevantProjectionRetrieval :: RelevantRetrieval,
     relevantProjectionResults :: [RelevantResult],
     relevantProjectionDiagnostics :: Maybe RelevantDiagnostics,
-    relevantProjectionPagination :: Pagination
+    relevantProjectionPagination :: Pagination,
+    relevantProjectionEmbeddingPreparation :: Maybe EmbeddingPreparation
   }
   deriving (Eq, Show)
 
@@ -1383,16 +1390,19 @@ data SearchVectorDiagnostics = SearchVectorDiagnostics
 
 runCurrentSearch :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchRequest -> IO (Either SearchError SearchProjection)
 runCurrentSearch connection snapshot materialization request =
-  runCurrentSearchWithEmbedding retrieveTextEmbeddings connection snapshot materialization request
+  runCurrentSearchWithEmbeddingOutcome retrieveTextEmbeddingsOutcome connection snapshot materialization request
 
 runCurrentSearchWithCorpus :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> SearchRequest -> IO (Either SearchError SearchProjection)
 runCurrentSearchWithCorpus connection snapshot materialization corpus request =
   case validateSearchVectorCorpus materialization corpus of
     Left problem -> pure (Left (SearchVectorCorpusFailure problem))
-    Right () -> runCurrentSearchWithEmbedding retrieveTextEmbeddings connection snapshot materialization request
+    Right () -> runCurrentSearchWithEmbeddingOutcome retrieveTextEmbeddingsOutcome connection snapshot materialization request
 
 runCurrentSearchWithEmbedding :: EmbeddingProvider -> Connection -> ReadSnapshot -> SearchMaterialization -> SearchRequest -> IO (Either SearchError SearchProjection)
-runCurrentSearchWithEmbedding provider connection snapshot materialization originalRequest =
+runCurrentSearchWithEmbedding provider = runCurrentSearchWithEmbeddingOutcome (legacyEmbeddingProvider provider)
+
+runCurrentSearchWithEmbeddingOutcome :: EmbeddingOutcomeProvider -> Connection -> ReadSnapshot -> SearchMaterialization -> SearchRequest -> IO (Either SearchError SearchProjection)
+runCurrentSearchWithEmbeddingOutcome provider connection snapshot materialization originalRequest =
   let request = originalRequest in
   case prepareSearch snapshot materialization request of
     Left problem -> pure (Left problem)
@@ -1410,7 +1420,7 @@ runCurrentSearchWithEmbedding provider connection snapshot materialization origi
       | otherwise -> do
           let plan = buildQueryPlan (searchRequestQuery request) (sortOn fst (searchMaterializationAliases materialization))
           let allowedDocuments = Map.restrictKeys documentsById allowedItems
-          (semanticScores, sectionDetails, vectorDiagnostics, vectorAvailable) <-
+          (semanticScores, sectionDetails, vectorDiagnostics, vectorAvailable, preparation) <-
             buildRequestedVectorScores provider request allowedDocuments (searchMaterializationPassages materialization)
           let effectiveRequest = if vectorAvailable then originalRequest else originalRequest {searchRequestMode = FtsRetrieval}
               identifierScores = Map.empty
@@ -1474,7 +1484,8 @@ runCurrentSearchWithEmbedding provider connection snapshot materialization origi
                       Just reduced <- [Map.lookup adr reducedByAdr],
                       Just info <- [Map.lookup adr filterInfo]
                   ]
-            buildSearchProjection snapshot effectiveRequest results
+            projection <- buildSearchProjection snapshot effectiveRequest results
+            pure (projection {searchProjectionEmbeddingPreparation = preparation})
 
 buildSearchProjection :: ReadSnapshot -> SearchRequest -> [SearchResult] -> Either SearchError SearchProjection
 buildSearchProjection snapshot request allResults = do
@@ -1491,7 +1502,8 @@ buildSearchProjection snapshot request allResults = do
         searchProjectionLimit = searchRequestLimit request,
         searchProjectionPagination = pagination,
         searchProjectionResults = results,
-        searchProjectionExplodedDetails = explodedDetails
+        searchProjectionExplodedDetails = explodedDetails,
+        searchProjectionEmbeddingPreparation = Nothing
       }
   where
     projectResult result =
@@ -1538,16 +1550,19 @@ runRelevant = runRelevantWithTimingHooks (RelevantTimingHooks (pure ()) (pure ()
 
 runRelevantWithTimingHooks :: RelevantTimingHooks -> Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
 runRelevantWithTimingHooks timingHooks connection snapshot materialization request source =
-  runRelevantWithEmbedding retrieveTextEmbeddings timingHooks connection snapshot materialization request source
+  runRelevantWithEmbeddingOutcome retrieveTextEmbeddingsOutcome timingHooks connection snapshot materialization request source
 
 runRelevantWithCorpus :: Connection -> ReadSnapshot -> SearchMaterialization -> SearchVectorCorpus -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
 runRelevantWithCorpus connection snapshot materialization corpus request source =
   case validateSearchVectorCorpus materialization corpus of
     Left problem -> pure (Left (RelevantVectorCorpusFailure problem))
-    Right () -> runRelevantWithEmbedding retrieveTextEmbeddings (RelevantTimingHooks (pure ()) (pure ())) connection snapshot materialization request source
+    Right () -> runRelevantWithEmbeddingOutcome retrieveTextEmbeddingsOutcome (RelevantTimingHooks (pure ()) (pure ())) connection snapshot materialization request source
 
 runRelevantWithEmbedding :: EmbeddingProvider -> RelevantTimingHooks -> Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
-runRelevantWithEmbedding provider timingHooks connection snapshot materialization request source =
+runRelevantWithEmbedding provider = runRelevantWithEmbeddingOutcome (legacyEmbeddingProvider provider)
+
+runRelevantWithEmbeddingOutcome :: EmbeddingOutcomeProvider -> RelevantTimingHooks -> Connection -> ReadSnapshot -> SearchMaterialization -> RelevantRequest -> RelevantSource -> IO (Either RelevantError RelevantProjection)
+runRelevantWithEmbeddingOutcome provider timingHooks connection snapshot materialization request source =
   case prepareRelevant snapshot materialization request source of
     Left problem -> pure (Left problem)
     Right prepared ->
@@ -1680,15 +1695,16 @@ emptyRelevantRetrieval allChunks selectedChunks =
       relevantRetrievalExactRerankCandidates = 0
     }
 
-runRelevantCandidates :: EmbeddingProvider -> RelevantTimingHooks -> Connection -> ReadSnapshot -> RelevantRequest -> RelevantPrepared -> RelevantFileInfo -> [TextChunk] -> [TextChunk] -> IO (Either RelevantError RelevantProjection)
+runRelevantCandidates :: EmbeddingOutcomeProvider -> RelevantTimingHooks -> Connection -> ReadSnapshot -> RelevantRequest -> RelevantPrepared -> RelevantFileInfo -> [TextChunk] -> [TextChunk] -> IO (Either RelevantError RelevantProjection)
 runRelevantCandidates provider timingHooks connection snapshot request prepared fileInfo allChunks selectedChunks
   | Map.null documents = pure (scopeOnlyRelevantProjection request snapshot prepared fileInfo allChunks selectedChunks)
   | otherwise = do
-      embedded <- provider
+      outcome <- provider
         [(searchPassageId p, searchPassageText p) | p <- passages]
         (map (sourceEmbeddingText . textChunkText) selectedChunks)
         relevanceSectionLimit
-      let scores = maybe (replicate (length selectedChunks) Map.empty) embeddingRetrievalScores embedded
+      let embedded = embeddingOutcomeRetrieval outcome
+          scores = maybe (replicate (length selectedChunks) Map.empty) embeddingRetrievalScores embedded
       passageResult <- runRelevantPassageFts connection request selectedChunks passages
       case passageResult of
         Left problem -> pure (Left problem)
@@ -1713,7 +1729,8 @@ runRelevantCandidates provider timingHooks connection snapshot request prepared 
                     }
               case buildRelevantProjection request snapshot fileInfo retrieval results of
                 Left problem -> pure (Left problem)
-                Right paged -> do
+                Right base -> do
+                  let paged = base {relevantProjectionEmbeddingPreparation = outcomeReadiness outcome}
                   forcePublishedRelevantProjection paged
                   relevantResultsRanked timingHooks
                   pure (Right paged)
@@ -1756,7 +1773,7 @@ buildRelevantProjection request snapshot fileInfo retrieval allResults = do
   let scoreFloor = maybe relevanceFtsScoreFloor (const relevanceHybridScoreFloor) (relevantRetrievalSemanticVectorId retrieval)
       retained = filter ((>= scoreFloor) . relevantResultScore) allResults
   (results, pagination) <- mapLeft RelevantInvalidPage (paginate (relevantRequestPage request) (relevantRequestLimit request) retained)
-  Right (RelevantProjection (readSnapshotRevision snapshot) fileInfo retrieval results Nothing pagination)
+  Right (RelevantProjection (readSnapshotRevision snapshot) fileInfo retrieval results Nothing pagination Nothing)
 
 -- The retrieval clock stops only after the pair scores and passage payloads
 -- consumed by aggregation have been evaluated. Map.size would force keys and
@@ -2183,7 +2200,7 @@ summaryFtsChannelMaps candidates =
   where
     hitMap = Map.fromList . map (\hit -> (ftsHitItemId hit, ftsHitScore hit))
 
-buildRequestedVectorScores :: EmbeddingProvider -> SearchRequest -> Map Text SearchDocument -> [SearchPassage] -> IO (Map Text Double, Map Text SemanticEvidence, SearchVectorDiagnostics, Bool)
+buildRequestedVectorScores :: EmbeddingOutcomeProvider -> SearchRequest -> Map Text SearchDocument -> [SearchPassage] -> IO (Map Text Double, Map Text SemanticEvidence, SearchVectorDiagnostics, Bool, Maybe EmbeddingPreparation)
 buildRequestedVectorScores provider request documents passages
   | searchRequestMode request == FtsRetrieval = pure empty
   | otherwise = do
@@ -2192,19 +2209,57 @@ buildRequestedVectorScores provider request documents passages
             <> [("passage:" <> searchPassageId p, searchPassageText p) | p <- eligiblePassages]
       result <- provider corpus [searchRequestQuery request] (rankedSearchDepth * 30)
       pure $ case result of
-        Nothing -> empty
-        Just retrieval ->
+        EmbeddingNotReady _ -> let (a,b,c,d,_) = empty in (a,b,c,d,outcomeReadiness result)
+        EmbeddingReady retrieval ->
           let scores = case embeddingRetrievalScores retrieval of first : _ -> first; [] -> Map.empty
               summaries = Map.fromList [(key, score) | (key, _) <- Map.toList documents, Just score <- [Map.lookup ("document:" <> key) scores]]
               sections = Map.fromListWith (<>) [(searchPassageDocumentItemId p, [SemanticSectionScore (searchPassageSectionKind p) (searchPassageId p) (searchPassageText p) (score * searchPassageWeight p)]) | p <- eligiblePassages, Just score <- [Map.lookup ("passage:" <> searchPassageId p) scores]]
               items = Set.union (Map.keysSet summaries) (Map.keysSet sections)
               details = Map.fromSet (\key -> detailedSemanticScore (Map.findWithDefault 0 key summaries) (Map.findWithDefault [] key sections)) items
-           in (Map.map semanticEvidenceScore details, details, SearchVectorDiagnostics "tei+sqlite-vec-cosine" (Map.size documents) (Map.size sections) (length eligiblePassages) Nothing, True)
+           in (Map.map semanticEvidenceScore details, details, SearchVectorDiagnostics "tei+sqlite-vec-cosine" (Map.size documents) (Map.size sections) (length eligiblePassages) Nothing, True, Nothing)
   where
-    empty = (Map.empty, Map.empty, SearchVectorDiagnostics "fts-only" 0 0 0 Nothing, False)
+    empty = (Map.empty, Map.empty, SearchVectorDiagnostics "fts-only" 0 0 0 Nothing, False, Nothing)
 
 semanticSummaryText :: SearchDocument -> Text
 semanticSummaryText = searchVectorSemanticSummaryText
+
+-- Full revision corpus shared by search and relevance preparation. Interactive
+-- callers still restrict eligibility before invoking the provider.
+embeddingPreparationCorpus :: SearchMaterialization -> [(Text, Text)]
+embeddingPreparationCorpus materialization =
+  [("document:" <> searchDocumentItemId document, semanticSummaryText document) | document <- searchMaterializationDocuments materialization]
+    <> [("passage:" <> searchPassageId passage, searchPassageText passage) | passage <- searchMaterializationPassages materialization]
+
+legacyEmbeddingProvider :: EmbeddingProvider -> EmbeddingOutcomeProvider
+legacyEmbeddingProvider provider corpus queries limit = do
+  result <- provider corpus queries limit
+  pure (maybe (EmbeddingNotReady (EmbeddingPreparation PreparationUnavailable Nothing Nothing 0 Nothing 0 Nothing Nothing)) EmbeddingReady result)
+
+outcomeReadiness :: EmbeddingOutcome -> Maybe EmbeddingPreparation
+outcomeReadiness (EmbeddingNotReady progress)
+  | embeddingPreparationStatus progress /= PreparationComplete, Just _ <- embeddingPreparationReason progress = Just progress
+outcomeReadiness _ = Nothing
+
+embeddingPreparationJson :: Text -> EmbeddingPreparation -> JsonValue
+embeddingPreparationJson revision progress = object
+  ([ ("status", JsonString (case embeddingPreparationStatus progress of PreparationComplete -> "complete"; PreparationPending -> "pending"; PreparationUnavailable -> "unavailable")),
+     ("reason", maybeJson (JsonString . reasonText) (embeddingPreparationReason progress)),
+     ("model_identity", maybeJson JsonString (embeddingPreparationIdentity progress)),
+     ("dimensions", maybeJson intJson (embeddingPreparationDimensions progress)),
+     ("total_texts", intJson (embeddingPreparationTotalTexts progress)),
+     ("cache_hits", maybeJson intJson (embeddingPreparationCacheHits progress)),
+     ("prepared_texts", intJson (embeddingPreparationPreparedTexts progress)),
+     ("remaining_texts", maybeJson intJson (embeddingPreparationRemainingTexts progress))
+   ] <> [("action", object [("command", JsonString "prepare-embeddings"), ("at", JsonString revision)]) | embeddingPreparationStatus progress /= PreparationComplete])
+  where
+    reasonText CorpusMissing = "corpus_missing"
+    reasonText BudgetExhausted = "budget_exhausted"
+    reasonText NotConfigured = "not_configured"
+    reasonText InvalidConfiguration = "invalid_configuration"
+    reasonText ServiceUnavailable = "service_unavailable"
+    reasonText InvalidResponse = "invalid_response"
+    reasonText CacheUnavailable = "cache_unavailable"
+    reasonText NativeUnavailable = "native_unavailable"
 
 finalChannels :: RetrievalMode -> Map RetrievalChannel (Map Text Double) -> Map Text Double -> Map Text Double -> Map RetrievalChannel (Map Text Double)
 finalChannels mode fts semanticScores identifierScores =
@@ -2619,6 +2674,7 @@ relevantProjectionJson projection =
       ("results", JsonArray (map relevantResultJson (relevantProjectionResults projection)))
       ]
         <> maybe [] (\diagnostics -> [("diagnostics", relevantDiagnosticsJson diagnostics)]) (relevantProjectionDiagnostics projection)
+        <> maybe [] (\progress -> [("embedding_preparation", embeddingPreparationJson (revisionResolved (relevantProjectionRevision projection)) progress)]) (relevantProjectionEmbeddingPreparation projection)
     )
 
 relevantDiagnosticsJson :: RelevantDiagnostics -> JsonValue
@@ -2780,14 +2836,14 @@ confidenceLabelText HighConfidence = "high"
 searchProjectionJson :: SearchProjection -> JsonValue
 searchProjectionJson projection =
   object
-    [ ("schema", JsonString "adrai/search/v1"),
+    ([ ("schema", JsonString "adrai/search/v1"),
       ("as_of", JsonString (revisionResolved (searchProjectionRevision projection))),
       ("view", JsonString (searchViewName (searchProjectionView projection))),
       ("mode", JsonString (retrievalModeName (searchProjectionMode projection))),
       ("limit", JsonNumber (fromIntegral (searchProjectionLimit projection))),
       ("pagination", paginationJson (searchProjectionPagination projection)),
       ("results", JsonArray (map renderResult (searchProjectionResults projection)))
-    ]
+    ] <> maybe [] (\progress -> [("embedding_preparation", embeddingPreparationJson (revisionResolved (searchProjectionRevision projection)) progress)]) (searchProjectionEmbeddingPreparation projection))
   where
     revision = revisionResolved (searchProjectionRevision projection)
     renderResult result =

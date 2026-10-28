@@ -2,6 +2,20 @@
   "chunking_fingerprint": "sha256:Nh2G1cvQT0C8UX8nxSoUMS7NI2caJ_rJOHgTwncHEc4",
   "conflicted": {
     "as_of": "p3-04-conflict-resolved",
+    "embedding_preparation": {
+      "action": {
+        "at": "p3-04-conflict-resolved",
+        "command": "prepare-embeddings"
+      },
+      "cache_hits": null,
+      "dimensions": null,
+      "model_identity": null,
+      "prepared_texts": 0,
+      "reason": "not_configured",
+      "remaining_texts": null,
+      "status": "unavailable",
+      "total_texts": 6
+    },
     "file": {
       "blob": "blob-conflict",
       "bytes": 65,
@@ -146,6 +160,20 @@
   },
   "outside_scope": {
     "as_of": "rationale-resolved",
+    "embedding_preparation": {
+      "action": {
+        "at": "rationale-resolved",
+        "command": "prepare-embeddings"
+      },
+      "cache_hits": null,
+      "dimensions": null,
+      "model_identity": null,
+      "prepared_texts": 0,
+      "reason": "not_configured",
+      "remaining_texts": null,
+      "status": "unavailable",
+      "total_texts": 7
+    },
     "file": {
       "blob": "blob-rationale",
       "bytes": 95,
@@ -285,6 +313,20 @@
   },
   "resolved": {
     "as_of": "rationale-resolved",
+    "embedding_preparation": {
+      "action": {
+        "at": "rationale-resolved",
+        "command": "prepare-embeddings"
+      },
+      "cache_hits": null,
+      "dimensions": null,
+      "model_identity": null,
+      "prepared_texts": 0,
+      "reason": "not_configured",
+      "remaining_texts": null,
+      "status": "unavailable",
+      "total_texts": 7
+    },
     "file": {
       "blob": "blob-rationale",
       "bytes": 95,

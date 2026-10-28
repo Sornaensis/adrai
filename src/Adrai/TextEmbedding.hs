@@ -9,6 +9,16 @@ module Adrai.TextEmbedding
   ( TextEmbeddingConfig (..),
     EmbeddingProvider,
     EmbeddingRetrieval (..),
+    EmbeddingOutcome (..),
+    EmbeddingOutcomeProvider,
+    EmbeddingPreparation (..),
+    EmbeddingPreparationStatus (..),
+    EmbeddingPreparationReason (..),
+    embeddingOutcomeRetrieval,
+    retrieveTextEmbeddingsOutcome,
+    retrieveTextEmbeddingsOutcomeWith,
+    prepareTextEmbeddings,
+    prepareTextEmbeddingsWith,
     parseTextEmbeddingConfig,
     textEmbeddingConfigPath,
     loadTextEmbeddingConfig,
@@ -18,9 +28,14 @@ module Adrai.TextEmbedding
 
 import Adrai.Format (renderDigest)
 import Adrai.Provenance (sha256Digest)
-import Control.Exception (SomeException, SomeAsyncException, bracket, bracketOnError, catch, fromException, throwIO)
+import Control.Exception (Exception, SomeException, SomeAsyncException, bracket, bracketOnError, catch, fromException, mask, throwIO)
 import Control.Monad (forM, forM_, unless, when)
 import Data.Char (isDigit, isHexDigit)
+import Data.Bits ((.|.), shiftL)
+import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.Word (Word32)
+import GHC.Clock (getMonotonicTimeNSec)
+import GHC.Float (castWord32ToFloat)
 import Text.Read (readMaybe)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
@@ -58,6 +73,39 @@ data TextEmbeddingConfig = TextEmbeddingConfig
   } deriving (Eq, Show)
 
 type EmbeddingProvider = [(Text, Text)] -> [Text] -> Int -> IO (Maybe EmbeddingRetrieval)
+
+type EmbeddingOutcomeProvider = [(Text, Text)] -> [Text] -> Int -> IO EmbeddingOutcome
+
+data EmbeddingOutcome = EmbeddingReady EmbeddingRetrieval | EmbeddingNotReady EmbeddingPreparation
+  deriving (Eq, Show)
+
+data EmbeddingPreparationStatus = PreparationComplete | PreparationPending | PreparationUnavailable
+  deriving (Eq, Show)
+
+data EmbeddingPreparationReason
+  = CorpusMissing | BudgetExhausted | NotConfigured | InvalidConfiguration
+  | ServiceUnavailable | InvalidResponse | CacheUnavailable | NativeUnavailable
+  deriving (Eq, Show)
+
+-- Counts describe unique corpus texts, never request-local query/source texts.
+-- Nothing means that the live model/cache could not yet be inspected.
+data EmbeddingPreparation = EmbeddingPreparation
+  { embeddingPreparationStatus :: EmbeddingPreparationStatus,
+    embeddingPreparationIdentity :: Maybe Text,
+    embeddingPreparationDimensions :: Maybe Int,
+    embeddingPreparationTotalTexts :: Int,
+    embeddingPreparationCacheHits :: Maybe Int,
+    embeddingPreparationPreparedTexts :: Int,
+    embeddingPreparationRemainingTexts :: Maybe Int,
+    embeddingPreparationReason :: Maybe EmbeddingPreparationReason
+  } deriving (Eq, Show)
+
+data EmbeddingFailure = EmbeddingFailure EmbeddingPreparationReason deriving (Show)
+instance Exception EmbeddingFailure
+
+embeddingOutcomeRetrieval :: EmbeddingOutcome -> Maybe EmbeddingRetrieval
+embeddingOutcomeRetrieval (EmbeddingReady retrieval) = Just retrieval
+embeddingOutcomeRetrieval (EmbeddingNotReady _) = Nothing
 
 data EmbeddingRetrieval = EmbeddingRetrieval
   { embeddingRetrievalIdentity :: Text,
@@ -118,51 +166,120 @@ foreign import ccall safe "adrai_connect_bounded" boundedConnect :: CInt -> Ptr 
 #endif
 
 loadTextEmbeddingConfig :: IO (Maybe TextEmbeddingConfig)
-loadTextEmbeddingConfig = optional $ do
-  path <- textEmbeddingConfigPath
-  exists <- doesFileExist path
-  if not exists then pure Nothing else withBinaryFile path ReadMode $ \handle -> do
-    bytes <- BS.hGet handle 65537
-    when (BS.length bytes > 65536) (fail "embedding config too large")
-    text <- either (const (fail "embedding config is not UTF-8")) pure (Encoding.decodeUtf8' bytes)
-    pure (either (const Nothing) id (parseTextEmbeddingConfig text))
+loadTextEmbeddingConfig = either (const Nothing) id <$> loadTextEmbeddingConfigResult
+
+loadTextEmbeddingConfigResult :: IO (Either EmbeddingPreparationReason (Maybe TextEmbeddingConfig))
+loadTextEmbeddingConfigResult = (do
+    path <- textEmbeddingConfigPath
+    exists <- doesFileExist path
+    Right <$> if not exists then pure Nothing else withBinaryFile path ReadMode (\handle -> do
+      bytes <- BS.hGet handle 65537
+      when (BS.length bytes > 65536) (throwIO (EmbeddingFailure InvalidConfiguration))
+      text <- either (const (throwIO (EmbeddingFailure InvalidConfiguration))) pure (Encoding.decodeUtf8' bytes)
+      either (const (throwIO (EmbeddingFailure InvalidConfiguration))) pure (parseTextEmbeddingConfig text)))
+  `catch` \(problem :: SomeException) -> case fromException problem :: Maybe SomeAsyncException of
+    Just _ -> throwIO problem
+    Nothing -> pure (Left InvalidConfiguration)
 
 foreign import ccall unsafe "adrai_register_sqlite_vec" registerSqliteVec :: IO CInt
 
 -- | Each query checks the live model and embeds its request-local inputs before
 -- reading cached corpus vectors. A warm cache can never activate an offline model.
 retrieveTextEmbeddings :: [(Text, Text)] -> [Text] -> Int -> IO (Maybe EmbeddingRetrieval)
-retrieveTextEmbeddings corpus queries limit = optional $ do
-  config <- loadTextEmbeddingConfig
+retrieveTextEmbeddings corpus queries limit = embeddingOutcomeRetrieval <$> retrieveTextEmbeddingsOutcome corpus queries limit
+
+retrieveTextEmbeddingsOutcome :: EmbeddingOutcomeProvider
+retrieveTextEmbeddingsOutcome corpus queries limit
+  | null corpus || null queries || limit <= 0 = pure (EmbeddingNotReady (emptyPreparation corpus))
+  | otherwise = configuredOperation corpus $ \config cache -> retrieveTextEmbeddingsOutcomeWith config cache corpus queries limit
+
+prepareTextEmbeddings :: Int -> [(Text, Text)] -> IO EmbeddingPreparation
+prepareTextEmbeddings budget corpus
+  | null corpus = pure (emptyPreparation corpus)
+  | otherwise = outcomePreparation <$> configuredOperation corpus (\config cache -> runEmbeddingOperation True budget config cache corpus [] 0)
+
+prepareTextEmbeddingsWith :: TextEmbeddingConfig -> FilePath -> Int -> [(Text, Text)] -> IO EmbeddingPreparation
+prepareTextEmbeddingsWith config cache budget corpus = outcomePreparation <$> runEmbeddingOperation True budget config cache corpus [] 0
+
+configuredOperation :: [(Text, Text)] -> (TextEmbeddingConfig -> FilePath -> IO EmbeddingOutcome) -> IO EmbeddingOutcome
+configuredOperation corpus action = do
+  config <- loadTextEmbeddingConfigResult
   case config of
-    Nothing -> pure Nothing
-    Just configured -> do
-      cache <- getXdgDirectory XdgCache ("adrai" </> "text-embeddings-v1")
-      retrieveTextEmbeddingsWith configured cache corpus queries limit
+    Left reason -> unavailable reason
+    Right Nothing -> unavailable NotConfigured
+    Right (Just configured) -> (do
+        cache <- getXdgDirectory XdgCache ("adrai" </> "text-embeddings-v1")
+        action configured cache)
+      `catch` \(problem :: SomeException) -> case fromException problem :: Maybe SomeAsyncException of
+        Just _ -> throwIO problem
+        Nothing -> unavailable CacheUnavailable
+  where
+    unavailable reason = pure (EmbeddingNotReady ((initialPreparation corpus) {embeddingPreparationReason = Just reason}))
+
+initialPreparation :: [(Text, Text)] -> EmbeddingPreparation
+initialPreparation corpus = EmbeddingPreparation PreparationUnavailable Nothing Nothing
+  (Map.size (Map.fromList [(text, ()) | (_, text) <- corpus])) Nothing 0 Nothing Nothing
+
+emptyPreparation :: [(Text, Text)] -> EmbeddingPreparation
+emptyPreparation corpus = (initialPreparation corpus)
+  {embeddingPreparationStatus = PreparationComplete, embeddingPreparationCacheHits = Just 0, embeddingPreparationRemainingTexts = Just 0}
+
+outcomePreparation :: EmbeddingOutcome -> EmbeddingPreparation
+outcomePreparation (EmbeddingNotReady progress) = progress
+outcomePreparation (EmbeddingReady _) = error "preparation unexpectedly ran KNN"
 
 retrieveTextEmbeddingsWith :: TextEmbeddingConfig -> FilePath -> [(Text, Text)] -> [Text] -> Int -> IO (Maybe EmbeddingRetrieval)
-retrieveTextEmbeddingsWith config cacheDirectory corpus queries limit
-  | null corpus || null queries || limit <= 0 = pure Nothing
+retrieveTextEmbeddingsWith config cacheDirectory corpus queries limit =
+  embeddingOutcomeRetrieval <$> retrieveTextEmbeddingsOutcomeWith config cacheDirectory corpus queries limit
+
+retrieveTextEmbeddingsOutcomeWith :: TextEmbeddingConfig -> FilePath -> EmbeddingOutcomeProvider
+retrieveTextEmbeddingsOutcomeWith = runEmbeddingOperation False 30000
+
+runEmbeddingOperation :: Bool -> Int -> TextEmbeddingConfig -> FilePath -> [(Text, Text)] -> [Text] -> Int -> IO EmbeddingOutcome
+runEmbeddingOperation full budget config cacheDirectory corpus queries limit
+  | null corpus || not full && (null queries || limit <= 0) = pure (EmbeddingNotReady (emptyPreparation corpus))
   | textEmbeddingBatchSize config < 1 || textEmbeddingBatchSize config > 64
       || textEmbeddingTimeoutMs config < 100 || textEmbeddingTimeoutMs config > 10000
-      || not (validEndpoint (textEmbeddingEndpoint config)) = pure Nothing
-  | otherwise = optional $ do
-      -- Bound the whole optional phase as well as individual HTTP requests.
-      result <- timeout 30000000 $ do
+      || not (validEndpoint (textEmbeddingEndpoint config)) || budget < 100 || budget > 600000 =
+      pure (EmbeddingNotReady ((initialPreparation corpus) {embeddingPreparationReason = Just InvalidConfiguration}))
+  | otherwise = do
+      progressRef <- newIORef (initialPreparation corpus)
+      failureRef <- newIORef ServiceUnavailable
+      started <- getMonotonicTimeNSec
+      let operationDeadline = started + fromIntegral budget * 1000000
+      deadlineRef <- newIORef operationDeadline
+      let failed reason = do
+            progress <- readIORef progressRef
+            pure (EmbeddingNotReady (progress {embeddingPreparationStatus = if reason == BudgetExhausted then PreparationPending else PreparationUnavailable, embeddingPreparationReason = Just reason}))
+          handleFailure (problem :: SomeException) = do
+            rethrowCancellation problem
+            deadline <- readIORef deadlineRef
+            now <- getMonotonicTimeNSec
+            reason <- case embeddingFailureReason problem of
+              Just category -> pure category
+              Nothing | now >= deadline -> pure BudgetExhausted
+              Nothing -> readIORef failureRef
+            Just <$> failed reason
+      result <- (timeout (budget * 1000) $ do
         manager <- HTTP.newManager (HTTP.managerSetProxy HTTP.noProxy HTTP.defaultManagerSettings
           { HTTP.managerIdleConnectionCount = 0,
-            HTTP.managerRawConnection = pure (\_ -> localConnection (textEmbeddingTimeoutMs config))
+            HTTP.managerRawConnection = pure (\_ host port -> do
+              remaining <- remainingTimeout deadlineRef
+              localConnection remaining host port)
           })
         native <- registerSqliteVec
-        unless (native == 0) (fail "sqlite-vec unavailable")
-        info <- requestJson manager "/info" (Nothing :: Maybe Aeson.Value) >>= decodeInfo
+        unless (native == 0) (throwIO (EmbeddingFailure NativeUnavailable))
+        info <- requestJson deadlineRef manager "/info" (Nothing :: Maybe Aeson.Value) >>= decodeInfo
         let (model, revision) = info
-        unless (maybe True (== model) (textEmbeddingModel config)) (fail "TEI model mismatch")
-        queryVectors <- embedTexts manager queries
-        dimensions <- validateVectors Nothing (length queries) queryVectors
+        unless (maybe True (== model) (textEmbeddingModel config)) (throwIO (EmbeddingFailure InvalidResponse))
+        let ephemeral = if full then ["adrai embedding dimension probe"] else queries
+        queryVectors <- embedTexts deadlineRef manager ephemeral
+        dimensions <- validateVectors Nothing (length ephemeral) queryVectors
         let identity = digest (LBS.toStrict (Aeson.encode (textEmbeddingEndpoint config, model, revision, dimensions, "tei-normalized-f32-cosine-truncate-v1" :: Text)))
             inputs = Map.fromList [(digest (Encoding.encodeUtf8 text), text) | (_, text) <- corpus]
-        unless (Map.size (Map.fromList corpus) == length corpus) (fail "duplicate embedding item")
+        unless (Map.size (Map.fromList corpus) == length corpus) (throwIO (EmbeddingFailure InvalidResponse))
+        writeIORef progressRef ((initialPreparation corpus) {embeddingPreparationIdentity = Just identity, embeddingPreparationDimensions = Just dimensions})
+        writeIORef failureRef CacheUnavailable
         createDirectoryIfMissing True cacheDirectory
         -- ':' is an NTFS stream separator, not a portable filename character.
         let cacheName = Text.unpack (Text.replace ":" "-" identity) <> ".sqlite"
@@ -171,13 +288,43 @@ retrieveTextEmbeddingsWith config cacheDirectory corpus queries limit
           execute_ cache "CREATE TABLE IF NOT EXISTS embedding(input_hash TEXT PRIMARY KEY,vector BLOB NOT NULL)"
           cached <- readCachedVectors cache dimensions (Map.keys inputs)
           let missing = [(key, text) | (key, text) <- Map.toAscList inputs, Map.findWithDefault Nothing key cached == Nothing]
-          newVectors <- embedTexts manager (map snd missing)
-          _ <- validateVectors (Just dimensions) (length missing) newVectors
-          let fresh = Map.fromList (zip (map fst missing) (map packFloat32 newVectors))
-              stored = Map.union fresh (Map.mapMaybe id cached)
-          -- Publish only a complete validated batch, never a partial model.
-          withTransaction cache $ forM_ (Map.toAscList fresh) $ \(key, bytes) ->
-            execute cache "INSERT OR REPLACE INTO embedding(input_hash,vector) VALUES (?,?)" (key, bytes)
+              remaining = length missing
+              progress = EmbeddingPreparation PreparationPending (Just identity) (Just dimensions) (Map.size inputs) (Just (Map.size inputs - remaining)) 0 (Just remaining) (Just CorpusMissing)
+          writeIORef progressRef progress
+          if not full && remaining > 32 then pure (EmbeddingNotReady progress) else do
+            now <- getMonotonicTimeNSec
+            unless full (writeIORef deadlineRef (min operationDeadline (now + 1000000000)))
+            let publish chunk = do
+                  writeIORef failureRef ServiceUnavailable
+                  newVectors <- embedTexts deadlineRef manager (map snd chunk)
+                  _ <- validateVectors (Just dimensions) (length chunk) newVectors
+                  let rows = zip (map fst chunk) (map packFloat32 newVectors)
+                  writeIORef failureRef CacheUnavailable
+                  -- Insertion remains cancellable/rollback-safe. Once COMMIT
+                  -- succeeds, publish matching counts before delivering a cancel.
+                  mask $ \restore -> do
+                    withTransaction cache $ restore (executeMany cache "INSERT OR REPLACE INTO embedding(input_hash,vector) VALUES (?,?)" rows)
+                    previous <- readIORef progressRef
+                    writeIORef progressRef (previous {embeddingPreparationPreparedTexts = embeddingPreparationPreparedTexts previous + length chunk,
+                      embeddingPreparationRemainingTexts = subtract (length chunk) <$> embeddingPreparationRemainingTexts previous})
+                  pure (Map.fromList rows)
+            repaired <- if full
+              then forM_ (batches (textEmbeddingBatchSize config) missing) (\chunk -> publish chunk >> pure ()) >> pure (Just [])
+              else timeout 1000000 (mapM publish (batches (textEmbeddingBatchSize config) missing))
+            writeIORef deadlineRef operationDeadline
+            case repaired of
+              Nothing -> failed BudgetExhausted
+              Just chunks -> do
+                complete <- readIORef progressRef
+                let ready = complete {embeddingPreparationStatus = PreparationComplete, embeddingPreparationReason = Nothing}
+                    stored = Map.union (Map.unions chunks) (Map.mapMaybe id cached)
+                writeIORef progressRef ready
+                if full then pure (EmbeddingNotReady ready) else do
+                  writeIORef failureRef NativeUnavailable
+                  retrieveVectors dimensions identity stored queryVectors) `catch` handleFailure
+      maybe (failed BudgetExhausted) pure result
+  where
+    retrieveVectors dimensions identity stored queryVectors =
           bracket (open ":memory:") close $ \vectors -> do
             -- Eligibility precedes KNN: only the caller's eligible corpus is
             -- inserted. No post-K filter can hide eligible neighbours.
@@ -192,9 +339,14 @@ retrieveTextEmbeddingsWith config cacheDirectory corpus queries limit
               rows <- query vectors "SELECT item_id,distance FROM candidates WHERE embedding MATCH ? AND k=? ORDER BY distance" (packFloat32 vector, min limit (length corpus)) :: IO [(Text, Double)]
               unless (all (finite . snd) rows) (fail "nonfinite sqlite-vec distance")
               pure (Map.fromList [(key, max (-1) (min 1 (1 - distance))) | (key, distance) <- rows])
-            pure (Just (EmbeddingRetrieval identity dimensions scores))
-      pure (maybe Nothing id result)
-  where
+            pure (EmbeddingReady (EmbeddingRetrieval identity dimensions scores))
+    remainingTimeout deadlineRef = do
+      deadline <- readIORef deadlineRef
+      now <- getMonotonicTimeNSec
+      when (now >= deadline) (throwIO (EmbeddingFailure BudgetExhausted))
+      -- Ceil to the transport's millisecond granularity: flooring would expire
+      -- a request before the monotonic operation/repair deadline was reached.
+      pure (min (textEmbeddingTimeoutMs config) (fromIntegral ((deadline - now + 999999) `div` 1000000)))
     -- HTTP's public connection hook keeps all sockets under bracketed ownership.
     -- Numeric getAddrInfo cannot wait on a resolver; localhost has one IPv4 loopback
     -- address. Windows connect uses nonblocking select, never concurrent closesocket.
@@ -225,36 +377,55 @@ retrieveTextEmbeddingsWith config cacheDirectory corpus queries limit
         dropBrackets ('[' : rest) = reverse (dropWhile (== ']') (reverse rest))
         dropBrackets value = value
     
-    requestJson manager suffix body = do
+    requestJson deadlineRef manager suffix body = do
+      remaining <- remainingTimeout deadlineRef
       base <- HTTP.parseRequest (Text.unpack (textEmbeddingEndpoint config <> suffix))
       let request = base
             { HTTP.method = maybe "GET" (const "POST") body,
               HTTP.requestHeaders = [("Content-Type", "application/json")],
               HTTP.requestBody = maybe (HTTP.RequestBodyBS "") (HTTP.RequestBodyLBS . Aeson.encode) body,
-              HTTP.responseTimeout = HTTP.responseTimeoutMicro (textEmbeddingTimeoutMs config * 1000),
+              HTTP.responseTimeout = HTTP.responseTimeoutMicro (remaining * 1000),
               HTTP.redirectCount = 0
             }
-      outcome <- timeout (textEmbeddingTimeoutMs config * 1000) $
+      outcome <- timeout (remaining * 1000) $
         HTTP.withResponse request manager $ \response -> do
-          unless (statusCode (HTTP.responseStatus response) == 200) (fail "TEI unavailable")
+          unless (statusCode (HTTP.responseStatus response) == 200) (throwIO (EmbeddingFailure ServiceUnavailable))
           bytes <- readBounded (HTTP.responseBody response) (8 * 1024 * 1024)
-          either (const (fail "malformed TEI JSON")) pure (Aeson.eitherDecodeStrict' bytes)
-      maybe (fail "TEI request timeout") pure outcome
-    decodeInfo value = either (const (fail "invalid TEI info")) pure (Aeson.parseEither parser value)
+          either (const (throwIO (EmbeddingFailure InvalidResponse))) pure (Aeson.eitherDecodeStrict' bytes)
+      maybe (throwIO (EmbeddingFailure (if remaining < textEmbeddingTimeoutMs config then BudgetExhausted else ServiceUnavailable))) pure outcome
+    decodeInfo value = either (const (throwIO (EmbeddingFailure InvalidResponse))) pure (Aeson.parseEither parser value)
       where
         parser = Aeson.withObject "TEI info" $ \o -> do
           model <- o .: "model_id"
           revision <- o .:? "model_sha"
           when (Text.null model) (fail "empty model")
           pure (model, revision :: Maybe Text)
-    embedTexts _ [] = pure []
-    embedTexts manager texts = do
-      unless (all ((<= 32768) . BS.length . Encoding.encodeUtf8) texts) (fail "embedding input too large")
+    embedTexts _ _ [] = pure []
+    embedTexts deadlineRef manager texts = do
+      unless (all ((<= 32768) . BS.length . Encoding.encodeUtf8) texts) (throwIO (EmbeddingFailure InvalidResponse))
       fmap concat $ forM (batches (textEmbeddingBatchSize config) texts) $ \batch -> do
-        value <- requestJson manager "/embed" (Just (Aeson.object ["inputs" .= batch, "normalize" .= True, "truncate" .= True]))
-        vectors <- either (const (fail "invalid TEI embeddings")) pure (Aeson.parseEither Aeson.parseJSON value)
+        value <- requestJson deadlineRef manager "/embed" (Just (Aeson.object ["inputs" .= batch, "normalize" .= True, "truncate" .= True]))
+        vectors <- either (const (throwIO (EmbeddingFailure InvalidResponse))) pure (Aeson.parseEither Aeson.parseJSON value)
         _ <- validateVectors Nothing (length batch) vectors
         pure vectors
+
+-- http-client can wrap connection-hook exceptions. Cancellation must remain
+-- exceptional through those wrappers; typed validation failures keep their cause.
+rethrowCancellation :: SomeException -> IO ()
+rethrowCancellation problem = case fromException problem :: Maybe SomeAsyncException of
+  Just _ -> throwIO problem
+  Nothing -> maybe (pure ()) rethrowCancellation (transportCause problem)
+
+embeddingFailureReason :: SomeException -> Maybe EmbeddingPreparationReason
+embeddingFailureReason problem = case fromException problem of
+  Just (EmbeddingFailure category) -> Just category
+  Nothing -> transportCause problem >>= embeddingFailureReason
+
+transportCause :: SomeException -> Maybe SomeException
+transportCause problem = case fromException problem of
+  Just (HTTP.HttpExceptionRequest _ (HTTP.InternalException cause)) -> Just cause
+  Just (HTTP.HttpExceptionRequest _ (HTTP.ConnectionFailure cause)) -> Just cause
+  _ -> Nothing
 
 -- Read only the requested text hashes, with a bounded number of SQL parameters.
 -- Reconstruct by hash because SQLite does not promise the order of IN results.
@@ -265,7 +436,20 @@ readCachedVectors cache dimensions hashes =
     let statement = Query ("SELECT input_hash,vector FROM embedding WHERE input_hash IN (" <> Text.intercalate "," (replicate (length chunk) "?") <> ")")
     rows <- query cache statement chunk :: IO [(Text, BS.ByteString)]
     pure (Map.fromListWith (\_ _ -> Nothing)
-      [(key, if BS.length bytes == dimensions * 4 then Just bytes else Nothing) | (key, bytes) <- rows])
+      [(key, if validCachedVector dimensions bytes then Just bytes else Nothing) | (key, bytes) <- rows])
+
+validCachedVector :: Int -> BS.ByteString -> Bool
+validCachedVector dimensions bytes = BS.length bytes == dimensions * 4 && go 0 False
+  where
+    go offset nonzero
+      | offset == BS.length bytes = nonzero
+      | otherwise = let value = castWord32ToFloat (word offset)
+         in not (isNaN value || isInfinite value)
+              && if value /= 0 then go (offset + 4) True else go (offset + 4) nonzero
+    word offset = fromIntegral (BS.index bytes offset)
+      .|. (fromIntegral (BS.index bytes (offset + 1)) `shiftL` 8)
+      .|. (fromIntegral (BS.index bytes (offset + 2)) `shiftL` 16)
+      .|. (fromIntegral (BS.index bytes (offset + 3)) `shiftL` 24) :: Word32
 
 validateVectors :: Maybe Int -> Int -> [[Double]] -> IO Int
 validateVectors expected count vectors = do
@@ -274,7 +458,7 @@ validateVectors expected count vectors = do
     && maybe True (== dimensions) expected
     && all (\v -> length v == dimensions && all finite v
       && any (\x -> (realToFrac x :: Float) /= 0) v
-      && all (\x -> finite (realToFrac (realToFrac x :: Float))) v) vectors) (fail "invalid embedding shape or number")
+      && all (\x -> finite (realToFrac (realToFrac x :: Float))) v) vectors) (throwIO (EmbeddingFailure InvalidResponse))
   pure dimensions
 
 packFloat32 :: [Double] -> BS.ByteString
@@ -296,12 +480,6 @@ readBounded reader limit = go [] 0
     go chunks size = do
       chunk <- HTTP.brRead reader
       let next = size + BS.length chunk
-      when (next > limit) (fail "TEI response too large")
+      when (next > limit) (throwIO (EmbeddingFailure InvalidResponse))
       if BS.null chunk then pure (BS.concat (reverse chunks)) else go (chunk : chunks) next
 
--- Optional transport/config/cache/native failures must not mask cancellation.
-optional :: IO (Maybe a) -> IO (Maybe a)
-optional action = action `catch` \(problem :: SomeException) ->
-  case fromException problem :: Maybe SomeAsyncException of
-    Just _ -> throwIO problem
-    Nothing -> pure Nothing

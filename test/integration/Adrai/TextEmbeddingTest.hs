@@ -31,7 +31,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import Database.SQLite.Simple (Only (..), close, execute, execute_, open, query_)
 import Network.HTTP.Types (status200, status503)
-import Network.Wai (Application, pathInfo, responseLBS, responseStream, strictRequestBody)
+import Network.Wai (Application, pathInfo, responseLBS, responseRaw, responseStream, strictRequestBody)
 import Network.Wai.Handler.Warp (testWithApplication)
 import System.Directory (createDirectoryIfMissing, listDirectory)
 import System.Environment (getEnvironment, getExecutablePath)
@@ -43,7 +43,7 @@ import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
-data Behavior = Healthy | ThreeDimensions | Offline | Malformed | WrongCount | MixedDimensions | Zero | Tiny | Slow | SlowBody deriving (Eq, Show)
+data Behavior = Healthy | ThreeDimensions | Offline | Malformed | WrongCount | MixedDimensions | Zero | Tiny | Overflow | Disconnected | Slow | SlowBody | AfterBatches Int Behavior deriving (Eq, Show)
 
 tests :: TestTree
 tests = testGroup "optional TEI and sqlite-vec"
@@ -101,15 +101,23 @@ fixture behavior model inputs request respond = do
               batch = case Aeson.eitherDecode body >>= Aeson.parseEither parseBatch of
                 Right values -> values
                 Left _ -> []
+          prior <- readIORef inputs
           modifyIORef' inputs (<> [batch])
-          let vectors = case state of
+          let current = case state of AfterBatches count next | length prior >= count -> next; _ -> state
+          if current == Slow then threadDelay 2000000 else pure ()
+          let vectors = case current of
                 WrongCount -> []
                 MixedDimensions -> zipWith (\n _ -> replicate n (1 :: Double)) [2..] batch
                 Zero -> replicate (length batch) [0,0]
                 Tiny -> replicate (length batch) [1e-300,0]
+                Overflow -> replicate (length batch) [1e100,0]
                 ThreeDimensions -> map ((<> [0]) . vector) batch
                 _ -> map vector batch
-          respond (json (Aeson.toJSON vectors))
+          case current of
+            Offline -> respond (responseLBS status503 [] "unavailable")
+            Disconnected -> respond (responseRaw (\_ _ -> pure ()) (responseLBS status503 [] "unavailable"))
+            Malformed -> respond (responseLBS status200 [] "invalid JSON")
+            _ -> respond (json (Aeson.toJSON vectors))
         _ -> respond (responseLBS status503 [] "unexpected endpoint")
   where
     json value = responseLBS status200 [("Content-Type", "application/json")] (Aeson.encode value)
@@ -157,6 +165,7 @@ cacheContract = withTei $ \config behavior model inputs cache -> do
   batches <- readIORef inputs
   assertBool "batch limit applies" (all ((<=2) . length) batches)
   cacheReadBoundaryContract
+  preparationContract
 
 -- More than two cache-read and vector-insert chunks, with a duplicate text and
 -- a non-full final chunk.
@@ -167,6 +176,9 @@ cacheReadBoundaryContract = withTei $ \config _ _ inputs cache -> do
       corpus = unique <> [("duplicate-text", "same-2")]
       retrieve values = retrieveTextEmbeddingsWith config cache values ["query"] (length corpus)
       expected = Just [Map.fromList [(key, if "opposite" `Text.isInfixOf` text then 0 else 1) | (key, text) <- corpus]]
+  prepared <- prepareTextEmbeddingsWith config cache 120000 corpus
+  embeddingPreparationStatus prepared @?= PreparationComplete
+  embeddingPreparationPreparedTexts prepared @?= 513
   first <- retrieve corpus
   fmap embeddingRetrievalScores first @?= expected
   writeIORef inputs []
@@ -210,6 +222,106 @@ cacheReadBoundaryContract = withTei $ \config _ _ inputs cache -> do
       assertBool "duplicate item IDs remain rejected" (isNothing rejected)
       readIORef inputs >>= (@?= [["query"]])
     _ -> fail "expected one cache file for bounded-read contract"
+
+preparationContract :: IO ()
+preparationContract = do
+  -- A bad later batch must not undo earlier complete validated transactions.
+  forM_ [WrongCount, MixedDimensions, ThreeDimensions, Zero, Tiny, Overflow, Malformed, Offline, Disconnected] $ \bad ->
+    withTei $ \config behavior _ inputs cache -> do
+      let corpus = [(Text.pack (show n), "same-" <> Text.pack (show n)) | n <- [1 :: Int .. 6]]
+      writeIORef behavior (AfterBatches 2 bad) -- ephemeral probe, valid batch, bad batch
+      partial <- prepareTextEmbeddingsWith config cache 120000 corpus
+      embeddingPreparationStatus partial @?= PreparationUnavailable
+      embeddingPreparationReason partial @?= Just (if bad `elem` [Offline, Disconnected] then ServiceUnavailable else InvalidResponse)
+      embeddingPreparationPreparedTexts partial @?= 2
+      embeddingPreparationRemainingTexts partial @?= Just 4
+      cacheRowCount cache >>= (@?= 2)
+      calls <- readIORef inputs
+      committedTexts <- case calls of _ : firstBatch : _ -> pure firstBatch; _ -> fail "expected committed first batch"
+      writeIORef behavior Healthy
+      writeIORef inputs []
+      resumed <- prepareTextEmbeddingsWith config cache 120000 corpus
+      embeddingPreparationStatus resumed @?= PreparationComplete
+      embeddingPreparationCacheHits resumed @?= Just 2
+      embeddingPreparationPreparedTexts resumed @?= 4
+      embeddingPreparationRemainingTexts resumed @?= Just 0
+      resumedCalls <- readIORef inputs
+      assertBool "resume does not repeat committed corpus texts" (all (`notElem` concat resumedCalls) committedTexts)
+      cacheRowCount cache >>= (@?= 6) -- no dimension probe/query/source persisted
+      -- Same-length invalid float32 cache bytes are misses, too.
+      files <- listDirectory cache
+      case files of
+        [file] -> bracket (open (cache </> file)) close $ \stored -> do
+          execute_ stored "UPDATE embedding SET vector=zeroblob(8) WHERE input_hash=(SELECT min(input_hash) FROM embedding)"
+          repaired <- prepareTextEmbeddingsWith config cache 120000 corpus
+          embeddingPreparationPreparedTexts repaired @?= 1
+          execute stored "UPDATE embedding SET vector=? WHERE input_hash=(SELECT min(input_hash) FROM embedding)" (Only (BS.pack [0,0,128,127,0,0,0,0]))
+          repairedFinite <- prepareTextEmbeddingsWith config cache 120000 corpus
+          embeddingPreparationPreparedTexts repairedFinite @?= 1
+        _ -> fail "expected one preparation cache"
+  forM_ [False, True] $ \full -> withTei $ \config behavior _ inputs cache -> do
+    let corpus = [(Text.pack (show n), "same-" <> Text.pack (show n)) | n <- [1 :: Int .. 6]]
+        bounded = config {textEmbeddingTimeoutMs = 10000}
+    writeIORef behavior (AfterBatches 2 Slow)
+    progress <- if full then prepareTextEmbeddingsWith bounded cache 1000 corpus
+      else do
+        outcome <- retrieveTextEmbeddingsOutcomeWith bounded cache corpus ["query"] 6
+        case outcome of EmbeddingNotReady value -> pure value; _ -> fail "partial corpus must not run KNN"
+    assertBool ("deadline progress " <> show (full, progress)) (embeddingPreparationStatus progress == PreparationPending)
+    embeddingPreparationReason progress @?= Just BudgetExhausted
+    embeddingPreparationPreparedTexts progress @?= 2
+    embeddingPreparationRemainingTexts progress @?= Just 4
+    length <$> readIORef inputs >>= (@?= 3) -- no next repair request after budget
+    cacheRowCount cache >>= (@?= 2)
+    writeIORef behavior Healthy
+    ready <- retrieveTextEmbeddingsWith config cache corpus ["query"] 6
+    assertBool "small remaining delta heals automatically" (isJust ready)
+  forM_ [False, True] $ \full -> withTei $ \config behavior _ inputs cache -> do
+    let corpus = [(Text.pack (show n), "same-" <> Text.pack (show n)) | n <- [1 :: Int .. 6]]
+    writeIORef behavior (AfterBatches 2 Slow)
+    worker <- async (if full
+      then void (prepareTextEmbeddingsWith (config {textEmbeddingTimeoutMs = 10000}) cache 120000 corpus)
+      else void (retrieveTextEmbeddingsOutcomeWith (config {textEmbeddingTimeoutMs = 10000}) cache corpus ["query"] 6))
+    let awaitThird = do calls <- readIORef inputs; if length calls >= 3 then pure () else threadDelay 1000 >> awaitThird
+    observed <- timeout 2000000 awaitThird
+    observed @?= Just ()
+    cancel worker
+    cancelled <- waitCatch worker
+    assertBool "preparation cancellation remains exceptional" (case cancelled of Left _ -> True; _ -> False)
+    cacheRowCount cache >>= (@?= 2)
+    writeIORef behavior Healthy
+    resumed <- prepareTextEmbeddingsWith config cache 120000 corpus
+    embeddingPreparationCacheHits resumed @?= Just 2
+    embeddingPreparationPreparedTexts resumed @?= 4
+  withTei $ \config _ _ inputs cache -> do
+    let corpus n = [(Text.pack (show i), "same-" <> Text.pack (show i)) | i <- [1 :: Int .. n]]
+    empty <- prepareTextEmbeddingsWith config cache 120000 []
+    embeddingPreparationStatus empty @?= PreparationComplete
+    readIORef inputs >>= (@?= [])
+    invalid <- prepareTextEmbeddingsWith config cache 99 (corpus 1)
+    embeddingPreparationReason invalid @?= Just InvalidConfiguration
+    readIORef inputs >>= (@?= [])
+    pending <- retrieveTextEmbeddingsOutcomeWith config cache (corpus 33) ["query"] 33
+    case pending of
+      EmbeddingNotReady progress -> do
+        embeddingPreparationStatus progress @?= PreparationPending
+        embeddingPreparationRemainingTexts progress @?= Just 33
+        embeddingPreparationPreparedTexts progress @?= 0
+      _ -> fail "bulk corpus must use explicit preparation"
+    readIORef inputs >>= (@?= [["query"]])
+    ready <- retrieveTextEmbeddingsWith config cache (corpus 32) ["query"] 32
+    assertBool "32 missing texts recover automatically" (isJust ready)
+    edited <- retrieveTextEmbeddingsWith config cache (corpus 32 <> [("edit", "same-edit")]) ["query"] 33
+    assertBool "small post-edit delta recovers automatically" (isJust edited)
+    cacheRowCount cache >>= (@?= 33)
+
+cacheRowCount :: FilePath -> IO Int
+cacheRowCount cache = do
+  files <- listDirectory cache
+  counts <- mapM (\file -> bracket (open (cache </> file)) close $ \stored -> do
+    rows <- query_ stored "SELECT count(*) FROM embedding" :: IO [Only Int]
+    case rows of [Only count] -> pure count; _ -> fail "invalid cache count") files
+  pure (sum counts)
 
 unavailableContract :: IO ()
 unavailableContract = withTei $ \config behavior _ _ cache -> do
@@ -282,6 +394,35 @@ queryContract = withTei $ \config behavior _ inputs cache -> bracket (open ":mem
   healthy <- fmap must (runRelevantWithEmbedding provider hooks connection snapshot materialization relevant source)
   relevantRetrievalStrategy (relevantProjectionRetrieval healthy) @?= "tei+sqlite-vec+passage-fts"
   assertBool "healthy relevance uses external vectors" (isJust (relevantRetrievalSemanticVectorId (relevantProjectionRetrieval healthy)))
+  richWarm <- fmap must (runCurrentSearchWithEmbeddingOutcome (retrieveTextEmbeddingsOutcomeWith config cache) connection snapshot materialization (request VectorRetrieval "current"))
+  renderSearchProjection richWarm @?= renderSearchProjection vector
+  richRelevant <- fmap must (runRelevantWithEmbeddingOutcome (retrieveTextEmbeddingsOutcomeWith config cache) hooks connection snapshot materialization relevant source)
+  renderRelevantProjection richRelevant @?= renderRelevantProjection healthy
+  let progress = EmbeddingPreparation PreparationPending (Just "known-model") (Just 2) 33 (Just 0) 0 (Just 33) (Just CorpusMissing)
+      pending _ _ _ = pure (EmbeddingNotReady progress)
+      unavailable _ _ _ = pure (EmbeddingNotReady (progress {embeddingPreparationStatus = PreparationUnavailable, embeddingPreparationReason = Just ServiceUnavailable,
+        embeddingPreparationIdentity = Nothing, embeddingPreparationDimensions = Nothing, embeddingPreparationCacheHits = Nothing, embeddingPreparationRemainingTexts = Nothing}))
+      field name value = case value of Aeson.Object object -> KeyMap.lookup name object; _ -> Nothing
+      decodeProjection = must . Aeson.eitherDecodeStrict'
+  pendingSearch <- fmap must (runCurrentSearchWithEmbeddingOutcome pending connection snapshot materialization (request VectorRetrieval "current"))
+  searchProjectionMode pendingSearch @?= FtsRetrieval
+  renderSearchProjection (pendingSearch {searchProjectionEmbeddingPreparation = Nothing}) @?= renderSearchProjection lexical
+  let metadata = field "embedding_preparation" (decodeProjection (renderSearchProjection pendingSearch))
+  (metadata >>= field "status") @?= Just (Aeson.String "pending")
+  (metadata >>= field "reason") @?= Just (Aeson.String "corpus_missing")
+  (metadata >>= field "action" >>= field "command") @?= Just (Aeson.String "prepare-embeddings")
+  (metadata >>= field "action" >>= field "at") @?= Just (Aeson.String (revisionResolved (readSnapshotRevision snapshot)))
+  unavailableSearch <- fmap must (runCurrentSearchWithEmbeddingOutcome unavailable connection snapshot materialization (request VectorRetrieval "current"))
+  let unavailableMetadata = field "embedding_preparation" (decodeProjection (renderSearchProjection unavailableSearch))
+  (unavailableMetadata >>= field "status") @?= Just (Aeson.String "unavailable")
+  forM_ ["model_identity", "dimensions", "cache_hits", "remaining_texts"] $ \key ->
+    (unavailableMetadata >>= field key) @?= Just Aeson.Null
+  pendingRelevant <- fmap must (runRelevantWithEmbeddingOutcome pending hooks connection snapshot materialization relevant source)
+  relevantRetrievalStrategy (relevantProjectionRetrieval pendingRelevant) @?= "passage-fts"
+  assertBool "relevance carries request-local pending progress" (isJust (relevantProjectionEmbeddingPreparation pendingRelevant))
+  forM_ [request FtsRetrieval "current", request HybridRetrieval ""] $ \skipped -> do
+    noCalls <- fmap must (runCurrentSearchWithEmbeddingOutcome (\_ _ _ -> fail "FTS/blank must not call embeddings") connection snapshot materialization skipped)
+    searchProjectionEmbeddingPreparation noCalls @?= Nothing
   let conflicted = must (materializeCurrentSearch p304ConflictSnapshot)
   replaceSearchMaterialization connection conflicted >>= (@?= Right ())
   conflict <- fmap must (runCurrentSearchWithEmbedding provider connection p304ConflictSnapshot conflicted (defaultSearchRequest "left"))
@@ -319,6 +460,10 @@ configEntryContract = withTei $ \config behavior _ _ directory -> do
   field "mode" offline @?= Just (Aeson.String "fts")
   (field "cli" offline >>= field "algorithm") @?= Just (Aeson.String "three-fts+weighted-rrf")
   field "relevant_strategy" offline @?= Just (Aeson.String "passage-fts")
+  TextIO.writeFile (configRoot </> "adrai" </> "config.toml") "[text_embedding]\nendpoint='invalid'\n"
+  malformed <- run
+  (field "web" malformed >>= field "embedding_preparation" >>= field "reason") @?= Just (Aeson.String "invalid_configuration")
+  (field "web" malformed >>= field "embedding_preparation" >>= field "cache_hits") @?= Just Aeson.Null
 
 configEntryProbe :: IO ()
 configEntryProbe = bracket (open ":memory:") close $ \connection -> do
