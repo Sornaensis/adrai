@@ -1,19 +1,19 @@
 {
   "cold_reused_equality": {
     "relevance": {
-      "bytes": 4389,
-      "cold_sha256": "sha256:h9v6oKECJlP2pCxbrTQK7bDvjtNqgGDhIlxJy5hwB88",
+      "bytes": 4763,
+      "cold_sha256": "sha256:AnNQUlgbl_7hgdH4V6QIYcjAz57gOsLvdmDcUrZ2AcQ",
       "rendered_bytes_equal": true,
-      "repeated_sha256": "sha256:h9v6oKECJlP2pCxbrTQK7bDvjtNqgGDhIlxJy5hwB88",
-      "reused_sha256": "sha256:h9v6oKECJlP2pCxbrTQK7bDvjtNqgGDhIlxJy5hwB88",
+      "repeated_sha256": "sha256:AnNQUlgbl_7hgdH4V6QIYcjAz57gOsLvdmDcUrZ2AcQ",
+      "reused_sha256": "sha256:AnNQUlgbl_7hgdH4V6QIYcjAz57gOsLvdmDcUrZ2AcQ",
       "typed_equal": true
     },
     "search": {
-      "bytes": 3906,
-      "cold_sha256": "sha256:nmrCVBslmCAtOibumrUBwnOmkR2xUPq0-0CsQg3jjQE",
+      "bytes": 4280,
+      "cold_sha256": "sha256:U1lNg6Lm-fA6pmKhVxSHLy3y2ZcwxAXEU_A2b3IKIZQ",
       "rendered_bytes_equal": true,
-      "repeated_sha256": "sha256:nmrCVBslmCAtOibumrUBwnOmkR2xUPq0-0CsQg3jjQE",
-      "reused_sha256": "sha256:nmrCVBslmCAtOibumrUBwnOmkR2xUPq0-0CsQg3jjQE",
+      "repeated_sha256": "sha256:U1lNg6Lm-fA6pmKhVxSHLy3y2ZcwxAXEU_A2b3IKIZQ",
+      "reused_sha256": "sha256:U1lNg6Lm-fA6pmKhVxSHLy3y2ZcwxAXEU_A2b3IKIZQ",
       "typed_equal": true
     }
   },
@@ -100,7 +100,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000001",
         "expected_adr_key": 1,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:h9v6oKECJlP2pCxbrTQK7bDvjtNqgGDhIlxJy5hwB88",
+        "projection_sha256": "sha256:AnNQUlgbl_7hgdH4V6QIYcjAz57gOsLvdmDcUrZ2AcQ",
         "rank": 1,
         "source_key": "cache-python",
         "within_top3": true
@@ -113,7 +113,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000002",
         "expected_adr_key": 2,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:xPLQOgQ0FulrhpwztbnSyK-zCrAomUaiAgOz4d6gxyo",
+        "projection_sha256": "sha256:FMCRXE4_rtMBoXenTQA7A6GcfmMTZZyU9Xn7rZDZkA8",
         "rank": 1,
         "source_key": "auth-text",
         "within_top3": true
@@ -126,7 +126,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000003",
         "expected_adr_key": 3,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:Gp2UFCEUR903LpsY__oIsoJ0Xxe5M7rjJ3Y5XKWf89A",
+        "projection_sha256": "sha256:uw-kiilVGF1KKsE307fzIHI7OvK_UvpCcSEjZvDmhFk",
         "rank": 1,
         "source_key": "queue-compose",
         "within_top3": true
@@ -139,7 +139,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000004",
         "expected_adr_key": 4,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:bIaPRtA0GON7z-V1rVJk_rvTwxX7yaBzLTTUtI3moEI",
+        "projection_sha256": "sha256:xBCNP2n0Op5N54MoOfOXIIOp4SPhIbDbr5WxN0lCnGA",
         "rank": 1,
         "source_key": "storage-sql",
         "within_top3": true
@@ -152,7 +152,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000005",
         "expected_adr_key": 5,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:o8ewz224S2cIVdVBwMHRnJVle-7GvgLkAkvZDGf4PUw",
+        "projection_sha256": "sha256:k5990t5RMi4ECmc2SOLh9OvIAfdyH5Hi9nbQ2-FVcpg",
         "rank": 1,
         "source_key": "observability-custom",
         "within_top3": true
@@ -165,7 +165,7 @@
         "expected_adr": "A19Z1VKF4PPAXE0000000000006",
         "expected_adr_key": 6,
         "matched_terms_present": true,
-        "projection_sha256": "sha256:_8yPjFqEaAfo6rjyUGoBiuJhyGCsKpfl2DP_2b-Sbs4",
+        "projection_sha256": "sha256:G5JYBfal0vAFMR_P9-ZbfmlpXfgS1BW3kykAKke_E5o",
         "rank": 1,
         "source_key": "deployment-extensionless",
         "within_top3": true

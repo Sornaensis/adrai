@@ -92,8 +92,8 @@ tests =
         , describe "embedding preparation readiness"
             [ test "older ready search and relevance payloads omit preparation" <|
                 \_ ->
-                    case ( fixture "search_ranked" (Api.response Api.search), fixture "relevant_committed" (Api.response Api.relevant) ) of
-                        ( Ok search, Ok relevant ) -> Expect.equal ( Nothing, Nothing ) ( search.data.embeddingPreparation, relevant.data.embeddingPreparation )
+                    case ( D.decodeValue Api.search (inspectionWithout "search_ranked" "embedding_preparation"), D.decodeValue Api.relevant (inspectionWithout "relevant_committed" "embedding_preparation") ) of
+                        ( Ok search, Ok relevant ) -> Expect.equal ( Nothing, Nothing ) ( search.embeddingPreparation, relevant.embeddingPreparation )
                         _ -> Expect.fail "ready fixtures decode"
             , test "pending counts and resolved action decode for both windows" <|
                 \_ ->
@@ -107,7 +107,7 @@ tests =
                     let
                         pending = preparationModel
                         loading = Tuple.first (Main.update Main.Load pending)
-                        readyWindowState = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-3" "search_ranked")) loading)
+                        readyWindowState = Tuple.first (Main.update (Main.FromJs (transportData "ui-3" "search_ranked" (inspectionWithout "search_ranked" "embedding_preparation"))) loading)
                         notice = Query.fromHtml (Main.view pending) |> Query.find [ Selector.id "embedding-preparation" ]
                     in
                     Expect.all
@@ -141,7 +141,7 @@ tests =
                         revised = Tuple.first (Main.update (Main.EditQuery "revision" "previous") filtered)
                         loading = Tuple.first (Main.update Main.Load revised)
                         delayed = Tuple.first (Main.update (Main.FromJs (transportData "ui-2" "search_ranked" (preparationData "search_ranked" "unavailable" False))) loading)
-                        readyWindowState = Tuple.first (Main.update (Main.FromJs (transportResponse "ui-3" "search_ranked")) delayed)
+                        readyWindowState = Tuple.first (Main.update (Main.FromJs (transportData "ui-3" "search_ranked" (inspectionWithout "search_ranked" "embedding_preparation"))) delayed)
                         late = Tuple.first (Main.update (Main.FromJs (transportData "ui-2" "search_ranked" (preparationData "search_ranked" "pending" True))) readyWindowState)
                     in
                     Expect.all

@@ -252,6 +252,15 @@ testSharedWireFixtures = do
   let cases = member "cases" fixture
       payload name = member "data" (member name cases)
       fixtureOid = Aeson.String "1111111111111111111111111111111111111111"
+      rebaseAsOf object =
+        let rebased = case KeyMap.lookup "embedding_preparation" object of
+              Nothing -> object
+              Just (Aeson.Object preparation) -> case KeyMap.lookup "action" preparation of
+                Just (Aeson.Object action) -> KeyMap.insert "embedding_preparation"
+                  (Aeson.Object (KeyMap.insert "action" (Aeson.Object (KeyMap.insert "at" fixtureOid action)) preparation)) object
+                _ -> error "golden preparation action must be an object"
+              _ -> error "golden embedding preparation must be an object"
+        in Aeson.Object (KeyMap.insert "as_of" fixtureOid rebased)
       assertFixtureOid name = do
         let asOf = member "as_of" (member "metadata" (member name cases))
         member "kind" asOf @?= Aeson.String "commit"
@@ -260,7 +269,7 @@ testSharedWireFixtures = do
       goldenAsOf name path = do
         golden <- decodeFixture path
         case golden of
-          Aeson.Object object -> payload name @?= Aeson.Object (KeyMap.insert "as_of" fixtureOid object)
+          Aeson.Object object -> payload name @?= rebaseAsOf object
           _ -> assertFailure (path <> " is not a public projection object")
   member "schema" fixture @?= Aeson.String "adrai/web-fixtures/v1"
   mapM_ (\name -> member "schema" (member name cases) @?= Aeson.String "adrai/api/v1")
@@ -276,13 +285,15 @@ testSharedWireFixtures = do
   goldenAsOf "history" "test/golden/p2-05/history-adr.golden"
   searchGolden <- decodeFixture "test/golden/p3-04/current-search.golden"
   mapM_ (\(name, goldenName) -> case member goldenName searchGolden of
-    Aeson.Object object -> payload name @?= Aeson.Object (KeyMap.insert "as_of" fixtureOid object)
+    Aeson.Object object -> payload name @?= rebaseAsOf object
     _ -> assertFailure ("missing public search golden " <> Text.unpack goldenName))
     [("search_blank", "blank"), ("search_ranked", "hybrid")]
   relevantGolden <- decodeFixture "test/golden/p3-05/relevance.golden"
   case member "resolved" relevantGolden of
-    Aeson.Object object -> payload "relevant_committed" @?= Aeson.Object (KeyMap.insert "as_of" fixtureOid object)
+    Aeson.Object object -> payload "relevant_committed" @?= rebaseAsOf object
     _ -> assertFailure "missing public relevant golden"
+  mapM_ (\name -> member "at" (member "action" (member "embedding_preparation" (payload name))) @?= fixtureOid)
+    ["search_ranked", "relevant_committed", "relevant_worktree"]
   member "source" (member "file" (payload "relevant_committed")) @?= Aeson.String "revision"
   member "source" (member "file" (payload "relevant_worktree")) @?= Aeson.String "worktree"
   member "resolved" (payload "rich_conflicted") @?= Aeson.Bool False

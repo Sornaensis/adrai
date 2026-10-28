@@ -813,6 +813,20 @@
       },
       "data": {
         "as_of": "1111111111111111111111111111111111111111",
+        "embedding_preparation": {
+          "action": {
+            "at": "1111111111111111111111111111111111111111",
+            "command": "prepare-embeddings"
+          },
+          "cache_hits": null,
+          "dimensions": null,
+          "model_identity": null,
+          "prepared_texts": 0,
+          "reason": "not_configured",
+          "remaining_texts": null,
+          "status": "unavailable",
+          "total_texts": 8
+        },
         "limit": 10,
         "mode": "fts",
         "pagination": {
@@ -1060,6 +1074,20 @@
       },
       "data": {
         "as_of": "1111111111111111111111111111111111111111",
+        "embedding_preparation": {
+          "action": {
+            "at": "1111111111111111111111111111111111111111",
+            "command": "prepare-embeddings"
+          },
+          "cache_hits": null,
+          "dimensions": null,
+          "model_identity": null,
+          "prepared_texts": 0,
+          "reason": "not_configured",
+          "remaining_texts": null,
+          "status": "unavailable",
+          "total_texts": 7
+        },
         "file": {
           "blob": "blob-rationale",
           "bytes": 95,
@@ -1124,9 +1152,15 @@
             "replacement": null,
             "resolution_required": true,
             "resolved": false,
-            "scope_bonus": 0.025,
+            "scope_bonus": 0.1,
+            "scope_evidence": {
+              "literal_components": 2,
+              "pattern": "src/current/**",
+              "specificity": "path",
+              "wildcard_tokens": 1
+            },
             "scope_match": "exact",
-            "score": 0.125,
+            "score": 0.2,
             "semantic_score": 0.0,
             "source_information": 1.0,
             "status": "obsolete",
@@ -1154,7 +1188,8 @@
             "queries": 1
           },
           "policy": "fixed-depth-10",
-          "policy_fingerprint": "sha256:r9TqKS1NZB2TOX9PckSRHQI_-MJU4O7ZFOHvozPqrPM",
+          "policy_fingerprint": "sha256:qLhkAo0FXEYEP_Tz5jBOUyD2mvkPO_uN2lV_I1ZNn04",
+          "scope_candidates": 1,
           "scope_used_for_eligibility": false,
           "scoring": {
             "high_margin": 0.045,
@@ -1170,10 +1205,16 @@
             "medium_pair_score": 0.14,
             "medium_semantic_score": 0.16,
             "minimum_lexical_pair_score": 0.036,
+            "minimum_overall_score_fts": 0.1,
+            "minimum_overall_score_hybrid": 0.58,
             "minimum_pair_score": 0.075,
             "repetitive_chunk_low_confidence": 0.15,
+            "scope_ambiguity_factor": 0.4,
             "scope_bonus_ambiguous": 0.01,
             "scope_bonus_exact": 0.025,
+            "scope_bonus_file": 0.6,
+            "scope_bonus_literal": 1.0,
+            "scope_bonus_path": 0.1,
             "second_evidence_weight": 0.1,
             "third_evidence_weight": 0.05
           },
@@ -1201,6 +1242,20 @@
       },
       "data": {
         "as_of": "1111111111111111111111111111111111111111",
+        "embedding_preparation": {
+          "action": {
+            "at": "1111111111111111111111111111111111111111",
+            "command": "prepare-embeddings"
+          },
+          "cache_hits": null,
+          "dimensions": null,
+          "model_identity": null,
+          "prepared_texts": 0,
+          "reason": "not_configured",
+          "remaining_texts": null,
+          "status": "unavailable",
+          "total_texts": 7
+        },
         "file": {
           "blob": null,
           "bytes": 95,
@@ -1265,9 +1320,15 @@
             "replacement": null,
             "resolution_required": true,
             "resolved": false,
-            "scope_bonus": 0.025,
+            "scope_bonus": 0.1,
+            "scope_evidence": {
+              "literal_components": 2,
+              "pattern": "src/current/**",
+              "specificity": "path",
+              "wildcard_tokens": 1
+            },
             "scope_match": "exact",
-            "score": 0.125,
+            "score": 0.2,
             "semantic_score": 0.0,
             "source_information": 1.0,
             "status": "obsolete",
@@ -1295,7 +1356,8 @@
             "queries": 1
           },
           "policy": "fixed-depth-10",
-          "policy_fingerprint": "sha256:r9TqKS1NZB2TOX9PckSRHQI_-MJU4O7ZFOHvozPqrPM",
+          "policy_fingerprint": "sha256:qLhkAo0FXEYEP_Tz5jBOUyD2mvkPO_uN2lV_I1ZNn04",
+          "scope_candidates": 1,
           "scope_used_for_eligibility": false,
           "scoring": {
             "high_margin": 0.045,
@@ -1311,10 +1373,16 @@
             "medium_pair_score": 0.14,
             "medium_semantic_score": 0.16,
             "minimum_lexical_pair_score": 0.036,
+            "minimum_overall_score_fts": 0.1,
+            "minimum_overall_score_hybrid": 0.58,
             "minimum_pair_score": 0.075,
             "repetitive_chunk_low_confidence": 0.15,
+            "scope_ambiguity_factor": 0.4,
             "scope_bonus_ambiguous": 0.01,
             "scope_bonus_exact": 0.025,
+            "scope_bonus_file": 0.6,
+            "scope_bonus_literal": 1.0,
+            "scope_bonus_path": 0.1,
             "second_evidence_weight": 0.1,
             "third_evidence_weight": 0.05
           },
