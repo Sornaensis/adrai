@@ -27,6 +27,8 @@ module Adrai.CliTypes
     HistoryCommand (..),
     historyCommandJson,
     SearchCommand (..),
+    PrepareEmbeddingsCommand (..),
+    embeddingPreparationHint,
     searchCommandRequest,
     searchCommandJson,
     searchCliJson,
@@ -60,6 +62,7 @@ import Adrai.History
     historyProjectionJson,
     ReadSnapshot (..),
     revisionRequested,
+    revisionResolved,
   )
 import Adrai.Query
   ( CompareOptions (..),
@@ -114,6 +117,7 @@ import Data.Maybe (fromMaybe)
 import Data.Char (isControl, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Adrai.TextEmbedding (EmbeddingPreparation (..), EmbeddingPreparationStatus (..), EmbeddingPreparationReason (..))
 import Control.Exception (bracket)
 import Database.SQLite.Simple (Connection, close, open)
 import Numeric (showFFloat)
@@ -510,6 +514,12 @@ historyCommandJson snapshot cmd =
         ]
 
 -- | CLI argument representation for the @search@ command.
+data PrepareEmbeddingsCommand = PrepareEmbeddingsCommand
+  { prepareEmbeddingsAt :: Text,
+    prepareEmbeddingsBudget :: Int,
+    prepareEmbeddingsJson :: Bool
+  } deriving (Eq, Show)
+
 data SearchCommand = SearchCommand
   { searchQuery          :: Text
   , searchMode           :: RetrievalMode
@@ -633,7 +643,8 @@ relevantCommandJson snapshot source cmd =
 -- owned by 'Query.searchProjectionJson' and 'Query.relevantProjectionJson'.
 searchCliJson :: SearchCommand -> Query.SearchProjection -> JsonValue
 searchCliJson command projection =
-  resultListJson "adrai/search-cli/v1" algorithm (searchView command) (searchCliRows projection) (Just (Query.searchProjectionPagination projection))
+  withPreparation (revisionResolved (Query.searchProjectionRevision projection)) (Query.searchProjectionEmbeddingPreparation projection) $
+    resultListJson "adrai/search-cli/v1" algorithm (searchView command) (searchCliRows projection) (Just (Query.searchProjectionPagination projection))
   where
     algorithm
       | Text.null (Text.strip (searchQuery command)) = "filtered-list"
@@ -644,15 +655,40 @@ searchCliJson command projection =
 
 relevantCliJson :: ViewMode -> Query.RelevantProjection -> JsonValue
 relevantCliJson view projection =
+  withPreparation (revisionResolved (Query.relevantProjectionRevision projection)) (Query.relevantProjectionEmbeddingPreparation projection) $
   resultListJson "adrai/relevant-cli/v1"
     (Query.relevantRetrievalStrategy (Query.relevantProjectionRetrieval projection))
     view (relevantCliRows projection) (Just (Query.relevantProjectionPagination projection))
 
 renderSearchCli :: ViewMode -> Query.SearchProjection -> Text
-renderSearchCli view projection = renderResultList view (searchCliRows projection) <> renderPagination (Query.searchProjectionPagination projection)
+renderSearchCli view projection = preparationGuidance (revisionResolved (Query.searchProjectionRevision projection)) (Query.searchProjectionEmbeddingPreparation projection)
+  <> renderResultList view (searchCliRows projection) <> renderPagination (Query.searchProjectionPagination projection)
 
 renderRelevantCli :: ViewMode -> Query.RelevantProjection -> Text
-renderRelevantCli view projection = renderResultList view (relevantCliRows projection) <> renderPagination (Query.relevantProjectionPagination projection)
+renderRelevantCli view projection = preparationGuidance (revisionResolved (Query.relevantProjectionRevision projection)) (Query.relevantProjectionEmbeddingPreparation projection)
+  <> renderResultList view (relevantCliRows projection) <> renderPagination (Query.relevantProjectionPagination projection)
+
+withPreparation :: Text -> Maybe EmbeddingPreparation -> JsonValue -> JsonValue
+withPreparation revision (Just progress) (JsonObject fields) = JsonObject (fields <> [("embedding_preparation", Query.embeddingPreparationJson revision progress)])
+withPreparation _ _ value = value
+
+preparationGuidance :: Text -> Maybe EmbeddingPreparation -> Text
+preparationGuidance _ Nothing = ""
+preparationGuidance revision (Just progress) =
+  (if embeddingPreparationStatus progress == PreparationPending then "Embedding preparation pending. " else "Embedding preparation unavailable. ")
+    <> reason <> " Results use lexical retrieval.\nRun: adrai prepare-embeddings --at " <> revision <> "\n"
+  where
+    reason = embeddingPreparationHint progress
+
+embeddingPreparationHint :: EmbeddingPreparation -> Text
+embeddingPreparationHint progress = case embeddingPreparationReason progress of
+      Just NotConfigured -> "Configure your local TEI service first."
+      Just InvalidConfiguration -> "Correct the user text_embedding configuration."
+      Just CacheUnavailable -> "Check access to the disposable embedding cache."
+      Just NativeUnavailable -> "Restore sqlite-vec availability."
+      Just ServiceUnavailable -> "Restore the configured local TEI service."
+      Just InvalidResponse -> "Check the configured TEI model and responses."
+      _ -> "Prepare the remaining corpus texts; valid progress is retained."
 
 searchCliRows :: Query.SearchProjection -> [(AdrId, Text, Text, Double)]
 searchCliRows = map (\row -> (Query.searchResultAdr row, Query.searchResultTitle row, Query.searchResultSummary row, Query.searchResultScore row)) . Query.searchProjectionResults

@@ -39,7 +39,9 @@ import Database.SQLite.Simple (Connection, close, open)
 
 -- | The fixed 2,000-ADR current-search state shared by Criterion and the
 -- profiling driver. Preparing this fixture creates the SQLite indexes. A warm
--- fixture runs one production query before timing to populate the optional cache.
+-- fixture runs one production query before timing. A large optional TEI corpus
+-- requires explicit preparation outside this fixture; setup alone does not
+-- establish vector readiness under the interactive repair limit.
 data CurrentSearchFixture = CurrentSearchFixture
   { currentSearchConnection :: Connection,
     currentSearchSnapshot :: ReadSnapshot,

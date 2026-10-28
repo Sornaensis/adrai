@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Adrai.TextEmbeddingTest (tests, configEntryProbe) where
+module Adrai.TextEmbeddingTest (tests, configEntryProbe, withTei, Behavior (..)) where
 
 import Adrai.Compiler (materializeCurrentSearch)
 import qualified Adrai.CliTypes as Cli

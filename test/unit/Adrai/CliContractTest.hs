@@ -29,6 +29,8 @@ import Adrai.Cli
   )
 import Adrai.CliTypes (ViewMode (..), RetrievalMode (..), compileResultValue, relevantCommandRequest, searchCommandRequest, textToActorKind)
 import qualified Adrai.CliTypes as CliTypes
+import Data.Either (isRight)
+import Adrai.TextEmbedding (EmbeddingPreparation (..), EmbeddingPreparationStatus (..), EmbeddingPreparationReason (..))
 import Adrai.CliRunner
   ( CliConfig (..),
     CliCommand (..),
@@ -71,6 +73,7 @@ import Adrai.CliRunner
     dispatchWith,
     emitRenderedToHandles,
     renderCreateOutcome,
+    renderPrepareEmbeddingsOutcome,
      renderAmendOutcome,
      renderScopeOutcome,
      renderDomainOutcome,
@@ -144,7 +147,7 @@ import Adrai.Fixture.QueryMaterialization (QueryMaterialization (..), materializ
 import Adrai.Fixture.RetrievalScale (adrTemplates, retrievalScaleV1)
 import Adrai.Fixture.Types (AdrTemplate (..), RetrievalScaleSpec (..))
 import Data.List.NonEmpty (NonEmpty ((:|)))
-import Adrai.Service.Query (DomainsRequest (..), SearchServiceRequest (..), ShowFailure (..), ShowResult (..), showFailureIsConflict)
+import Adrai.Service.Query (DomainsRequest (..), SearchServiceRequest (..), PrepareEmbeddingsRequest (..), PrepareEmbeddingsResult (..), ShowFailure (..), ShowResult (..), showFailureIsConflict)
 import Adrai.Relevance (ConfidenceLabel (..), RelevanceScopeMatch (..))
 import Adrai.Types (RepoPath (..))
 import qualified Adrai.Types as Types
@@ -184,7 +187,7 @@ import Data.Foldable (for_)
 import Data.Char (isControl)
 import Data.List (sort)
 import Data.Maybe (fromMaybe)
-import Control.Monad (when)
+import Control.Monad (forM_, when)
 import System.FilePath (searchPathSeparator, takeDirectory)
 import System.FilePath ((</>))
 import System.Directory (executable, getPermissions, setPermissions, createDirectoryIfMissing, doesDirectoryExist, listDirectory, removeFile)
@@ -309,6 +312,7 @@ unsupportedCliDispatchDependencies =
     , cliRunCompare = \_ _ -> error "compare service must not be selected"
     , cliRunHistory = \_ _ -> error "history service must not be selected"
     , cliRunSearch = \_ _ -> error "search service must not be selected"
+    , cliRunPrepareEmbeddings = \_ _ -> error "embedding preparation service must not be selected"
     , cliRunDomains = \_ _ -> error "domains service must not be selected"
     , cliRunRelevant = \_ _ -> error "relevant service must not be selected"
     , cliMaterializeCreate = \_ -> error "create materialization must not be selected"
@@ -1207,6 +1211,28 @@ mutationCliContractTests =
         dispatchWith dependencies (CliInvocation (defaultCliConfig {configRepo = "domain repo"}) (CmdDomains explicit)) >>= (@?= ExitSuccess)
         readIORef received >>= (@?= Just ("domain repo", DomainsRequest (Just parent) "release~1" True True))
     , testCase "search accepts only the frozen positional syntax, materializes strictly, renders exactly, and dispatches typed intent" $ do
+        let prepDefault = CliTypes.PrepareEmbeddingsCommand "HEAD" 120000 False
+            prepExplicit = CliTypes.PrepareEmbeddingsCommand "release~1" 1000 True
+            progress = EmbeddingPreparation PreparationPending (Just "model") (Just 2) 8 (Just 2) 2 (Just 4) (Just BudgetExhausted)
+            result = PrepareEmbeddingsResult "resolved-revision" progress
+        parseCli ["prepare-embeddings"] @?= Right (CliInvocation defaultCliConfig (CmdPrepareEmbeddings prepDefault))
+        parseCli ["prepare-embeddings", "--at", "release~1", "--budget-ms", "1000", "--json"]
+          @?= Right (CliInvocation defaultCliConfig (CmdPrepareEmbeddings prepExplicit))
+        forM_ ["99", "600001", "-1", "999999999999999999999999", "1.5", "bad"] $ \value ->
+          assertBool "preparation rejects unbounded budget" (isLeft (parseCli ["prepare-embeddings", "--budget-ms", value]))
+        forM_ ["100", "600000"] $ \value ->
+          assertBool "preparation accepts inclusive boundaries" (isRight (parseCli ["prepare-embeddings", "--budget-ms", value]))
+        let rendered = renderPrepareEmbeddingsOutcome prepExplicit result
+        renderedExitCode rendered @?= ExitFailure 1
+        assertBool "command uses incomplete, never query pending" ("\"status\": \"incomplete\"" `T.isInfixOf` renderedStdout rendered && not ("\"status\": \"pending\"" `T.isInfixOf` renderedStdout rendered))
+        renderedExitCode (renderPrepareEmbeddingsOutcome prepDefault (result {preparedEmbeddingsProgress = progress {embeddingPreparationStatus = PreparationComplete, embeddingPreparationRemainingTexts = Just 0, embeddingPreparationReason = Nothing}})) @?= ExitSuccess
+        renderedExitCode (renderPrepareEmbeddingsOutcome prepExplicit (result {preparedEmbeddingsProgress = progress {embeddingPreparationStatus = PreparationUnavailable}})) @?= ExitFailure 1
+        let absentText = renderedStdout (renderPrepareEmbeddingsOutcome prepDefault (result {preparedEmbeddingsProgress = progress {embeddingPreparationStatus = PreparationUnavailable, embeddingPreparationReason = Just NotConfigured}}))
+        assertBool "unavailable text explains configuration recovery" ("Configure your local TEI service first." `T.isInfixOf` absentText && "Retry: adrai prepare-embeddings --at resolved-revision" `T.isInfixOf` absentText)
+        receivedPrep <- newIORef Nothing
+        let prepDependencies = unsupportedCliDispatchDependencies {cliRunPrepareEmbeddings = \_ requested -> writeIORef receivedPrep (Just requested) >> pure (Right result)}
+        dispatchWith prepDependencies (CliInvocation defaultCliConfig (CmdPrepareEmbeddings prepExplicit)) >>= (@?= ExitFailure 1)
+        readIORef receivedPrep >>= (@?= Just (PrepareEmbeddingsRequest "release~1" 1000))
         let defaulted = SearchCommand "" HybridRetrieval CollapsedView Nothing [] Nothing Nothing Nothing "HEAD" False 10 False False 1
             explicit =
               SearchCommand
@@ -1461,6 +1487,7 @@ mutationCliContractTests =
                 pure (Text.Encoding.decodeUtf8 (BL.toStrict stdout))
               checkJson command schema algorithm view expectedScore = do
                 output <- runCli (command <> ["--json", "--view", if view == CollapsedView then "collapsed" else "exploded"])
+                readiness <- expectedReadiness command
                 score <- case Aeson.eitherDecodeStrict (Text.Encoding.encodeUtf8 output) of
                   Right (Aeson.Object envelope) -> case KM.lookup "results" envelope of
                     Just (Aeson.Array rows) | Vector.length rows == 1 -> case Vector.head rows of
@@ -1481,17 +1508,37 @@ mutationCliContractTests =
                     , "results" Aeson..= [Aeson.object
                         (["adr" Aeson..= fixtureAdr, "title" Aeson..= fixtureTitle, "score" Aeson..= score]
                           <> ["summary" Aeson..= fixtureSummary | view == ExplodedView])]
-                    ] <> ["pagination" Aeson..= toAesonValue (paginationJson (Pagination (Just 1) (Just 10) 1 (Just 1) 1 0 False)) | schema `elem` ["adrai/search-cli/v1", "adrai/relevant-cli/v1"]]))
+                    ] <> ["pagination" Aeson..= toAesonValue (paginationJson (Pagination (Just 1) (Just 10) 1 (Just 1) 1 0 False)) | schema `elem` ["adrai/search-cli/v1", "adrai/relevant-cli/v1"]]
+                      <> ["embedding_preparation" Aeson..= toAesonValue (Query.embeddingPreparationJson revision progress) | (revision, progress) <- maybe [] pure readiness]))
                 pure score
+              expectedReadiness command = do
+                intent <- case parseCli command of
+                  Right (CliInvocation _ (CmdSearch selected))
+                    | not (Text.null (Text.strip (searchQuery selected))) && searchMode selected /= FtsRetrieval -> pure (Just (searchAt selected, 5))
+                  Right (CliInvocation _ (CmdRelevant selected)) -> do
+                    -- This fixture has four distinct passage texts; search
+                    -- additionally includes one distinct summary document.
+                    meaningful <- case relevantAt selected of
+                      Just _ -> pure True
+                      Nothing -> not . Text.null . Text.strip <$> TextIO.readFile (repo </> Text.unpack (relevantFile selected))
+                    pure (if meaningful then Just (fromMaybe "HEAD" (relevantAt selected), 4) else Nothing)
+                  _ -> pure Nothing
+                case intent of
+                  Nothing -> pure Nothing
+                  Just (requestedRevision, total) -> do
+                    revision <- Text.strip . Text.Encoding.decodeUtf8 . BL.toStrict <$> gitStdout repo ["rev-parse", Text.unpack requestedRevision]
+                    pure (Just (revision, EmbeddingPreparation PreparationUnavailable Nothing Nothing total Nothing 0 Nothing (Just NotConfigured)))
               checkCommand command schema algorithm expectedScore = do
                 score <- checkJson command schema algorithm CollapsedView expectedScore
+                readiness <- expectedReadiness command
                 let displayed = case score of
                       Aeson.Number value -> Text.pack (showFFloat (Just 2) (realToFrac value :: Double) "")
                       _ -> error "checkJson accepted a nonnumeric score"
                     footer = "1 of 1 results — Page 1 of 1\n"
                     row = displayed <> " " <> fixtureAdr <> " " <> fixtureTitle
-                runCli command >>= (@?= row <> "\n" <> footer)
-                runCli (command <> ["--view", "exploded"]) >>= (@?= row <> "\n  " <> fixtureSummary <> "\n" <> footer)
+                    guidance = maybe "" (\(revision, _) -> "Embedding preparation unavailable. Configure your local TEI service first. Results use lexical retrieval.\nRun: adrai prepare-embeddings --at " <> revision <> "\n") readiness
+                runCli command >>= (@?= guidance <> row <> "\n" <> footer)
+                runCli (command <> ["--view", "exploded"]) >>= (@?= guidance <> row <> "\n  " <> fixtureSummary <> "\n" <> footer)
                 _ <- checkJson command schema algorithm ExplodedView expectedScore
                 pure ()
           let adrArgument = Text.unpack fixtureAdr
@@ -1559,6 +1606,8 @@ mutationCliContractTests =
           runCli ["search", "--domain", "storage", "--all", "--mode", "fts"] >>= (@?= "0 of 0 results — Page 1 of 0\n")
           runCli ["search", "--domain", "storage", "--all", "--include-obsolete", "--mode", "fts"] >>= (@?= "1.00 " <> fixtureAdr <> " " <> fixtureTitle <> "\n1 of 1 results — Page 1 of 1\n")
           _ <- runCli ["reactivate", Text.unpack fixtureAdr, "--reason", "Restore fixture", "--actor", "human:test"]
+          reactivatedRevision <- Text.strip . Text.Encoding.decodeUtf8 . BL.toStrict <$> gitStdout repo ["rev-parse", "HEAD"]
+          let historicalReadiness = Text.replace ("\"at\": \"" <> reactivatedRevision <> "\"") ("\"at\": \"" <> historicalRevision <> "\"")
           checkCommand ["relevant", "source.txt"] "adrai/relevant-cli/v1" "passage-fts" Nothing
           committedRelevance <- runCli ["relevant", "source.txt", "--at", "HEAD", "--json"]
           committedContentRelevance <- runCli ["relevant", "content.txt", "--at", "HEAD", "--json"]
@@ -1595,9 +1644,9 @@ mutationCliContractTests =
           runCli ["relevant", "content.txt", "--json"] >>= (@?= emptyCliJson 10 "adrai/relevant-cli/v1" "passage-fts")
           runCli ["relevant", "content.txt", "--worktree", "--json"] >>= (@?= emptyCliJson 10 "adrai/relevant-cli/v1" "passage-fts")
           runCli ["relevant", "content.txt", "--at", "HEAD", "--json"] >>= (@?= committedContentRelevance)
-          runCli ["relevant", "content.txt", "--at", Text.unpack historicalRevision, "--json"] >>= (@?= committedContentRelevance)
+          runCli ["relevant", "content.txt", "--at", Text.unpack historicalRevision, "--json"] >>= (@?= historicalReadiness committedContentRelevance)
           runCli ["relevant", "source.txt", "--at", "HEAD", "--json"] >>= (@?= committedRelevance)
-          runCli ["relevant", "source.txt", "--at", Text.unpack historicalRevision, "--json"] >>= (@?= committedRelevance)
+          runCli ["relevant", "source.txt", "--at", Text.unpack historicalRevision, "--json"] >>= (@?= historicalReadiness committedRelevance)
           removeFile (repo </> "source.txt")
           sourceFailure ["relevant", "source.txt"]
           runCli ["relevant", "source.txt", "--at", "HEAD", "--json"] >>= (@?= committedRelevance)

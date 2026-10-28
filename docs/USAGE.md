@@ -69,11 +69,20 @@ Use the identifier printed by `create` in place of `ADR_ID`. `init`, `create`, `
 | `relevant` | Rank ADRs against the current worktree file, including untracked files; use `--at REVISION` for committed bytes. |
 | `compare` | Compare two immutable revisions. |
 | `compile` | Build or reuse the repository's derived SQLite index. |
+| `prepare-embeddings` | Prepare resumable local TEI embeddings for `--at REVISION` (default `HEAD`); `--budget-ms` defaults to 120000 and accepts 100–600000. |
 | `doctor` | Report source, graph, provenance, and cache diagnostics. |
 | `explore` | Open the terminal explorer. Search, inspection, history, conflicts, and checked edits use the shared repository services. |
 | `web` | Start the authenticated loopback repository explorer, HTTP API, and event WebSocket. |
 
 Most read commands accept `--at REVISION`; the default is `HEAD`. Most commands also accept `--json` for stable machine-readable output. Run `adrai COMMAND --help` for the complete option list.
+
+For a configured local TEI service, run `adrai prepare-embeddings --at HEAD --json`
+before large vector searches. Complete/empty preparation exits zero; incomplete
+or unavailable preparation exits nonzero with truthful progress and a recovery
+command. Repeat it to resume validated batches. Search and relevance continue to
+return lexical results while preparation is pending/unavailable; their optional
+readiness output identifies the resolved revision to prepare. No service or user
+configuration is changed by preparation. See [Search](SEARCH.md#optional-text-embeddings).
 
 Ordinary invocations print plain text. `show ADR_ID` displays the ID and title,
 lifecycle status, domains, file scope, summary, and decision body with real

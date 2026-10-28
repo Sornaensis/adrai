@@ -21,6 +21,10 @@ module Adrai.Service.Query
     RelevantFailure (..),
     QueryExecutionHooks (..),
     ExactQueryContext (..),
+    PrepareEmbeddingsRequest (..),
+    PrepareEmbeddingsResult (..),
+    runEmbeddingPreparation,
+    runEmbeddingPreparationWith,
     runShow,
     runWebShow,
     runCompare,
@@ -148,6 +152,7 @@ import Adrai.Query
     runRelevantWithTimingHooks,
     referenceLookupErrorText,
     resolveAdrReference,
+    embeddingPreparationCorpus,
   )
 import Adrai.Repository
   ( observeRawRepositorySnapshotAt,
@@ -176,7 +181,9 @@ import Adrai.Types
     operationIdText,
     repoPathText,
   )
-import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, fromException, throwIO, try)
+import Adrai.TextEmbedding (EmbeddingPreparation, prepareTextEmbeddings)
+import Adrai.Service.Runtime (ensureExactArchive)
+import Control.Exception (SomeAsyncException, SomeException, bracket, displayException, evaluate, fromException, throwIO, try)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -376,6 +383,47 @@ runHistory repository request = do
 
 runSearch :: Repository -> SearchServiceRequest -> IO (Either SearchFailure SearchProjection)
 runSearch = runSearchWithHooks defaultQueryExecutionHooks
+
+data PrepareEmbeddingsRequest = PrepareEmbeddingsRequest
+  { prepareEmbeddingsRevision :: Text,
+    prepareEmbeddingsBudgetMs :: Int
+  } deriving (Eq, Show)
+
+data PrepareEmbeddingsResult = PrepareEmbeddingsResult
+  { preparedEmbeddingsRevision :: Text,
+    preparedEmbeddingsProgress :: EmbeddingPreparation
+  } deriving (Eq, Show)
+
+runEmbeddingPreparation :: Repository -> PrepareEmbeddingsRequest -> IO (Either SearchFailure PrepareEmbeddingsResult)
+runEmbeddingPreparation = runEmbeddingPreparationWith prepareTextEmbeddings
+
+-- The provider is invoked only after the exact archive transaction and handle
+-- have been released. Its budget excludes lexical archive acquisition.
+runEmbeddingPreparationWith
+  :: (Int -> [(Text, Text)] -> IO EmbeddingPreparation)
+  -> Repository -> PrepareEmbeddingsRequest -> IO (Either SearchFailure PrepareEmbeddingsResult)
+runEmbeddingPreparationWith provider repository request
+  | budget < 100 || budget > 600000 = pure (Left (SearchCompilerFailure "embedding preparation budget must be between 100 and 600000 ms"))
+  | otherwise = do
+      resolved <- resolveRepositoryRevision repository (RevisionSpec (prepareEmbeddingsRevision request))
+      case resolved of
+        Left problem -> pure (Left (SearchRepositoryFailure (Text.pack (show problem))))
+        Right revision -> do
+          let oid = resolvedCommitOid revision
+              revisionText = gitOidText oid
+          archive <- ensureExactArchive repository oid
+          case archive of
+            Left problem -> pure (Left (SearchCompilerFailure problem))
+            Right _ -> do
+              loaded <- withExactCacheContext defaultQueryExecutionHooks repository revision revisionText $ \_ context -> do
+                let corpus = embeddingPreparationCorpus (exactQueryMaterialization context)
+                _ <- evaluate (foldl' (\size (key, text) -> size + Text.length key + Text.length text) (0 :: Int) corpus)
+                pure corpus
+              case loaded of
+                Nothing -> pure (Left (SearchCompilerFailure "validated exact archive is unavailable"))
+                Just corpus -> Right . PrepareEmbeddingsResult revisionText <$> provider budget corpus
+  where
+    budget = prepareEmbeddingsBudgetMs request
 
 -- | Aggregate the complete validated snapshot at one immutable revision.
 runDomains :: Repository -> DomainsRequest -> IO (Either SearchFailure DomainsProjection)

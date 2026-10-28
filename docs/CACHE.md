@@ -24,6 +24,15 @@ Both use the `adrai-cache/3` SQLite/FTS5 schema. They are derived artifacts and 
 
 Optional TEI corpus embeddings use a separate disposable user cache, keyed by endpoint, live model identity/revision, dimensions and exact text digest. sqlite-vec indexes only eligible entries for each request. Query and relevance-source vectors remain request-ephemeral. Unavailable TEI or sqlite-vec uses FTS5, even with a warm embedding cache; this never rejects an immutable lexical archive. See [Search](SEARCH.md#optional-text-embeddings) for user configuration and cache paths.
 
+`adrai prepare-embeddings --at REVISION` acquires the exact lexical archive, then
+fully materializes its summary/passage corpus and closes the archive transaction
+before optional TEI work. Validated embedding batches publish independently, so
+interrupted preparation resumes from the same identity/text cache. The lexical
+archive remains independent of optional preparation success. Search/relevance
+repair only bounded small deltas; larger missing corpora expose a preparation
+action while continuing with lexical retrieval. No vector index is retained
+across requests.
+
 `relevant` first validates an exact revision-addressed archive and falls back to cold compilation when one is unavailable. Its `diagnostics.index_revision` names the commit represented by the context actually used, and `diagnostics.index_preparation` reports `cache-hit` or `cold-fallback`. The separately captured `checkout_head` supplies the freshness comparison; an intentionally historical archive remains valid even when `stale` is true. The mutable `index.sqlite` alias is not evidence of which revision a relevance query used.
 
 ## Maintenance

@@ -61,6 +61,7 @@ module Adrai.CliRunner
     renderCompareOutcome,
     renderHistoryOutcome,
     renderSearchOutcome,
+    renderPrepareEmbeddingsOutcome,
     renderDomainsOutcome,
     renderRelevantOutcome,
     renderCompileOutcome,
@@ -82,6 +83,8 @@ import Adrai.CliTypes
     ShowCommand (..),
     HistoryCommand (..),
     SearchCommand (..),
+    PrepareEmbeddingsCommand (..),
+    embeddingPreparationHint,
     searchCommandRequest,
     searchCliJson,
     renderSearchCli,
@@ -132,6 +135,9 @@ import Adrai.Service.Query
   ( CompareRequest (..),
     HistoryRequest (..),
     SearchServiceRequest (..),
+    PrepareEmbeddingsRequest (..),
+    PrepareEmbeddingsResult (..),
+    runEmbeddingPreparation,
     DomainsRequest (..),
     ShowRequest (..),
     ShowResult (..),
@@ -231,6 +237,7 @@ import Adrai.Query
     explodedProjectionJson,
   )
 import qualified Adrai.Query as Query
+import Adrai.TextEmbedding (EmbeddingPreparation (..), EmbeddingPreparationStatus (..))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Aeson.Key
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -462,6 +469,7 @@ data CliCommand
   | CmdShow ShowCommand
   | CmdHistory HistoryCommand
   | CmdSearch SearchCommand
+  | CmdPrepareEmbeddings PrepareEmbeddingsCommand
   | CmdDomains DomainsCommand
   | CmdRelevant RelevantCommand
   | CmdCompare CompareCommand
@@ -496,6 +504,7 @@ parser =
      <> Opt.command "domains" (commandInfoWithFooter (CmdDomains <$> domainsParser) "browse domains with ADR counts" "Omit DOMAIN for top-level domains, or provide a domain to list its immediate children. Flat counts include each non-obsolete ADR once per domain and its descendants. Use --tree for every level; a requested parent becomes the tree root. Tree rows show exact assignments as domain D, followed by (N) only when N strictly descendant ADRs exist, without a result limit. --tree --json emits nested children and both counts. Search a subtree with adrai search --domain platform.storage --all; use --include-obsolete or --at REVISION consistently across both commands.")
      <> Opt.command "search" (commandInfoWithFooter (CmdSearch <$> searchParser) "search ADRs or list non-obsolete ADRs when QUERY is omitted or blank" "Browse non-obsolete ADRs at HEAD: adrai search --limit 1000. Use --page 2 for the next page. A blank query pages the full filtered corpus in ADR ID order. Ranked queries page a fixed retrieved result set; retrieval budgets do not depend on page or page size. Every text response ends with RETURNED of TOTAL results — Page CURRENT of PAGES. Add --include-obsolete to include obsolete decisions. Search text: adrai search database. Narrow by --domain using an exact assignment such as platform.storage; add --all to include dotted descendants. Repeat --domain to require all requested domains. Use --file to match applicability. Read matching decisions before authoring a concise standalone decision.")
      <> Opt.command "relevant" (commandInfoWithFooter (CmdRelevant <$> relevantParser) "rank ADRs for a file" "Find applicable guidance before changing an implementation: adrai relevant src/Main.hs. Read the current worktree file by default, including untracked files, with HEAD as ADR context. Use --at for immutable revision content; --worktree explicitly selects the default. Maintain path applicability through --applies-to/applies_to or scope instead of embedding paths in decision prose.")
+     <> Opt.command "prepare-embeddings" (commandInfoWithFooter (CmdPrepareEmbeddings <$> prepareEmbeddingsParser) "prepare resumable local TEI corpus embeddings for an exact revision" "Validated batches survive interruption. Repeat the command to resume. Local TEI must already be configured and running; this does not alter the service or user settings.")
      <> Opt.command "compare" (commandInfoWithFooter (CmdCompare <$> compareParser) "compare revisions" "Review decision changes between immutable revisions: adrai compare HEAD~1 HEAD. TO defaults to HEAD; --include-unchanged also shows stable decisions. Use this comparison for review; keep revision details out of decision prose unless essential.")
      <> Opt.command "doctor" (commandInfoWithFooter (CmdDoctor <$> doctorParser) "diagnose repository and index" "Run adrai doctor to inspect repository and index health at HEAD, or select --at REVISION. Address reported issues before relying on retrieved guidance; use compile to build or refresh the derived index.")
      <> Opt.command "compile" (commandInfoWithFooter (CmdCompile <$> compileParser) "build or reuse the derived index" "Run adrai compile to prepare retrieval at HEAD, or select --at REVISION. The index is derived from recorded decisions; use create, amend, scope, or domain to change their content or metadata, then retrieve guidance with search or relevant.")
@@ -778,6 +787,16 @@ searchParser =
     searchViewText ExplodedView = "exploded"
 
 -- | Relevant command parser.
+prepareEmbeddingsParser :: Parser PrepareEmbeddingsCommand
+prepareEmbeddingsParser = PrepareEmbeddingsCommand
+  <$> strOption (long "at" <> metavar "REVISION" <> Opt.value "HEAD" <> showDefault <> help "immutable revision to prepare")
+  <*> option (eitherReader budget) (long "budget-ms" <> metavar "MILLISECONDS" <> Opt.value 120000 <> showDefault <> help "TEI preparation budget, 100-600000 ms; lexical acquisition is separate")
+  <*> switch (long "json" <> help "output preparation progress JSON")
+  where
+    budget raw = case reads raw :: [(Integer, String)] of
+      [(value, "")] | value >= 100 && value <= 600000 -> Right (fromInteger value)
+      _ -> Left "--budget-ms must be between 100 and 600000"
+
 relevantParser :: Parser RelevantCommand
 relevantParser =
   RelevantCommand
@@ -971,6 +990,12 @@ dispatchEnabled dependencies (CliInvocation config (CmdSearch command)) =
         Left failure -> renderFailure failure
         Right projection -> emitRendered (renderSearchOutcome command projection)
 
+dispatchEnabled dependencies (CliInvocation config (CmdPrepareEmbeddings command)) = do
+  result <- cliRunPrepareEmbeddings dependencies config (PrepareEmbeddingsRequest (prepareEmbeddingsAt command) (prepareEmbeddingsBudget command))
+  case result of
+    Left failure -> renderFailure failure
+    Right progress -> emitRendered (renderPrepareEmbeddingsOutcome command progress)
+
 dispatchEnabled dependencies (CliInvocation config (CmdDomains command)) = do
   result <- cliRunDomains dependencies config (DomainsRequest (domainsParent command) (domainsAt command) (domainsIncludeObsolete command) (domainsTree command))
   case result of
@@ -1015,6 +1040,7 @@ data CliDispatchDependencies = CliDispatchDependencies
   , cliRunCompare :: ~(CliConfig -> CompareCommand -> IO (Either CliFailure CompareProjection))
   , cliRunHistory :: ~(CliConfig -> HistoryCommand -> IO (Either CliFailure HistoryProjection))
   , cliRunSearch :: ~(CliConfig -> SearchServiceRequest -> IO (Either CliFailure SearchProjection))
+  , cliRunPrepareEmbeddings :: ~(CliConfig -> PrepareEmbeddingsRequest -> IO (Either CliFailure PrepareEmbeddingsResult))
   , cliRunDomains :: ~(CliConfig -> DomainsRequest -> IO (Either CliFailure DomainsProjection))
   , cliRunRelevant :: ~(CliConfig -> RelevantRequest -> IO (Either CliFailure RelevantProjection))
   , cliMaterializeCreate :: CreateCommand -> IO (Either Text CreateRequest)
@@ -1034,7 +1060,7 @@ data CliDispatchDependencies = CliDispatchDependencies
 
 productionCliDependencies :: CliDispatchDependencies
 productionCliDependencies =
-  CliDispatchDependencies checkProductionEnabled runProductionCompile runProductionDoctor runProductionShow runProductionCompare runProductionHistory runProductionSearch runProductionDomains runProductionRelevant materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
+  CliDispatchDependencies checkProductionEnabled runProductionCompile runProductionDoctor runProductionShow runProductionCompare runProductionHistory runProductionSearch runProductionPrepareEmbeddings runProductionDomains runProductionRelevant materializeCreate materializeAmend materializeObsolete materializeReactivate materializeScope materializeDomain runProductionInit runProductionCreate runProductionAmend runProductionObsolete runProductionReactivate runProductionScope runProductionDomain
 
 -- Enablement belongs to the selected repository's current committed tree, not
 -- the worktree, index, requested historical revision, or parsed configuration.
@@ -1621,6 +1647,13 @@ runProductionSearch config request = do
           | searchFailureIsConflict failure -> Left (CliConflictFailure (searchFailureText failure))
           | otherwise -> Left (CliUserFailure (searchFailureText failure))
         Right projection -> Right projection
+
+runProductionPrepareEmbeddings :: CliConfig -> PrepareEmbeddingsRequest -> IO (Either CliFailure PrepareEmbeddingsResult)
+runProductionPrepareEmbeddings config request = do
+  discovered <- discoverRepository systemGit (configRepo config)
+  case discovered of
+    Left problem -> pure (Left (CliUserFailure (Text.pack (show problem))))
+    Right repository -> first (CliUserFailure . searchFailureText) <$> runEmbeddingPreparation repository request
 
 runProductionDomains :: CliConfig -> DomainsRequest -> IO (Either CliFailure DomainsProjection)
 runProductionDomains config request = do
@@ -2670,6 +2703,28 @@ renderSearchOutcome command projection =
     output
       | searchJson command = renderCanonicalJson (searchCliJson command projection)
       | otherwise = renderSearchCli (searchView command) projection
+
+renderPrepareEmbeddingsOutcome :: PrepareEmbeddingsCommand -> PrepareEmbeddingsResult -> CliRendered
+renderPrepareEmbeddingsOutcome command result = CliRendered output "" exitCode
+  where
+    progress = preparedEmbeddingsProgress result
+    revision = preparedEmbeddingsRevision result
+    status = case embeddingPreparationStatus progress of
+      PreparationComplete -> "complete"
+      PreparationPending -> "incomplete"
+      PreparationUnavailable -> "unavailable"
+    exitCode = if embeddingPreparationStatus progress == PreparationComplete then ExitSuccess else ExitFailure 1
+    fields = case Query.embeddingPreparationJson revision progress of JsonObject values -> values; _ -> []
+    output
+      | prepareEmbeddingsJson command = renderCanonicalJson (JsonObject
+          ([("schema", JsonString "adrai/embedding-preparation/v1"), ("as_of", JsonString revision), ("status", JsonString status)] <> filter ((/= "status") . fst) fields))
+      | otherwise = "Embedding preparation " <> status <> " for " <> revision <> ".\n"
+          <> "Prepared " <> Text.pack (show (embeddingPreparationPreparedTexts progress))
+          <> "; cache hits " <> count (embeddingPreparationCacheHits progress)
+          <> "; remaining " <> count (embeddingPreparationRemainingTexts progress)
+          <> " of " <> Text.pack (show (embeddingPreparationTotalTexts progress)) <> " unique texts.\n"
+          <> if embeddingPreparationStatus progress == PreparationComplete then "" else embeddingPreparationHint progress <> " Valid progress is retained.\nRetry: adrai prepare-embeddings --at " <> revision <> "\n"
+    count = maybe "unknown" (Text.pack . show)
 
 renderRelevantOutcome :: RelevantCommand -> RelevantProjection -> CliRendered
 renderRelevantOutcome command projection =

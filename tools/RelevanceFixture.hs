@@ -173,7 +173,9 @@ evaluateCorpus artifactInput executable label repositoryInput cases = do
     info <- maybe (pure Aeson.Null) modelInfo config
     cold <- evaluatePhase repository cache "default-first" cases
     writeJson (artifact </> "transient" </> (label <> "-first.json")) cold
-    repeated <- evaluatePhase repository cache "default-repeat" cases
+    preparation <- prepareEvaluation executable repositoryPath
+    writeJson (artifact </> "transient" </> (label <> "-preparation.json")) preparation
+    repeated <- evaluatePhase repository cache "default-after-preparation" cases
     writeJson (artifact </> "transient" </> (label <> "-repeat.json")) repeated
     pairs <- forM [c | c <- cases, caseQuery c /= Nothing] $ \c -> do
       let query = maybe "" id (caseQuery c)
@@ -187,7 +189,7 @@ evaluateCorpus artifactInput executable label repositoryInput cases = do
         pure (sanitizeCli response)
       [] -> pure Aeson.Null
     pure (Aeson.object ["info" .= info, "settings" .= fmap configJson config],
-      Aeson.object ["first" .= cold, "repeat" .= repeated, "prompt_pairs" .= pairs, "cli_smoke" .= smoke])
+      Aeson.object ["first" .= cold, "preparation" .= preparation, "repeat" .= repeated, "prompt_pairs" .= pairs, "cli_smoke" .= smoke])
   revision <- Text.strip . Text.pack <$> run "git" ["-C", repositoryPath, "rev-parse", "HEAD"]
   writeJson (artifact </> (label <> "-results.json")) (Aeson.object
     ["schema" .= ("adrai/retrieval-evaluation/v1" :: Text), "revision" .= revision,
@@ -196,6 +198,7 @@ evaluateCorpus artifactInput executable label repositoryInput cases = do
      "model_info" .= info, "fts" .= fallback, "actual_default" .= actual,
      "instruction" .= instruction,
      "limitations" .= (["Labels identify selected positives and hard negatives, not exhaustive precision.",
+       "Explicit preparation is recorded separately; incomplete/unavailable preparation is not a ready vector baseline.",
        "A repeat is warm only if the actual backend succeeds and corpus vectors were published.",
        "Instruction comparisons change explicit query text only; production prompting and thresholds are unchanged."] :: [Text])])
   putStrLn ("Wrote sanitized receipts: " <> (artifact </> (label <> "-results.json")))
@@ -349,6 +352,14 @@ disablePush repository = voidRun "git" ["-C", repository, "remote", "set-url", "
 
 cli :: FilePath -> FilePath -> [String] -> IO Aeson.Value
 cli executable repository args = run executable (["--repo", repository] <> args) >>= either fail pure . Aeson.eitherDecodeStrict' . Encoding.encodeUtf8 . Text.pack
+
+prepareEvaluation :: FilePath -> FilePath -> IO Aeson.Value
+prepareEvaluation executable repository = do
+  (code, output, problem) <- readCreateProcessWithExitCode
+    (proc executable ["--repo", repository, "prepare-embeddings", "--at", "HEAD", "--budget-ms", "120000", "--json", "+RTS", "-N1", "-RTS"]) ""
+  progress <- either (const (fail ("preparation did not return progress JSON: " <> take 1200 problem))) pure
+    (Aeson.eitherDecodeStrict' (Encoding.encodeUtf8 (Text.pack output)))
+  pure (Aeson.object ["exit_code" .= (case code of ExitSuccess -> 0 :: Int; ExitFailure value -> value), "progress" .= (progress :: Aeson.Value)])
 
 run :: FilePath -> [String] -> IO String
 run executable args = do

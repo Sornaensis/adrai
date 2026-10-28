@@ -69,6 +69,16 @@ block or invalidate a run.
 
 ## Reproducibility policy
 
+Optional TEI corpus preparation is separate from the native cold/warm query
+timings. For an enabled Git fixture, use `adrai prepare-embeddings --at REVISION`
+and retain its resolved revision, configured model identity, progress, budget and
+initial cache state. A partial preparation is not a ready vector baseline. The
+pure 2,000-ADR benchmark fixture has no Git archive: prepare its unchanged
+`embeddingPreparationCorpus` through the production `prepareTextEmbeddings` API
+in isolated user config/cache roots. Label that as explicitly prepared corpus
+state; do not claim native warm setup or a cold query populated it. Keep
+preparation outside Criterion timing and verify the effective backend separately.
+
 - Time benchmarks use the ordinary, non-profiled component. It embeds `-N1` as
   its RTS default to avoid machine-wide capability differences. A caller may
   deliberately override it with `+RTS -N4 -RTS`, but must record that choice in

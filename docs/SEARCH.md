@@ -148,6 +148,35 @@ not invalidate immutable lexical archives. This cache is disposable and can be
 removed while ADRAI is stopped. sqlite-vec v0.1.6 is bundled; no extension install
 or shared-library path is needed.
 
+Prepare a full revision before large vector searches:
+
+```console
+adrai prepare-embeddings --at HEAD --budget-ms 120000 --json
+```
+
+The command acquires the exact lexical archive and releases its transaction before
+contacting TEI. Its optional preparation budget defaults to 120,000 ms and accepts
+100–600,000 ms. Each complete validated corpus batch is committed separately;
+repeat the command after interruption, an outage or an incomplete result to resume
+without re-embedding already cached texts. Model, revision, dimension and input
+identity still isolate incompatible vectors. A disposable dimension probe is not
+persisted. Empty corpora require no TEI calls.
+
+Preparation JSON uses `adrai/embedding-preparation/v1`, the resolved `as_of` revision,
+`complete`, `incomplete` or `unavailable` status, a bounded `reason`, and
+`total_texts`, `cache_hits`, `prepared_texts` and `remaining_texts`. Counts concern
+unique corpus texts; unknown model/cache values are `null`. Complete and empty
+results exit zero; incomplete/unavailable results exit nonzero and retain valid
+progress. This command neither starts TEI nor changes service or user settings.
+
+Interactive search/relevance automatically repair at most 32 missing unique texts
+within 1,000 ms, under the existing 30-second optional phase. Larger or unfinished
+corpora use lexical retrieval, with optional `embedding_preparation` metadata and
+an actionable command naming the resolved revision. Query readiness uses `pending`
+or `unavailable`; ready results, explicit FTS and blank listings omit the metadata.
+No query runs KNN over a partially prepared eligible corpus. The preparation budget
+does not extend interactive deadlines.
+
 ## Browse domains
 
 ```console

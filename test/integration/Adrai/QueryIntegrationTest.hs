@@ -45,6 +45,8 @@ import Adrai.Repository (resolveRepositoryRevision, resolvedCommitOid)
 import Adrai.Retrieval (SearchDocument (..), SearchMaterialization (..))
 import Adrai.SearchVectorCorpus (buildSearchVectorCorpus)
 import Adrai.Scope (mkScopePattern)
+import Adrai.TextEmbedding (TextEmbeddingConfig (..), EmbeddingPreparation (..), EmbeddingPreparationStatus (..))
+import Adrai.TextEmbeddingTest (withTei, Behavior (..))
 import Adrai.Service.Query
   ( ExactQueryContext (..),
     QueryExecutionHooks (..),
@@ -59,6 +61,9 @@ import Adrai.Service.Query
     runRelevantQueryWithHooks,
     runSearchWithHooks,
     runDomainsWithHooks,
+    PrepareEmbeddingsRequest (..),
+    PrepareEmbeddingsResult (..),
+    runEmbeddingPreparationWith,
   )
 import Adrai.Types
   ( ActorKind (HumanActor),
@@ -84,20 +89,26 @@ import Adrai.Types
   )
 import Control.Concurrent (newEmptyMVar, putMVar, takeMVar, throwTo)
 import qualified Control.Concurrent.Async as Async
-import Control.Exception (AsyncException (ThreadKilled), SomeAsyncException, SomeException, fromException, throwIO, try)
+import Control.Exception (AsyncException (ThreadKilled), SomeAsyncException, SomeException, bracket, fromException, throwIO, try)
 import Data.Bifunctor (first)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.List (find, sort, sortOn)
 import qualified Data.Map.Strict as Map
+import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.Aeson as Aeson
+import qualified Data.Text.IO as TextIO
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text, strip)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Time.Clock (UTCTime)
 import System.Directory (createDirectoryIfMissing, doesFileExist, getFileSize, getModificationTime, removeFile, renameFile)
-import Database.SQLite.Simple (Connection, Only (..), close, execute_, open, query, query_)
+import Database.SQLite.Simple (Connection, Only (..), close, execute_, open, query, query_, withTransaction)
 import System.FilePath (takeDirectory, (</>))
+import System.Environment (getEnvironment, lookupEnv)
+import System.Exit (ExitCode (..))
+import System.Process.Typed (proc, readProcess, setEnv)
 import Test.Tasty (TestTree, testGroup, withResource)
 import Test.Tasty.HUnit ((@?=), assertBool, assertFailure, testCase)
 
@@ -552,6 +563,89 @@ assertExactBranchPlacementParity payload repoPath repository mainContext = do
 -- Test 1: Full history returns all operations for an ADR
 -- =====================================================================
 
+embeddingPreparationServiceContract :: Repository -> FilePath -> FilePath -> Text -> Text -> IO ()
+embeddingPreparationServiceContract repository repoPath archive mainRevision featureRevision = do
+  let exclusive = bracket (openReadWriteExisting archive) close $ \connection -> do
+        execute_ connection "PRAGMA busy_timeout=0"
+        execute_ connection "BEGIN EXCLUSIVE"
+        execute_ connection "ROLLBACK"
+  -- Negative control: this exact acquisition must fail while a real archive
+  -- reader holds a rollback-journal transaction. WAL would not prove release.
+  bracket (openReadWriteExisting archive) close $ \reader -> do
+    mode <- query_ reader "PRAGMA journal_mode" :: IO [Only Text]
+    mode @?= [Only "delete"]
+    withTransaction reader $ do
+      _ <- query_ reader "SELECT count(*) FROM sqlite_master" :: IO [Only Int]
+      blocked <- try exclusive :: IO (Either SomeException ())
+      assertBool "exclusive negative control observes held archive reader" (case blocked of Left _ -> True; _ -> False)
+  totalRef <- newIORef 0
+  let inspect budget corpus = do
+        budget @?= 120000
+        exclusive -- succeeds only after service archive scope has ended
+        let total = Map.size (Map.fromList [(text, ()) | (_, text) <- corpus])
+        assertBool "full revision corpus is materialized" (total > 2)
+        writeIORef totalRef total
+        pure (EmbeddingPreparation PreparationComplete Nothing Nothing total (Just total) 0 (Just 0) Nothing)
+  prepared <- requireRight "prepare HEAD after archive release" =<< runEmbeddingPreparationWith inspect repository (PrepareEmbeddingsRequest "HEAD" 120000)
+  preparedEmbeddingsRevision prepared @?= mainRevision
+  explicit <- requireRight "prepare immutable feature revision" =<< runEmbeddingPreparationWith (\_ corpus -> pure (EmbeddingPreparation PreparationComplete Nothing Nothing (length corpus) Nothing 0 (Just 0) Nothing)) repository (PrepareEmbeddingsRequest featureRevision 120000)
+  preparedEmbeddingsRevision explicit @?= featureRevision
+  invalid <- runEmbeddingPreparationWith (\_ _ -> fail "invalid budget must not invoke provider") repository (PrepareEmbeddingsRequest "HEAD" 99)
+  assertBool "service rejects invalid budget before provider" (case invalid of Left _ -> True; _ -> False)
+  -- Recreate a missing exact archive through the same production acquisition.
+  removeFile archive
+  _ <- requireRight "cold preparation reacquires exact archive" =<< runEmbeddingPreparationWith inspect repository (PrepareEmbeddingsRequest mainRevision 120000)
+  total <- readIORef totalRef
+  withTei $ \config behavior model inputs directory -> do
+    selected <- lookupEnv "ADRAI_EXE" >>= requireExecutable . maybe "adrai" id
+    inherited <- getEnvironment
+    let configRoot = directory </> "config"
+        cacheRoot = directory </> "cache"
+        environment = [("XDG_CONFIG_HOME", configRoot), ("XDG_CACHE_HOME", cacheRoot)]
+          <> filter (\(key,_) -> key `notElem` ["XDG_CONFIG_HOME", "XDG_CACHE_HOME"]) inherited
+        run arguments = do
+          (code, output, errors) <- readProcess (setEnv environment (proc selected (adraiTestArgs repoPath arguments)))
+          errors @?= ""
+          value <- requireRight "preparation CLI JSON" (Aeson.eitherDecode output)
+          pure (code, value)
+        field name value = case value of Aeson.Object object -> KeyMap.lookup name object; _ -> Nothing
+        command = ["prepare-embeddings", "--json"]
+    (absentExit, absent) <- run command
+    absentExit @?= ExitFailure 1
+    field "status" absent @?= Just (Aeson.String "unavailable")
+    field "reason" absent @?= Just (Aeson.String "not_configured")
+    field "cache_hits" absent @?= Just Aeson.Null
+    createDirectoryIfMissing True (configRoot </> "adrai")
+    TextIO.writeFile (configRoot </> "adrai" </> "config.toml")
+      ("[text_embedding]\nendpoint='" <> textEmbeddingEndpoint config <> "'\ntimeout_ms=10000\nbatch_size=2\n")
+    writeIORef behavior (AfterBatches 2 Slow)
+    (partialExit, partial) <- run (command <> ["--budget-ms", "1000"])
+    partialExit @?= ExitFailure 1
+    field "status" partial @?= Just (Aeson.String "incomplete")
+    field "as_of" partial @?= Just (Aeson.String mainRevision)
+    field "prepared_texts" partial @?= Just (Aeson.Number 2)
+    field "remaining_texts" partial @?= Just (Aeson.toJSON (total - 2))
+    writeIORef behavior Healthy
+    writeIORef inputs []
+    (readyExit, ready) <- run (command <> ["--at", T.unpack mainRevision])
+    readyExit @?= ExitSuccess
+    field "status" ready @?= Just (Aeson.String "complete")
+    field "cache_hits" ready @?= Just (Aeson.Number 2)
+    field "prepared_texts" ready @?= Just (Aeson.toJSON (total - 2))
+    (_, warm) <- run command
+    field "prepared_texts" warm @?= Just (Aeson.Number 0)
+    field "cache_hits" warm @?= Just (Aeson.toJSON total)
+    writeIORef model "changed-cli-model"
+    (_, changed) <- run command
+    field "cache_hits" changed @?= Just (Aeson.Number 0)
+    assertBool "model change invalidates CLI preparation identity" (field "model_identity" changed /= field "model_identity" ready)
+    writeIORef behavior Offline
+    (offlineExit, offline) <- run command
+    offlineExit @?= ExitFailure 1
+    field "status" offline @?= Just (Aeson.String "unavailable")
+    field "model_identity" offline @?= Just Aeson.Null
+    field "cache_hits" offline @?= Just Aeson.Null
+
 testExactCacheQueryHooks :: IO (RepositorySeed ExactQuerySeed) -> TestTree
 testExactCacheQueryHooks getSeed =
   testCase "P6-08Q exact-v3 archive hooks and tamper fallback" $ do
@@ -574,6 +668,7 @@ testExactCacheQueryHooks getSeed =
       archive <- case exactCacheArchivePath repository (resolvedCommitOid revision) of
         Nothing -> assertFailure "compiled revision has no exact archive path" >> fail "unreachable"
         Just value -> pure value
+      embeddingPreparationServiceContract repository repoPath archive resolvedOid (exactQuerySeedFeatureCommit payload)
       coldSnapshotResult <- readSnapshotAt repository "HEAD"
       exactContext <- loadExactQueryContextForTest repository "HEAD"
       case (coldSnapshotResult, exactContext) of
